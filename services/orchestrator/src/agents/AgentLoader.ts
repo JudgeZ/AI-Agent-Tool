@@ -20,8 +20,7 @@ export type AgentProfile = {
 };
 
 export function loadAgentProfile(name: string): AgentProfile {
-  const safeName = sanitizeAgentName(name);
-  const resolvedPath = resolveAgentPath(safeName);
+  const { path: resolvedPath, safeName } = resolveAgentPath(name);
   const raw = fs.readFileSync(resolvedPath, "utf-8");
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/m.exec(raw);
   let meta: Record<string, unknown> = {};
@@ -97,36 +96,53 @@ function sanitizeAgentName(input: string): string {
   if (!AGENT_NAME_PATTERN.test(trimmed)) {
     throw new Error(`Invalid agent name: ${input}`);
   }
+  if (path.basename(trimmed) !== trimmed) {
+    throw new Error(`Invalid agent name segment: ${input}`);
+  }
   return trimmed;
 }
 
 function isWithinBaseDirectory(baseDir: string, targetPath: string): boolean {
-  const relative = path.relative(baseDir, targetPath);
+  const normalizedBase = path.resolve(baseDir);
+  const normalizedTarget = path.resolve(targetPath);
+  if (normalizedBase === normalizedTarget) {
+    return false;
+  }
+  const relative = path.relative(normalizedBase, normalizedTarget);
   return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
 }
 
-function resolveAgentPath(name: string): string {
+function resolveAgentPath(name: string): { path: string; safeName: string } {
   const safeName = sanitizeAgentName(name);
 
   for (const baseDir of AGENT_DIRECTORIES) {
     if (!fs.existsSync(baseDir)) {
       continue;
     }
-    const candidate = path.resolve(baseDir, safeName, "agent.md");
-    if (!isWithinBaseDirectory(baseDir, candidate)) {
-      continue;
-    }
-    if (!fs.existsSync(candidate)) {
-      continue;
-    }
+
+    let realBase: string;
     try {
-      const realBase = fs.realpathSync(baseDir);
-      const realCandidate = fs.realpathSync(candidate);
+      realBase = fs.realpathSync(baseDir);
+    } catch {
+      continue;
+    }
+
+    const profilePath = path.join(realBase, safeName, "agent.md");
+    if (!isWithinBaseDirectory(realBase, profilePath)) {
+      continue;
+    }
+
+    if (!fs.existsSync(profilePath)) {
+      continue;
+    }
+
+    try {
+      const realCandidate = fs.realpathSync(profilePath);
       if (isWithinBaseDirectory(realBase, realCandidate)) {
-        return realCandidate;
+        return { path: realCandidate, safeName };
       }
     } catch {
-      // Ignore and continue searching other directories
+      continue;
     }
   }
 
