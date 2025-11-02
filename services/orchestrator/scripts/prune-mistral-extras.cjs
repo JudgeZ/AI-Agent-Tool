@@ -26,7 +26,7 @@ for (const target of targets) {
       fs.rmSync(fullPath, { recursive: true, force: true });
       removed.push(target);
     } catch (error) {
-      console.warn(`Failed to prune ${pkgName}/${target}:`, error);
+      console.warn("Failed to prune %s/%s:", pkgName, target, error);
     }
   }
 }
@@ -43,7 +43,7 @@ for (const lockPath of strayLocks) {
       fs.rmSync(lockPath, { force: true });
       removed.push(path.relative(moduleRoot, lockPath) || "package-lock.json");
     } catch (error) {
-      console.warn(`Failed to remove ${pkgName} lock file ${lockPath}:`, error);
+      console.warn("Failed to remove %s lock file %s:", pkgName, lockPath, error);
     }
   }
 }
