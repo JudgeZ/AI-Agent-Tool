@@ -33,11 +33,19 @@ function scryptAsync(
   });
 }
 
+type PersistedScryptParams = {
+  algorithm: "scrypt";
+  N: number;
+  r: number;
+  p: number;
+};
+
 type PersistedPayload = {
   version: number;
   salt: string;
   nonce: string;
   cipher: string;
+  kdf?: PersistedScryptParams;
 };
 
 type SodiumModule = typeof sodium;
@@ -155,11 +163,12 @@ export class LocalKeystore {
   private async decryptV1Payload(payload: PersistedPayload): Promise<Record<string, string>> {
     const salt = decode(payload.salt);
     this.salt = salt;
+    const scryptParams = this.resolveScryptParams(payload);
     const keyBuffer = await scryptAsync(
       this.passphrase,
       Buffer.from(salt),
       KEY_LENGTH,
-      SCRYPT_PARAMS
+      scryptParams
     );
     const key = new Uint8Array(keyBuffer);
     const nonce = decode(payload.nonce);
@@ -170,5 +179,25 @@ export class LocalKeystore {
     }
     const json = Buffer.from(plaintext).toString("utf-8");
     return JSON.parse(json) as Record<string, string>;
+  }
+
+  private resolveScryptParams(payload: PersistedPayload): ScryptOptions {
+    const { kdf } = payload;
+    if (!kdf || kdf.algorithm !== "scrypt") {
+      return SCRYPT_PARAMS;
+    }
+
+    const { N, r, p } = kdf;
+    const isValid = (value: number): boolean => Number.isSafeInteger(value) && value > 0;
+    if (!isValid(N) || !isValid(r) || !isValid(p)) {
+      return SCRYPT_PARAMS;
+    }
+
+    return {
+      N,
+      r,
+      p,
+      maxmem: SCRYPT_PARAMS.maxmem,
+    };
   }
 }
