@@ -166,7 +166,7 @@ async fn run() -> Result<(), IndexerError> {
         .route("/ast", post(ast_handler))
         .route("/semantic/documents", post(add_semantic_document))
         .route("/semantic/search", post(search_semantic))
-        .route("/semantic/history/:path", get(semantic_history))
+        .route("/semantic/history/*path", get(semantic_history))
         .with_state(state.clone());
 
     let addr: SocketAddr = ([0, 0, 0, 0], 7070).into();
