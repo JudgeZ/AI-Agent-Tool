@@ -36,6 +36,7 @@ jobs:
         with:
           node-version: '20'
           cache: npm
+          cache-dependency-path: services/orchestrator/package-lock.json
 
       - name: Set up Go
         if: matrix.language == 'go'
@@ -52,6 +53,7 @@ jobs:
       - name: Install JavaScript dependencies
         if: matrix.language == 'javascript'
         run: npm ci
+        working-directory: services/orchestrator
 
       - name: Prepare Go modules
         if: matrix.language == 'go'

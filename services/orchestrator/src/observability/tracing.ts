@@ -22,7 +22,7 @@ const TRACER_VERSION = process.env.npm_package_version ?? "0.0.0";
 function logTracingError(message: string, error: unknown): void {
   diag.error(message, error);
   // eslint-disable-next-line no-console
-  console.error(`[tracing] ${message}`, error);
+  console.error("[tracing]", message, error);
 }
 
 export type TracingConfig = {

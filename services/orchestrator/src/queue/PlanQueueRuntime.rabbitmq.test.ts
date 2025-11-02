@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 
 import { GenericContainer } from "testcontainers";
-import { afterAll, describe, expect, it, vi, type Mock } from "vitest";
+import { afterAll, describe, expect, it, vi } from "vitest";
 
 import { submitPlanSteps, resetPlanQueueRuntime } from "./PlanQueueRuntime.js";
 import { resetQueueAdapter } from "./QueueAdapter.js";
@@ -13,10 +13,8 @@ import * as events from "../plan/events.js";
 const executeTool = vi.fn();
 
 const policyMock = vi.hoisted(() => ({
-  enforcePlanStep: vi.fn().mockResolvedValue({ allow: true, deny: [] })
-})) as {
-  enforcePlanStep: Mock<[unknown?], Promise<{ allow: boolean; deny: unknown[] }>>;
-};
+  enforcePlanStep: vi.fn(async () => ({ allow: true, deny: [] as unknown[] }))
+}));
 
 vi.mock("../policy/PolicyEnforcer.js", () => {
   return {

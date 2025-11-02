@@ -2,6 +2,13 @@ import fs from "fs";
 import path from "path";
 import { parse as parseYaml } from "yaml";
 
+const AGENT_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-_]{0,62}[a-z0-9])?$/i;
+const AGENT_DIRECTORIES = [
+  path.resolve(process.cwd(), "agents"),
+  path.resolve(process.cwd(), "..", "agents"),
+  path.resolve(__dirname, "../../../../agents")
+];
+
 export type AgentProfile = {
   name: string;
   role: string;
@@ -13,7 +20,8 @@ export type AgentProfile = {
 };
 
 export function loadAgentProfile(name: string): AgentProfile {
-  const resolvedPath = resolveAgentPath(name);
+  const safeName = sanitizeAgentName(name);
+  const resolvedPath = resolveAgentPath(safeName);
   const raw = fs.readFileSync(resolvedPath, "utf-8");
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/m.exec(raw);
   let meta: Record<string, unknown> = {};
@@ -31,7 +39,7 @@ export function loadAgentProfile(name: string): AgentProfile {
   const model = normalizeModel(meta.model);
   const constraints = normalizeStringArray(meta.constraints, []);
   return {
-    name: typeof meta.name === "string" ? meta.name : name,
+    name: typeof meta.name === "string" ? meta.name : safeName,
     role: typeof meta.role === "string" ? meta.role : "Agent",
     capabilities,
     approval_policy: approvalPolicy,
@@ -84,16 +92,41 @@ function normalizeModel(value: unknown): AgentProfile["model"] {
   return {};
 }
 
-function resolveAgentPath(name: string): string {
-  const candidates = [
-    path.join(process.cwd(), "agents", name, "agent.md"),
-    path.resolve(process.cwd(), "..", "agents", name, "agent.md"),
-    path.resolve(__dirname, "../../../../agents", name, "agent.md")
-  ];
+function sanitizeAgentName(input: string): string {
+  const trimmed = input.trim();
+  if (!AGENT_NAME_PATTERN.test(trimmed)) {
+    throw new Error(`Invalid agent name: ${input}`);
+  }
+  return trimmed;
+}
 
-  for (const candidate of candidates) {
-    if (fs.existsSync(candidate)) {
-      return candidate;
+function isWithinBaseDirectory(baseDir: string, targetPath: string): boolean {
+  const relative = path.relative(baseDir, targetPath);
+  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+}
+
+function resolveAgentPath(name: string): string {
+  const safeName = sanitizeAgentName(name);
+
+  for (const baseDir of AGENT_DIRECTORIES) {
+    if (!fs.existsSync(baseDir)) {
+      continue;
+    }
+    const candidate = path.resolve(baseDir, safeName, "agent.md");
+    if (!isWithinBaseDirectory(baseDir, candidate)) {
+      continue;
+    }
+    if (!fs.existsSync(candidate)) {
+      continue;
+    }
+    try {
+      const realBase = fs.realpathSync(baseDir);
+      const realCandidate = fs.realpathSync(candidate);
+      if (isWithinBaseDirectory(realBase, realCandidate)) {
+        return realCandidate;
+      }
+    } catch {
+      // Ignore and continue searching other directories
     }
   }
 

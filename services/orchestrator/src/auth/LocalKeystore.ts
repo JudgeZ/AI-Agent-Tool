@@ -1,7 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 import { randomBytes, scrypt as scryptCb } from "node:crypto";
-import { promisify } from "node:util";
+import type { ScryptOptions } from "node:crypto";
 import sodium from "libsodium-wrappers-sumo";
 import nacl from "tweetnacl";
 
@@ -9,7 +9,22 @@ const KEY_LENGTH = 32;
 const SALT_LENGTH = 16;
 const SCRYPT_PARAMS = { N: 1 << 15, r: 8, p: 1 } as const;
 
-const scrypt = promisify(scryptCb);
+function scryptAsync(
+  passphrase: string,
+  salt: Buffer,
+  keyLength: number,
+  options: ScryptOptions
+): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    scryptCb(passphrase, salt, keyLength, options, (error, derivedKey) => {
+      if (error) {
+        reject(error);
+        return;
+      }
+      resolve(derivedKey);
+    });
+  });
+}
 
 type PersistedPayload = {
   version: number;
@@ -133,13 +148,13 @@ export class LocalKeystore {
   private async decryptV1Payload(payload: PersistedPayload): Promise<Record<string, string>> {
     const salt = decode(payload.salt);
     this.salt = salt;
-    const keyBuffer = await scrypt(
+    const keyBuffer = await scryptAsync(
       this.passphrase,
       Buffer.from(salt),
       KEY_LENGTH,
       SCRYPT_PARAMS
     );
-    const key = new Uint8Array(keyBuffer as Buffer);
+    const key = new Uint8Array(keyBuffer);
     const nonce = decode(payload.nonce);
     const cipher = decode(payload.cipher);
     const plaintext = nacl.secretbox.open(cipher, nonce, key);
