@@ -25,7 +25,8 @@
     "dev": "tsx watch src/index.ts",
     "build": "tsc -p tsconfig.json",
     "start": "node dist/index.js",
-    "test": "vitest run"
+    "test": "vitest run",
+    "postinstall": "node ./scripts/prune-mistral-extras.cjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.68.0",
@@ -74,6 +75,9 @@
     "vitest": "^4.0.5"
   },
   "overrides": {
-    "cross-spawn": "7.0.6"
+    "cross-spawn": "7.0.6",
+    "@mistralai/mistralai": {
+      "cross-spawn": "7.0.6"
+    }
   }
 }
