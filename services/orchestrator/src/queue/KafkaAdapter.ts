@@ -250,16 +250,23 @@ export class KafkaAdapter implements QueueAdapter {
       return;
     }
     this.consumerRunning = true;
-    await this.consumer.run({
-      autoCommit: false,
-      eachMessage: async (payload: EachMessagePayload) => {
-        try {
-          await this.handleMessage(payload);
-        } catch (error: unknown) {
-          this.logger.error?.(`Kafka message handler error: ${(error as Error).message}`);
+    void this.consumer
+      .run({
+        autoCommit: false,
+        eachMessage: async (payload: EachMessagePayload) => {
+          try {
+            await this.handleMessage(payload);
+          } catch (error: unknown) {
+            this.logger.error?.(`Kafka message handler error: ${(error as Error).message}`);
+          }
         }
-      }
-    });
+      })
+      .catch((error: unknown) => {
+        this.logger.error?.(`Kafka consumer run failed: ${(error as Error).message}`);
+      })
+      .finally(() => {
+        this.consumerRunning = false;
+      });
   }
 
   private async handleMessage({ topic, partition, message }: EachMessagePayload): Promise<void> {
