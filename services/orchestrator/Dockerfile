@@ -4,6 +4,7 @@ FROM node:20-alpine AS deps
 WORKDIR /app
 RUN apk add --no-cache python3 make g++
 COPY package*.json ./
+COPY scripts ./scripts
 RUN npm ci
 
 FROM node:20-alpine AS build
@@ -18,7 +19,9 @@ FROM node:20-alpine
 WORKDIR /app
 ENV NODE_ENV=production
 COPY package*.json ./
+COPY scripts ./scripts
 RUN npm ci --omit=dev
+RUN rm -rf scripts
 COPY --from=build /app/dist ./dist
 USER node
 EXPOSE 4000
