@@ -2,7 +2,6 @@ import { existsSync } from "node:fs";
 import { readFile } from "node:fs/promises";
 import path from "node:path";
 
-import type { Policy } from "@open-policy-agent/opa-wasm";
 import { loadPolicy } from "@open-policy-agent/opa-wasm";
 
 import { loadAgentProfile, type AgentProfile } from "../agents/AgentLoader.js";
@@ -31,8 +30,13 @@ export class PolicyViolationError extends Error {
   }
 }
 
+type EvaluatablePolicy = {
+  evaluate: (input: unknown) => unknown;
+  setData: (data: unknown) => Promise<void> | void;
+};
+
 type WasmPolicy = {
-  policy: Policy;
+  policy: EvaluatablePolicy;
   wasmPath: string;
   dataPath?: string;
 };
@@ -74,13 +78,13 @@ async function loadWasmPolicy(): Promise<WasmPolicy> {
   }
 
   const wasm = await readFile(wasmPath);
-  const policy = await loadPolicy(wasm);
+  const policy = (await loadPolicy(wasm)) as EvaluatablePolicy;
 
   const dataPath = resolvePolicyDataCandidates(wasmPath).find(candidate => existsSync(candidate));
   if (dataPath) {
     const raw = await readFile(dataPath, "utf-8");
     const data = JSON.parse(raw);
-    await policy.setData(data);
+    await Promise.resolve(policy.setData(data));
   }
 
   return { policy, wasmPath, dataPath };

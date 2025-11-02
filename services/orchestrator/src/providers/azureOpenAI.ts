@@ -43,9 +43,13 @@ async function defaultClientFactory({
   if (typeof ctorCandidate !== "function") {
     throw new Error("Azure OpenAI client is not available");
   }
+  const resolvedApiVersion =
+    typeof apiVersion === "string" && apiVersion.trim().length > 0
+      ? apiVersion
+      : process.env.AZURE_OPENAI_API_VERSION ?? "2024-02-01";
   type AzureOpenAIConstructor = new (config: { apiKey: string; endpoint: string; apiVersion: string }) => unknown;
   const AzureOpenAIConstructor = ctorCandidate as AzureOpenAIConstructor;
-  return new AzureOpenAIConstructor({ apiKey, endpoint, apiVersion }) as unknown as AzureOpenAIClient;
+  return new AzureOpenAIConstructor({ apiKey, endpoint, apiVersion: resolvedApiVersion }) as unknown as AzureOpenAIClient;
 }
 
 function toAzureMessages(messages: ChatMessage[]) {

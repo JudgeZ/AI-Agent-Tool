@@ -75,6 +75,10 @@ function extractBedrockText(payload: unknown): string {
   return "";
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 export class BedrockProvider implements ModelProvider {
   name = "bedrock";
   private clientPromise?: Promise<BedrockClient>;
@@ -154,13 +158,22 @@ export class BedrockProvider implements ModelProvider {
       });
     }
 
-    const usage = parsed?.usage ?? parsed?.generationUsage ?? parsed?.metrics;
-    const promptTokens = usage?.input_tokens ?? usage?.prompt_tokens ?? usage?.inputTokens;
-    const completionTokens = usage?.output_tokens ?? usage?.completion_tokens ?? usage?.outputTokens;
-    const totalTokens = usage?.total_tokens ?? usage?.totalTokens ??
-      (typeof promptTokens === "number" && typeof completionTokens === "number"
+    const parsedRecord = isRecord(parsed) ? parsed : {};
+    const usageCandidate =
+      parsedRecord.usage ?? parsedRecord.generationUsage ?? parsedRecord.metrics;
+    const usageRecord = isRecord(usageCandidate) ? usageCandidate : undefined;
+    const promptTokensRaw =
+      usageRecord?.input_tokens ?? usageRecord?.prompt_tokens ?? usageRecord?.inputTokens;
+    const completionTokensRaw =
+      usageRecord?.output_tokens ?? usageRecord?.completion_tokens ?? usageRecord?.outputTokens;
+    const totalTokensRaw = usageRecord?.total_tokens ?? usageRecord?.totalTokens;
+    const promptTokens = typeof promptTokensRaw === "number" ? promptTokensRaw : undefined;
+    const completionTokens = typeof completionTokensRaw === "number" ? completionTokensRaw : undefined;
+    const totalTokens = typeof totalTokensRaw === "number"
+      ? totalTokensRaw
+      : typeof promptTokens === "number" && typeof completionTokens === "number"
         ? promptTokens + completionTokens
-        : undefined);
+        : undefined;
 
     return {
       output,

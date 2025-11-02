@@ -4,6 +4,7 @@ import path from "node:path";
 
 import { KafkaContainer, type StartedKafkaContainer } from "@testcontainers/kafka";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import type { MockInstance } from "vitest";
 
 import {
   submitPlanSteps,
@@ -14,6 +15,7 @@ import {
 import { resetQueueAdapter } from "./QueueAdapter.js";
 import type { Plan } from "../plan/planner.js";
 import * as events from "../plan/events.js";
+import type { PlanStepEvent } from "../plan/events.js";
 
 const executeTool = vi.fn();
 
@@ -31,7 +33,7 @@ describe("PlanQueueRuntime (Kafka integration)", () => {
   let skipSuite = false;
   let planStateDir: string | undefined;
   let previousEnv: Record<string, string | undefined> = {};
-  let publishSpy: ReturnType<typeof vi.spyOn> | undefined;
+  let publishSpy: MockInstance<(event: PlanStepEvent) => void> | undefined;
 
   beforeAll(async () => {
     try {
@@ -66,7 +68,11 @@ describe("PlanQueueRuntime (Kafka integration)", () => {
       KAFKA_RETRY_DELAY_MS: process.env.KAFKA_RETRY_DELAY_MS
     };
 
-    const brokers = container!.getBootstrapServers();
+    const brokersFn = (container as unknown as { getBootstrapServers?: () => string }).getBootstrapServers;
+    const brokers =
+      typeof brokersFn === "function"
+        ? brokersFn.call(container)
+        : `${container!.getHost()}:${container!.getMappedPort(9093)}`;
     process.env.PLAN_STATE_PATH = path.join(planStateDir, "state.json");
     process.env.MESSAGING_TYPE = "kafka";
     process.env.KAFKA_BROKERS = brokers;

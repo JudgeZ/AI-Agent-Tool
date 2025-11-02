@@ -117,7 +117,7 @@ export async function callback(req: Request, res: Response) {
         : typeof error === "object" && error !== null && typeof (error as StatusLike).status === "number"
           ? (error as StatusLike).status
           : undefined;
-    const status = statusCandidate ?? 502;
+    const status = typeof statusCandidate === "number" && Number.isFinite(statusCandidate) ? statusCandidate : 502;
     res.status(status).json({ error: message });
   }
 }

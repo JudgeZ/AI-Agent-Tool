@@ -69,17 +69,17 @@ function extractUsage(payload: OllamaPayload) {
   const usage = obj.usage;
   if (!usage || typeof usage !== "object" || usage === null) return undefined;
   const usageObj = usage as Record<string, unknown>;
-  const promptTokens = usageObj.prompt_tokens ?? usageObj.promptTokens;
-  const completionTokens = usageObj.completion_tokens ?? usageObj.completionTokens;
-  const totalTokens = usageObj.total_tokens ?? usageObj.totalTokens ??
-    (typeof promptTokens === "number" && typeof completionTokens === "number"
+  const promptRaw = usageObj.prompt_tokens ?? usageObj.promptTokens;
+  const completionRaw = usageObj.completion_tokens ?? usageObj.completionTokens;
+  const promptTokens = typeof promptRaw === "number" ? promptRaw : undefined;
+  const completionTokens = typeof completionRaw === "number" ? completionRaw : undefined;
+  const totalFromUsage = usageObj.total_tokens ?? usageObj.totalTokens;
+  const totalTokens = typeof totalFromUsage === "number"
+    ? totalFromUsage
+    : typeof promptTokens === "number" && typeof completionTokens === "number"
       ? promptTokens + completionTokens
-      : undefined);
-  if (
-    typeof promptTokens === "number" ||
-    typeof completionTokens === "number" ||
-    typeof totalTokens === "number"
-  ) {
+      : undefined;
+  if (promptTokens !== undefined || completionTokens !== undefined || totalTokens !== undefined) {
     return { promptTokens, completionTokens, totalTokens };
   }
   return undefined;

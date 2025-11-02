@@ -6,10 +6,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { PlanStep } from "../plan/planner.js";
 
-const evaluateMock = vi.fn<
-  [unknown],
-  Array<{ result: { allow?: boolean; deny?: unknown[] } }>
->();
+type PolicyResult = { result: { allow?: boolean; deny?: unknown[] } };
+
+const evaluateMock = vi.fn<(input: unknown) => PolicyResult[]>();
 const setDataMock = vi.fn();
 
 const loadPolicyMock = vi.fn(async () => ({
@@ -26,6 +25,35 @@ const loadAgentProfileMock = vi.fn();
 vi.mock("../agents/AgentLoader.js", () => ({
   loadAgentProfile: loadAgentProfileMock
 }));
+
+type PolicyInput = {
+  subject: { agent: string; capabilities: string[] };
+  action: { capabilities: string[] };
+};
+
+function assertPolicyInput(input: unknown): asserts input is PolicyInput {
+  if (!input || typeof input !== "object") {
+    throw new Error("policy input was not captured");
+  }
+  const candidate = input as Record<string, unknown>;
+  const subject = candidate.subject;
+  const action = candidate.action;
+  if (
+    !subject ||
+    typeof subject !== "object" ||
+    typeof (subject as { agent?: unknown }).agent !== "string" ||
+    !Array.isArray((subject as { capabilities?: unknown }).capabilities)
+  ) {
+    throw new Error("policy input subject missing capabilities");
+  }
+  if (
+    !action ||
+    typeof action !== "object" ||
+    !Array.isArray((action as { capabilities?: unknown }).capabilities)
+  ) {
+    throw new Error("policy input action missing capabilities");
+  }
+}
 
 describe("PolicyEnforcer", () => {
   let tempDir: string;
@@ -84,7 +112,7 @@ describe("PolicyEnforcer", () => {
     });
 
     let receivedInput: unknown;
-    evaluateMock.mockImplementation(input => {
+    evaluateMock.mockImplementation((input: unknown) => {
       receivedInput = input;
       return [{ result: { allow: true, deny: [] } }];
     });
@@ -99,6 +127,7 @@ describe("PolicyEnforcer", () => {
     });
 
     expect(decision.allow).toBe(true);
+    assertPolicyInput(receivedInput);
     expect(receivedInput.subject.capabilities).toContain("repo.write");
     expect(receivedInput.action.capabilities).toEqual(["repo.write"]);
     expect(loadPolicyMock).toHaveBeenCalledTimes(1);
@@ -139,7 +168,7 @@ describe("PolicyEnforcer", () => {
     });
 
     let receivedInput: unknown;
-    evaluateMock.mockImplementation(input => {
+    evaluateMock.mockImplementation((input: unknown) => {
       receivedInput = input;
       return [{ result: { allow: true, deny: [] } }];
     });
@@ -150,6 +179,7 @@ describe("PolicyEnforcer", () => {
       traceId: "trace-fallback"
     });
 
+    assertPolicyInput(receivedInput);
     expect(receivedInput.subject.agent).toBe("code-writer");
     expect(receivedInput.subject.capabilities).toEqual(["repo.write"]);
   });
@@ -182,7 +212,7 @@ describe("PolicyEnforcer", () => {
     }));
 
     let receivedInput: unknown;
-    evaluateMock.mockImplementation(input => {
+    evaluateMock.mockImplementation((input: unknown) => {
       receivedInput = input;
       return [{ result: { allow: true, deny: [] } }];
     });
@@ -196,6 +226,7 @@ describe("PolicyEnforcer", () => {
     });
 
     expect(decision.allow).toBe(true);
+    assertPolicyInput(receivedInput);
     expect(receivedInput.action.capabilities).toEqual(["plan.create"]);
     expect(receivedInput.subject.agent).toBe("planner");
   });

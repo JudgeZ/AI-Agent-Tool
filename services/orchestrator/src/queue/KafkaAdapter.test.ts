@@ -36,8 +36,12 @@ function createKafkaMocks() {
     })
   } as unknown as Consumer;
 
-  const fetchTopicOffsets = vi.fn().mockResolvedValue([{ partition: 0, offset: "0" }]);
-  const fetchOffsets = vi.fn().mockResolvedValue([{ partition: 0, offset: "0" }]);
+  const fetchTopicOffsets = vi.fn().mockResolvedValue([
+    { partition: 0, offset: "0", high: "0", low: "0" }
+  ]);
+  const fetchOffsets = vi.fn().mockResolvedValue([
+    { topic: "plan.steps", partitions: [{ partition: 0, offset: "0" }] }
+  ]);
   const admin = {
     connect: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn().mockResolvedValue(undefined),
@@ -85,7 +89,9 @@ function makeKafkaMessage(value: unknown, headers: Record<string, string> = {}, 
       return acc;
     }, {}),
     offset,
-    key: headers["x-idempotency-key"] ? Buffer.from(headers["x-idempotency-key"]) : undefined
+    timestamp: new Date(0).toISOString(),
+    attributes: 0,
+    key: headers["x-idempotency-key"] ? Buffer.from(headers["x-idempotency-key"]) : null
   };
 }
 
@@ -118,7 +124,7 @@ describe("KafkaAdapter", () => {
       topic: "plan.steps",
       partition: 0,
       heartbeat: async () => {},
-      pause: () => {},
+      pause: () => () => undefined,
       message: makeKafkaMessage({ task: "index" }, { "x-attempts": "0", "x-idempotency-key": "plan-1:s1" })
     });
 
@@ -146,7 +152,7 @@ describe("KafkaAdapter", () => {
       topic: "plan.steps",
       partition: 0,
       heartbeat: async () => {},
-      pause: () => {},
+      pause: () => () => undefined,
       message: makeKafkaMessage(
         { task: "apply", job: { attempt: 0 } },
         { "x-attempts": "0", "x-idempotency-key": "plan-1:s2" }
@@ -174,7 +180,7 @@ describe("KafkaAdapter", () => {
       topic: "plan.steps",
       partition: 0,
       heartbeat: async () => {},
-      pause: () => {},
+      pause: () => () => undefined,
       message: makeKafkaMessage(
         { task: "apply" },
         { "x-attempts": "0", "x-idempotency-key": "plan-1:s3" }
@@ -200,11 +206,14 @@ describe("KafkaAdapter", () => {
       topic: "plan.steps",
       partition: 0,
       heartbeat: async () => {},
-      pause: () => {},
+      pause: () => () => undefined,
       message: {
         value: Buffer.from("not-json"),
         headers: {},
-        offset: "0"
+        offset: "0",
+        timestamp: new Date(0).toISOString(),
+        attributes: 0,
+        key: null
       }
     });
 
@@ -222,8 +231,13 @@ describe("KafkaAdapter", () => {
       { partition: 1, offset: "5" }
     ]);
     mocks.fetchOffsets.mockResolvedValueOnce([
-      { partition: 0, offset: "7" },
-      { partition: 1, offset: "5" }
+      {
+        topic: "plan.steps",
+        partitions: [
+          { partition: 0, offset: "7" },
+          { partition: 1, offset: "5" }
+        ]
+      }
     ]);
 
     const depth = await adapter.getQueueDepth("plan.steps");

@@ -1,8 +1,8 @@
 import { ProviderError } from "./utils.js";
 
-type RateLimiterTask<T> = {
-  fn: () => Promise<T>;
-  resolve: (value: T) => void;
+type StoredTask = {
+  fn: () => Promise<unknown>;
+  resolve: (value: unknown) => void;
   reject: (reason: unknown) => void;
 };
 
@@ -18,7 +18,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 export class RateLimiter {
-  private readonly queues = new Map<string, RateLimiterTask<unknown>[]>();
+  private readonly queues = new Map<string, StoredTask[]>();
   private readonly timestamps = new Map<string, number[]>();
   private readonly processing = new Set<string>();
 
@@ -26,7 +26,13 @@ export class RateLimiter {
 
   async schedule<T>(key: string, task: () => Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
-      const entry: RateLimiterTask<T> = { fn: task, resolve, reject };
+      const entry: StoredTask = {
+        fn: async () => task(),
+        resolve: value => {
+          resolve(value as T);
+        },
+        reject
+      };
       const queue = this.queues.get(key);
       if (queue) {
         queue.push(entry);
@@ -88,7 +94,7 @@ export class RateLimiter {
 
         try {
           const result = await next.fn();
-          (next.resolve as (value: unknown) => void)(result);
+          next.resolve(result);
         } catch (error) {
           next.reject(error);
         }

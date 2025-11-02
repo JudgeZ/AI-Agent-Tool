@@ -154,7 +154,7 @@ export class KafkaAdapter implements QueueAdapter {
         )
       );
     })()
-      .catch(error => {
+      .catch((error: unknown) => {
         this.connecting = null;
         this.connected = false;
         throw error;
@@ -177,9 +177,15 @@ export class KafkaAdapter implements QueueAdapter {
     this.inflightKeys.clear();
 
     await Promise.all([
-      producer?.disconnect().catch(error => this.logger.warn?.(`Kafka producer close failed: ${(error as Error).message}`)),
-      consumer?.disconnect().catch(error => this.logger.warn?.(`Kafka consumer close failed: ${(error as Error).message}`)),
-      admin?.disconnect().catch(error => this.logger.warn?.(`Kafka admin close failed: ${(error as Error).message}`))
+      producer?.disconnect().catch((error: unknown) =>
+        this.logger.warn?.(`Kafka producer close failed: ${(error as Error).message}`)
+      ),
+      consumer?.disconnect().catch((error: unknown) =>
+        this.logger.warn?.(`Kafka consumer close failed: ${(error as Error).message}`)
+      ),
+      admin?.disconnect().catch((error: unknown) =>
+        this.logger.warn?.(`Kafka admin close failed: ${(error as Error).message}`)
+      )
     ]);
   }
 
@@ -202,11 +208,17 @@ export class KafkaAdapter implements QueueAdapter {
 
     try {
       const topicOffsets = await this.admin.fetchTopicOffsets(queue);
-      const groupOffsets = await this.admin.fetchOffsets({ groupId: this.groupId, topic: queue });
+      const groupOffsets = await this.admin.fetchOffsets({ groupId: this.groupId, topics: [queue] });
 
-      const groupOffsetMap = new Map<number, string>(
-        groupOffsets.map(entry => [entry.partition, entry.offset])
-      );
+      const groupOffsetMap = new Map<number, string>();
+      for (const topicEntry of groupOffsets) {
+        if (topicEntry.topic !== queue) {
+          continue;
+        }
+        for (const partition of topicEntry.partitions) {
+          groupOffsetMap.set(partition.partition, partition.offset);
+        }
+      }
 
       let lag = 0n;
       for (const partition of topicOffsets) {
@@ -240,10 +252,10 @@ export class KafkaAdapter implements QueueAdapter {
     this.consumerRunning = true;
     await this.consumer.run({
       autoCommit: false,
-      eachMessage: async payload => {
+      eachMessage: async (payload: EachMessagePayload) => {
         try {
           await this.handleMessage(payload);
-        } catch (error) {
+        } catch (error: unknown) {
           this.logger.error?.(`Kafka message handler error: ${(error as Error).message}`);
         }
       }
@@ -264,7 +276,7 @@ export class KafkaAdapter implements QueueAdapter {
     let payload: unknown;
     try {
       payload = message.value ? JSON.parse(message.value.toString("utf-8")) : null;
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error?.(`Failed to parse Kafka message from ${topic}: ${(error as Error).message}`);
       await this.commitOffset(topic, partition, message.offset);
       if (idempotencyKey) {
@@ -324,7 +336,7 @@ export class KafkaAdapter implements QueueAdapter {
 
     try {
       await handler(queueMessage);
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.error?.(`Queue handler for ${topic} failed: ${(error as Error).message}`);
       await queueMessage.retry();
     }
@@ -362,7 +374,7 @@ export class KafkaAdapter implements QueueAdapter {
         topic,
         messages: toKafkaMessages(topic, payload, headers, idempotencyKey)
       });
-    } catch (error) {
+    } catch (error: unknown) {
       if (idempotencyKey && addedKey) {
         this.releaseKey(idempotencyKey);
       }
@@ -376,7 +388,7 @@ export class KafkaAdapter implements QueueAdapter {
     try {
       const depth = await this.getQueueDepth(queue);
       queueDepthGauge.labels(queue).set(depth);
-    } catch (error) {
+    } catch (error: unknown) {
       this.logger.warn?.(`Failed to refresh Kafka depth for ${queue}: ${(error as Error).message}`);
     }
   }
