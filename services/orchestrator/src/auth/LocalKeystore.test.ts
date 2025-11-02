@@ -42,7 +42,9 @@ describe("LocalKeystore", () => {
     if (process.platform !== "win32") {
       expect(stats.mode & 0o777).toBe(0o600);
     }
-  });
+    // Scrypt is intentionally configured with the legacy work factors and can
+    // exceed Vitest's 5s default timeout on slower CI executors.
+  }, 15000);
 
   it("rejects decryption with an incorrect passphrase", async () => {
     tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "keystore-"));
