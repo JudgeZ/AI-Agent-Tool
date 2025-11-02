@@ -95,9 +95,16 @@ export class OpenAIProvider implements ModelProvider {
     if (error instanceof ProviderError) {
       return error;
     }
-    const status = typeof (error as any)?.status === "number" ? (error as any).status : undefined;
-    const code = typeof (error as any)?.code === "string" ? (error as any).code : undefined;
-    const message = typeof (error as any)?.message === "string" ? (error as any).message : "OpenAI request failed";
+    type OpenAIErrorLike = {
+      status?: unknown;
+      code?: unknown;
+      message?: unknown;
+    };
+    const details: OpenAIErrorLike | undefined =
+      typeof error === "object" && error !== null ? (error as OpenAIErrorLike) : undefined;
+    const status = typeof details?.status === "number" ? details.status : undefined;
+    const code = typeof details?.code === "string" ? details.code : undefined;
+    const message = typeof details?.message === "string" ? details.message : "OpenAI request failed";
     const retryable = status === 429 || status === 408 || (typeof status === "number" ? status >= 500 : true);
     return new ProviderError(message, {
       status: status ?? 502,

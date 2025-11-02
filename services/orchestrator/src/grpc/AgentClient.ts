@@ -93,21 +93,53 @@ function safeParseJson(input: string | undefined): Record<string, unknown> | und
   }
 }
 
+type ProtoToolEvent = {
+  invocationId?: unknown;
+  planId?: unknown;
+  stepId?: unknown;
+  state?: unknown;
+  summary?: unknown;
+  outputJson?: unknown;
+  occurredAt?: unknown;
+};
+
+function isProtoToolEvent(value: unknown): value is ProtoToolEvent {
+  return typeof value === "object" && value !== null;
+}
+
 function toToolEvents(
-  responseEvents: { invocationId: string; planId: string; stepId: string; state: string; summary: string; outputJson: string; occurredAt: string }[],
+  responseEvents: unknown,
   fallback: NonNullable<ExecuteToolRequest["invocation"]>
 ): ToolEvent[] {
-  return responseEvents.map(event =>
-    parseToolEvent({
-      invocationId: event.invocationId || fallback.invocationId,
-      planId: event.planId || fallback.planId,
-      stepId: event.stepId || fallback.stepId,
-      state: event.state,
-      summary: event.summary || undefined,
-      output: safeParseJson(event.outputJson),
-      occurredAt: event.occurredAt || new Date().toISOString()
-    })
-  );
+  if (!Array.isArray(responseEvents)) {
+    return [];
+  }
+
+  return responseEvents
+    .filter(isProtoToolEvent)
+    .map(event => {
+      const invocationId = typeof event.invocationId === "string" && event.invocationId.length > 0
+        ? event.invocationId
+        : fallback.invocationId;
+      const planId = typeof event.planId === "string" && event.planId.length > 0 ? event.planId : fallback.planId;
+      const stepId = typeof event.stepId === "string" && event.stepId.length > 0 ? event.stepId : fallback.stepId;
+      const state = typeof event.state === "string" ? event.state : "queued";
+      const summary = typeof event.summary === "string" && event.summary.length > 0 ? event.summary : undefined;
+      const occurredAt =
+        typeof event.occurredAt === "string" && event.occurredAt.length > 0
+          ? event.occurredAt
+          : new Date().toISOString();
+
+      return parseToolEvent({
+        invocationId,
+        planId,
+        stepId,
+        state,
+        summary,
+        output: safeParseJson(typeof event.outputJson === "string" ? event.outputJson : undefined),
+        occurredAt
+      });
+    });
 }
 
 export class ToolAgentClient {
@@ -168,7 +200,7 @@ export class ToolAgentClient {
     throw lastError ?? new ToolClientError("Tool execution failed");
   }
 
-  private invoke(request: ExecuteToolRequest, metadata: Metadata, timeoutMs: number): Promise<{ events: any[] }> {
+  private invoke(request: ExecuteToolRequest, metadata: Metadata, timeoutMs: number): Promise<{ events: unknown[] }> {
     const client = this.getClient();
     const deadline = Date.now() + timeoutMs;
     return new Promise((resolve, reject) => {

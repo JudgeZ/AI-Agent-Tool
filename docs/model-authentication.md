@@ -33,6 +33,7 @@ Some desktop clients (CLI / GUI) use a loopback redirect during OAuth consent. W
 
 ### Configuration
 
+- `GOOGLE_OAUTH_CLIENT_ID` / `GOOGLE_OAUTH_CLIENT_SECRET`: OAuth client credentials for Google (Gemini). The gateway redirects to `https://accounts.google.com/o/oauth2/v2/auth` and requests scopes: `openid`, `profile`, `email`, `https://www.googleapis.com/auth/cloud-platform`.
 - `OPENROUTER_CLIENT_ID` / `OPENROUTER_CLIENT_SECRET`: OAuth client credentials for OpenRouter.
 - `OAUTH_REDIRECT_BASE`: Public base URL for the gateway callback (defaults to `http://127.0.0.1:8080`).
 - `LOCAL_SECRETS_PASSPHRASE`: Required passphrase for encrypting the local keystore (`config/secrets/local/secrets.json` by default).

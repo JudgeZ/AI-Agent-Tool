@@ -23,6 +23,33 @@ containerSecurityContext:
 
 networkPolicy:
   enabled: true
+  ingress:
+    - from:
+        - podSelector: {}
+        - namespaceSelector: {}
+  defaultDenyEgress: true
+  egressRules:
+    # Allow DNS queries to kube-dns inside kube-system
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # Allow OTLP/HTTP traffic to the bundled Jaeger collector
+    - to:
+        - podSelector:
+            matchLabels:
+              app.kubernetes.io/component: jaeger
+      ports:
+        - protocol: TCP
+          port: 4317
 
 gatewayApi:
   replicas: 2
@@ -31,6 +58,13 @@ gatewayApi:
     type: ClusterIP
     port: 80
   env: {}
+  tls:
+    enabled: false
+    secretName: ""
+    mountPath: /etc/orchestrator/tls
+    clientCertFile: client.crt
+    clientKeyFile: client.key
+    caFile: ca.crt
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
     limits: { cpu: "500m", memory: "256Mi" }
@@ -44,6 +78,14 @@ orchestrator:
   env:
     LOCAL_SECRETS_PATH: /app/config/secrets/local/secrets.json
     LOCAL_SECRETS_PASSPHRASE: change-me
+  tls:
+    enabled: false
+    secretName: ""
+    mountPath: /etc/orchestrator/tls
+    certFile: tls.crt
+    keyFile: tls.key
+    caFile: ca.crt
+    requestClientCert: true
   hpa:
     enabled: true
     min: 2
@@ -92,6 +134,11 @@ rabbitmq:
   image: rabbitmq:3.13-management
   username: guest
   password: guest
+  host: ""
+  port: 5672
+  scheme: amqp
+  vhost: ""
+  url: ""
   persistence:
     enabled: false
     size: 5Gi

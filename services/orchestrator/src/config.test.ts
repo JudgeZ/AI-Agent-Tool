@@ -12,7 +12,32 @@ const ENV_KEYS = [
   "PROVIDERS",
   "OAUTH_REDIRECT_BASE",
   "SECRETS_BACKEND",
-  "APP_CONFIG"
+  "APP_CONFIG",
+  "TRACING_ENABLED",
+  "OTEL_TRACES_EXPORTER_ENABLED",
+  "TRACING_SERVICE_NAME",
+  "OTEL_SERVICE_NAME",
+  "TRACING_ENVIRONMENT",
+  "OTEL_RESOURCE_ATTRIBUTES",
+  "DEPLOYMENT_ENVIRONMENT",
+  "TRACING_OTLP_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+  "OTEL_EXPORTER_OTLP_ENDPOINT",
+  "TRACING_OTLP_HEADERS",
+  "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
+  "OTEL_EXPORTER_OTLP_HEADERS",
+  "TRACING_SAMPLE_RATIO",
+  "OTEL_TRACES_SAMPLER_ARG",
+  "SERVER_TLS_ENABLED",
+  "SERVER_TLS_CERT_PATH",
+  "SERVER_TLS_KEY_PATH",
+  "SERVER_TLS_CA_PATHS",
+  "SERVER_TLS_REQUEST_CLIENT_CERT",
+  "ORCHESTRATOR_TLS_ENABLED",
+  "ORCHESTRATOR_CLIENT_CERT",
+  "ORCHESTRATOR_CLIENT_KEY",
+  "ORCHESTRATOR_CA_CERT",
+  "ORCHESTRATOR_TLS_SERVER_NAME"
 ] as const;
 
 const originalEnv: Partial<Record<(typeof ENV_KEYS)[number], string>> = {};
@@ -71,11 +96,42 @@ providers:
   enabled:
     - anthropic
     - openai
+  rateLimit:
+    windowMs: 30000
+    maxRequests: 50
+  circuitBreaker:
+    failureThreshold: 7
+    resetTimeoutMs: 45000
 auth:
   oauth:
     redirectBaseUrl: "https://example.com/callback"
 secrets:
   backend: vault
+server:
+  sseKeepAliveMs: 10000
+  rateLimits:
+    plan:
+      windowMs: 120000
+      maxRequests: 20
+    chat:
+      windowMs: 30000
+      maxRequests: 200
+  tls:
+    enabled: true
+    keyPath: "/etc/orchestrator/tls/server.key"
+    certPath: "/etc/orchestrator/tls/server.crt"
+    caPaths:
+      - "/etc/orchestrator/tls/ca.crt"
+    requestClientCert: true
+observability:
+  tracing:
+    enabled: true
+    serviceName: orchestrator-svc
+    environment: staging
+    exporterEndpoint: "https://otel.example.com/v1/traces"
+    exporterHeaders:
+      authorization: "Bearer token"
+    sampleRatio: 0.25
 `);
     process.env.APP_CONFIG = configPath;
 
@@ -85,8 +141,26 @@ secrets:
     expect(config.messaging.type).toBe("kafka");
     expect(config.providers.defaultRoute).toBe("high_quality");
     expect(config.providers.enabled).toEqual(["anthropic", "openai"]);
+    expect(config.providers.rateLimit).toEqual({ windowMs: 30000, maxRequests: 50 });
+    expect(config.providers.circuitBreaker).toEqual({ failureThreshold: 7, resetTimeoutMs: 45000 });
     expect(config.auth.oauth.redirectBaseUrl).toBe("https://example.com/callback");
     expect(config.secrets.backend).toBe("vault");
+    expect(config.server.sseKeepAliveMs).toBe(10000);
+    expect(config.server.rateLimits.plan).toEqual({ windowMs: 120000, maxRequests: 20 });
+    expect(config.server.rateLimits.chat).toEqual({ windowMs: 30000, maxRequests: 200 });
+    expect(config.server.tls).toEqual({
+      enabled: true,
+      keyPath: "/etc/orchestrator/tls/server.key",
+      certPath: "/etc/orchestrator/tls/server.crt",
+      caPaths: ["/etc/orchestrator/tls/ca.crt"],
+      requestClientCert: true
+    });
+    expect(config.observability.tracing.enabled).toBe(true);
+    expect(config.observability.tracing.serviceName).toBe("orchestrator-svc");
+    expect(config.observability.tracing.environment).toBe("staging");
+    expect(config.observability.tracing.exporterEndpoint).toBe("https://otel.example.com/v1/traces");
+    expect(config.observability.tracing.exporterHeaders).toEqual({ authorization: "Bearer token" });
+    expect(config.observability.tracing.sampleRatio).toBeCloseTo(0.25);
   });
 
   it("derives configuration from environment variables when file values are absent", () => {
@@ -105,6 +179,59 @@ secrets:
     expect(config.providers.enabled).toEqual(["anthropic", "openai"]);
     expect(config.auth.oauth.redirectBaseUrl).toBe("https://env.example.com/callback");
     expect(config.secrets.backend).toBe("vault");
+    expect(config.providers.rateLimit).toEqual({ windowMs: 60000, maxRequests: 120 });
+    expect(config.providers.circuitBreaker).toEqual({ failureThreshold: 5, resetTimeoutMs: 30000 });
+    expect(config.server.rateLimits.plan).toEqual({ windowMs: 60000, maxRequests: 60 });
+    expect(config.server.rateLimits.chat).toEqual({ windowMs: 60000, maxRequests: 600 });
+    expect(config.server.tls.enabled).toBe(false);
+    expect(config.server.tls.caPaths).toEqual([]);
+    expect(config.observability.tracing).toEqual({
+      enabled: false,
+      serviceName: "oss-ai-orchestrator",
+      environment: "development",
+      exporterEndpoint: "http://127.0.0.1:4318/v1/traces",
+      exporterHeaders: {},
+      sampleRatio: 1
+    });
+  });
+
+  it("enables server TLS from environment variables", () => {
+    delete process.env.APP_CONFIG;
+    process.env.SERVER_TLS_ENABLED = "true";
+    process.env.SERVER_TLS_CERT_PATH = "/certs/server.crt";
+    process.env.SERVER_TLS_KEY_PATH = "/certs/server.key";
+    process.env.SERVER_TLS_CA_PATHS = "/certs/ca.crt,/certs/secondary.crt";
+    process.env.SERVER_TLS_REQUEST_CLIENT_CERT = "false";
+
+    const config = loadConfig();
+
+    expect(config.server.tls.enabled).toBe(true);
+    expect(config.server.tls.certPath).toBe("/certs/server.crt");
+    expect(config.server.tls.keyPath).toBe("/certs/server.key");
+    expect(config.server.tls.caPaths).toEqual(["/certs/ca.crt", "/certs/secondary.crt"]);
+    expect(config.server.tls.requestClientCert).toBe(false);
+  });
+
+  it("configures tracing from environment variables", () => {
+    delete process.env.APP_CONFIG;
+    process.env.TRACING_ENABLED = "true";
+    process.env.TRACING_SERVICE_NAME = "custom-svc";
+    process.env.TRACING_ENVIRONMENT = "production";
+    process.env.TRACING_OTLP_ENDPOINT = "https://otel.example.com";
+    process.env.TRACING_OTLP_HEADERS = "authorization=Bearer abc, x-tenant=demo";
+    process.env.TRACING_SAMPLE_RATIO = "0.5";
+
+    const config = loadConfig();
+
+    expect(config.observability.tracing.enabled).toBe(true);
+    expect(config.observability.tracing.serviceName).toBe("custom-svc");
+    expect(config.observability.tracing.environment).toBe("production");
+    expect(config.observability.tracing.exporterEndpoint).toBe("https://otel.example.com/v1/traces");
+    expect(config.observability.tracing.exporterHeaders).toEqual({
+      authorization: "Bearer abc",
+      "x-tenant": "demo"
+    });
+    expect(config.observability.tracing.sampleRatio).toBeCloseTo(0.5);
   });
 
   it("prefers MESSAGING_TYPE over MESSAGE_BUS when both are provided", () => {
@@ -159,6 +286,18 @@ secrets:
     expect(config.providers.enabled).toEqual(["openai", "mistral"]);
     expect(config.auth.oauth.redirectBaseUrl).toBe("https://env.example.com/callback");
     expect(config.secrets.backend).toBe("localfile");
+    expect(config.providers.rateLimit).toEqual({ windowMs: 60000, maxRequests: 120 });
+    expect(config.providers.circuitBreaker).toEqual({ failureThreshold: 5, resetTimeoutMs: 30000 });
+    expect(config.server.rateLimits.plan).toEqual({ windowMs: 60000, maxRequests: 60 });
+    expect(config.server.rateLimits.chat).toEqual({ windowMs: 60000, maxRequests: 600 });
+    expect(config.observability.tracing).toEqual({
+      enabled: false,
+      serviceName: "oss-ai-orchestrator",
+      environment: "development",
+      exporterEndpoint: "http://127.0.0.1:4318/v1/traces",
+      exporterHeaders: {},
+      sampleRatio: 1
+    });
   });
   it("throws when the configuration file cannot be parsed", () => {
     const configPath = createTempConfigFile(`

@@ -3,6 +3,13 @@ import { loadConfig } from "../config.js";
 import { getSecretsStore } from "../providers/ProviderRegistry.js";
 import { type SecretsStore } from "./SecretsStore.js";
 
+class HttpError extends Error {
+  constructor(message: string, public readonly status: number) {
+    super(message);
+    this.name = "HttpError";
+  }
+}
+
 type TokenResponse = {
   access_token: string;
   refresh_token?: string;
@@ -103,7 +110,14 @@ export async function callback(req: Request, res: Response) {
     res.json({ ok: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : "failed to exchange code";
-    const status = typeof (error as any)?.status === "number" ? (error as any).status : 502;
+    type StatusLike = { status?: unknown };
+    const statusCandidate =
+      error instanceof HttpError
+        ? error.status
+        : typeof error === "object" && error !== null && typeof (error as StatusLike).status === "number"
+          ? (error as StatusLike).status
+          : undefined;
+    const status = typeof statusCandidate === "number" && Number.isFinite(statusCandidate) ? statusCandidate : 502;
     res.status(status).json({ error: message });
   }
 }
@@ -137,10 +151,8 @@ async function exchangeCodeForTokens(cfg: ProviderConfig, code: string, codeVeri
       signal: controller.signal
     });
   } catch (error) {
-    if ((error as Error).name === "AbortError") {
-      const timeoutError = new Error(`token endpoint timed out after ${timeoutMs}ms`);
-      (timeoutError as any).status = 504;
-      throw timeoutError;
+    if (error instanceof Error && error.name === "AbortError") {
+      throw new HttpError(`token endpoint timed out after ${timeoutMs}ms`, 504);
     }
     throw error;
   } finally {
@@ -149,13 +161,11 @@ async function exchangeCodeForTokens(cfg: ProviderConfig, code: string, codeVeri
 
   if (!fetchResponse.ok) {
     const text = await fetchResponse.text();
-    const err = new Error(text || `token endpoint returned ${fetchResponse.status}`);
-    (err as any).status = fetchResponse.status;
-    throw err;
+    throw new HttpError(text || `token endpoint returned ${fetchResponse.status}`, fetchResponse.status);
   }
   const payload = (await fetchResponse.json()) as TokenResponse;
   if (typeof payload.access_token !== "string") {
-    throw new Error("access_token missing in response");
+    throw new HttpError("access_token missing in response", 502);
   }
   return payload;
 }

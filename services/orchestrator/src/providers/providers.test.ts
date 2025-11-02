@@ -4,7 +4,12 @@ import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatResponse, ModelProvider } from "./interfaces.js";
 import { OpenAIProvider } from "./openai.js";
 import { OllamaProvider } from "./ollama.js";
-import { clearProviderOverrides, routeChat, setProviderOverride } from "./ProviderRegistry.js";
+import {
+  __resetProviderResilienceForTests,
+  clearProviderOverrides,
+  routeChat,
+  setProviderOverride
+} from "./ProviderRegistry.js";
 import { ProviderError } from "./utils.js";
 
 class MockSecretsStore implements SecretsStore {
@@ -38,6 +43,7 @@ describe("providers", () => {
 
   afterEach(() => {
     clearProviderOverrides();
+    __resetProviderResilienceForTests();
     process.env.PROVIDERS = originalProvidersEnv;
     vi.restoreAllMocks();
   });

@@ -28,7 +28,8 @@ async function defaultClientFactory({ apiKey }: { apiKey: string }): Promise<Mis
   if (typeof ctorCandidate !== "function") {
     throw new Error("Mistral client is not available");
   }
-  const MistralConstructor = ctorCandidate as new (...args: any[]) => unknown;
+  type MistralConstructor = new (config: { apiKey: string }) => unknown;
+  const MistralConstructor = ctorCandidate as MistralConstructor;
   return new MistralConstructor({ apiKey }) as unknown as MistralApiClient;
 }
 
@@ -96,9 +97,16 @@ export class MistralProvider implements ModelProvider {
     if (error instanceof ProviderError) {
       return error;
     }
-    const status = typeof (error as any)?.status === "number" ? (error as any).status : undefined;
-    const code = typeof (error as any)?.code === "string" ? (error as any).code : undefined;
-    const message = typeof (error as any)?.message === "string" ? (error as any).message : "Mistral request failed";
+    type MistralErrorLike = {
+      status?: unknown;
+      code?: unknown;
+      message?: unknown;
+    };
+    const details: MistralErrorLike | undefined =
+      typeof error === "object" && error !== null ? (error as MistralErrorLike) : undefined;
+    const status = typeof details?.status === "number" ? details.status : undefined;
+    const code = typeof details?.code === "string" ? details.code : undefined;
+    const message = typeof details?.message === "string" ? details.message : "Mistral request failed";
     const retryable = status === 429 || status === 408 || (typeof status === "number" ? status >= 500 : true);
     return new ProviderError(message, {
       status: status ?? 502,

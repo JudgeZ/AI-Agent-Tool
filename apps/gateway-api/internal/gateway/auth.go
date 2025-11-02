@@ -17,7 +17,8 @@ import (
 	"time"
 )
 
-const stateTTL = 10 * time.Minute
+var stateTTL = getDurationEnv("OAUTH_STATE_TTL", 10*time.Minute)
+var orchestratorTimeout = getDurationEnv("ORCHESTRATOR_CALLBACK_TIMEOUT", 10*time.Second)
 
 type oauthProvider struct {
 	Name         string
@@ -44,6 +45,13 @@ func getProviderConfig(provider string) (oauthProvider, error) {
 			RedirectURI:  fmt.Sprintf("%s/auth/openrouter/callback", redirectBase),
 			ClientID:     os.Getenv("OPENROUTER_CLIENT_ID"),
 			Scopes:       []string{"offline", "openid", "profile"},
+		},
+		"google": {
+			Name:         "google",
+			AuthorizeURL: "https://accounts.google.com/o/oauth2/v2/auth",
+			RedirectURI:  fmt.Sprintf("%s/auth/google/callback", redirectBase),
+			ClientID:     os.Getenv("GOOGLE_OAUTH_CLIENT_ID"),
+			Scopes:       []string{"openid", "profile", "email", "https://www.googleapis.com/auth/cloud-platform"},
 		},
 	}
 	cfg, ok := configs[provider]
@@ -146,7 +154,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	orchestratorURL := strings.TrimRight(getEnv("ORCHESTRATOR_URL", "http://127.0.0.1:4000"), "/")
 	endpoint := fmt.Sprintf("%s/auth/%s/callback", orchestratorURL, url.PathEscape(provider))
-	ctx, cancel := context.WithTimeout(r.Context(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(r.Context(), orchestratorTimeout)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(buf))
@@ -156,7 +164,12 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
-	client := &http.Client{Timeout: 10 * time.Second}
+	client, clientErr := getOrchestratorClient()
+	if clientErr != nil {
+		http.Error(w, "orchestrator client not configured", http.StatusInternalServerError)
+		return
+	}
+
 	resp, err := client.Do(req)
 	if err != nil {
 		http.Error(w, "failed to contact orchestrator", http.StatusBadGateway)
@@ -384,4 +397,14 @@ func RegisterAuthRoutes(mux *http.ServeMux) {
 func methodNotAllowed(w http.ResponseWriter, allowed string) {
 	w.Header().Set("Allow", allowed)
 	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+}
+
+func getDurationEnv(key string, fallback time.Duration) time.Duration {
+	if value := os.Getenv(key); value != "" {
+		dur, err := time.ParseDuration(value)
+		if err == nil {
+			return dur
+		}
+	}
+	return fallback
 }

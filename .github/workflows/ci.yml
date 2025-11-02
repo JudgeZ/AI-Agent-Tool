@@ -85,6 +85,12 @@ jobs:
           cache: 'npm'
           cache-dependency-path: ${{ matrix.project.path }}/package-lock.json
 
+      - name: Start Docker daemon
+        if: matrix.project.name == 'orchestrator'
+        run: |
+          sudo systemctl start docker
+          docker info
+
       - name: Install dependencies
         run: npm ci
 
@@ -101,6 +107,12 @@ jobs:
 
       - name: Run tests
         run: npm run test --if-present -- --run
+
+      - name: Run queue integration tests
+        if: matrix.project.name == 'orchestrator'
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: true
+        run: npm run test -- PlanQueueRuntime.rabbitmq PlanQueueRuntime.kafka
 
       - name: Build (if configured)
         if: matrix.project.name != 'cli'

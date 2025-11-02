@@ -43,7 +43,11 @@ func NewEventsHandler(client *http.Client, orchestratorURL string, heartbeat tim
 // RegisterEventRoutes wires the /events endpoint into the provided mux.
 func RegisterEventRoutes(mux *http.ServeMux) {
 	orchestratorURL := getEnv("ORCHESTRATOR_URL", "http://127.0.0.1:4000")
-	handler := NewEventsHandler(nil, orchestratorURL, 0)
+	client, err := getOrchestratorClient()
+	if err != nil {
+		panic(fmt.Sprintf("failed to configure orchestrator client: %v", err))
+	}
+	handler := NewEventsHandler(client, orchestratorURL, 0)
 	mux.Handle("/events", handler)
 }
 

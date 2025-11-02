@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { PlanStep } from '$lib/stores/planTimeline';
-  import { createEventDispatcher } from 'svelte';
+  import { createEventDispatcher, onDestroy, onMount, tick } from 'svelte';
   import DiffViewer from './DiffViewer.svelte';
 
   export let step: PlanStep;
@@ -9,32 +9,90 @@
 
   const dispatch = createEventDispatcher<{ approve: { rationale?: string }; reject: { rationale?: string } }>();
   let rationale = '';
+  let modalElement: HTMLElement | null = null;
+  let previouslyFocused: HTMLElement | null = null;
+
+  type EgressRequest = { url: string; method?: string; reason?: string };
+
+  function getFocusableElements(): HTMLElement[] {
+    if (!modalElement) {
+      return [];
+    }
+    const selectors = [
+      'a[href]',
+      'button:not([disabled])',
+      'textarea:not([disabled])',
+      'input:not([type="hidden"]):not([disabled])',
+      'select:not([disabled])',
+      '[tabindex]:not([tabindex="-1"])'
+    ];
+    const nodes = Array.from(modalElement.querySelectorAll<HTMLElement>(selectors.join(',')));
+    return nodes.filter(node => !node.hasAttribute('disabled') && node.offsetParent !== null);
+  }
+
+  function handleKeyDown(event: KeyboardEvent) {
+    if (event.key !== 'Tab') {
+      return;
+    }
+    const focusable = getFocusableElements();
+    if (focusable.length === 0) {
+      return;
+    }
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+    const active = document.activeElement as HTMLElement | null;
+
+    if (event.shiftKey) {
+      if (active === first || active === modalElement) {
+        event.preventDefault();
+        last.focus();
+      }
+      return;
+    }
+
+    if (active === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
+
+  onMount(async () => {
+    previouslyFocused = document.activeElement as HTMLElement | null;
+    modalElement?.addEventListener('keydown', handleKeyDown, true);
+    await tick();
+    const focusable = getFocusableElements();
+    (focusable[0] ?? modalElement)?.focus();
+  });
+
+  onDestroy(() => {
+    modalElement?.removeEventListener('keydown', handleKeyDown, true);
+    previouslyFocused?.focus?.();
+  });
 
   $: diffVisible = step.capability.startsWith('repo.write') && Boolean(step.diff);
   $: egressRequests = extractEgress(step);
   $: egressVisible = step.capability.startsWith('network.egress') && egressRequests.length > 0;
 
-  function extractEgress(target: PlanStep) {
+  function extractEgress(target: PlanStep): EgressRequest[] {
     const output = target.latestOutput;
     if (!output) return [];
     const raw =
       (output.egress_requests ?? output.egressRequests ?? output.requests ?? output.destinations) as unknown;
     if (!Array.isArray(raw)) return [];
-    return raw
-      .map((entry) => {
-        if (!entry || typeof entry !== 'object') return null;
-        const url =
-          typeof (entry as { url?: unknown }).url === 'string'
-            ? (entry as { url: string }).url
-            : typeof (entry as { host?: unknown }).host === 'string'
-            ? (entry as { host: string }).host
-            : undefined;
-        if (!url) return null;
-        const method = typeof (entry as { method?: unknown }).method === 'string' ? (entry as { method: string }).method : undefined;
-        const reason = typeof (entry as { reason?: unknown }).reason === 'string' ? (entry as { reason: string }).reason : undefined;
-        return { url, method, reason };
-      })
-      .filter((value): value is { url: string; method?: string; reason?: string } => value !== null);
+    const prepared = raw.map((entry): EgressRequest | null => {
+      if (!entry || typeof entry !== 'object') return null;
+      const url =
+        typeof (entry as { url?: unknown }).url === 'string'
+          ? (entry as { url: string }).url
+          : typeof (entry as { host?: unknown }).host === 'string'
+          ? (entry as { host: string }).host
+          : undefined;
+      if (!url) return null;
+      const method = typeof (entry as { method?: unknown }).method === 'string' ? (entry as { method: string }).method : undefined;
+      const reason = typeof (entry as { reason?: unknown }).reason === 'string' ? (entry as { reason: string }).reason : undefined;
+      return { url, method, reason };
+    });
+    return prepared.filter((value): value is EgressRequest => value !== null);
   }
 
   const onApprove = () => {
@@ -47,71 +105,83 @@
 </script>
 
 <div class="modal__backdrop" role="presentation">
-  <section class="modal" role="dialog" aria-modal="true" aria-labelledby="approval-title">
-    <header class="modal__header">
-      <h2 id="approval-title">Approval required</h2>
-      <p class="modal__subtitle">
-        Step <strong>{step.action}</strong> requires confirmation before continuing.
-      </p>
-    </header>
-    <dl class="modal__details">
-      <div>
-        <dt>Capability</dt>
-        <dd>{step.capability}</dd>
-      </div>
-      <div>
-        <dt>Current status</dt>
-        <dd>{step.state.replace('_', ' ')}</dd>
-      </div>
-      {#if step.summary}
+  <section
+    class="modal"
+    role="presentation"
+  >
+    <div
+      class="modal__container"
+      role="dialog"
+      aria-modal="true"
+      aria-labelledby="approval-title"
+      tabindex="-1"
+      bind:this={modalElement}
+    >
+      <header class="modal__header">
+        <h2 id="approval-title">Approval required</h2>
+        <p class="modal__subtitle">
+          Step <strong>{step.action}</strong> requires confirmation before continuing.
+        </p>
+      </header>
+      <dl class="modal__details">
         <div>
-          <dt>Summary</dt>
-          <dd>{step.summary}</dd>
+          <dt>Capability</dt>
+          <dd>{step.capability}</dd>
         </div>
+        <div>
+          <dt>Current status</dt>
+          <dd>{step.state.replace('_', ' ')}</dd>
+        </div>
+        {#if step.summary}
+          <div>
+            <dt>Summary</dt>
+            <dd>{step.summary}</dd>
+          </div>
+        {/if}
+      </dl>
+      {#if error}
+        <p class="modal__error">{error}</p>
       {/if}
-    </dl>
-    {#if error}
-      <p class="modal__error">{error}</p>
-    {/if}
-    {#if diffVisible && step.diff}
-      <section class="modal__section">
-        <h3>Pending diff</h3>
-        <DiffViewer diff={step.diff} />
-      </section>
-    {/if}
-    {#if egressVisible}
-      <section class="modal__section">
-        <h3>Planned network requests</h3>
-        <ul class="egress-list">
-          {#each egressRequests as request}
-            <li>
-              <span class="egress-list__target">{request.url}</span>
-              {#if request.method}
-                <span class="egress-list__method">{request.method}</span>
-              {/if}
-              {#if request.reason}
-                <span class="egress-list__reason">{request.reason}</span>
-              {/if}
-            </li>
-          {/each}
-        </ul>
-      </section>
-    {/if}
-    <label class="modal__rationale">
-      <span>Rationale (optional)</span>
-      <textarea
-        rows="3"
-        bind:value={rationale}
-        placeholder="Leave a note about this decision"
-        disabled={submitting}
-      ></textarea>
-    </label>
-    <footer class="modal__actions">
-      <button class="reject" on:click={onReject} disabled={submitting}>Reject</button>
-      <button class="approve" on:click={onApprove} disabled={submitting}>
-        {submitting ? 'Submitting…' : 'Approve'}
-      </button>
-    </footer>
+      {#if diffVisible && step.diff}
+        <section class="modal__section">
+          <h3>Pending diff</h3>
+          <DiffViewer diff={step.diff} />
+        </section>
+      {/if}
+      {#if egressVisible}
+        <section class="modal__section">
+          <h3>Planned network requests</h3>
+          <ul class="egress-list">
+            {#each egressRequests as request}
+              <li>
+                <span class="egress-list__target">{request.url}</span>
+                {#if request.method}
+                  <span class="egress-list__method">{request.method}</span>
+                {/if}
+                {#if request.reason}
+                  <span class="egress-list__reason">{request.reason}</span>
+                {/if}
+              </li>
+            {/each}
+          </ul>
+        </section>
+      {/if}
+      <label class="modal__rationale">
+        <span>Rationale (optional)</span>
+        <textarea
+          rows="3"
+          bind:value={rationale}
+          placeholder="Leave a note about this decision"
+          disabled={submitting}
+        ></textarea>
+      </label>
+      <footer class="modal__actions">
+        <button class="reject" on:click={onReject} disabled={submitting}>Reject</button>
+        <button class="approve" on:click={onApprove} disabled={submitting}>
+          {submitting ? 'Submitting…' : 'Approve'}
+        </button>
+      </footer>
+    </div>
   </section>
 </div>
 
@@ -126,7 +196,7 @@
     backdrop-filter: blur(8px);
   }
 
-  .modal {
+  .modal__container {
     width: min(480px, 92vw);
     background: rgba(15, 23, 42, 0.95);
     border-radius: 1rem;
@@ -134,6 +204,8 @@
     border: 1px solid rgba(148, 163, 184, 0.4);
     box-shadow: 0 20px 55px rgba(15, 23, 42, 0.45);
     color: inherit;
+    outline: none;
+    display: block;
   }
 
   .modal__header h2 {

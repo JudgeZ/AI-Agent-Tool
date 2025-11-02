@@ -1,6 +1,9 @@
 {{- $root := . -}}
 {{- $defaultGatewayEnv := dict "ORCHESTRATOR_URL" (printf "http://%s-orchestrator:%d" (include "oss-ai-agent-tool.fullname" $root) ($root.Values.orchestrator.service.port | default 4000)) "INDEXER_URL" (printf "http://%s-indexer:%d" (include "oss-ai-agent-tool.fullname" $root) ($root.Values.indexer.service.port | default 7070)) -}}
 {{- $gatewayEnv := merge $defaultGatewayEnv ($root.Values.gatewayApi.env | default dict) -}}
+{{- if and .Values.gatewayApi.tls.enabled (not .Values.gatewayApi.tls.secretName) -}}
+  {{- fail "gatewayApi.tls.secretName must be provided when gatewayApi.tls.enabled is true" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -37,6 +40,22 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
           {{- end }}
+          {{- if .Values.gatewayApi.tls.enabled }}
+            {{- $mountPath := .Values.gatewayApi.tls.mountPath | default "/etc/orchestrator/tls" -}}
+            {{- $clientCertFile := .Values.gatewayApi.tls.clientCertFile | default "client.crt" -}}
+            {{- $clientKeyFile := .Values.gatewayApi.tls.clientKeyFile | default "client.key" -}}
+            {{- $caFile := .Values.gatewayApi.tls.caFile | default "ca.crt" -}}
+            - name: ORCHESTRATOR_TLS_ENABLED
+              value: "true"
+            - name: ORCHESTRATOR_CLIENT_CERT
+              value: {{ printf "%s/%s" $mountPath $clientCertFile | quote }}
+            - name: ORCHESTRATOR_CLIENT_KEY
+              value: {{ printf "%s/%s" $mountPath $clientKeyFile | quote }}
+            {{- if $caFile }}
+            - name: ORCHESTRATOR_CA_CERT
+              value: {{ printf "%s/%s" $mountPath $caFile | quote }}
+            {{- end }}
+          {{- end }}
           {{- with .Values.gatewayApi.envFrom }}
           envFrom:
             {{- toYaml . | nindent 12 }}
@@ -71,3 +90,15 @@ spec:
             initialDelaySeconds: 2
             periodSeconds: 10
           {{- end }}
+          {{- if .Values.gatewayApi.tls.enabled }}
+          volumeMounts:
+            - name: orchestrator-client-tls
+              mountPath: {{ (.Values.gatewayApi.tls.mountPath | default "/etc/orchestrator/tls") | quote }}
+              readOnly: true
+          {{- end }}
+      {{- if .Values.gatewayApi.tls.enabled }}
+      volumes:
+        - name: orchestrator-client-tls
+          secret:
+            secretName: {{ .Values.gatewayApi.tls.secretName | quote }}
+      {{- end }}

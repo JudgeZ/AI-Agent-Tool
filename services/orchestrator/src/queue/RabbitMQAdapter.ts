@@ -2,7 +2,12 @@ import amqplib, { type Channel, type ChannelModel, type ConsumeMessage } from "a
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
-import { queueDepthGauge, queueRetryCounter } from "../observability/metrics.js";
+import {
+  queueAckCounter,
+  queueDeadLetterCounter,
+  queueDepthGauge,
+  queueRetryCounter
+} from "../observability/metrics.js";
 import type {
   DeadLetterOptions,
   EnqueueOptions,
@@ -227,6 +232,7 @@ export class RabbitMQAdapter implements QueueAdapter {
       return;
     }
     const attempts = Number(headers["x-attempts"] ?? 0);
+    payload = this.preparePayloadForAttempt(payload, attempts);
 
     const queueMessage: QueueMessage<T> = {
       id: msg.properties.messageId || idempotencyKey || randomUUID(),
@@ -235,6 +241,7 @@ export class RabbitMQAdapter implements QueueAdapter {
       attempts,
       ack: async () => {
         channel.ack(msg);
+        queueAckCounter.labels(queue).inc();
         if (idempotencyKey) {
           this.releaseKey(idempotencyKey);
         }
@@ -243,14 +250,17 @@ export class RabbitMQAdapter implements QueueAdapter {
       retry: async (options?: RetryOptions) => {
         queueRetryCounter.labels(queue).inc();
         try {
-          await this.publish(queue, payload, {
+          const nextAttempt = attempts + 1;
+          const nextPayload = this.preparePayloadForAttempt(payload, nextAttempt);
+          await this.publish(queue, nextPayload, {
             idempotencyKey,
             headers,
-            attempt: attempts + 1,
+            attempt: nextAttempt,
             skipDedupe: true,
             delayMs: options?.delayMs ?? this.retryDelayMs
           });
           channel.ack(msg);
+          queueAckCounter.labels(queue).inc();
           await this.refreshDepth(queue);
         } catch (error) {
           this.logger.error?.(
@@ -263,11 +273,14 @@ export class RabbitMQAdapter implements QueueAdapter {
         const reason = options?.reason ?? "unspecified";
         const targetQueue = options?.queue ?? `${queue}.dead`;
         try {
-          await this.publish(targetQueue, payload, {
+          const deadPayload = this.preparePayloadForAttempt(payload, attempts);
+          await this.publish(targetQueue, deadPayload, {
             headers: { ...headers, "x-dead-letter-reason": reason },
             skipDedupe: true
           });
           channel.ack(msg);
+          queueAckCounter.labels(queue).inc();
+          queueDeadLetterCounter.labels(queue).inc();
           if (idempotencyKey) {
             this.releaseKey(idempotencyKey);
           }
@@ -314,7 +327,9 @@ export class RabbitMQAdapter implements QueueAdapter {
     }
 
     const messageId = idempotencyKey ?? randomUUID();
-    const content = Buffer.from(JSON.stringify(payload));
+    const resolvedAttempt = attempt ?? 0;
+    const messagePayload = this.preparePayloadForAttempt(payload, resolvedAttempt);
+    const content = Buffer.from(JSON.stringify(messagePayload));
     try {
       channel.sendToQueue(queue, content, {
         persistent: true,
@@ -333,6 +348,23 @@ export class RabbitMQAdapter implements QueueAdapter {
 
   private releaseKey(key: string): void {
     this.inflightKeys.delete(key);
+  }
+
+  private preparePayloadForAttempt<T>(payload: T, attempt: number): T {
+    if (payload && typeof payload === "object") {
+      const maybeRecord = payload as Record<string, unknown>;
+      const job = maybeRecord.job;
+      if (job && typeof job === "object" && job !== null) {
+        return {
+          ...maybeRecord,
+          job: {
+            ...(job as Record<string, unknown>),
+            attempt
+          }
+        } as T;
+      }
+    }
+    return payload;
   }
 
   private async refreshDepth(queue: string): Promise<void> {

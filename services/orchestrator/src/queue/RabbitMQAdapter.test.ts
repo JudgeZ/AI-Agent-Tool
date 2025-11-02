@@ -3,7 +3,13 @@ import { EventEmitter } from "node:events";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RabbitMQAdapter } from "./RabbitMQAdapter.js";
-import { queueDepthGauge, queueRetryCounter, resetMetrics } from "../observability/metrics.js";
+import {
+  queueAckCounter,
+  queueDeadLetterCounter,
+  queueDepthGauge,
+  queueRetryCounter,
+  resetMetrics
+} from "../observability/metrics.js";
 
 import type { ConsumeMessage, Options } from "amqplib";
 import type { MetricObjectWithValues, MetricValue } from "prom-client";
@@ -172,6 +178,8 @@ describe("RabbitMQAdapter", () => {
     expect(channel.getDepth("plan.steps")).toBe(0);
     const depthMetric = await getMetricValue(queueDepthGauge, { queue: "plan.steps" });
     expect(depthMetric).toBe(0);
+    const ackMetric = await getMetricValue(queueAckCounter, { queue: "plan.steps" });
+    expect(ackMetric).toBe(1);
   });
 
   it("retries messages when instructed", async () => {
@@ -207,6 +215,8 @@ describe("RabbitMQAdapter", () => {
 
     expect(channel.getDepth("plan.steps")).toBe(0);
     expect(channel.getPublishedCount("plan.steps.dead")).toBe(1);
+    const deadMetric = await getMetricValue(queueDeadLetterCounter, { queue: "plan.steps" });
+    expect(deadMetric).toBe(1);
   });
 
   it("acknowledges poison messages when JSON parsing fails", async () => {

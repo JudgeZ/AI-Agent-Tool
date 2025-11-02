@@ -75,6 +75,10 @@ function extractBedrockText(payload: unknown): string {
   return "";
 }
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null;
+}
+
 export class BedrockProvider implements ModelProvider {
   name = "bedrock";
   private clientPromise?: Promise<BedrockClient>;
@@ -135,8 +139,8 @@ export class BedrockProvider implements ModelProvider {
       { attempts: this.options.retryAttempts ?? 2 }
     );
 
-    const rawBody = await decodeBedrockBody(response.body as any);
-    let parsed: any = {};
+    const rawBody = await decodeBedrockBody(response.body as Uint8Array | undefined);
+    let parsed: unknown = {};
     if (rawBody) {
       try {
         parsed = JSON.parse(rawBody);
@@ -154,13 +158,22 @@ export class BedrockProvider implements ModelProvider {
       });
     }
 
-    const usage = parsed?.usage ?? parsed?.generationUsage ?? parsed?.metrics;
-    const promptTokens = usage?.input_tokens ?? usage?.prompt_tokens ?? usage?.inputTokens;
-    const completionTokens = usage?.output_tokens ?? usage?.completion_tokens ?? usage?.outputTokens;
-    const totalTokens = usage?.total_tokens ?? usage?.totalTokens ??
-      (typeof promptTokens === "number" && typeof completionTokens === "number"
+    const parsedRecord = isRecord(parsed) ? parsed : {};
+    const usageCandidate =
+      parsedRecord.usage ?? parsedRecord.generationUsage ?? parsedRecord.metrics;
+    const usageRecord = isRecord(usageCandidate) ? usageCandidate : undefined;
+    const promptTokensRaw =
+      usageRecord?.input_tokens ?? usageRecord?.prompt_tokens ?? usageRecord?.inputTokens;
+    const completionTokensRaw =
+      usageRecord?.output_tokens ?? usageRecord?.completion_tokens ?? usageRecord?.outputTokens;
+    const totalTokensRaw = usageRecord?.total_tokens ?? usageRecord?.totalTokens;
+    const promptTokens = typeof promptTokensRaw === "number" ? promptTokensRaw : undefined;
+    const completionTokens = typeof completionTokensRaw === "number" ? completionTokensRaw : undefined;
+    const totalTokens = typeof totalTokensRaw === "number"
+      ? totalTokensRaw
+      : typeof promptTokens === "number" && typeof completionTokens === "number"
         ? promptTokens + completionTokens
-        : undefined);
+        : undefined;
 
     return {
       output,
@@ -180,13 +193,27 @@ export class BedrockProvider implements ModelProvider {
     if (error instanceof ProviderError) {
       return error;
     }
-    const status = typeof (error as any)?.$metadata?.httpStatusCode === "number"
-      ? (error as any).$metadata.httpStatusCode
-      : typeof (error as any)?.statusCode === "number"
-      ? (error as any).statusCode
-      : undefined;
-    const code = typeof (error as any)?.name === "string" ? (error as any).name : (error as any)?.code;
-    const message = typeof (error as any)?.message === "string" ? (error as any).message : "Bedrock request failed";
+    type BedrockMetadata = { httpStatusCode?: unknown };
+    type BedrockErrorLike = {
+      $metadata?: BedrockMetadata;
+      statusCode?: unknown;
+      name?: unknown;
+      code?: unknown;
+      message?: unknown;
+    };
+    const details: BedrockErrorLike | undefined =
+      typeof error === "object" && error !== null ? (error as BedrockErrorLike) : undefined;
+    const statusCandidate =
+      typeof details?.$metadata?.httpStatusCode === "number"
+        ? details.$metadata.httpStatusCode
+        : typeof details?.statusCode === "number"
+          ? details.statusCode
+          : undefined;
+    const name = typeof details?.name === "string" ? details.name : undefined;
+    const code = typeof details?.code === "string" ? details.code : name;
+    const message =
+      typeof details?.message === "string" ? details.message : "Bedrock request failed";
+    const status = statusCandidate;
     const retryableCodes = new Set(["ThrottlingException", "InternalServerException", "ServiceUnavailableException"]);
     const retryable =
       status === 429 || status === 408 || (typeof status === "number" ? status >= 500 : false) ||

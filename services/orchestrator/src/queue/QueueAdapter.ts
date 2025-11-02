@@ -1,5 +1,6 @@
 import { loadConfig } from "../config.js";
 import { RabbitMQAdapter } from "./RabbitMQAdapter.js";
+import { KafkaAdapter } from "./KafkaAdapter.js";
 
 export type QueueHandler<T = unknown> = (message: QueueMessage<T>) => Promise<void>;
 
@@ -43,6 +44,8 @@ export function createQueueAdapterFromConfig(): QueueAdapter {
   switch (config.messaging.type) {
     case "rabbitmq":
       return new RabbitMQAdapter();
+    case "kafka":
+      return new KafkaAdapter();
     default:
       throw new Error(`Unsupported messaging type: ${config.messaging.type}`);
   }

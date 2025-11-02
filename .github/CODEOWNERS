@@ -1,0 +1,15 @@
+# Global defaults
+* @oss-ai-agent-tool/maintainers @oss-ai-agent-tool/security
+
+# Service ownership
+/apps/gateway-api/ @oss-ai-agent-tool/gateway @oss-ai-agent-tool/security
+/services/orchestrator/ @oss-ai-agent-tool/orchestrator @oss-ai-agent-tool/security
+/services/indexer/ @oss-ai-agent-tool/indexer @oss-ai-agent-tool/security
+
+# Platform & infrastructure
+/charts/ @oss-ai-agent-tool/platform @oss-ai-agent-tool/security
+/infra/ @oss-ai-agent-tool/platform @oss-ai-agent-tool/security
+
+# Documentation
+/docs/ @oss-ai-agent-tool/docs
+

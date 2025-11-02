@@ -22,6 +22,8 @@ By default the UI connects to `http://127.0.0.1:4000`. Override the orchestrator
 VITE_ORCHESTRATOR_URL=http://localhost:4010 npm run dev
 ```
 
+> **Security defaults:** The bundled Tauri shell enforces a restrictive Content Security Policy (CSP) and HTTP allowlist. Only the local orchestrator endpoints (`http://127.0.0.1:4000`, `http://localhost:4000`, and `https://localhost:4000`) are permitted for API traffic. If you need to target a different host, update `apps/gui/src-tauri/tauri.conf.json` to add the destination to both the CSP `connect-src` directive and the `allowlist.http.scope` array.
+
 The timeline page accepts a `plan` query parameter to start streaming immediately:
 
 ```
@@ -40,6 +42,21 @@ npm run tauri:build  # produces distributable binaries
 ## SSE timeline
 
 The frontend listens for `plan.step` events emitted by the orchestrator at `/plan/:planId/events`. Every event updates the timeline, appending the latest status transition and highlighting the associated capability badge. Connection state is surfaced at the top of the page so operators can quickly validate the stream health.
+
+### Step states
+
+The timeline displays all step states including:
+- `queued` - Step is enqueued and waiting for execution
+- `running` - Step is currently executing
+- `waiting_approval` - Step requires human approval before execution
+- `approved` - Step has been approved and will proceed
+- `rejected` - Step was rejected by an operator
+- `retrying` - Step failed and is being retried (shows attempt number)
+- `completed` - Step finished successfully
+- `failed` - Step failed after all retries
+- `dead_lettered` - Step exhausted retry attempts and was moved to dead-letter queue
+
+Each state transition includes a timestamp and optional summary. Retry attempts are tracked and displayed so operators can see how many times a step has been retried.
 
 ## Approval UX
 

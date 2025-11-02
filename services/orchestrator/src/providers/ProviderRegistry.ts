@@ -10,10 +10,55 @@ import { OllamaProvider } from "./ollama.js";
 import { OpenAIProvider } from "./openai.js";
 import { OpenRouterProvider } from "./openrouter.js";
 import { ProviderError } from "./utils.js";
+import { CircuitBreaker, RateLimiter, type CircuitBreakerOptions, type RateLimiterOptions } from "./resilience.js";
 
 let secretsStore: SecretsStore | undefined;
 let cachedRegistry: Record<string, ModelProvider> | undefined;
 const overrides = new Map<string, ModelProvider>();
+let rateLimiter: RateLimiter | undefined;
+let rateLimiterOptions: RateLimiterOptions | undefined;
+let circuitBreaker: CircuitBreaker | undefined;
+let circuitBreakerOptions: CircuitBreakerOptions | undefined;
+
+function cloneRateLimiterOptions(options: RateLimiterOptions): RateLimiterOptions {
+  return {
+    windowMs: options.windowMs,
+    maxRequests: options.maxRequests
+  };
+}
+
+function cloneCircuitBreakerOptions(options: CircuitBreakerOptions): CircuitBreakerOptions {
+  return {
+    failureThreshold: options.failureThreshold,
+    resetTimeoutMs: options.resetTimeoutMs
+  };
+}
+
+function getRateLimiter(options: RateLimiterOptions): RateLimiter {
+  const normalized = cloneRateLimiterOptions(options);
+  if (!rateLimiter || !rateLimiterOptions || hasRateLimiterChanged(rateLimiterOptions, normalized)) {
+    rateLimiter = new RateLimiter(normalized);
+    rateLimiterOptions = normalized;
+  }
+  return rateLimiter;
+}
+
+function hasRateLimiterChanged(prev: RateLimiterOptions, next: RateLimiterOptions): boolean {
+  return prev.windowMs !== next.windowMs || prev.maxRequests !== next.maxRequests;
+}
+
+function getCircuitBreaker(options: CircuitBreakerOptions): CircuitBreaker {
+  const normalized = cloneCircuitBreakerOptions(options);
+  if (!circuitBreaker || !circuitBreakerOptions || hasCircuitBreakerChanged(circuitBreakerOptions, normalized)) {
+    circuitBreaker = new CircuitBreaker(normalized);
+    circuitBreakerOptions = normalized;
+  }
+  return circuitBreaker;
+}
+
+function hasCircuitBreakerChanged(prev: CircuitBreakerOptions, next: CircuitBreakerOptions): boolean {
+  return prev.failureThreshold !== next.failureThreshold || prev.resetTimeoutMs !== next.resetTimeoutMs;
+}
 
 export function getSecretsStore(): SecretsStore {
   if (!secretsStore) {
@@ -59,6 +104,15 @@ export function clearProviderOverrides(): void {
   overrides.clear();
 }
 
+export function __resetProviderResilienceForTests(): void {
+  rateLimiter?.reset();
+  circuitBreaker?.reset();
+  rateLimiter = undefined;
+  rateLimiterOptions = undefined;
+  circuitBreaker = undefined;
+  circuitBreakerOptions = undefined;
+}
+
 export async function routeChat(req: ChatRequest): Promise<ChatResponse> {
   const cfg = loadConfig();
   const enabled = cfg.providers.enabled.map(p => p.trim()).filter(Boolean);
@@ -72,6 +126,8 @@ export async function routeChat(req: ChatRequest): Promise<ChatResponse> {
 
   const warnings: string[] = [];
   const errors: ProviderError[] = [];
+  const limiter = getRateLimiter(cfg.providers.rateLimit);
+  const breaker = getCircuitBreaker(cfg.providers.circuitBreaker);
 
   for (const providerName of enabled) {
     const provider = getProvider(providerName);
@@ -88,7 +144,7 @@ export async function routeChat(req: ChatRequest): Promise<ChatResponse> {
     }
 
     try {
-      const response = await provider.chat(req);
+      const response = await limiter.schedule(provider.name, () => breaker.execute(provider.name, () => provider.chat(req)));
       const mergedWarnings = warnings.length
         ? [...warnings, ...(response.warnings ?? [])]
         : response.warnings;
@@ -98,18 +154,24 @@ export async function routeChat(req: ChatRequest): Promise<ChatResponse> {
         warnings: mergedWarnings?.length ? mergedWarnings : undefined
       };
     } catch (error) {
-      const providerError =
-        error instanceof ProviderError
-          ? error
-          : new ProviderError(
-              error instanceof Error ? error.message : "Provider request failed",
-              {
-                status: typeof (error as any)?.status === "number" ? (error as any).status : 502,
-                provider: provider.name,
-                retryable: false,
-                cause: error
-              }
-            );
+              const providerError =
+                error instanceof ProviderError
+                  ? error
+                  : (() => {
+                      type ErrorLike = { status?: unknown };
+                      const details: ErrorLike | undefined =
+                        typeof error === "object" && error !== null ? (error as ErrorLike) : undefined;
+                      const status = typeof details?.status === "number" ? details.status : 502;
+                      return new ProviderError(
+                        error instanceof Error ? error.message : "Provider request failed",
+                        {
+                          status,
+                          provider: provider.name,
+                          retryable: false,
+                          cause: error
+                        }
+                      );
+                    })();
       warnings.push(`${provider.name}: ${providerError.message}`);
       errors.push(providerError);
     }

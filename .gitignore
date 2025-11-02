@@ -3,3 +3,4 @@ dist/
 target/
 **/config/secrets/
 .cursor/
+infra/policies/dist/

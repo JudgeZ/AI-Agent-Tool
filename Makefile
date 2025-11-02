@@ -13,7 +13,7 @@ ORCHESTRATOR_DOCKERFILE := $(ORCHESTRATOR_CONTEXT)/Dockerfile
 INDEXER_CONTEXT := services/indexer
 INDEXER_DOCKERFILE := $(INDEXER_CONTEXT)/Dockerfile
 
-.PHONY: build push helm-install helm-kafka helm-rabbit
+.PHONY: build push helm-install helm-kafka helm-rabbit opa-build
 
 build: build-gateway-api build-orchestrator build-indexer
 
@@ -83,3 +83,7 @@ helm-rabbit:
 		--set messaging.type=rabbitmq \
 		--set kafka.enabled=false \
 		--set rabbitmq.enabled=true
+
+opa-build:
+	@echo "[opa] compiling capability policy"
+	node infra/policies/build.js

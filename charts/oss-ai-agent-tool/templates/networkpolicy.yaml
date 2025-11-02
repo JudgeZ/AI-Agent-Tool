@@ -12,20 +12,29 @@ spec:
   policyTypes:
     - Ingress
     - Egress
-  {{- with .Values.networkPolicy.ingress }}
+  {{- if hasKey .Values.networkPolicy "ingress" }}
   ingress:
-    {{- toYaml . | nindent 4 }}
+    {{- toYaml .Values.networkPolicy.ingress | nindent 4 }}
   {{- else }}
   ingress:
     - from:
         - podSelector: {}
         - namespaceSelector: {}
   {{- end }}
-  {{- with .Values.networkPolicy.egress }}
+  {{- $defaultDenyEgress := .Values.networkPolicy.defaultDenyEgress | default true }}
+  {{- $egressRules := .Values.networkPolicy.egressRules | default (list) }}
+  {{- if hasKey .Values.networkPolicy "egress" }}
   egress:
-    {{- toYaml . | nindent 4 }}
-  {{- else }}
+    {{- toYaml .Values.networkPolicy.egress | nindent 4 }}
+  {{- else if gt (len $egressRules) 0 }}
+  egress:
+    {{- range $rule := $egressRules }}
+    - {{- toYaml $rule | nindent 6 }}
+    {{- end }}
+  {{- else if not $defaultDenyEgress }}
   egress:
     - {}
+  {{- else }}
+  egress: []
   {{- end }}
 {{- end }}

@@ -43,8 +43,13 @@ async function defaultClientFactory({
   if (typeof ctorCandidate !== "function") {
     throw new Error("Azure OpenAI client is not available");
   }
-  const AzureOpenAIConstructor = ctorCandidate as new (...args: any[]) => unknown;
-  return new AzureOpenAIConstructor({ apiKey, endpoint, apiVersion }) as unknown as AzureOpenAIClient;
+  const resolvedApiVersion =
+    typeof apiVersion === "string" && apiVersion.trim().length > 0
+      ? apiVersion
+      : process.env.AZURE_OPENAI_API_VERSION ?? "2024-02-01";
+  type AzureOpenAIConstructor = new (config: { apiKey: string; endpoint: string; apiVersion: string }) => unknown;
+  const AzureOpenAIConstructor = ctorCandidate as AzureOpenAIConstructor;
+  return new AzureOpenAIConstructor({ apiKey, endpoint, apiVersion: resolvedApiVersion }) as unknown as AzureOpenAIClient;
 }
 
 function toAzureMessages(messages: ChatMessage[]) {
@@ -135,13 +140,24 @@ export class AzureOpenAIProvider implements ModelProvider {
     if (error instanceof ProviderError) {
       return error;
     }
-    const status = typeof (error as any)?.statusCode === "number"
-      ? (error as any).statusCode
-      : typeof (error as any)?.status === "number"
-      ? (error as any).status
-      : undefined;
-    const code = typeof (error as any)?.code === "string" ? (error as any).code : undefined;
-    const message = typeof (error as any)?.message === "string" ? (error as any).message : "Azure OpenAI request failed";
+    type AzureErrorLike = {
+      statusCode?: unknown;
+      status?: unknown;
+      code?: unknown;
+      message?: unknown;
+    };
+    const details: AzureErrorLike | undefined =
+      typeof error === "object" && error !== null ? (error as AzureErrorLike) : undefined;
+    const statusCandidate =
+      typeof details?.statusCode === "number"
+        ? details.statusCode
+        : typeof details?.status === "number"
+          ? details.status
+          : undefined;
+    const code = typeof details?.code === "string" ? details.code : undefined;
+    const message =
+      typeof details?.message === "string" ? details.message : "Azure OpenAI request failed";
+    const status = statusCandidate;
     const retryable = status === 429 || status === 408 || (typeof status === "number" ? status >= 500 : true);
     return new ProviderError(message, {
       status: status ?? 502,

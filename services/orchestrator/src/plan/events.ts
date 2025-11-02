@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 
 import { parsePlanStepEvent, type PlanStepEvent, type PlanStepState } from "./validation.js";
 
-const TERMINAL_STATES = new Set<PlanStepState>(["approved", "completed", "failed", "rejected"]);
+const TERMINAL_STATES = new Set<PlanStepState>(["approved", "completed", "failed", "rejected", "dead_lettered"]);
 const MAX_EVENTS_PER_PLAN = 200;
 export const HISTORY_RETENTION_MS = 5 * 60 * 1000; // 5 minutes
 

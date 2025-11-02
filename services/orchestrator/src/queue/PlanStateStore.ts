@@ -16,6 +16,10 @@ type PersistedStep = {
   summary?: string;
   output?: Record<string, unknown>;
   updatedAt: string;
+  attempt: number;
+  idempotencyKey: string;
+  createdAt: string;
+  approvals?: Record<string, boolean>;
 };
 
 type PersistedDocument = {
@@ -27,10 +31,19 @@ type PlanStateStoreOptions = {
   filePath?: string;
 };
 
+type RememberStepOptions = {
+  initialState?: PlanStepState;
+  idempotencyKey?: string;
+  attempt?: number;
+  createdAt?: string;
+  approvals?: Record<string, boolean>;
+};
+
 const TERMINAL_STATES: ReadonlySet<PlanStepState> = new Set([
   "completed",
   "failed",
-  "rejected"
+  "rejected",
+  "dead_lettered"
 ]);
 
 function defaultPath(): string {
@@ -55,7 +68,13 @@ export class PlanStateStore {
     planId: string,
     step: PlanStep,
     traceId: string,
-    initialState: PlanStepState = "queued"
+    options: {
+      initialState?: PlanStepState;
+      idempotencyKey: string;
+      attempt: number;
+      createdAt: string;
+      approvals?: Record<string, boolean>;
+    }
   ): Promise<void> {
     await this.ensureLoaded();
     const key = this.toKey(planId, step.id);
@@ -65,8 +84,12 @@ export class PlanStateStore {
       stepId: step.id,
       traceId,
       step,
-      state: initialState,
-      updatedAt: new Date().toISOString()
+      state: options.initialState ?? "queued",
+      updatedAt: new Date().toISOString(),
+      attempt: options.attempt,
+      idempotencyKey: options.idempotencyKey,
+      createdAt: options.createdAt,
+      approvals: options.approvals
     };
     this.records.set(key, entry);
     await this.enqueuePersist();
@@ -77,7 +100,8 @@ export class PlanStateStore {
     stepId: string,
     state: PlanStepState,
     summary?: string,
-    output?: Record<string, unknown>
+    output?: Record<string, unknown>,
+    attempt?: number
   ): Promise<void> {
     await this.ensureLoaded();
     const key = this.toKey(planId, stepId);
@@ -94,9 +118,34 @@ export class PlanStateStore {
         state,
         summary,
         output,
-        updatedAt: new Date().toISOString()
+        updatedAt: new Date().toISOString(),
+        attempt: attempt ?? existing.attempt
       });
     }
+
+    await this.enqueuePersist();
+  }
+
+  async recordApproval(planId: string, stepId: string, capability: string, granted: boolean): Promise<void> {
+    await this.ensureLoaded();
+    const key = this.toKey(planId, stepId);
+    const existing = this.records.get(key);
+    if (!existing) {
+      return;
+    }
+
+    const approvals = { ...(existing.approvals ?? {}) };
+    if (granted) {
+      approvals[capability] = true;
+    } else {
+      delete approvals[capability];
+    }
+
+    this.records.set(key, {
+      ...existing,
+      approvals,
+      updatedAt: new Date().toISOString()
+    });
 
     await this.enqueuePersist();
   }
@@ -112,6 +161,11 @@ export class PlanStateStore {
   async listActiveSteps(): Promise<PersistedStep[]> {
     await this.ensureLoaded();
     return Array.from(this.records.values()).map(entry => ({ ...entry }));
+  }
+
+  async getEntry(planId: string, stepId: string): Promise<PersistedStep | undefined> {
+    await this.ensureLoaded();
+    return this.records.get(this.toKey(planId, stepId));
   }
 
   async getStep(planId: string, stepId: string): Promise<{ step: PlanStep; traceId: string } | undefined> {
@@ -176,7 +230,14 @@ export class PlanStateStore {
       version: 1,
       steps: Array.from(this.records.values())
     };
-    await fs.writeFile(this.filePath, JSON.stringify(payload, null, 2), { mode: 0o600 });
+    const tempPath = path.join(dir, `${path.basename(this.filePath)}.${randomUUID()}.tmp`);
+    const data = JSON.stringify(payload, null, 2);
+    try {
+      await fs.writeFile(tempPath, data, { mode: 0o600 });
+      await fs.rename(tempPath, this.filePath);
+    } finally {
+      await fs.rm(tempPath, { force: true }).catch(() => undefined);
+    }
   }
 }
 

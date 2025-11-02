@@ -128,13 +128,24 @@ export class AnthropicProvider implements ModelProvider {
     if (error instanceof ProviderError) {
       return error;
     }
-    const status = typeof (error as any)?.status === "number"
-      ? (error as any).status
-      : typeof (error as any)?.statusCode === "number"
-      ? (error as any).statusCode
-      : undefined;
-    const code = typeof (error as any)?.code === "string" ? (error as any).code : undefined;
-    const message = typeof (error as any)?.message === "string" ? (error as any).message : "Anthropic request failed";
+    type AnthropicErrorLike = {
+      status?: unknown;
+      statusCode?: unknown;
+      code?: unknown;
+      message?: unknown;
+    };
+    const details: AnthropicErrorLike | undefined =
+      typeof error === "object" && error !== null ? (error as AnthropicErrorLike) : undefined;
+    const statusCandidate =
+      typeof details?.status === "number"
+        ? details.status
+        : typeof details?.statusCode === "number"
+          ? details.statusCode
+          : undefined;
+    const code = typeof details?.code === "string" ? details.code : undefined;
+    const message =
+      typeof details?.message === "string" ? details.message : "Anthropic request failed";
+    const status = statusCandidate;
     const retryable = status === 429 || status === 408 || (typeof status === "number" ? status >= 500 : true);
     return new ProviderError(message, {
       status: status ?? 502,

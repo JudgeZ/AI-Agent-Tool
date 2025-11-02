@@ -26,40 +26,60 @@ function sanitizeBaseUrl(url: string): string {
   return url.endsWith("/") ? url.slice(0, -1) : url;
 }
 
-function extractOllamaText(payload: any): string {
+type OllamaPayload = unknown;
+
+function extractOllamaText(payload: OllamaPayload): string {
   if (!payload) return "";
   if (typeof payload === "string") return payload;
-  if (typeof payload.response === "string") return payload.response;
-  if (payload.message && typeof payload.message.content === "string") return payload.message.content;
-  if (Array.isArray(payload.messages)) {
-    const last = payload.messages[payload.messages.length - 1];
-    if (last && typeof last.content === "string") {
-      return last.content;
+  if (typeof payload === "object" && payload !== null) {
+    const obj = payload as Record<string, unknown>;
+    if (typeof obj.response === "string") return obj.response;
+    if (obj.message && typeof obj.message === "object" && obj.message !== null) {
+      const message = obj.message as Record<string, unknown>;
+      if (typeof message.content === "string") return message.content;
     }
-  }
-  if (Array.isArray(payload.choices)) {
-    const choice = payload.choices[0];
-    if (choice?.message?.content) {
-      return String(choice.message.content);
+    if (Array.isArray(obj.messages)) {
+      const last = obj.messages[obj.messages.length - 1];
+      if (last && typeof last === "object" && last !== null) {
+        const lastMsg = last as Record<string, unknown>;
+        if (typeof lastMsg.content === "string") {
+          return lastMsg.content;
+        }
+      }
+    }
+    if (Array.isArray(obj.choices)) {
+      const choice = obj.choices[0];
+      if (choice && typeof choice === "object" && choice !== null) {
+        const choiceObj = choice as Record<string, unknown>;
+        if (choiceObj.message && typeof choiceObj.message === "object" && choiceObj.message !== null) {
+          const message = choiceObj.message as Record<string, unknown>;
+          if (message.content) {
+            return String(message.content);
+          }
+        }
+      }
     }
   }
   return "";
 }
 
-function extractUsage(payload: any) {
-  const usage = payload?.usage;
-  if (!usage) return undefined;
-  const promptTokens = usage.prompt_tokens ?? usage.promptTokens;
-  const completionTokens = usage.completion_tokens ?? usage.completionTokens;
-  const totalTokens = usage.total_tokens ?? usage.totalTokens ??
-    (typeof promptTokens === "number" && typeof completionTokens === "number"
+function extractUsage(payload: OllamaPayload) {
+  if (!payload || typeof payload !== "object" || payload === null) return undefined;
+  const obj = payload as Record<string, unknown>;
+  const usage = obj.usage;
+  if (!usage || typeof usage !== "object" || usage === null) return undefined;
+  const usageObj = usage as Record<string, unknown>;
+  const promptRaw = usageObj.prompt_tokens ?? usageObj.promptTokens;
+  const completionRaw = usageObj.completion_tokens ?? usageObj.completionTokens;
+  const promptTokens = typeof promptRaw === "number" ? promptRaw : undefined;
+  const completionTokens = typeof completionRaw === "number" ? completionRaw : undefined;
+  const totalFromUsage = usageObj.total_tokens ?? usageObj.totalTokens;
+  const totalTokens = typeof totalFromUsage === "number"
+    ? totalFromUsage
+    : typeof promptTokens === "number" && typeof completionTokens === "number"
       ? promptTokens + completionTokens
-      : undefined);
-  if (
-    typeof promptTokens === "number" ||
-    typeof completionTokens === "number" ||
-    typeof totalTokens === "number"
-  ) {
+      : undefined;
+  if (promptTokens !== undefined || completionTokens !== undefined || totalTokens !== undefined) {
     return { promptTokens, completionTokens, totalTokens };
   }
   return undefined;
@@ -72,8 +92,8 @@ export class OllamaProvider implements ModelProvider {
   constructor(private readonly secrets: SecretsStore, private readonly options: OllamaProviderOptions = {}) {
     if (options.fetch) {
       this.fetcher = options.fetch;
-    } else if (typeof (globalThis as any).fetch === "function") {
-      this.fetcher = (globalThis as any).fetch.bind(globalThis);
+    } else if (typeof globalThis.fetch === "function") {
+      this.fetcher = globalThis.fetch.bind(globalThis);
     } else {
       throw new ProviderError("No fetch implementation available for Ollama provider", {
         status: 500,

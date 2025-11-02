@@ -9,7 +9,15 @@
 {{- $_ := set $defaultOrchestratorEnv "REDIS_URL" (printf "redis://%s-redis:6379/0" $fullname) -}}
 {{- $_ := set $defaultOrchestratorEnv "POSTGRES_URL" (printf "postgres://%s:%s@%s-postgres:5432/%s" $postgresUser $postgresPassword $fullname $postgresDatabase) -}}
 {{- if $root.Values.rabbitmq.enabled -}}
-  {{- $_ := set $defaultOrchestratorEnv "RABBITMQ_URL" (printf "amqp://%s:%s@%s-rabbitmq:5672" ($root.Values.rabbitmq.username | default "guest") ($root.Values.rabbitmq.password | default "guest") $fullname) -}}
+  {{- $rabbitUser := $root.Values.rabbitmq.username | default "guest" -}}
+  {{- $rabbitPassword := $root.Values.rabbitmq.password | default "guest" -}}
+  {{- $rabbitHost := $root.Values.rabbitmq.host | default (printf "%s-rabbitmq" $fullname) -}}
+  {{- $rabbitPort := $root.Values.rabbitmq.port | default 5672 -}}
+  {{- $rabbitScheme := $root.Values.rabbitmq.scheme | default "amqp" -}}
+  {{- $rabbitVhost := $root.Values.rabbitmq.vhost | default "" -}}
+  {{- $vhostSegment := ternary (printf "/%s" ($rabbitVhost | urlquery)) "" (ne $rabbitVhost "") -}}
+  {{- $rabbitUrl := $root.Values.rabbitmq.url | default (printf "%s://%s:%s@%s:%v%s" $rabbitScheme $rabbitUser $rabbitPassword $rabbitHost $rabbitPort $vhostSegment) -}}
+  {{- $_ := set $defaultOrchestratorEnv "RABBITMQ_URL" $rabbitUrl -}}
 {{- end -}}
 {{- if $root.Values.kafka.enabled -}}
   {{- $_ := set $defaultOrchestratorEnv "KAFKA_BROKERS" (printf "%s-kafka:9092" $fullname) -}}
@@ -19,6 +27,9 @@
 {{- $_ := set $defaultOrchestratorEnv "LANGFUSE_SECRET_KEY" "dev-secret" -}}
 {{- $_ := set $defaultOrchestratorEnv "OTEL_EXPORTER_OTLP_ENDPOINT" (printf "http://%s-jaeger:4317" $fullname) -}}
 {{- $orchestratorEnv := merge $defaultOrchestratorEnv ($root.Values.orchestrator.env | default dict) -}}
+{{- if and .Values.orchestrator.tls.enabled (not .Values.orchestrator.tls.secretName) -}}
+  {{- fail "orchestrator.tls.secretName must be provided when orchestrator.tls.enabled is true" -}}
+{{- end -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -55,9 +66,34 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
           {{- end }}
+          {{- if .Values.orchestrator.tls.enabled }}
+            {{- $mountPath := .Values.orchestrator.tls.mountPath | default "/etc/orchestrator/tls" -}}
+            {{- $certFile := .Values.orchestrator.tls.certFile | default "tls.crt" -}}
+            {{- $keyFile := .Values.orchestrator.tls.keyFile | default "tls.key" -}}
+            {{- $caFile := .Values.orchestrator.tls.caFile | default "" -}}
+            {{- $certPath := printf "%s/%s" $mountPath $certFile -}}
+            {{- $keyPath := printf "%s/%s" $mountPath $keyFile -}}
+            - name: SERVER_TLS_ENABLED
+              value: "true"
+            - name: SERVER_TLS_CERT_PATH
+              value: {{ $certPath | quote }}
+            - name: SERVER_TLS_KEY_PATH
+              value: {{ $keyPath | quote }}
+            {{- if $caFile }}
+            - name: SERVER_TLS_CA_PATHS
+              value: {{ printf "%s/%s" $mountPath $caFile | quote }}
+            {{- end }}
+            - name: SERVER_TLS_REQUEST_CLIENT_CERT
+              value: {{ ternary "true" "false" (.Values.orchestrator.tls.requestClientCert | default true) | quote }}
+          {{- end }}
           volumeMounts:
             - name: plan-state
               mountPath: /app/data
+          {{- if .Values.orchestrator.tls.enabled }}
+            - name: orchestrator-tls
+              mountPath: {{ (.Values.orchestrator.tls.mountPath | default "/etc/orchestrator/tls") | quote }}
+              readOnly: true
+          {{- end }}
           {{- with .Values.orchestrator.envFrom }}
           envFrom:
             {{- toYaml . | nindent 12 }}
@@ -95,3 +131,8 @@ spec:
       volumes:
         - name: plan-state
           emptyDir: {}
+      {{- if .Values.orchestrator.tls.enabled }}
+        - name: orchestrator-tls
+          secret:
+            secretName: {{ .Values.orchestrator.tls.secretName | quote }}
+      {{- end }}

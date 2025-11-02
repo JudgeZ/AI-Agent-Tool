@@ -14,11 +14,16 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; img-src 'self' data:; media-src 'self'; connect-src *"
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self' http://127.0.0.1:4000 http://localhost:4000 https://localhost:4000; frame-ancestors 'none'"
     },
     "allowlist": {
       "http": {
-        "all": true
+        "all": false,
+        "scope": [
+          "http://127.0.0.1:4000/**",
+          "http://localhost:4000/**",
+          "https://localhost:4000/**"
+        ]
       }
     }
   },

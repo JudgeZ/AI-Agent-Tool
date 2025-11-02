@@ -2,6 +2,13 @@ import fs from "fs";
 import path from "path";
 import { parse as parseYaml } from "yaml";
 
+const AGENT_NAME_PATTERN = /^[a-z0-9_](?:[a-z0-9_-]{0,62}[a-z0-9_])?$/i;
+const AGENT_DIRECTORIES = [
+  path.resolve(process.cwd(), "agents"),
+  path.resolve(process.cwd(), "..", "agents"),
+  path.resolve(__dirname, "../../../../agents")
+];
+
 export type AgentProfile = {
   name: string;
   role: string;
@@ -13,8 +20,8 @@ export type AgentProfile = {
 };
 
 export function loadAgentProfile(name: string): AgentProfile {
-  const p = path.join(process.cwd(), "agents", name, "agent.md");
-  const raw = fs.readFileSync(p, "utf-8");
+  const { path: resolvedPath, safeName } = resolveAgentPath(name);
+  const raw = fs.readFileSync(resolvedPath, "utf-8");
   const m = /^---\r?\n([\s\S]*?)\r?\n---\r?\n([\s\S]*)$/m.exec(raw);
   let meta: Record<string, unknown> = {};
   let body = raw;
@@ -31,7 +38,7 @@ export function loadAgentProfile(name: string): AgentProfile {
   const model = normalizeModel(meta.model);
   const constraints = normalizeStringArray(meta.constraints, []);
   return {
-    name: typeof meta.name === "string" ? meta.name : name,
+    name: typeof meta.name === "string" ? meta.name : safeName,
     role: typeof meta.role === "string" ? meta.role : "Agent",
     capabilities,
     approval_policy: approvalPolicy,
@@ -82,4 +89,63 @@ function normalizeModel(value: unknown): AgentProfile["model"] {
     return model;
   }
   return {};
+}
+
+function sanitizeAgentName(input: string): string {
+  const trimmed = input.trim();
+  if (!AGENT_NAME_PATTERN.test(trimmed)) {
+    throw new Error(`Invalid agent name: ${input}`);
+  }
+  if (path.basename(trimmed) !== trimmed) {
+    throw new Error(`Invalid agent name segment: ${input}`);
+  }
+  return trimmed;
+}
+
+function isWithinBaseDirectory(baseDir: string, targetPath: string): boolean {
+  const normalizedBase = path.normalize(
+    baseDir.endsWith(path.sep) ? baseDir : `${baseDir}${path.sep}`
+  );
+  const normalizedTarget = path.normalize(targetPath);
+  if (normalizedTarget === normalizedBase) {
+    return false;
+  }
+  return normalizedTarget.startsWith(normalizedBase);
+}
+
+function resolveAgentPath(name: string): { path: string; safeName: string } {
+  const safeName = sanitizeAgentName(name);
+
+  for (const baseDir of AGENT_DIRECTORIES) {
+    if (!fs.existsSync(baseDir)) {
+      continue;
+    }
+
+    let realBase: string;
+    try {
+      realBase = fs.realpathSync(baseDir);
+    } catch {
+      continue;
+    }
+
+    const profilePath = path.join(realBase, safeName, "agent.md");
+    if (!isWithinBaseDirectory(realBase, profilePath)) {
+      continue;
+    }
+
+    if (!fs.existsSync(profilePath)) {
+      continue;
+    }
+
+    try {
+      const realCandidate = fs.realpathSync(profilePath);
+      if (isWithinBaseDirectory(realBase, realCandidate)) {
+        return { path: realCandidate, safeName };
+      }
+    } catch {
+      continue;
+    }
+  }
+
+  throw new Error(`Agent profile not found for ${name}`);
 }
