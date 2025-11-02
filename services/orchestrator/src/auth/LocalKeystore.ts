@@ -133,7 +133,12 @@ export class LocalKeystore {
   private async decryptV1Payload(payload: PersistedPayload): Promise<Record<string, string>> {
     const salt = decode(payload.salt);
     this.salt = salt;
-    const keyBuffer = await scrypt(this.passphrase, Buffer.from(salt), KEY_LENGTH);
+    const keyBuffer = await scrypt(
+      this.passphrase,
+      Buffer.from(salt),
+      KEY_LENGTH,
+      SCRYPT_PARAMS
+    );
     const key = new Uint8Array(keyBuffer as Buffer);
     const nonce = decode(payload.nonce);
     const cipher = decode(payload.cipher);
