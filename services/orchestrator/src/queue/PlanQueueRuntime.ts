@@ -323,6 +323,20 @@ export async function resolvePlanStepApproval(options: {
   });
 
   if (!policyDecision.allow) {
+    const rejectionSummary = policyDecision.deny.length
+      ? `Approval denied by policy: ${policyDecision.deny
+          .map(entry => (entry.capability ? `${entry.reason}:${entry.capability}` : entry.reason))
+          .join("; ")}`
+      : "Approval denied by policy";
+    await emitPlanEvent(planId, step, traceId, {
+      state: "rejected",
+      summary: rejectionSummary,
+      attempt: job.attempt
+    });
+    stepRegistry.delete(key);
+    clearApprovals(planId, stepId);
+    await planStateStore?.forgetStep(planId, stepId);
+
     throw new PolicyViolationError(
       `Approval denied by policy for plan ${planId} step ${stepId}`,
       policyDecision.deny
