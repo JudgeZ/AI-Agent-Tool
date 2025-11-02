@@ -7,7 +7,14 @@ import nacl from "tweetnacl";
 
 const KEY_LENGTH = 32;
 const SALT_LENGTH = 16;
-const SCRYPT_PARAMS = { N: 1 << 15, r: 8, p: 1 } as const;
+const SCRYPT_PARAMS: ScryptOptions = {
+  N: 1 << 14,
+  r: 8,
+  p: 1,
+  // Allow enough memory for the legacy derivation parameters while still
+  // keeping the ceiling predictable to avoid DoS vectors.
+  maxmem: 64 * 1024 * 1024,
+};
 
 function scryptAsync(
   passphrase: string,

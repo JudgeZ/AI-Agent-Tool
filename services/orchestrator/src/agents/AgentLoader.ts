@@ -2,7 +2,7 @@ import fs from "fs";
 import path from "path";
 import { parse as parseYaml } from "yaml";
 
-const AGENT_NAME_PATTERN = /^[a-z0-9](?:[a-z0-9-_]{0,62}[a-z0-9])?$/i;
+const AGENT_NAME_PATTERN = /^[a-z0-9_](?:[a-z0-9_-]{0,62}[a-z0-9_])?$/i;
 const AGENT_DIRECTORIES = [
   path.resolve(process.cwd(), "agents"),
   path.resolve(process.cwd(), "..", "agents"),
