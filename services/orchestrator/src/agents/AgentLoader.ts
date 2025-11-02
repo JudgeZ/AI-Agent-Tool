@@ -103,13 +103,14 @@ function sanitizeAgentName(input: string): string {
 }
 
 function isWithinBaseDirectory(baseDir: string, targetPath: string): boolean {
-  const normalizedBase = path.resolve(baseDir);
-  const normalizedTarget = path.resolve(targetPath);
-  if (normalizedBase === normalizedTarget) {
+  const normalizedBase = path.normalize(
+    baseDir.endsWith(path.sep) ? baseDir : `${baseDir}${path.sep}`
+  );
+  const normalizedTarget = path.normalize(targetPath);
+  if (normalizedTarget === normalizedBase) {
     return false;
   }
-  const relative = path.relative(normalizedBase, normalizedTarget);
-  return relative !== "" && !relative.startsWith("..") && !path.isAbsolute(relative);
+  return normalizedTarget.startsWith(normalizedBase);
 }
 
 function resolveAgentPath(name: string): { path: string; safeName: string } {
