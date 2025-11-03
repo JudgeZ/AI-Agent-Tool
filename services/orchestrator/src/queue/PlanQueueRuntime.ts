@@ -31,6 +31,7 @@ export type PlanStepCompletionPayload = {
   traceId?: string;
   occurredAt?: string;
   attempt?: number;
+  approvals?: Record<string, boolean>;
 };
 
 const DEFAULT_MAX_RETRIES = 5;
@@ -384,15 +385,21 @@ async function setupCompletionConsumer(): Promise<void> {
     const payload = message.payload;
     const key = `${payload.planId}:${payload.stepId}`;
     const metadata = stepRegistry.get(key);
-    const baseStep = metadata?.step;
+    const persistedEntry = metadata ? undefined : await planStateStore?.getEntry(payload.planId, payload.stepId);
+    const baseStep = metadata?.step ?? persistedEntry?.step;
+    const persistedApprovals = metadata ? undefined : persistedEntry?.approvals;
+    if (!metadata && persistedApprovals) {
+      cacheApprovals(payload.planId, payload.stepId, persistedApprovals);
+    }
     const attempt =
       payload.attempt ??
       metadata?.job.attempt ??
-      (await planStateStore?.getEntry(payload.planId, payload.stepId))?.attempt ??
+      persistedEntry?.attempt ??
       0;
     const traceId =
       payload.traceId ||
       metadata?.traceId ||
+      persistedEntry?.traceId ||
       message.headers["trace-id"] ||
       message.headers["traceId"] ||
       message.headers["Trace-Id"] ||
@@ -415,7 +422,8 @@ async function setupCompletionConsumer(): Promise<void> {
         timeoutSeconds: payload.timeoutSeconds ?? baseStep?.timeoutSeconds ?? 0,
         approvalRequired: payload.approvalRequired ?? baseStep?.approvalRequired ?? false,
         attempt,
-        summary: payload.summary
+        summary: payload.summary,
+        approvals: payload.approvals ?? persistedApprovals
       }
     });
 
@@ -665,7 +673,8 @@ async function rehydratePendingSteps(): Promise<void> {
         approvalRequired: entry.step.approvalRequired,
         attempt: entry.attempt,
         summary: entry.summary,
-        output: entry.output as Record<string, unknown> | undefined
+        output: entry.output as Record<string, unknown> | undefined,
+        approvals: entry.approvals
       }
     });
   }

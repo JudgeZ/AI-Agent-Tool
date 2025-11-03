@@ -14,6 +14,7 @@ import type {
   QueueMessage,
   RetryOptions
 } from "./QueueAdapter.js";
+import type { PlanStepCompletionPayload } from "./PlanQueueRuntime.js";
 import type { PlanStepEvent } from "../plan/events.js";
 import { ToolClientError } from "../grpc/AgentClient.js";
 type EventsModule = typeof import("../plan/events.js");
@@ -304,6 +305,67 @@ describe("PlanQueueRuntime integration", () => {
 
     const finalCalls = publishSpy.mock.calls as Array<[PlanStepEvent]>;
     expect(finalCalls.some(([event]) => event.step.state === "completed")).toBe(true);
+  });
+
+  it("emits completion events with persisted metadata when registry is empty", async () => {
+    const step = {
+      id: "s-persisted",
+      action: "apply_edits",
+      capability: "repo.write",
+      capabilityLabel: "Apply repository changes",
+      labels: ["repo"],
+      tool: "code_writer",
+      timeoutSeconds: 120,
+      approvalRequired: true,
+      input: {},
+      metadata: {}
+    };
+    const planId = "plan-persisted";
+    const persistedTraceId = "trace-from-store";
+
+    const { PlanStateStore } = await import("./PlanStateStore.js");
+    const store = new PlanStateStore({ filePath: storePath });
+    await store.rememberStep(planId, step, persistedTraceId, {
+      initialState: "waiting_approval",
+      idempotencyKey: `${planId}:${step.id}`,
+      attempt: 1,
+      createdAt: new Date().toISOString(),
+      approvals: { [step.capability]: true }
+    });
+
+    const listSpy = vi.spyOn(PlanStateStore.prototype, "listActiveSteps").mockResolvedValue([]);
+    try {
+      await runtime.initializePlanQueueRuntime();
+    } finally {
+      listSpy.mockRestore();
+    }
+
+    publishSpy.mockClear();
+
+    await adapterRef.current.enqueue<PlanStepCompletionPayload>(
+      runtime.PLAN_COMPLETIONS_QUEUE,
+      {
+        planId,
+        stepId: step.id,
+        state: "completed",
+        summary: "Completed via store"
+      }
+    );
+
+    await vi.waitFor(() => {
+      const events = publishSpy.mock.calls as Array<[PlanStepEvent]>;
+      expect(events.some(([event]) => event.planId === planId && event.step.state === "completed")).toBe(true);
+    });
+
+    const events = (publishSpy.mock.calls as Array<[PlanStepEvent]>).map(([event]) => event);
+    const completion = events.find(event => event.planId === planId && event.step.id === step.id);
+    expect(completion).toBeDefined();
+    expect(completion?.traceId).toBe(persistedTraceId);
+    expect(completion?.step.action).toBe(step.action);
+    expect(completion?.step.tool).toBe(step.tool);
+    expect(completion?.step.capability).toBe(step.capability);
+    expect(completion?.step.approvals).toEqual({ [step.capability]: true });
+    expect(completion?.step.attempt).toBe(1);
   });
 
   it("queues approval-gated steps only after approval is granted", async () => {

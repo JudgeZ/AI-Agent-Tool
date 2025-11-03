@@ -55,7 +55,8 @@ export const PlanStepEventSchema = z.object({
     approvalRequired: z.boolean(),
     attempt: z.number().int().nonnegative().optional(),
     summary: z.string().optional(),
-    output: z.record(z.any()).optional()
+    output: z.record(z.any()).optional(),
+    approvals: z.record(z.boolean()).optional()
   })
 });
 
