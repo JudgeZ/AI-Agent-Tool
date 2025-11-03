@@ -19,6 +19,13 @@ import (
 
 var stateTTL = getDurationEnv("OAUTH_STATE_TTL", 10*time.Minute)
 var orchestratorTimeout = getDurationEnv("ORCHESTRATOR_CALLBACK_TIMEOUT", 10*time.Second)
+var allowedRedirectOrigins = loadAllowedRedirectOrigins()
+
+type redirectOrigin struct {
+	scheme string
+	host   string
+	port   string
+}
 
 type oauthProvider struct {
 	Name         string
@@ -278,16 +285,118 @@ func validateClientRedirect(redirectURI string) error {
 	if err != nil {
 		return errors.New("invalid redirect_uri")
 	}
-	if u.Scheme == "https" {
-		return nil
-	}
+
 	if u.Scheme == "http" {
-		host := strings.Split(u.Host, ":")[0]
-		if host == "127.0.0.1" || host == "localhost" {
+		host := u.Hostname()
+		if host == "127.0.0.1" || host == "localhost" || host == "::1" {
 			return nil
 		}
 	}
-	return errors.New("redirect_uri must be https or loopback")
+
+	if u.Scheme == "" || u.Host == "" {
+		return errors.New("invalid redirect_uri")
+	}
+
+	if originAllowed(u) {
+		return nil
+	}
+
+	return errors.New("redirect_uri must match an allowed origin")
+}
+
+func originAllowed(u *url.URL) bool {
+	for _, allowed := range allowedRedirectOrigins {
+		if allowed.matches(u) {
+			return true
+		}
+	}
+	return false
+}
+
+func (o redirectOrigin) matches(u *url.URL) bool {
+	if !strings.EqualFold(o.scheme, u.Scheme) {
+		return false
+	}
+	if !strings.EqualFold(o.host, u.Hostname()) {
+		return false
+	}
+	return o.port == normalizePort(u)
+}
+
+func normalizePort(u *url.URL) string {
+	if port := u.Port(); port != "" {
+		return port
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		return "80"
+	case "https":
+		return "443"
+	default:
+		return ""
+	}
+}
+
+func loadAllowedRedirectOrigins() []redirectOrigin {
+	var origins []redirectOrigin
+
+	seen := make(map[string]struct{})
+
+	allowedList := strings.Split(os.Getenv("OAUTH_ALLOWED_REDIRECT_ORIGINS"), ",")
+	for _, entry := range allowedList {
+		origin, ok := parseRedirectOrigin(strings.TrimSpace(entry))
+		if ok {
+			key := originKey(origin)
+			if _, exists := seen[key]; !exists {
+				origins = append(origins, origin)
+				seen[key] = struct{}{}
+			}
+		}
+	}
+
+	if len(origins) == 0 {
+		if origin, ok := parseRedirectOrigin(strings.TrimSpace(getEnv("OAUTH_REDIRECT_BASE", "http://127.0.0.1:8080"))); ok {
+			key := originKey(origin)
+			if _, exists := seen[key]; !exists {
+				origins = append(origins, origin)
+				seen[key] = struct{}{}
+			}
+		}
+	}
+
+	return origins
+}
+
+func parseRedirectOrigin(raw string) (redirectOrigin, bool) {
+	if raw == "" {
+		return redirectOrigin{}, false
+	}
+
+	u, err := url.Parse(raw)
+	if err != nil {
+		return redirectOrigin{}, false
+	}
+
+	host := u.Hostname()
+	if host == "" || u.Scheme == "" {
+		return redirectOrigin{}, false
+	}
+
+	origin := redirectOrigin{
+		scheme: strings.ToLower(u.Scheme),
+		host:   strings.ToLower(host),
+		port:   normalizePort(u),
+	}
+
+	if origin.port == "" {
+		return redirectOrigin{}, false
+	}
+
+	return origin, true
+}
+
+func originKey(o redirectOrigin) string {
+	return fmt.Sprintf("%s://%s:%s", o.scheme, o.host, o.port)
 }
 
 func getEnv(key, defaultValue string) string {
