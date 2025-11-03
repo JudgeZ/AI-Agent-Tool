@@ -108,6 +108,31 @@ describe("GoogleProvider", () => {
     expect(response.output).toBe("api");
   });
 
+  it.each([
+    ["gemini-1.5-flash"],
+    ["models/gemini-1.5-flash"]
+  ])("normalizes model ID %s when constructing the Gemini endpoint", async modelId => {
+    const secrets = new MockSecretsStore({ "provider:google:apiKey": "test-api-key" });
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({ candidates: [{ content: { parts: [{ text: "normalized" }] } }] })
+    });
+
+    const provider = new GoogleProvider(secrets, { fetch: fetchMock as typeof fetch, now });
+    await provider.chat({
+      model: modelId,
+      messages: [{ role: "user", content: "hi" }]
+    });
+
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [requestUrl] = fetchMock.mock.calls[0];
+    const parsed = new URL(requestUrl as string);
+    expect(parsed.pathname).toBe("/v1beta/models/gemini-1.5-flash:generateContent");
+    expect(parsed.searchParams.get("key")).toBe("test-api-key");
+  });
+
   it("refreshes expired OAuth tokens when a refresh token is available", async () => {
     const secrets = new MockSecretsStore({
       "oauth:google:tokens": JSON.stringify({

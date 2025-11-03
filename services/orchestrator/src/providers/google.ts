@@ -361,7 +361,8 @@ export class GoogleProvider implements ModelProvider {
     messages: ChatMessage[],
     auth: GoogleAuth
   ): Promise<GeminiGenerateResponse> {
-    const url = new URL(`${GOOGLE_API_BASE}/models/${encodeURIComponent(modelId)}:generateContent`);
+    const normalizedModelPath = this.normalizeModelPath(modelId);
+    const url = new URL(`${GOOGLE_API_BASE}/models/${normalizedModelPath}:generateContent`);
     const headers: Record<string, string> = {
       "Content-Type": "application/json"
     };
@@ -400,6 +401,15 @@ export class GoogleProvider implements ModelProvider {
     }
 
     return (await response.json()) as GeminiGenerateResponse;
+  }
+
+  private normalizeModelPath(modelId: string): string {
+    const trimmed = modelId.replace(/^models\//, "");
+    const segments = trimmed.split("/").filter(segment => segment.length > 0);
+    if (segments.length === 0) {
+      return "";
+    }
+    return segments.map(encodeURIComponent).join("/");
   }
 
   private async extractError(response: Response): Promise<string> {
