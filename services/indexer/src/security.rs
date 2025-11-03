@@ -1,4 +1,5 @@
 use std::env;
+use std::path::{Component, Path, PathBuf};
 
 use regex::Regex;
 use thiserror::Error;
@@ -22,8 +23,61 @@ pub enum SecurityError {
 
 #[derive(Clone)]
 pub struct SecurityConfig {
-    allowed_prefixes: Vec<String>,
+    allowed_prefixes: Vec<PathBuf>,
+    allow_all: bool,
     dlp_patterns: Vec<Regex>,
+}
+
+fn normalize_path(path: &str) -> Option<PathBuf> {
+    let candidate = Path::new(path);
+    let mut normalized = PathBuf::from("/");
+
+    for component in candidate.components() {
+        match component {
+            Component::RootDir => {
+                normalized = PathBuf::from("/");
+            }
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !normalized.pop() {
+                    return None;
+                }
+                if normalized.as_os_str().is_empty() {
+                    normalized.push("/");
+                }
+            }
+            Component::Normal(segment) => {
+                normalized.push(segment);
+            }
+            Component::Prefix(_) => {
+                return None;
+            }
+        }
+    }
+
+    if normalized.as_os_str().is_empty() {
+        normalized.push("/");
+    }
+
+    Some(normalized)
+}
+
+fn normalize_allowed_prefixes(prefixes: Vec<String>) -> (bool, Vec<PathBuf>) {
+    let mut allow_all = false;
+    let mut normalized = Vec::new();
+
+    for entry in prefixes {
+        if entry == "*" {
+            allow_all = true;
+            continue;
+        }
+
+        if let Some(path) = normalize_path(&entry) {
+            normalized.push(path);
+        }
+    }
+
+    (allow_all, normalized)
 }
 
 impl SecurityConfig {
@@ -62,43 +116,53 @@ impl SecurityConfig {
             }
         }
 
+        let (allow_all, normalized_allowed) = normalize_allowed_prefixes(allowed);
+
         Self {
-            allowed_prefixes: allowed,
+            allowed_prefixes: normalized_allowed,
+            allow_all,
             dlp_patterns: patterns,
         }
     }
 
     pub fn with_rules(allowed_prefixes: Vec<String>, dlp_patterns: Vec<Regex>) -> Self {
+        let (allow_all, normalized_allowed) = normalize_allowed_prefixes(allowed_prefixes);
+
         Self {
-            allowed_prefixes,
+            allowed_prefixes: normalized_allowed,
+            allow_all,
             dlp_patterns,
         }
     }
 
     pub fn is_allowed(&self, path: &str) -> bool {
-        if self.allowed_prefixes.is_empty() {
+        let normalized = match normalize_path(path) {
+            Some(value) => value,
+            None => return false,
+        };
+
+        if self.allow_all || self.allowed_prefixes.is_empty() {
             return true;
         }
-        let normalized = if path.starts_with('/') {
-            path.to_string()
-        } else {
-            format!("/{}", path)
-        };
-        self.allowed_prefixes.iter().any(|prefix| {
-            if prefix == "/" || prefix == "*" {
-                true
-            } else if normalized.starts_with(prefix) {
-                true
-            } else if let Some(without_slash) = normalized.strip_prefix('/') {
-                without_slash.starts_with(prefix.trim_start_matches('/'))
-            } else {
-                false
-            }
-        })
+
+        self.allowed_prefixes
+            .iter()
+            .any(|prefix| normalized.starts_with(prefix))
     }
 
     pub fn check_path(&self, path: &str) -> Result<(), SecurityError> {
-        if self.is_allowed(path) {
+        let normalized =
+            normalize_path(path).ok_or_else(|| SecurityError::AclViolation(path.to_string()))?;
+
+        if self.allow_all || self.allowed_prefixes.is_empty() {
+            return Ok(());
+        }
+
+        if self
+            .allowed_prefixes
+            .iter()
+            .any(|prefix| normalized.starts_with(prefix))
+        {
             Ok(())
         } else {
             Err(SecurityError::AclViolation(path.to_string()))
@@ -125,7 +189,20 @@ mod tests {
     fn acl_allows_prefixes() {
         let config = SecurityConfig::with_rules(vec!["src/".into()], vec![]);
         assert!(config.is_allowed("src/lib.rs"));
+        assert!(config.is_allowed("/src/lib.rs"));
         assert!(!config.is_allowed("docs/guide.md"));
+    }
+
+    #[test]
+    fn acl_blocks_path_traversal_attempts() {
+        let config = SecurityConfig::with_rules(vec!["src".into()], vec![]);
+
+        assert!(!config.is_allowed("../etc/passwd"));
+        assert!(!config.is_allowed("src/../secrets.txt"));
+        assert!(config.is_allowed("src/module/lib.rs"));
+
+        let err = config.check_path("src/../../etc/passwd").unwrap_err();
+        assert!(matches!(err, SecurityError::AclViolation(_)));
     }
 
     #[test]
@@ -140,6 +217,6 @@ mod tests {
         let err = config
             .scan_content("-----BEGIN RSA PRIVATE KEY-----")
             .unwrap_err();
-        matches!(err, SecurityError::DlpMatch { .. });
+        assert!(matches!(err, SecurityError::DlpMatch { .. }));
     }
 }
