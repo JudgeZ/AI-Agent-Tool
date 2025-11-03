@@ -1,26 +1,43 @@
 import { EventEmitter } from "node:events";
 
-import { parsePlanStepEvent, type PlanStepEvent, type PlanStepState } from "./validation.js";
-
-const TERMINAL_STATES = new Set<PlanStepState>(["approved", "completed", "failed", "rejected", "dead_lettered"]);
+import { parsePlanStepEvent, type PlanStepEvent } from "./validation.js";
 const MAX_EVENTS_PER_PLAN = 200;
 export const HISTORY_RETENTION_MS = 5 * 60 * 1000; // 5 minutes
 
 type PlanHistoryEntry = {
   events: PlanStepEvent[];
   cleanupTimer?: NodeJS.Timeout;
+  lastActivity: number;
 };
 
 const emitter = new EventEmitter();
 const history = new Map<string, PlanHistoryEntry>();
 
-function scheduleCleanup(planId: string, entry: PlanHistoryEntry): void {
+function scheduleCleanup(planId: string): void {
+  const entry = history.get(planId);
+  if (!entry) {
+    return;
+  }
+
   if (entry.cleanupTimer) {
     clearTimeout(entry.cleanupTimer);
   }
+
   entry.cleanupTimer = setTimeout(() => {
-    history.delete(planId);
+    const currentEntry = history.get(planId);
+    if (!currentEntry) {
+      return;
+    }
+
+    const idleDuration = Date.now() - currentEntry.lastActivity;
+    if (idleDuration >= HISTORY_RETENTION_MS) {
+      history.delete(planId);
+      return;
+    }
+
+    scheduleCleanup(planId);
   }, HISTORY_RETENTION_MS);
+
   entry.cleanupTimer.unref?.();
 }
 
@@ -31,20 +48,20 @@ export function publishPlanStepEvent(event: PlanStepEvent): void {
   };
   const parsed = parsePlanStepEvent(enrichedEvent);
   const planId = parsed.planId;
-  const entry = history.get(planId) ?? { events: [] };
+  const now = Date.now();
+  const entry = history.get(planId) ?? { events: [], lastActivity: now };
 
   if (entry.cleanupTimer) {
     clearTimeout(entry.cleanupTimer);
     entry.cleanupTimer = undefined;
   }
 
+  entry.lastActivity = now;
   entry.events = [...entry.events, parsed].slice(-MAX_EVENTS_PER_PLAN);
   history.set(planId, entry);
   emitter.emit(parsed.event, parsed);
 
-  if (TERMINAL_STATES.has(parsed.step.state)) {
-    scheduleCleanup(planId, entry);
-  }
+  scheduleCleanup(planId);
 }
 
 export function getPlanHistory(planId: string): PlanStepEvent[] {
