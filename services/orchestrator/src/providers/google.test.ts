@@ -2,6 +2,7 @@ import { describe, it, expect, vi, afterEach } from "vitest";
 
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import { GoogleProvider } from "./google.js";
+import { ProviderError } from "./utils.js";
 
 class MockSecretsStore implements SecretsStore {
   constructor(private readonly values: Record<string, string> = {}) {}
@@ -131,6 +132,25 @@ describe("GoogleProvider", () => {
     const parsed = new URL(requestUrl as string);
     expect(parsed.pathname).toBe("/v1beta/models/gemini-1.5-flash:generateContent");
     expect(parsed.searchParams.get("key")).toBe("test-api-key");
+  });
+
+  it.each([
+    "../operations",
+    "models/../operations",
+    "./gemini"
+  ])("rejects model ID with path traversal segment: %s", async modelId => {
+    const secrets = new MockSecretsStore({ "provider:google:apiKey": "test-api-key" });
+    const fetchMock = vi.fn();
+    const provider = new GoogleProvider(secrets, { fetch: fetchMock as typeof fetch, now });
+
+    await expect(
+      provider.chat({
+        model: modelId,
+        messages: [{ role: "user", content: "hi" }]
+      })
+    ).rejects.toBeInstanceOf(ProviderError);
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it("refreshes expired OAuth tokens when a refresh token is available", async () => {
