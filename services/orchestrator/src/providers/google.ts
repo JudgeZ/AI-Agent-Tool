@@ -385,11 +385,21 @@ export class GoogleProvider implements ModelProvider {
       };
     }
 
-    const response = await this.fetchImpl(url.toString(), {
-      method: "POST",
-      headers,
-      body: JSON.stringify(body)
-    });
+    let response: Response;
+    try {
+      response = await this.fetchImpl(url.toString(), {
+        method: "POST",
+        headers,
+        body: JSON.stringify(body)
+      });
+    } catch (error) {
+      throw new ProviderError("Google Gemini request failed", {
+        status: 502,
+        provider: this.name,
+        retryable: true,
+        cause: error
+      });
+    }
 
     if (!response.ok) {
       const message = await this.extractError(response);
