@@ -25,6 +25,7 @@ describe("GoogleProvider", () => {
   const now = () => fixedNow;
 
   afterEach(() => {
+    vi.useRealTimers();
     vi.restoreAllMocks();
     delete process.env.GOOGLE_OAUTH_CLIENT_ID;
     delete process.env.GOOGLE_OAUTH_CLIENT_SECRET;
@@ -107,6 +108,30 @@ describe("GoogleProvider", () => {
     const [url] = fetchMock.mock.calls[0];
     expect(url).toContain("key=test-api-key");
     expect(response.output).toBe("api");
+  });
+
+  it("retries Gemini invocation when the initial fetch fails", async () => {
+    vi.useFakeTimers();
+
+    const secrets = new MockSecretsStore({ "provider:google:apiKey": "test-api-key" });
+
+    const fetchMock = vi
+      .fn()
+      .mockRejectedValueOnce(new TypeError("network error"))
+      .mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        json: async () => ({ candidates: [{ content: { parts: [{ text: "retry" }] } }] })
+      });
+
+    const provider = new GoogleProvider(secrets, { fetch: fetchMock as typeof fetch, now });
+    const chatPromise = provider.chat({ messages: [{ role: "user", content: "hi" }] });
+
+    await vi.advanceTimersByTimeAsync(200);
+    const response = await chatPromise;
+
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+    expect(response.output).toBe("retry");
   });
 
   it.each([
