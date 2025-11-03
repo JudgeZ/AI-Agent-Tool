@@ -40,10 +40,18 @@ describe("plan events history", () => {
     publishPlanStepEvent(baseEvent);
     publishPlanStepEvent({
       ...baseEvent,
+      step: { ...baseEvent.step, state: "completed" },
+    });
+    publishPlanStepEvent({
+      ...baseEvent,
       step: { ...baseEvent.step, id: "step-2", state: "running" },
     });
+    publishPlanStepEvent({
+      ...baseEvent,
+      step: { ...baseEvent.step, id: "step-2", state: "completed" },
+    });
 
-    expect(getPlanHistory(baseEvent.planId)).toHaveLength(2);
+    expect(getPlanHistory(baseEvent.planId)).toHaveLength(4);
     expect(getPlanHistory(baseEvent.planId)[0]?.occurredAt).toBeTruthy();
 
     publishPlanStepEvent({
@@ -51,10 +59,10 @@ describe("plan events history", () => {
       step: { ...baseEvent.step, id: "step-3", state: "completed" },
     });
 
-    expect(getPlanHistory(baseEvent.planId)).toHaveLength(3);
+    expect(getPlanHistory(baseEvent.planId)).toHaveLength(5);
 
     vi.advanceTimersByTime(HISTORY_RETENTION_MS - 1);
-    expect(getPlanHistory(baseEvent.planId)).toHaveLength(3);
+    expect(getPlanHistory(baseEvent.planId)).toHaveLength(5);
 
     vi.advanceTimersByTime(1);
     expect(getPlanHistory(baseEvent.planId)).toHaveLength(0);
@@ -81,7 +89,7 @@ describe("plan events history", () => {
     expect(getPlanHistory(baseEvent.planId)).toHaveLength(0);
   });
 
-  it("cleans up plan history after inactivity for non-terminal states", () => {
+  it("retains non-terminal plan history until steps reach a terminal state", () => {
     publishPlanStepEvent({
       ...baseEvent,
       step: { ...baseEvent.step, state: "waiting_approval" },
@@ -89,8 +97,21 @@ describe("plan events history", () => {
 
     expect(getPlanHistory(baseEvent.planId)).toHaveLength(1);
 
-    vi.advanceTimersByTime(HISTORY_RETENTION_MS - 1);
+    vi.advanceTimersByTime(HISTORY_RETENTION_MS);
     expect(getPlanHistory(baseEvent.planId)).toHaveLength(1);
+
+    vi.advanceTimersByTime(HISTORY_RETENTION_MS);
+    expect(getPlanHistory(baseEvent.planId)).toHaveLength(1);
+
+    publishPlanStepEvent({
+      ...baseEvent,
+      step: { ...baseEvent.step, state: "completed" },
+    });
+
+    expect(getPlanHistory(baseEvent.planId)).toHaveLength(2);
+
+    vi.advanceTimersByTime(HISTORY_RETENTION_MS - 1);
+    expect(getPlanHistory(baseEvent.planId)).toHaveLength(2);
 
     vi.advanceTimersByTime(1);
     expect(getPlanHistory(baseEvent.planId)).toHaveLength(0);

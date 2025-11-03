@@ -1,6 +1,10 @@
 import { EventEmitter } from "node:events";
 
-import { parsePlanStepEvent, type PlanStepEvent } from "./validation.js";
+import {
+  parsePlanStepEvent,
+  type PlanStepEvent,
+  type PlanStepState,
+} from "./validation.js";
 const MAX_EVENTS_PER_PLAN = 200;
 export const HISTORY_RETENTION_MS = 5 * 60 * 1000; // 5 minutes
 
@@ -9,6 +13,29 @@ type PlanHistoryEntry = {
   cleanupTimer?: NodeJS.Timeout;
   lastActivity: number;
 };
+
+const ACTIVE_STEP_STATES: ReadonlySet<PlanStepState> = new Set([
+  "queued",
+  "running",
+  "retrying",
+  "waiting_approval",
+  "approved",
+]);
+
+function hasActiveSteps(entry: PlanHistoryEntry): boolean {
+  const latestStates = new Map<string, PlanStepState>();
+  for (const event of entry.events) {
+    latestStates.set(event.step.id, event.step.state);
+  }
+
+  for (const state of latestStates.values()) {
+    if (ACTIVE_STEP_STATES.has(state)) {
+      return true;
+    }
+  }
+
+  return false;
+}
 
 const emitter = new EventEmitter();
 const history = new Map<string, PlanHistoryEntry>();
@@ -31,6 +58,11 @@ function scheduleCleanup(planId: string): void {
 
     const idleDuration = Date.now() - currentEntry.lastActivity;
     if (idleDuration >= HISTORY_RETENTION_MS) {
+      if (hasActiveSteps(currentEntry)) {
+        scheduleCleanup(planId);
+        return;
+      }
+
       history.delete(planId);
       return;
     }
