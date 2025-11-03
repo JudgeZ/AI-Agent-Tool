@@ -35,6 +35,7 @@ export type PlanStepCompletionPayload = {
 };
 
 const DEFAULT_MAX_RETRIES = 5;
+const DEFAULT_INIT_MAX_ATTEMPTS = 5;
 
 const stepRegistry = new Map<string, { step: PlanStep; traceId: string; job: PlanJob }>();
 const approvalCache = new Map<string, Record<string, boolean>>();
@@ -54,6 +55,8 @@ function parseIntEnv(name: string): number | undefined {
 }
 
 const MAX_RETRIES = parseIntEnv("QUEUE_RETRY_MAX") ?? DEFAULT_MAX_RETRIES;
+const INIT_MAX_ATTEMPTS = Math.max(parseIntEnv("QUEUE_INIT_MAX_ATTEMPTS") ?? DEFAULT_INIT_MAX_ATTEMPTS, 1);
+const INIT_BACKOFF_BASE_MS = parseIntEnv("QUEUE_INIT_BACKOFF_MS");
 
 function computeRetryDelayMs(attempt: number): number | undefined {
   const base = parseIntEnv("QUEUE_RETRY_BACKOFF_MS");
@@ -67,6 +70,28 @@ function computeRetryDelayMs(attempt: number): number | undefined {
     return Number.MAX_SAFE_INTEGER;
   }
   return Math.min(rawDelay, Number.MAX_SAFE_INTEGER);
+}
+
+function computeInitializationDelayMs(attempt: number): number | undefined {
+  if (INIT_BACKOFF_BASE_MS === undefined || INIT_BACKOFF_BASE_MS <= 0) {
+    return undefined;
+  }
+  const normalizedAttempt = Math.max(0, attempt);
+  const multiplier = 2 ** normalizedAttempt;
+  const rawDelay = INIT_BACKOFF_BASE_MS * multiplier;
+  if (!Number.isFinite(rawDelay)) {
+    return Number.MAX_SAFE_INTEGER;
+  }
+  return Math.min(rawDelay, Number.MAX_SAFE_INTEGER);
+}
+
+function delay(ms: number): Promise<void> {
+  if (!Number.isFinite(ms) || ms <= 0) {
+    return Promise.resolve();
+  }
+  return new Promise(resolve => {
+    setTimeout(resolve, ms);
+  });
 }
 
 function approvalKey(planId: string, stepId: string): string {
@@ -172,14 +197,46 @@ async function publishToolEvents(
   }
 }
 
+async function performInitialization(): Promise<void> {
+  await Promise.all([setupStepConsumer(), setupCompletionConsumer(), rehydratePendingSteps()]);
+}
+
+async function initializeWithRetry(): Promise<void> {
+  const maxAttempts = Math.max(1, INIT_MAX_ATTEMPTS);
+  let attempt = 0;
+  for (;;) {
+    try {
+      await performInitialization();
+      return;
+    } catch (error) {
+      attempt += 1;
+      const willRetry = attempt < maxAttempts;
+      const retryDelayMs = willRetry ? computeInitializationDelayMs(attempt - 1) : undefined;
+      const context: { attempt: number; maxAttempts: number; willRetry: boolean; retryDelayMs?: number } = {
+        attempt,
+        maxAttempts,
+        willRetry
+      };
+      if (retryDelayMs !== undefined) {
+        context.retryDelayMs = retryDelayMs;
+      }
+      console.error("plan.queue_runtime.initialization_failed", context, error);
+      if (!willRetry) {
+        throw error;
+      }
+      if (retryDelayMs !== undefined) {
+        await delay(retryDelayMs);
+      }
+    }
+  }
+}
+
 export async function initializePlanQueueRuntime(): Promise<void> {
   if (!initialized) {
-    initialized = Promise.all([setupStepConsumer(), setupCompletionConsumer(), rehydratePendingSteps()])
-      .then(() => undefined)
-      .catch(error => {
-        initialized = null;
-        throw error;
-      });
+    initialized = initializeWithRetry().catch(error => {
+      initialized = null;
+      throw error;
+    });
   }
   await initialized;
 }

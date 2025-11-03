@@ -26,11 +26,6 @@ import { authorize as oauthAuthorize, callback as oauthCallback } from "./auth/O
 import { loadConfig, type AppConfig } from "./config.js";
 import { getPolicyEnforcer, PolicyViolationError, type PolicyDecision } from "./policy/PolicyEnforcer.js";
 
-initializePlanQueueRuntime().catch(error => {
-  // eslint-disable-next-line no-console
-  console.error("Failed to initialize queue runtime", error);
-});
-
 function formatSse(event: PlanStepEvent): string {
   return `event: ${event.event}\ndata: ${JSON.stringify(event)}\n\n`;
 }
@@ -261,8 +256,23 @@ export function createHttpServer(app: Express, config: AppConfig): http.Server |
 }
 
 if (process.env.NODE_ENV !== "test") {
+  bootstrapOrchestrator().catch(error => {
+    // eslint-disable-next-line no-console
+    console.error("orchestrator startup failed", error);
+    process.exit(1);
+  });
+}
+
+export async function bootstrapOrchestrator(appConfig?: AppConfig): Promise<http.Server | https.Server> {
   const port = Number(process.env.PORT) || 4000;
-  const config = loadConfig();
+  const config = appConfig ?? loadConfig();
+  try {
+    await initializePlanQueueRuntime();
+  } catch (error) {
+    // eslint-disable-next-line no-console
+    console.error("Failed to initialize queue runtime", error);
+    throw error;
+  }
   const app = createServer(config);
   const server = createHttpServer(app, config);
   server.listen(port, () => {
@@ -270,4 +280,5 @@ if (process.env.NODE_ENV !== "test") {
     // eslint-disable-next-line no-console
     console.info(`orchestrator listening on ${protocol}://localhost:${port}`);
   });
+  return server;
 }
