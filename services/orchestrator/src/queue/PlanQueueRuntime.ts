@@ -43,6 +43,12 @@ const policyEnforcer = getPolicyEnforcer();
 let planStateStore: PlanStateStore | null = createPlanStateStore();
 let initialized: Promise<void> | null = null;
 
+let stepConsumerSetupPromise: Promise<void> | null = null;
+let stepConsumerReady = false;
+
+let completionConsumerSetupPromise: Promise<void> | null = null;
+let completionConsumerReady = false;
+
 const TERMINAL_STATES = new Set<ToolEvent["state"]>(["completed", "failed", "dead_lettered", "rejected"]);
 
 function parseIntEnv(name: string): number | undefined {
@@ -247,6 +253,10 @@ export function resetPlanQueueRuntime(): void {
   approvalCache.clear();
   resetToolAgentClient();
   planStateStore = createPlanStateStore();
+  stepConsumerReady = false;
+  stepConsumerSetupPromise = null;
+  completionConsumerReady = false;
+  completionConsumerSetupPromise = null;
 }
 
 export async function submitPlanSteps(plan: Plan, traceId: string): Promise<void> {
@@ -437,8 +447,13 @@ export async function resolvePlanStepApproval(options: {
 }
 
 async function setupCompletionConsumer(): Promise<void> {
-  const adapter = await getQueueAdapter();
-  await adapter.consume<PlanStepCompletionPayload>(PLAN_COMPLETIONS_QUEUE, async message => {
+  if (completionConsumerReady) {
+    return;
+  }
+  if (!completionConsumerSetupPromise) {
+    completionConsumerSetupPromise = (async () => {
+      const adapter = await getQueueAdapter();
+      await adapter.consume<PlanStepCompletionPayload>(PLAN_COMPLETIONS_QUEUE, async message => {
     const payload = message.payload;
     const key = `${payload.planId}:${payload.stepId}`;
     const metadata = stepRegistry.get(key);
@@ -491,12 +506,24 @@ async function setupCompletionConsumer(): Promise<void> {
     }
 
     await message.ack();
-  });
+      });
+      completionConsumerReady = true;
+    })().catch(error => {
+      completionConsumerSetupPromise = null;
+      throw error;
+    });
+  }
+  await completionConsumerSetupPromise;
 }
 
 async function setupStepConsumer(): Promise<void> {
-  const adapter = await getQueueAdapter();
-  await adapter.consume<unknown>(PLAN_STEPS_QUEUE, async message => {
+  if (stepConsumerReady) {
+    return;
+  }
+  if (!stepConsumerSetupPromise) {
+    stepConsumerSetupPromise = (async () => {
+      const adapter = await getQueueAdapter();
+      await adapter.consume<unknown>(PLAN_STEPS_QUEUE, async message => {
     let payload: PlanStepTaskPayload;
     try {
       payload = message.payload as PlanStepTaskPayload;
@@ -694,7 +721,14 @@ async function setupStepConsumer(): Promise<void> {
         attempt: job.attempt
       }
     );
-  });
+      });
+      stepConsumerReady = true;
+    })().catch(error => {
+      stepConsumerSetupPromise = null;
+      throw error;
+    });
+  }
+  await stepConsumerSetupPromise;
 }
 
 async function rehydratePendingSteps(): Promise<void> {
