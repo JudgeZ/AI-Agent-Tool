@@ -21,8 +21,17 @@ export class RateLimiter {
   private readonly queues = new Map<string, StoredTask[]>();
   private readonly timestamps = new Map<string, number[]>();
   private readonly processing = new Set<string>();
+  private readonly options: RateLimiterOptions;
 
-  constructor(private readonly options: RateLimiterOptions) {}
+  constructor(options: RateLimiterOptions) {
+    if (!Number.isFinite(options.windowMs) || options.windowMs <= 0) {
+      throw new Error("RateLimiter windowMs must be a positive number");
+    }
+    if (!Number.isFinite(options.maxRequests) || options.maxRequests <= 0) {
+      throw new Error("RateLimiter maxRequests must be a positive number");
+    }
+    this.options = options;
+  }
 
   async schedule<T>(key: string, task: () => Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {

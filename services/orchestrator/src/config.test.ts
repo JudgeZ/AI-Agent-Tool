@@ -331,6 +331,58 @@ providers:
     expect(config.providers.enabled).toEqual([]);
   });
 
+  it("throws when provider rate limits are non-positive", () => {
+    const configPath = createTempConfigFile(`
+providers:
+  rateLimit:
+    windowMs: 0
+    maxRequests: 10
+`);
+    process.env.APP_CONFIG = configPath;
+
+    expect(() => loadConfig()).toThrow("providers.rateLimit windowMs must be a positive number");
+  });
+
+  it("throws when HTTP rate limits are non-positive", () => {
+    const configPath = createTempConfigFile(`
+server:
+  rateLimits:
+    plan:
+      windowMs: -1
+      maxRequests: 10
+    chat:
+      windowMs: 1000
+      maxRequests: 0
+`);
+    process.env.APP_CONFIG = configPath;
+
+    expect(() => loadConfig()).toThrow("server.rateLimits.plan windowMs must be a positive number");
+  });
+
+  it("accepts minimal positive rate limit values", () => {
+    const configPath = createTempConfigFile(`
+providers:
+  rateLimit:
+    windowMs: 1
+    maxRequests: 1
+server:
+  rateLimits:
+    plan:
+      windowMs: 1
+      maxRequests: 1
+    chat:
+      windowMs: 1
+      maxRequests: 1
+`);
+    process.env.APP_CONFIG = configPath;
+
+    const config = loadConfig();
+
+    expect(config.providers.rateLimit).toEqual({ windowMs: 1, maxRequests: 1 });
+    expect(config.server.rateLimits.plan).toEqual({ windowMs: 1, maxRequests: 1 });
+    expect(config.server.rateLimits.chat).toEqual({ windowMs: 1, maxRequests: 1 });
+  });
+
   it("defaults to vault secrets in enterprise mode when unspecified", () => {
     const configPath = createTempConfigFile("runMode: enterprise\n");
     process.env.APP_CONFIG = configPath;

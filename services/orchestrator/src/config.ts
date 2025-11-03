@@ -53,6 +53,16 @@ export type AppConfig = {
   observability: ObservabilityConfig;
 };
 
+function ensurePositiveRateLimit(value: RateLimitConfig, context: string): RateLimitConfig {
+  if (!Number.isFinite(value.windowMs) || value.windowMs <= 0) {
+    throw new Error(`${context} windowMs must be a positive number`);
+  }
+  if (!Number.isFinite(value.maxRequests) || value.maxRequests <= 0) {
+    throw new Error(`${context} maxRequests must be a positive number`);
+  }
+  return value;
+}
+
 type PartialRateLimitConfig = {
   windowMs?: number;
   maxRequests?: number;
@@ -578,10 +588,13 @@ export function loadConfig(): AppConfig {
   const envEnabled = providersEnabledFromEnv?.map(provider => provider);
   const fileEnabled = providersEnabledFromFile?.map(provider => provider);
 
-  const providerRateLimitConfig: RateLimitConfig = {
-    windowMs: fileCfg.providers?.rateLimit?.windowMs ?? DEFAULT_CONFIG.providers.rateLimit.windowMs,
-    maxRequests: fileCfg.providers?.rateLimit?.maxRequests ?? DEFAULT_CONFIG.providers.rateLimit.maxRequests
-  };
+  const providerRateLimitConfig = ensurePositiveRateLimit(
+    {
+      windowMs: fileCfg.providers?.rateLimit?.windowMs ?? DEFAULT_CONFIG.providers.rateLimit.windowMs,
+      maxRequests: fileCfg.providers?.rateLimit?.maxRequests ?? DEFAULT_CONFIG.providers.rateLimit.maxRequests
+    },
+    "providers.rateLimit"
+  );
 
   const providerCircuitBreakerConfig: CircuitBreakerConfig = {
     failureThreshold:
@@ -590,15 +603,21 @@ export function loadConfig(): AppConfig {
       fileCfg.providers?.circuitBreaker?.resetTimeoutMs ?? DEFAULT_CONFIG.providers.circuitBreaker.resetTimeoutMs
   };
 
-  const serverPlanRateLimit: RateLimitConfig = {
-    windowMs: fileCfg.server?.rateLimits?.plan?.windowMs ?? DEFAULT_CONFIG.server.rateLimits.plan.windowMs,
-    maxRequests: fileCfg.server?.rateLimits?.plan?.maxRequests ?? DEFAULT_CONFIG.server.rateLimits.plan.maxRequests
-  };
+  const serverPlanRateLimit = ensurePositiveRateLimit(
+    {
+      windowMs: fileCfg.server?.rateLimits?.plan?.windowMs ?? DEFAULT_CONFIG.server.rateLimits.plan.windowMs,
+      maxRequests: fileCfg.server?.rateLimits?.plan?.maxRequests ?? DEFAULT_CONFIG.server.rateLimits.plan.maxRequests
+    },
+    "server.rateLimits.plan"
+  );
 
-  const serverChatRateLimit: RateLimitConfig = {
-    windowMs: fileCfg.server?.rateLimits?.chat?.windowMs ?? DEFAULT_CONFIG.server.rateLimits.chat.windowMs,
-    maxRequests: fileCfg.server?.rateLimits?.chat?.maxRequests ?? DEFAULT_CONFIG.server.rateLimits.chat.maxRequests
-  };
+  const serverChatRateLimit = ensurePositiveRateLimit(
+    {
+      windowMs: fileCfg.server?.rateLimits?.chat?.windowMs ?? DEFAULT_CONFIG.server.rateLimits.chat.windowMs,
+      maxRequests: fileCfg.server?.rateLimits?.chat?.maxRequests ?? DEFAULT_CONFIG.server.rateLimits.chat.maxRequests
+    },
+    "server.rateLimits.chat"
+  );
 
   const fileTls = fileCfg.server?.tls;
   const tlsEnabled = envServerTlsEnabled ?? fileTls?.enabled ?? DEFAULT_CONFIG.server.tls.enabled;
