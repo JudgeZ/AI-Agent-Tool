@@ -141,8 +141,12 @@ impl SecurityConfig {
             None => return false,
         };
 
-        if self.allow_all || self.allowed_prefixes.is_empty() {
+        if self.allow_all {
             return true;
+        }
+
+        if self.allowed_prefixes.is_empty() {
+            return false;
         }
 
         self.allowed_prefixes
@@ -154,8 +158,12 @@ impl SecurityConfig {
         let normalized =
             normalize_path(path).ok_or_else(|| SecurityError::AclViolation(path.to_string()))?;
 
-        if self.allow_all || self.allowed_prefixes.is_empty() {
+        if self.allow_all {
             return Ok(());
+        }
+
+        if self.allowed_prefixes.is_empty() {
+            return Err(SecurityError::AclViolation(path.to_string()));
         }
 
         if self
@@ -203,6 +211,17 @@ mod tests {
 
         let err = config.check_path("src/../../etc/passwd").unwrap_err();
         assert!(matches!(err, SecurityError::AclViolation(_)));
+    }
+
+    #[test]
+    fn acl_invalid_prefixes_fail_closed() {
+        let config = SecurityConfig::with_rules(vec!["../tmp".into(), "C:\\temp".into()], vec![]);
+
+        assert!(!config.is_allowed("src/lib.rs"));
+        assert!(matches!(
+            config.check_path("src/lib.rs"),
+            Err(SecurityError::AclViolation(_))
+        ));
     }
 
     #[test]
