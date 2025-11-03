@@ -13,6 +13,18 @@ describe("RateLimiter", () => {
     vi.useRealTimers();
   });
 
+  it("throws when constructed with a non-positive window", () => {
+    expect(() => new RateLimiter({ windowMs: 0, maxRequests: 1 })).toThrow(
+      "RateLimiter windowMs must be a positive number"
+    );
+  });
+
+  it("throws when constructed with a non-positive maxRequests", () => {
+    expect(() => new RateLimiter({ windowMs: 1000, maxRequests: 0 })).toThrow(
+      "RateLimiter maxRequests must be a positive number"
+    );
+  });
+
   it("queues requests that exceed the configured rate", async () => {
     const limiter = new RateLimiter({ windowMs: 1000, maxRequests: 1 });
     const order: number[] = [];
