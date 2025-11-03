@@ -406,6 +406,14 @@ export class GoogleProvider implements ModelProvider {
   private normalizeModelPath(modelId: string): string {
     const trimmed = modelId.replace(/^models\//, "");
     const segments = trimmed.split("/").filter(segment => segment.length > 0);
+    const invalidSegment = segments.find(segment => segment === "." || segment === "..");
+    if (invalidSegment) {
+      throw new ProviderError("Google model ID cannot contain path traversal segments", {
+        status: 400,
+        provider: this.name,
+        retryable: false
+      });
+    }
     if (segments.length === 0) {
       return "";
     }
