@@ -368,6 +368,82 @@ describe("PlanQueueRuntime integration", () => {
     expect(completion?.step.attempt).toBe(1);
   });
 
+  it("clears approvals and persisted state when a rejected completion is processed", async () => {
+    const step = {
+      id: "s-rejected",
+      action: "apply_edits",
+      capability: "repo.write",
+      capabilityLabel: "Apply repository changes",
+      labels: ["repo"],
+      tool: "code_writer",
+      timeoutSeconds: 120,
+      approvalRequired: true,
+      input: {},
+      metadata: {}
+    } as const;
+    const planId = "plan-rejected";
+    const traceId = "trace-rejected";
+
+    const { PlanStateStore } = await import("./PlanStateStore.js");
+    const store = new PlanStateStore({ filePath: storePath });
+    await store.rememberStep(planId, step, traceId, {
+      initialState: "running",
+      idempotencyKey: `${planId}:${step.id}`,
+      attempt: 1,
+      createdAt: new Date().toISOString(),
+      approvals: { [step.capability]: true }
+    });
+
+    await runtime.initializePlanQueueRuntime();
+
+    publishSpy.mockClear();
+    policyMock.enforcePlanStep.mockClear();
+
+    await adapterRef.current.enqueue<PlanStepCompletionPayload>(
+      runtime.PLAN_COMPLETIONS_QUEUE,
+      {
+        planId,
+        stepId: step.id,
+        state: "rejected",
+        summary: "Rejected during execution",
+        approvals: { [step.capability]: true }
+      }
+    );
+
+    await vi.waitFor(() => {
+      const events = publishSpy.mock.calls as Array<[PlanStepEvent]>;
+      expect(
+        events.some(
+          ([event]) =>
+            event.planId === planId && event.step.id === step.id && event.step.state === "rejected"
+        )
+      ).toBe(true);
+    });
+
+    const persisted = new PlanStateStore({ filePath: storePath });
+    await vi.waitFor(async () => {
+      const remaining = await persisted.listActiveSteps();
+      expect(remaining).toHaveLength(0);
+    });
+
+    const plan = {
+      id: planId,
+      goal: "approval refresh",
+      steps: [
+        {
+          ...step
+        }
+      ],
+      successCriteria: ["ok"]
+    };
+
+    await runtime.submitPlanSteps(plan, "trace-rejected-followup");
+
+    expect(policyMock.enforcePlanStep).toHaveBeenCalledTimes(1);
+    const [, context] = policyMock.enforcePlanStep.mock.calls[0]!;
+    expect(context.approvals).toEqual({});
+  });
+
   it("queues approval-gated steps only after approval is granted", async () => {
     const plan = {
       id: "plan-approval",

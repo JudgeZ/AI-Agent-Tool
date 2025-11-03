@@ -427,7 +427,7 @@ async function setupCompletionConsumer(): Promise<void> {
       }
     });
 
-    if (payload.state === "completed" || payload.state === "failed" || payload.state === "dead_lettered") {
+    if (TERMINAL_STATES.has(payload.state)) {
       stepRegistry.delete(key);
       clearApprovals(payload.planId, payload.stepId);
       await planStateStore?.forgetStep(payload.planId, payload.stepId);
