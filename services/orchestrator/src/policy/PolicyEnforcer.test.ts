@@ -230,5 +230,37 @@ describe("PolicyEnforcer", () => {
     expect(receivedInput.action.capabilities).toEqual(["plan.create"]);
     expect(receivedInput.subject.agent).toBe("planner");
   });
+
+  it("applies runtime role mappings to the policy data", async () => {
+    process.env.OIDC_ENABLED = "true";
+    process.env.OIDC_ISSUER_URL = "https://issuer.example.com";
+    process.env.OIDC_CLIENT_ID = "policy-client";
+    process.env.OIDC_ROLE_MAPPINGS = JSON.stringify({ engineer: ["repo.write"] });
+
+    const enforcer = await createEnforcer();
+    loadAgentProfileMock.mockReturnValue({
+      name: "code-writer",
+      role: "Code Writer",
+      capabilities: ["repo.read", "repo.write"],
+      approval_policy: {},
+      constraints: [],
+      body: ""
+    });
+
+    await enforcer.enforcePlanStep(buildStep(), { planId: "plan-role", traceId: "trace-role" });
+
+    expect(setDataMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capabilities: expect.objectContaining({
+          role_bindings: { engineer: ["repo.write"] }
+        })
+      })
+    );
+
+    delete process.env.OIDC_ENABLED;
+    delete process.env.OIDC_ISSUER_URL;
+    delete process.env.OIDC_CLIENT_ID;
+    delete process.env.OIDC_ROLE_MAPPINGS;
+  });
 });
 

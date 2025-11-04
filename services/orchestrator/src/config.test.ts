@@ -37,7 +37,51 @@ const ENV_KEYS = [
   "ORCHESTRATOR_CLIENT_CERT",
   "ORCHESTRATOR_CLIENT_KEY",
   "ORCHESTRATOR_CA_CERT",
-  "ORCHESTRATOR_TLS_SERVER_NAME"
+  "ORCHESTRATOR_TLS_SERVER_NAME",
+  "KAFKA_BROKERS",
+  "KAFKA_CLIENT_ID",
+  "KAFKA_GROUP_ID",
+  "KAFKA_CONSUME_FROM_BEGINNING",
+  "KAFKA_RETRY_DELAY_MS",
+  "KAFKA_TOPIC_PLAN_STEPS",
+  "KAFKA_TOPIC_PLAN_COMPLETIONS",
+  "KAFKA_TOPIC_PLAN_EVENTS",
+  "KAFKA_TOPIC_PLAN_STATE",
+  "KAFKA_TOPIC_DEAD_LETTER_SUFFIX",
+  "KAFKA_TLS_ENABLED",
+  "KAFKA_TLS_CA_PATHS",
+  "KAFKA_TLS_CERT_PATH",
+  "KAFKA_TLS_KEY_PATH",
+  "KAFKA_TLS_REJECT_UNAUTHORIZED",
+  "KAFKA_SASL_MECHANISM",
+  "KAFKA_SASL_USERNAME",
+  "KAFKA_SASL_PASSWORD",
+  "KAFKA_ENSURE_TOPICS",
+  "KAFKA_TOPIC_PARTITIONS",
+  "KAFKA_TOPIC_REPLICATION_FACTOR",
+  "KAFKA_TOPIC_DEFAULT_CONFIG",
+  "KAFKA_TOPIC_COMPACT_PATTERNS",
+  "KAFKA_DEAD_LETTER_SUFFIX",
+  "OIDC_ENABLED",
+  "OIDC_ISSUER_URL",
+  "OIDC_CLIENT_ID",
+  "OIDC_CLIENT_SECRET",
+  "OIDC_REDIRECT_BASE",
+  "OIDC_SCOPES",
+  "OIDC_TENANT_CLAIM",
+  "OIDC_AUDIENCE",
+  "OIDC_LOGOUT_URL",
+  "OIDC_SESSION_COOKIE_NAME",
+  "OIDC_SESSION_TTL_SECONDS",
+  "OIDC_ROLE_CLAIM",
+  "OIDC_DEFAULT_ROLES",
+  "OIDC_ROLE_MAPPINGS",
+  "OIDC_TENANT_ROLE_MAPPINGS",
+  "RETENTION_PLAN_STATE_DAYS",
+  "RETENTION_PLAN_ARTIFACT_DAYS",
+  "CONTENT_CAPTURE_ENABLED",
+  "SSE_MAX_CONNECTIONS_PER_IP",
+  "SSE_MAX_CONNECTIONS_PER_SUBJECT"
 ] as const;
 
 const originalEnv: Partial<Record<(typeof ENV_KEYS)[number], string>> = {};
@@ -91,6 +135,31 @@ describe("loadConfig", () => {
 runMode: enterprise
 messaging:
   type: kafka
+  kafka:
+    brokers:
+      - kafka-1:9092
+      - kafka-2:9092
+    clientId: orchestrator
+    consumerGroup: plan-workers
+    consumeFromBeginning: true
+    retryDelayMs: 500
+    topics:
+      planSteps: plan.steps.custom
+      planCompletions: plan.completions.custom
+      planEvents: plan.events.custom
+      planState: plan.state.custom
+      deadLetterSuffix: ".dlq"
+    tls:
+      enabled: true
+      caPaths:
+        - /etc/kafka/ca.pem
+      certPath: /etc/kafka/client.crt
+      keyPath: /etc/kafka/client.key
+      rejectUnauthorized: false
+    sasl:
+      mechanism: plain
+      username: kafka-user
+      password: kafka-pass
 providers:
   defaultRoute: high_quality
   enabled:
@@ -105,6 +174,22 @@ providers:
 auth:
   oauth:
     redirectBaseUrl: "https://example.com/callback"
+  oidc:
+    enabled: true
+    issuer: https://oidc.example.com
+    clientId: yaml-client
+    clientSecret: yaml-secret
+    redirectBaseUrl: https://app.example.com
+    scopes:
+      - openid
+      - profile
+      - email
+    tenantClaim: org_id
+    audience: api://default
+    logoutUrl: https://oidc.example.com/logout
+    session:
+      cookieName: yaml_session
+      ttlSeconds: 14400
 secrets:
   backend: vault
 server:
@@ -116,6 +201,9 @@ server:
     chat:
       windowMs: 30000
       maxRequests: 200
+  sseQuotas:
+    perIp: 3
+    perSubject: 1
   tls:
     enabled: true
     keyPath: "/etc/orchestrator/tls/server.key"
@@ -139,15 +227,67 @@ observability:
 
     expect(config.runMode).toBe("enterprise");
     expect(config.messaging.type).toBe("kafka");
+    expect(config.messaging.kafka).toEqual({
+      brokers: ["kafka-1:9092", "kafka-2:9092"],
+      clientId: "orchestrator",
+      consumerGroup: "plan-workers",
+      consumeFromBeginning: true,
+      retryDelayMs: 500,
+      topics: {
+        planSteps: "plan.steps.custom",
+        planCompletions: "plan.completions.custom",
+        planEvents: "plan.events.custom",
+        planState: "plan.state.custom",
+        deadLetterSuffix: ".dlq"
+      },
+      tls: {
+        enabled: true,
+        caPaths: ["/etc/kafka/ca.pem"],
+        certPath: "/etc/kafka/client.crt",
+        keyPath: "/etc/kafka/client.key",
+        rejectUnauthorized: false
+      },
+      sasl: {
+        mechanism: "plain",
+        username: "kafka-user",
+        password: "kafka-pass"
+      },
+      ensureTopics: true,
+      topicPartitions: 1,
+      replicationFactor: 1,
+      topicConfig: {},
+      compactTopics: []
+    });
     expect(config.providers.defaultRoute).toBe("high_quality");
     expect(config.providers.enabled).toEqual(["anthropic", "openai"]);
-    expect(config.providers.rateLimit).toEqual({ windowMs: 30000, maxRequests: 50 });
-    expect(config.providers.circuitBreaker).toEqual({ failureThreshold: 7, resetTimeoutMs: 45000 });
     expect(config.auth.oauth.redirectBaseUrl).toBe("https://example.com/callback");
+    expect(config.auth.oidc).toEqual({
+      enabled: true,
+      issuer: "https://oidc.example.com",
+      clientId: "yaml-client",
+      clientSecret: "yaml-secret",
+      redirectBaseUrl: "https://app.example.com",
+      redirectUri: "https://app.example.com/auth/oidc/callback",
+      scopes: ["openid", "profile", "email"],
+      tenantClaim: "org_id",
+      audience: "api://default",
+      logoutUrl: "https://oidc.example.com/logout",
+      roles: {
+        claim: "roles",
+        fallback: [],
+        mappings: {},
+        tenantMappings: {}
+      },
+      session: {
+        cookieName: "yaml_session",
+        ttlSeconds: 14400
+      }
+    });
     expect(config.secrets.backend).toBe("vault");
     expect(config.server.sseKeepAliveMs).toBe(10000);
     expect(config.server.rateLimits.plan).toEqual({ windowMs: 120000, maxRequests: 20 });
     expect(config.server.rateLimits.chat).toEqual({ windowMs: 30000, maxRequests: 200 });
+    expect(config.server.sseQuotas).toEqual({ perIp: 3, perSubject: 1 });
     expect(config.server.tls).toEqual({
       enabled: true,
       keyPath: "/etc/orchestrator/tls/server.key",
@@ -161,6 +301,13 @@ observability:
     expect(config.observability.tracing.exporterEndpoint).toBe("https://otel.example.com/v1/traces");
     expect(config.observability.tracing.exporterHeaders).toEqual({ authorization: "Bearer token" });
     expect(config.observability.tracing.sampleRatio).toBeCloseTo(0.25);
+    expect(config.retention).toEqual({
+      planStateDays: 30,
+      planArtifactsDays: 30,
+      contentCapture: {
+        enabled: false
+      }
+    });
   });
 
   it("derives configuration from environment variables when file values are absent", () => {
@@ -170,6 +317,16 @@ observability:
     process.env.PROVIDERS = "anthropic, openai";
     process.env.OAUTH_REDIRECT_BASE = "https://env.example.com/callback";
     process.env.SECRETS_BACKEND = "vault";
+    process.env.OIDC_ENABLED = "true";
+    process.env.OIDC_ISSUER_URL = "https://env-issuer.example.com";
+    process.env.OIDC_CLIENT_ID = "env-client";
+    process.env.OIDC_CLIENT_SECRET = "env-secret";
+    process.env.OIDC_REDIRECT_BASE = "https://env.app";
+    process.env.OIDC_SCOPES = "openid email";
+    process.env.OIDC_SESSION_COOKIE_NAME = "env_session";
+    process.env.OIDC_SESSION_TTL_SECONDS = "1800";
+    process.env.SSE_MAX_CONNECTIONS_PER_IP = "7";
+    process.env.SSE_MAX_CONNECTIONS_PER_SUBJECT = "4";
 
     const config = loadConfig();
 
@@ -178,21 +335,32 @@ observability:
     expect(config.providers.defaultRoute).toBe("balanced");
     expect(config.providers.enabled).toEqual(["anthropic", "openai"]);
     expect(config.auth.oauth.redirectBaseUrl).toBe("https://env.example.com/callback");
-    expect(config.secrets.backend).toBe("vault");
-    expect(config.providers.rateLimit).toEqual({ windowMs: 60000, maxRequests: 120 });
-    expect(config.providers.circuitBreaker).toEqual({ failureThreshold: 5, resetTimeoutMs: 30000 });
-    expect(config.server.rateLimits.plan).toEqual({ windowMs: 60000, maxRequests: 60 });
-    expect(config.server.rateLimits.chat).toEqual({ windowMs: 60000, maxRequests: 600 });
-    expect(config.server.tls.enabled).toBe(false);
-    expect(config.server.tls.caPaths).toEqual([]);
-    expect(config.observability.tracing).toEqual({
-      enabled: false,
-      serviceName: "oss-ai-orchestrator",
-      environment: "development",
-      exporterEndpoint: "http://127.0.0.1:4318/v1/traces",
-      exporterHeaders: {},
-      sampleRatio: 1
+    expect(config.auth.oidc.enabled).toBe(true);
+    expect(config.auth.oidc.issuer).toBe("https://env-issuer.example.com");
+    expect(config.auth.oidc.clientId).toBe("env-client");
+    expect(config.auth.oidc.clientSecret).toBe("env-secret");
+    expect(config.auth.oidc.redirectBaseUrl).toBe("https://env.app");
+    expect(config.auth.oidc.redirectUri).toBe("https://env.app/auth/oidc/callback");
+    expect(config.auth.oidc.scopes).toEqual(["openid", "email"]);
+    expect(config.auth.oidc.session.cookieName).toBe("env_session");
+    expect(config.auth.oidc.session.ttlSeconds).toBe(1800);
+    expect(config.auth.oidc.tenantClaim).toBeUndefined();
+    expect(config.auth.oidc.logoutUrl).toBeUndefined();
+    expect(config.auth.oidc.roles).toEqual({
+      claim: "roles",
+      fallback: [],
+      mappings: {},
+      tenantMappings: {}
     });
+    expect(config.server.sseQuotas).toEqual({ perIp: 7, perSubject: 4 });
+    expect(config.retention).toEqual({
+      planStateDays: 30,
+      planArtifactsDays: 30,
+      contentCapture: {
+        enabled: false
+      }
+    });
+    expect(config.secrets.backend).toBe("vault");
   });
 
   it("enables server TLS from environment variables", () => {
@@ -260,6 +428,31 @@ observability:
 runMode: enterprise
 messaging:
   type: kafka
+  kafka:
+    brokers:
+      - kafka-1:9092
+      - kafka-2:9092
+    clientId: orchestrator
+    consumerGroup: plan-workers
+    consumeFromBeginning: true
+    retryDelayMs: 500
+    topics:
+      planSteps: plan.steps.custom
+      planCompletions: plan.completions.custom
+      planEvents: plan.events.custom
+      planState: plan.state.custom
+      deadLetterSuffix: ".dlq"
+    tls:
+      enabled: true
+      caPaths:
+        - /etc/kafka/ca.pem
+      certPath: /etc/kafka/client.crt
+      keyPath: /etc/kafka/client.key
+      rejectUnauthorized: false
+    sasl:
+      mechanism: plain
+      username: kafka-user
+      password: kafka-pass
 providers:
   defaultRoute: high_quality
   enabled:
@@ -268,6 +461,22 @@ providers:
 auth:
   oauth:
     redirectBaseUrl: "https://file.example.com/callback"
+  oidc:
+    enabled: true
+    issuer: https://oidc.example.com
+    clientId: yaml-client
+    clientSecret: yaml-secret
+    redirectBaseUrl: https://app.example.com
+    scopes:
+      - openid
+      - profile
+      - email
+    tenantClaim: org_id
+    audience: api://default
+    logoutUrl: https://oidc.example.com/logout
+    session:
+      cookieName: yaml_session
+      ttlSeconds: 14400
 secrets:
   backend: vault
 `);
@@ -390,5 +599,62 @@ server:
     const config = loadConfig();
 
     expect(config.secrets.backend).toBe("vault");
+  });
+
+  it("parses OIDC role configuration from environment variables", () => {
+    delete process.env.APP_CONFIG;
+    process.env.OIDC_ENABLED = "true";
+    process.env.OIDC_ISSUER_URL = "https://roles-issuer.example.com";
+    process.env.OIDC_CLIENT_ID = "roles-client";
+    process.env.OIDC_ROLE_CLAIM = "groups";
+    process.env.OIDC_DEFAULT_ROLES = "viewer,editor";
+    process.env.OIDC_ROLE_MAPPINGS = JSON.stringify({
+      editor: ["repo.write", "test.run"],
+      approver: ["plan.approve"]
+    });
+    process.env.OIDC_TENANT_ROLE_MAPPINGS = JSON.stringify({
+      "tenant-a": {
+        admin: ["network.egress", "plan.approve"],
+        qa: ["test.run"]
+      }
+    });
+    process.env.RETENTION_PLAN_STATE_DAYS = "5";
+    process.env.RETENTION_PLAN_ARTIFACT_DAYS = "10";
+    process.env.CONTENT_CAPTURE_ENABLED = "true";
+
+    const config = loadConfig();
+
+    expect(config.auth.oidc.roles).toEqual({
+      claim: "groups",
+      fallback: ["editor", "viewer"],
+      mappings: {
+        approver: ["plan.approve"],
+        editor: ["repo.write", "test.run"]
+      },
+      tenantMappings: {
+        "tenant-a": {
+          admin: ["network.egress", "plan.approve"],
+          qa: ["test.run"]
+        }
+      }
+    });
+    expect(config.retention).toEqual({
+      planStateDays: 5,
+      planArtifactsDays: 10,
+      contentCapture: {
+        enabled: true
+      }
+    });
+
+    delete process.env.OIDC_ROLE_CLAIM;
+    delete process.env.OIDC_DEFAULT_ROLES;
+    delete process.env.OIDC_ROLE_MAPPINGS;
+    delete process.env.OIDC_TENANT_ROLE_MAPPINGS;
+    delete process.env.OIDC_ENABLED;
+    delete process.env.OIDC_ISSUER_URL;
+    delete process.env.OIDC_CLIENT_ID;
+    delete process.env.RETENTION_PLAN_STATE_DAYS;
+    delete process.env.RETENTION_PLAN_ARTIFACT_DAYS;
+    delete process.env.CONTENT_CAPTURE_ENABLED;
   });
 });

@@ -37,13 +37,13 @@ spec:
           imagePullPolicy: IfNotPresent
           env:
             - name: DATABASE_URL
-              value: {{ .Values.langfuse.databaseUrl | default (printf "postgres://%s:%s@%s-postgres:5432/ossaat" (.Values.postgres.username | default "ossaat") (.Values.postgres.password | default "ossaat") (include "oss-ai-agent-tool.fullname" .)) | quote }}
+              value: {{ required "langfuse.databaseUrl must be provided" (.Values.langfuse.databaseUrl | default "") | quote }}
             - name: NEXTAUTH_SECRET
-              value: {{ .Values.langfuse.nextAuthSecret | default "changeme" | quote }}
+              value: {{ required "langfuse.nextAuthSecret must be provided" (.Values.langfuse.nextAuthSecret | default "") | quote }}
             - name: NEXTAUTH_URL
               value: {{ .Values.langfuse.publicUrl | default "http://localhost:3000" | quote }}
             - name: SALT
-              value: {{ .Values.langfuse.salt | default "changeme" | quote }}
+              value: {{ required "langfuse.salt must be provided" (.Values.langfuse.salt | default "") | quote }}
             - name: TELEMETRY_ENABLED
               value: {{ .Values.langfuse.telemetryEnabled | default "false" | quote }}
           ports:

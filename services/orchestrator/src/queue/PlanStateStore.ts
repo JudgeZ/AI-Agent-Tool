@@ -3,7 +3,7 @@ import path from "node:path";
 
 import { randomUUID } from "node:crypto";
 
-import type { PlanStep } from "../plan/planner.js";
+import type { PlanStep, PlanSubject } from "../plan/planner.js";
 import type { PlanStepState } from "../plan/validation.js";
 
 type PersistedStep = {
@@ -20,6 +20,7 @@ type PersistedStep = {
   idempotencyKey: string;
   createdAt: string;
   approvals?: Record<string, boolean>;
+  subject?: PlanSubject;
 };
 
 type PersistedDocument = {
@@ -29,6 +30,7 @@ type PersistedDocument = {
 
 type PlanStateStoreOptions = {
   filePath?: string;
+  retentionMs?: number;
 };
 
 type RememberStepOptions = {
@@ -37,6 +39,7 @@ type RememberStepOptions = {
   attempt?: number;
   createdAt?: string;
   approvals?: Record<string, boolean>;
+  subject?: PlanSubject;
 };
 
 const TERMINAL_STATES: ReadonlySet<PlanStepState> = new Set([
@@ -56,12 +59,14 @@ function defaultPath(): string {
 
 export class PlanStateStore {
   private readonly filePath: string;
+  private readonly retentionMs: number | null;
   private loaded = false;
   private readonly records = new Map<string, PersistedStep>();
   private persistChain: Promise<void> = Promise.resolve();
 
   constructor(options?: PlanStateStoreOptions) {
     this.filePath = options?.filePath ?? defaultPath();
+    this.retentionMs = options?.retentionMs && options.retentionMs > 0 ? options.retentionMs : null;
   }
 
   async rememberStep(
@@ -74,9 +79,11 @@ export class PlanStateStore {
       attempt: number;
       createdAt: string;
       approvals?: Record<string, boolean>;
+      subject?: PlanSubject;
     }
   ): Promise<void> {
     await this.ensureLoaded();
+    this.purgeExpired();
     const key = this.toKey(planId, step.id);
     const entry: PersistedStep = {
       id: randomUUID(),
@@ -89,7 +96,14 @@ export class PlanStateStore {
       attempt: options.attempt,
       idempotencyKey: options.idempotencyKey,
       createdAt: options.createdAt,
-      approvals: options.approvals
+      approvals: options.approvals,
+      subject: options.subject
+        ? {
+            ...options.subject,
+            roles: [...options.subject.roles],
+            scopes: [...options.subject.scopes]
+          }
+        : undefined
     };
     this.records.set(key, entry);
     await this.enqueuePersist();
@@ -104,9 +118,13 @@ export class PlanStateStore {
     attempt?: number
   ): Promise<void> {
     await this.ensureLoaded();
+    const purged = this.purgeExpired();
     const key = this.toKey(planId, stepId);
     const existing = this.records.get(key);
     if (!existing) {
+      if (purged) {
+        await this.enqueuePersist();
+      }
       return;
     }
 
@@ -128,9 +146,13 @@ export class PlanStateStore {
 
   async recordApproval(planId: string, stepId: string, capability: string, granted: boolean): Promise<void> {
     await this.ensureLoaded();
+    const purged = this.purgeExpired();
     const key = this.toKey(planId, stepId);
     const existing = this.records.get(key);
     if (!existing) {
+      if (purged) {
+        await this.enqueuePersist();
+      }
       return;
     }
 
@@ -152,25 +174,49 @@ export class PlanStateStore {
 
   async forgetStep(planId: string, stepId: string): Promise<void> {
     await this.ensureLoaded();
+    const purged = this.purgeExpired();
     const key = this.toKey(planId, stepId);
+    let updated = purged;
     if (this.records.delete(key)) {
+      updated = true;
+    }
+    if (updated) {
       await this.enqueuePersist();
     }
   }
 
   async listActiveSteps(): Promise<PersistedStep[]> {
     await this.ensureLoaded();
-    return Array.from(this.records.values()).map(entry => ({ ...entry }));
+    const purged = this.purgeExpired();
+    const entries = Array.from(this.records.values()).map(entry => ({
+      ...entry,
+      subject: entry.subject
+        ? { ...entry.subject, roles: [...entry.subject.roles], scopes: [...entry.subject.scopes] }
+        : undefined
+    }));
+    if (purged) {
+      await this.enqueuePersist();
+    }
+    return entries;
   }
 
   async getEntry(planId: string, stepId: string): Promise<PersistedStep | undefined> {
     await this.ensureLoaded();
-    return this.records.get(this.toKey(planId, stepId));
+    const purged = this.purgeExpired();
+    const entry = this.records.get(this.toKey(planId, stepId));
+    if (purged) {
+      await this.enqueuePersist();
+    }
+    return entry;
   }
 
   async getStep(planId: string, stepId: string): Promise<{ step: PlanStep; traceId: string } | undefined> {
     await this.ensureLoaded();
+    const purged = this.purgeExpired();
     const record = this.records.get(this.toKey(planId, stepId));
+    if (purged) {
+      await this.enqueuePersist();
+    }
     if (!record) {
       return undefined;
     }
@@ -238,6 +284,24 @@ export class PlanStateStore {
     } finally {
       await fs.rm(tempPath, { force: true }).catch(() => undefined);
     }
+  }
+
+  private purgeExpired(now = Date.now()): boolean {
+    if (this.retentionMs === null) {
+      return false;
+    }
+    const cutoff = now - this.retentionMs;
+    let removed = false;
+    for (const [key, entry] of this.records.entries()) {
+      const updated = Date.parse(entry.updatedAt ?? "");
+      const created = Date.parse(entry.createdAt ?? "");
+      const reference = Number.isFinite(updated) ? updated : Number.isFinite(created) ? created : undefined;
+      if (reference !== undefined && reference < cutoff) {
+        this.records.delete(key);
+        removed = true;
+      }
+    }
+    return removed;
   }
 }
 

@@ -5,6 +5,8 @@ import {
   queueAckCounter,
   queueDeadLetterCounter,
   queueDepthGauge,
+  queueLagGauge,
+  queuePartitionLagGauge,
   queueRetryCounter,
   resetMetrics
 } from "../observability/metrics.js";
@@ -42,11 +44,13 @@ function createKafkaMocks() {
   const fetchOffsets = vi.fn().mockResolvedValue([
     { topic: "plan.steps", partitions: [{ partition: 0, offset: "0" }] }
   ]);
+  const createTopics = vi.fn().mockResolvedValue(true);
   const admin = {
     connect: vi.fn().mockResolvedValue(undefined),
     disconnect: vi.fn().mockResolvedValue(undefined),
     fetchTopicOffsets,
-    fetchOffsets
+    fetchOffsets,
+    createTopics
   } as unknown as Admin;
 
   const kafka = {
@@ -65,6 +69,7 @@ function createKafkaMocks() {
     admin,
     fetchTopicOffsets,
     fetchOffsets,
+    createTopics,
     getEachMessage: () => eachMessage,
     logger: { info: vi.fn(), warn: vi.fn(), error: vi.fn() }
   };
@@ -117,6 +122,14 @@ describe("KafkaAdapter", () => {
       await message.ack();
     });
 
+    expect(mocks.createTopics).toHaveBeenCalledWith(
+      expect.objectContaining({
+        topics: expect.arrayContaining([
+          expect.objectContaining({ topic: "plan.steps" })
+        ])
+      })
+    );
+
     await adapter.enqueue("plan.steps", { task: "index" }, { idempotencyKey: "plan-1:s1" });
 
     const handler = mocks.getEachMessage();
@@ -134,6 +147,8 @@ describe("KafkaAdapter", () => {
     expect(mocks.producerSend).toHaveBeenCalledTimes(1);
     const ackMetric = await getMetricValue(queueAckCounter, { queue: "plan.steps" });
     expect(ackMetric).toBe(1);
+    const lagMetric = await getMetricValue(queueLagGauge, { queue: "plan.steps" });
+    expect(lagMetric).toBe(0);
   });
 
   it("retries messages with incremented attempts", async () => {
@@ -196,6 +211,41 @@ describe("KafkaAdapter", () => {
     expect(deadMetric).toBe(1);
   });
 
+  it("allows overriding the dead-letter suffix", async () => {
+    await adapter.close();
+    mocks.producerSend.mockClear();
+    const customAdapter = new KafkaAdapter({
+      kafka: mocks.kafka,
+      logger: mocks.logger,
+      retryDelayMs: 0,
+      deadLetterSuffix: ".dlq"
+    });
+    await customAdapter.connect();
+
+    await customAdapter.consume("plan.steps", async message => {
+      await message.deadLetter({ reason: "custom" });
+    });
+
+    await customAdapter.enqueue("plan.steps", { task: "apply" }, { idempotencyKey: "plan-1:s4" });
+
+    const handler = mocks.getEachMessage();
+    await handler({
+      topic: "plan.steps",
+      partition: 0,
+      heartbeat: async () => {},
+      pause: () => () => undefined,
+      message: makeKafkaMessage(
+        { task: "apply" },
+        { "x-attempts": "0", "x-idempotency-key": "plan-1:s4" }
+      )
+    });
+
+    expect(mocks.producerSend).toHaveBeenCalledTimes(2);
+    const deadCall = mocks.producerSend.mock.calls[1][0];
+    expect(deadCall.topic).toBe("plan.steps.dlq");
+    await customAdapter.close();
+  });
+
   it("commits offsets when JSON parsing fails", async () => {
     await adapter.consume("plan.steps", async () => {
       throw new Error("should not be called");
@@ -242,6 +292,16 @@ describe("KafkaAdapter", () => {
 
     const depth = await adapter.getQueueDepth("plan.steps");
     expect(depth).toBe(3);
+    const lagMetric = await getMetricValue(queueLagGauge, { queue: "plan.steps" });
+    expect(lagMetric).toBe(3);
+  });
+
+  it("creates topics once and reuses cached metadata", async () => {
+    await adapter.consume("plan.steps", async () => {});
+    const initialCalls = mocks.createTopics.mock.calls.length;
+    expect(initialCalls).toBeGreaterThan(0);
+    await adapter.enqueue("plan.steps", { task: "rerun" }, { idempotencyKey: "plan-1:s4" });
+    expect(mocks.createTopics.mock.calls.length).toBe(initialCalls);
   });
 });
 

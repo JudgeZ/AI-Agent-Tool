@@ -43,6 +43,19 @@ jobs:
       - name: Lint chart
         run: helm lint ${{ env.CHART_DIR }}
 
+      - name: Update chart dependencies
+        run: helm dependency update ${{ env.CHART_DIR }}
+
+      - name: Render enterprise profile
+        run: |
+          helm template enterprise ${{ env.CHART_DIR }} \
+            --set runMode=enterprise \
+            --set messaging.type=kafka \
+            --set kafka.enabled=true \
+            --set vault.enabled=true \
+            --set auth.oidc.enabled=true \
+            --set orchestrator.env.LOCAL_SECRETS_PASSPHRASE=example-pass
+
       - name: Package chart
         run: |
           mkdir -p ${{ env.CHART_PACKAGE_DIR }}

@@ -123,4 +123,25 @@ describe("PlanStateStore", () => {
     const entry = await store.getEntry("plan-approval", "s1");
     expect(entry?.approvals).toEqual({ "repo.write": true });
   });
+
+  it("purges entries that exceed the retention window", async () => {
+    const store = new PlanStateStore({ filePath: storePath, retentionMs: 100 });
+    const oldTimestamp = new Date(Date.now() - 10_000).toISOString();
+    await store.rememberStep("plan-retain", sampleStep, "trace-retain", {
+      idempotencyKey: "retain-1",
+      attempt: 0,
+      createdAt: oldTimestamp
+    });
+
+    const raw = await fs.readFile(storePath, "utf-8");
+    const document = JSON.parse(raw) as { steps: Array<{ updatedAt: string }> };
+    if (document.steps[0]) {
+      document.steps[0].updatedAt = oldTimestamp;
+    }
+    await fs.writeFile(storePath, JSON.stringify(document));
+
+    const reloaded = new PlanStateStore({ filePath: storePath, retentionMs: 100 });
+    const pending = await reloaded.listActiveSteps();
+    expect(pending).toHaveLength(0);
+  });
 });

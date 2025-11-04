@@ -39,4 +39,19 @@ describe("planner", () => {
     expect(events[0]?.step.capabilityLabel).toBe(plan.steps[0]?.capabilityLabel);
     expect(events.every(event => Boolean(event.occurredAt))).toBe(true);
   });
+
+  it("purges plan artifacts older than the retention window", () => {
+    const oldPlanDir = path.join(plansDir, "plan-old");
+    fs.mkdirSync(oldPlanDir, { recursive: true });
+    const oldPlanFile = path.join(oldPlanDir, "plan.json");
+    fs.writeFileSync(oldPlanFile, JSON.stringify({ id: "plan-old" }));
+    const oldTime = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(oldPlanDir, oldTime, oldTime);
+    fs.utimesSync(oldPlanFile, oldTime, oldTime);
+
+    const plan = createPlan("Retention test", { retentionDays: 30 });
+
+    expect(fs.existsSync(oldPlanDir)).toBe(false);
+    expect(fs.existsSync(path.join(plansDir, plan.id))).toBe(true);
+  });
 });

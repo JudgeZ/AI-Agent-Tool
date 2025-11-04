@@ -1,4 +1,8 @@
-import amqplib, { type Channel, type ChannelModel, type ConsumeMessage } from "amqplib";
+import amqplib, {
+  type Channel,
+  type ChannelModel,
+  type ConsumeMessage,
+} from "amqplib";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -6,15 +10,17 @@ import {
   queueAckCounter,
   queueDeadLetterCounter,
   queueDepthGauge,
-  queueRetryCounter
+  queueLagGauge,
+  queueRetryCounter,
 } from "../observability/metrics.js";
+import { resolveEnv } from "../utils/env.js";
 import type {
   DeadLetterOptions,
   EnqueueOptions,
   QueueAdapter,
   QueueHandler,
   QueueMessage,
-  RetryOptions
+  RetryOptions,
 } from "./QueueAdapter.js";
 
 const DEFAULT_RECONNECT_BASE_MS = 1000;
@@ -45,17 +51,22 @@ type RabbitMQAdapterOptions = {
   logger?: Logger;
 };
 
-function normaliseHeaders(headers: Record<string, unknown> | undefined): Record<string, string> {
+function normaliseHeaders(
+  headers: Record<string, unknown> | undefined,
+): Record<string, string> {
   if (!headers) {
     return {};
   }
-  return Object.entries(headers).reduce<Record<string, string>>((acc, [key, value]) => {
-    if (value === undefined || value === null) {
+  return Object.entries(headers).reduce<Record<string, string>>(
+    (acc, [key, value]) => {
+      if (value === undefined || value === null) {
+        return acc;
+      }
+      acc[key] = typeof value === "string" ? value : String(value);
       return acc;
-    }
-    acc[key] = typeof value === "string" ? value : String(value);
-    return acc;
-  }, {});
+    },
+    {},
+  );
 }
 
 export class RabbitMQAdapter implements QueueAdapter {
@@ -75,10 +86,20 @@ export class RabbitMQAdapter implements QueueAdapter {
   private readonly logger: Logger;
 
   constructor(options: RabbitMQAdapterOptions = {}) {
-    this.url = options.url ?? process.env.RABBITMQ_URL ?? "amqp://guest:guest@localhost:5672";
-    this.prefetch = options.prefetch ?? Number(process.env.RABBITMQ_PREFETCH ?? DEFAULT_PREFETCH);
-    this.retryDelayMs = options.retryDelayMs ?? Number(process.env.RABBITMQ_RETRY_DELAY_MS ?? DEFAULT_RETRY_DELAY_MS);
-    this.reconnectBaseDelayMs = options.reconnectBaseDelayMs ?? DEFAULT_RECONNECT_BASE_MS;
+    const resolvedUrl = resolveEnv(
+      "RABBITMQ_URL",
+      "amqp://guest:guest@localhost:5672",
+    );
+    this.url =
+      options.url ?? resolvedUrl ?? "amqp://guest:guest@localhost:5672";
+    this.prefetch =
+      options.prefetch ??
+      Number(process.env.RABBITMQ_PREFETCH ?? DEFAULT_PREFETCH);
+    this.retryDelayMs =
+      options.retryDelayMs ??
+      Number(process.env.RABBITMQ_RETRY_DELAY_MS ?? DEFAULT_RETRY_DELAY_MS);
+    this.reconnectBaseDelayMs =
+      options.reconnectBaseDelayMs ?? DEFAULT_RECONNECT_BASE_MS;
     this.amqp = options.amqplib ?? amqplib;
     this.logger = options.logger ?? console;
   }
@@ -111,7 +132,9 @@ export class RabbitMQAdapter implements QueueAdapter {
       try {
         await chan.close();
       } catch (error) {
-        this.logger.warn?.(`RabbitMQ channel close failed: ${(error as Error).message}`);
+        this.logger.warn?.(
+          `RabbitMQ channel close failed: ${(error as Error).message}`,
+        );
       }
     }
     const conn = this.connection;
@@ -120,12 +143,18 @@ export class RabbitMQAdapter implements QueueAdapter {
       try {
         await conn.close();
       } catch (error) {
-        this.logger.warn?.(`RabbitMQ connection close failed: ${(error as Error).message}`);
+        this.logger.warn?.(
+          `RabbitMQ connection close failed: ${(error as Error).message}`,
+        );
       }
     }
   }
 
-  async enqueue<T>(queue: string, payload: T, options?: EnqueueOptions): Promise<void> {
+  async enqueue<T>(
+    queue: string,
+    payload: T,
+    options?: EnqueueOptions,
+  ): Promise<void> {
     await this.publish(queue, payload, { ...options, attempt: 0 });
   }
 
@@ -140,7 +169,9 @@ export class RabbitMQAdapter implements QueueAdapter {
       const result = await channel.checkQueue(queue);
       return typeof result.messageCount === "number" ? result.messageCount : 0;
     } catch (error) {
-      this.logger.warn?.(`Failed to check queue depth for ${queue}: ${(error as Error).message}`);
+      this.logger.warn?.(
+        `Failed to check queue depth for ${queue}: ${(error as Error).message}`,
+      );
       return 0;
     }
   }
@@ -152,7 +183,9 @@ export class RabbitMQAdapter implements QueueAdapter {
         const connection = await this.amqp.connect(this.url);
         this.connection = connection;
         connection.on("close", () => this.handleDisconnect());
-        connection.on("error", (error: unknown) => this.handleDisconnect(error));
+        connection.on("error", (error: unknown) =>
+          this.handleDisconnect(error),
+        );
         this.channel = await connection.createChannel();
         const channel = this.channel;
         await channel.prefetch(this.prefetch);
@@ -162,8 +195,13 @@ export class RabbitMQAdapter implements QueueAdapter {
         return;
       } catch (error) {
         attempt += 1;
-        const delayMs = Math.min(this.reconnectBaseDelayMs * 2 ** (attempt - 1), MAX_RECONNECT_MS);
-        this.logger.error?.(`RabbitMQ connection attempt ${attempt} failed: ${(error as Error).message}`);
+        const delayMs = Math.min(
+          this.reconnectBaseDelayMs * 2 ** (attempt - 1),
+          MAX_RECONNECT_MS,
+        );
+        this.logger.error?.(
+          `RabbitMQ connection attempt ${attempt} failed: ${(error as Error).message}`,
+        );
         await sleep(delayMs);
       }
     }
@@ -174,7 +212,9 @@ export class RabbitMQAdapter implements QueueAdapter {
       return;
     }
     if (error) {
-      this.logger.warn?.(`RabbitMQ connection closed: ${(error as Error).message}`);
+      this.logger.warn?.(
+        `RabbitMQ connection closed: ${(error as Error).message}`,
+      );
     }
     this.connection = null;
     this.channel = null;
@@ -183,8 +223,10 @@ export class RabbitMQAdapter implements QueueAdapter {
     }
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
-      this.connect().catch(err => {
-        this.logger.error?.(`RabbitMQ reconnect failed: ${(err as Error).message}`);
+      this.connect().catch((err) => {
+        this.logger.error?.(
+          `RabbitMQ reconnect failed: ${(err as Error).message}`,
+        );
       });
     }, this.retryDelayMs);
     this.reconnectTimer.unref?.();
@@ -200,17 +242,24 @@ export class RabbitMQAdapter implements QueueAdapter {
     return this.channel;
   }
 
-  private async setupConsumer<T>(queue: string, handler: QueueHandler<T>): Promise<void> {
+  private async setupConsumer<T>(
+    queue: string,
+    handler: QueueHandler<T>,
+  ): Promise<void> {
     const channel = await this.ensureChannel();
     await channel.assertQueue(queue, { durable: true });
     await channel.consume(
       queue,
       (msg: ConsumeMessage | null) => this.handleMessage(queue, handler, msg),
-      { noAck: false }
+      { noAck: false },
     );
   }
 
-  private async handleMessage<T>(queue: string, handler: QueueHandler<T>, msg: ConsumeMessage | null): Promise<void> {
+  private async handleMessage<T>(
+    queue: string,
+    handler: QueueHandler<T>,
+    msg: ConsumeMessage | null,
+  ): Promise<void> {
     if (!msg) {
       return;
     }
@@ -222,7 +271,7 @@ export class RabbitMQAdapter implements QueueAdapter {
       payload = JSON.parse(msg.content.toString()) as T;
     } catch (error) {
       this.logger.error?.(
-        `Failed to parse message from ${queue}: ${(error as Error).message}`
+        `Failed to parse message from ${queue}: ${(error as Error).message}`,
       );
       channel.ack(msg);
       if (idempotencyKey) {
@@ -251,20 +300,23 @@ export class RabbitMQAdapter implements QueueAdapter {
         queueRetryCounter.labels(queue).inc();
         try {
           const nextAttempt = attempts + 1;
-          const nextPayload = this.preparePayloadForAttempt(payload, nextAttempt);
+          const nextPayload = this.preparePayloadForAttempt(
+            payload,
+            nextAttempt,
+          );
           await this.publish(queue, nextPayload, {
             idempotencyKey,
             headers,
             attempt: nextAttempt,
             skipDedupe: true,
-            delayMs: options?.delayMs ?? this.retryDelayMs
+            delayMs: options?.delayMs ?? this.retryDelayMs,
           });
           channel.ack(msg);
           queueAckCounter.labels(queue).inc();
           await this.refreshDepth(queue);
         } catch (error) {
           this.logger.error?.(
-            `Failed to republish message for retry on ${queue}: ${(error as Error).message}`
+            `Failed to republish message for retry on ${queue}: ${(error as Error).message}`,
           );
           channel.nack(msg, false, true);
         }
@@ -276,7 +328,7 @@ export class RabbitMQAdapter implements QueueAdapter {
           const deadPayload = this.preparePayloadForAttempt(payload, attempts);
           await this.publish(targetQueue, deadPayload, {
             headers: { ...headers, "x-dead-letter-reason": reason },
-            skipDedupe: true
+            skipDedupe: true,
           });
           channel.ack(msg);
           queueAckCounter.labels(queue).inc();
@@ -287,26 +339,46 @@ export class RabbitMQAdapter implements QueueAdapter {
           await this.refreshDepth(queue);
         } catch (error) {
           this.logger.error?.(
-            `Failed to dead-letter message from ${queue} to ${targetQueue}: ${(error as Error).message}`
+            `Failed to dead-letter message from ${queue} to ${targetQueue}: ${(error as Error).message}`,
           );
           channel.nack(msg, false, true);
         }
-      }
+      },
     };
 
     try {
       await handler(queueMessage);
     } catch (error) {
-      this.logger.error?.(`Queue handler for ${queue} failed: ${(error as Error).message}`);
-      await queueMessage.retry();
+      this.logger.error?.(
+        `Queue handler for ${queue} failed: ${(error as Error).message}`,
+      );
+      const maxAttemptsEnv = process.env.QUEUE_MAX_ATTEMPTS;
+      const maxAttempts = Number.isFinite(Number(maxAttemptsEnv))
+        ? Number(maxAttemptsEnv)
+        : 3;
+      if (attempts + 1 >= maxAttempts) {
+        await queueMessage.deadLetter({ reason: "max_attempts_exceeded" });
+      } else {
+        await queueMessage.retry();
+      }
     }
   }
 
-  private async publish<T>(queue: string, payload: T, options: PublishOptions = {}): Promise<void> {
+  private async publish<T>(
+    queue: string,
+    payload: T,
+    options: PublishOptions = {},
+  ): Promise<void> {
     const channel = await this.ensureChannel();
     await channel.assertQueue(queue, { durable: true });
 
-    const { skipDedupe, attempt, delayMs, idempotencyKey, headers: headerOverrides } = options;
+    const {
+      skipDedupe,
+      attempt,
+      delayMs,
+      idempotencyKey,
+      headers: headerOverrides,
+    } = options;
 
     if (delayMs && delayMs > 0) {
       await sleep(delayMs);
@@ -314,7 +386,7 @@ export class RabbitMQAdapter implements QueueAdapter {
 
     const headers: Record<string, string> = {
       ...headerOverrides,
-      "x-attempts": String(attempt ?? 0)
+      "x-attempts": String(attempt ?? 0),
     };
     let keyAdded = false;
     if (idempotencyKey) {
@@ -328,13 +400,16 @@ export class RabbitMQAdapter implements QueueAdapter {
 
     const messageId = idempotencyKey ?? randomUUID();
     const resolvedAttempt = attempt ?? 0;
-    const messagePayload = this.preparePayloadForAttempt(payload, resolvedAttempt);
+    const messagePayload = this.preparePayloadForAttempt(
+      payload,
+      resolvedAttempt,
+    );
     const content = Buffer.from(JSON.stringify(messagePayload));
     try {
       channel.sendToQueue(queue, content, {
         persistent: true,
         messageId,
-        headers
+        headers,
       });
     } catch (error) {
       if (idempotencyKey && keyAdded) {
@@ -359,8 +434,8 @@ export class RabbitMQAdapter implements QueueAdapter {
           ...maybeRecord,
           job: {
             ...(job as Record<string, unknown>),
-            attempt
-          }
+            attempt,
+          },
         } as T;
       }
     }
@@ -371,8 +446,12 @@ export class RabbitMQAdapter implements QueueAdapter {
     try {
       const depth = await this.getQueueDepth(queue);
       queueDepthGauge.labels(queue).set(depth);
+      queueLagGauge.labels(queue).set(depth);
     } catch (error) {
-      this.logger.warn?.(`Failed to refresh depth for ${queue}: ${(error as Error).message}`);
+      this.logger.warn?.(
+        `Failed to refresh depth for ${queue}: ${(error as Error).message}`,
+      );
+      queueLagGauge.labels(queue).set(0);
     }
   }
 }

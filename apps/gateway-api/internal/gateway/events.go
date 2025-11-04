@@ -5,8 +5,12 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
+	"os"
+	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -17,15 +21,65 @@ const (
 	heartbeatPayload         = ": ping\n\n"
 )
 
+var planIDPattern = regexp.MustCompile(`^plan-[0-9a-f]{8}$`)
+
+type connectionLimiter struct {
+	mu     sync.Mutex
+	limit  int
+	counts map[string]int
+}
+
+func newConnectionLimiter(limit int) *connectionLimiter {
+	if limit <= 0 {
+		return nil
+	}
+	return &connectionLimiter{
+		limit:  limit,
+		counts: make(map[string]int),
+	}
+}
+
+func (l *connectionLimiter) Acquire(key string) bool {
+	if l == nil {
+		return true
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	current := l.counts[key]
+	if current >= l.limit {
+		return false
+	}
+	l.counts[key] = current + 1
+	return true
+}
+
+func (l *connectionLimiter) Release(key string) {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	current, ok := l.counts[key]
+	if !ok {
+		return
+	}
+	if current <= 1 {
+		delete(l.counts, key)
+		return
+	}
+	l.counts[key] = current - 1
+}
+
 // EventsHandler proxies Server-Sent Events streams from the orchestrator.
 type EventsHandler struct {
 	client            *http.Client
 	orchestratorURL   string
 	heartbeatInterval time.Duration
+	limiter           *connectionLimiter
 }
 
 // NewEventsHandler constructs an SSE proxy handler that forwards requests to the orchestrator.
-func NewEventsHandler(client *http.Client, orchestratorURL string, heartbeat time.Duration) *EventsHandler {
+func NewEventsHandler(client *http.Client, orchestratorURL string, heartbeat time.Duration, limiter *connectionLimiter) *EventsHandler {
 	if client == nil {
 		client = &http.Client{}
 	}
@@ -37,6 +91,7 @@ func NewEventsHandler(client *http.Client, orchestratorURL string, heartbeat tim
 		client:            client,
 		orchestratorURL:   orchestratorURL,
 		heartbeatInterval: heartbeat,
+		limiter:           limiter,
 	}
 }
 
@@ -47,16 +102,31 @@ func RegisterEventRoutes(mux *http.ServeMux) {
 	if err != nil {
 		panic(fmt.Sprintf("failed to configure orchestrator client: %v", err))
 	}
-	handler := NewEventsHandler(client, orchestratorURL, 0)
+	maxConnections := getIntEnv("GATEWAY_SSE_MAX_CONNECTIONS_PER_IP", 4)
+	handler := NewEventsHandler(client, orchestratorURL, 0, newConnectionLimiter(maxConnections))
 	mux.Handle("/events", handler)
 }
 
 // ServeHTTP implements http.Handler for the EventsHandler.
 func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	planID := r.URL.Query().Get("plan_id")
+	planID = strings.TrimSpace(planID)
 	if planID == "" {
 		http.Error(w, "plan_id is required", http.StatusBadRequest)
 		return
+	}
+	if !planIDPattern.MatchString(planID) {
+		http.Error(w, "plan_id is invalid", http.StatusBadRequest)
+		return
+	}
+
+	clientIP := clientIPFromRequest(r)
+	if h.limiter != nil {
+		if !h.limiter.Acquire(clientIP) {
+			http.Error(w, "too many concurrent event streams", http.StatusTooManyRequests)
+			return
+		}
+		defer h.limiter.Release(clientIP)
 	}
 
 	upstreamURL := fmt.Sprintf("%s/plan/%s/events", h.orchestratorURL, url.PathEscape(planID))
@@ -154,4 +224,34 @@ func (fw *flushingWriter) Write(p []byte) (int, error) {
 		fw.flusher.Flush()
 	}
 	return n, err
+}
+
+func clientIPFromRequest(r *http.Request) string {
+	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+		parts := strings.Split(forwarded, ",")
+		candidate := strings.TrimSpace(parts[0])
+		if candidate != "" {
+			return candidate
+		}
+	}
+	host, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err == nil && host != "" {
+		return host
+	}
+	return r.RemoteAddr
+}
+
+func getIntEnv(key string, fallback int) int {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		return fallback
+	}
+	value, err := strconv.Atoi(raw)
+	if err != nil {
+		return fallback
+	}
+	if value < 0 {
+		return 0
+	}
+	return value
 }

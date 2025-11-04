@@ -6,7 +6,10 @@ import { publishPlanStepEvent } from "./events.js";
 import { startSpan } from "../observability/tracing.js";
 import { parsePlan, PlanStepSchema, type Plan, type PlanStep } from "./validation.js";
 
-export type { Plan, PlanStep } from "./validation.js";
+export type { Plan, PlanStep, PlanSubject } from "./validation.js";
+
+const DEFAULT_PLAN_ARTIFACT_RETENTION_DAYS = 30;
+const MILLIS_PER_DAY = 24 * 60 * 60 * 1000;
 
 const DEFAULT_CAPABILITY_LABELS: Record<string, string> = {
   "repo.read": "Read repository",
@@ -74,7 +77,39 @@ function buildSteps(goal: string): PlanStep[] {
   ].map(step => PlanStepSchema.parse(step));
 }
 
-export function createPlan(goal: string): Plan {
+function cleanupPlanArtifacts(baseDir: string, retentionDays: number): void {
+  if (retentionDays <= 0) {
+    return;
+  }
+  const retentionMs = retentionDays * MILLIS_PER_DAY;
+  try {
+    const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+    const cutoff = Date.now() - retentionMs;
+    for (const entry of entries) {
+      if (!entry.isDirectory()) {
+        continue;
+      }
+      const target = path.join(baseDir, entry.name);
+      let stats: fs.Stats;
+      try {
+        stats = fs.statSync(target);
+      } catch {
+        continue;
+      }
+      const lastModified = stats.mtimeMs ?? stats.ctimeMs ?? 0;
+      if (lastModified <= cutoff) {
+        fs.rmSync(target, { recursive: true, force: true });
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+}
+
+export function createPlan(goal: string, options?: { retentionDays?: number }): Plan {
   const span = startSpan("planner.createPlan", { goal });
   try {
     const id = "plan-" + crypto.randomBytes(4).toString("hex");
@@ -88,7 +123,8 @@ export function createPlan(goal: string): Plan {
       successCriteria: ["All tests pass", "CI green", "Docs updated"]
     });
 
-    const dir = path.join(process.cwd(), ".plans", id);
+    const plansRoot = path.join(process.cwd(), ".plans");
+    const dir = path.join(plansRoot, id);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "plan.json"), JSON.stringify(plan, null, 2));
     fs.writeFileSync(
@@ -102,6 +138,11 @@ export function createPlan(goal: string): Plan {
           )
           .join("\n")
     );
+
+    const retentionDays = options?.retentionDays ?? DEFAULT_PLAN_ARTIFACT_RETENTION_DAYS;
+    if (retentionDays > 0) {
+      cleanupPlanArtifacts(plansRoot, retentionDays);
+    }
 
     for (const step of steps) {
       const state = step.approvalRequired ? "waiting_approval" : "queued";

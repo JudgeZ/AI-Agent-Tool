@@ -44,8 +44,24 @@ export function createQueueAdapterFromConfig(): QueueAdapter {
   switch (config.messaging.type) {
     case "rabbitmq":
       return new RabbitMQAdapter();
-    case "kafka":
-      return new KafkaAdapter();
+    case "kafka": {
+      const kafkaCfg = config.messaging.kafka;
+      return new KafkaAdapter({
+        brokers: kafkaCfg.brokers,
+        clientId: kafkaCfg.clientId,
+        groupId: kafkaCfg.consumerGroup,
+        fromBeginning: kafkaCfg.consumeFromBeginning,
+        retryDelayMs: kafkaCfg.retryDelayMs,
+        tls: kafkaCfg.tls,
+        sasl: kafkaCfg.sasl,
+        deadLetterSuffix: kafkaCfg.topics.deadLetterSuffix,
+        ensureTopics: kafkaCfg.ensureTopics,
+        numPartitions: kafkaCfg.topicPartitions,
+        replicationFactor: kafkaCfg.replicationFactor,
+        topicConfig: kafkaCfg.topicConfig,
+        compactTopicPatterns: kafkaCfg.compactTopics
+      });
+    }
     default:
       throw new Error(`Unsupported messaging type: ${config.messaging.type}`);
   }

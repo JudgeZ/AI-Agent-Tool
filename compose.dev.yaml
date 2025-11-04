@@ -9,6 +9,7 @@ services:
       ORCHESTRATOR_URL: http://orchestrator:4000
       INDEXER_URL: http://indexer:7070
       PORT: "8080"
+      GATEWAY_SSE_MAX_CONNECTIONS_PER_IP: "4"
     ports:
       - "8080:8080"
     depends_on:
@@ -33,6 +34,8 @@ services:
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
       LOCAL_SECRETS_PASSPHRASE: ${LOCAL_SECRETS_PASSPHRASE:-dev-local-passphrase}
       LOCAL_SECRETS_PATH: ${LOCAL_SECRETS_PATH:-/app/config/secrets/local/secrets.json}
+      SSE_MAX_CONNECTIONS_PER_IP: "4"
+      SSE_MAX_CONNECTIONS_PER_SUBJECT: "2"
     ports:
       - "4000:4000"
     depends_on:

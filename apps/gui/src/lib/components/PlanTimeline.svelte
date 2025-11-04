@@ -25,21 +25,34 @@
     if (!Array.isArray(candidates)) {
       return [];
     }
-    return candidates
-      .map((entry) => {
-        if (!entry || typeof entry !== 'object') return null;
-        const url =
-          typeof (entry as { url?: unknown }).url === 'string'
-            ? (entry as { url: string }).url
-            : typeof (entry as { host?: unknown }).host === 'string'
-            ? (entry as { host: string }).host
-            : undefined;
-        if (!url) return null;
-        const method = typeof (entry as { method?: unknown }).method === 'string' ? (entry as { method: string }).method : undefined;
-        const reason = typeof (entry as { reason?: unknown }).reason === 'string' ? (entry as { reason: string }).reason : undefined;
-        return { target: url, method, reason } satisfies EgressDescriptor;
-      })
-      .filter((value): value is EgressDescriptor => value !== null);
+    const results: EgressDescriptor[] = [];
+    for (const entry of candidates) {
+      if (!entry || typeof entry !== 'object') continue;
+      const url =
+        typeof (entry as { url?: unknown }).url === 'string'
+          ? (entry as { url: string }).url
+          : typeof (entry as { host?: unknown }).host === 'string'
+          ? (entry as { host: string }).host
+          : undefined;
+      if (!url) continue;
+      const method =
+        typeof (entry as { method?: unknown }).method === 'string'
+          ? (entry as { method: string }).method
+          : undefined;
+      const reason =
+        typeof (entry as { reason?: unknown }).reason === 'string'
+          ? (entry as { reason: string }).reason
+          : undefined;
+      const descriptor: EgressDescriptor = { target: url };
+      if (method) {
+        descriptor.method = method;
+      }
+      if (reason) {
+        descriptor.reason = reason;
+      }
+      results.push(descriptor);
+    }
+    return results;
   };
 
   const submitDecision = async (decision: 'approve' | 'reject', rationale?: string) => {

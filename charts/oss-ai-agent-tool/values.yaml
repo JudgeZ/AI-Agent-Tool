@@ -7,6 +7,69 @@ runMode: consumer
 
 messaging:
   type: rabbitmq
+  kafka:
+    brokers: []
+    clientId: oss-orchestrator
+    consumerGroup: orchestrator-plan-runtime
+    consumeFromBeginning: false
+    retryDelayMs: 1000
+    topics:
+      planSteps: plan.steps
+      planCompletions: plan.completions
+      planEvents: plan.events
+      planState: plan.state
+      deadLetterSuffix: ".dead"
+    tls:
+      enabled: false
+      secretName: ""
+      mountPath: /etc/kafka/tls
+      caFile: ca.crt
+      certFile: tls.crt
+      keyFile: tls.key
+      caPaths: []
+      certPath: ""
+      keyPath: ""
+      rejectUnauthorized: true
+    sasl:
+      mechanism: ""
+      username: ""
+      password: ""
+      passwordSecretName: ""
+      passwordSecretKey: password
+    ensureTopics: true
+    topicPartitions: 3
+    replicationFactor: 3
+    topicDefaultConfig: ""
+    compactTopics: []
+
+vault:
+  enabled: false
+  address: https://vault.default.svc:8200
+  authMethod: kubernetes
+  role: oss-ai-orchestrator
+  namespace: ""
+  tokenSecretName: ""
+  tokenSecretKey: token
+  serviceAccountName: ""
+  kubernetes:
+    jwtPath: /var/run/secrets/kubernetes.io/serviceaccount/token
+
+auth:
+  oidc:
+    enabled: false
+    issuer: ""
+    redirectBaseUrl: ""
+    clientId: ""
+    clientSecretSecretName: ""
+    clientSecretKey: client-secret
+    tenantClaim: ""
+    audience: ""
+    scopes:
+      - openid
+      - profile
+      - email
+    extraScopes: []
+    logoutUrl: ""
 
 podSecurityContext:
   runAsNonRoot: true
@@ -58,6 +121,8 @@ gatewayApi:
     type: ClusterIP
     port: 80
   env: {}
+  sse:
+    maxConnectionsPerIP: 4
   tls:
     enabled: false
     secretName: ""
@@ -78,6 +143,9 @@ orchestrator:
   env:
     LOCAL_SECRETS_PATH: /app/config/secrets/local/secrets.json
     LOCAL_SECRETS_PASSPHRASE: change-me
+  sseQuotas:
+    maxConnectionsPerIP: 4
+    maxConnectionsPerSubject: 2
   tls:
     enabled: false
     secretName: ""
@@ -91,7 +159,7 @@ orchestrator:
     min: 2
     max: 10
     targetQueueDepth: 5
-    metricName: queue_depth
+    metricName: orchestrator_queue_depth
   resources:
     requests: { cpu: "200m", memory: "256Mi" }
     limits: { cpu: "1", memory: "512Mi" }
@@ -123,7 +191,7 @@ postgres:
   image: postgres:15-alpine
   database: ossaat
   username: ossaat
-  password: ossaat
+  password: ""
   persistence:
     size: 8Gi
     storageClass: ""
@@ -132,8 +200,8 @@ postgres:
 rabbitmq:
   enabled: true
   image: rabbitmq:3.13-management
-  username: guest
-  password: guest
+  username: ""
+  password: ""
   host: ""
   port: 5672
   scheme: amqp
@@ -164,8 +232,9 @@ langfuse:
   replicas: 1
   image: langfuse/langfuse:2.14.1
   publicUrl: http://localhost:3000
-  nextAuthSecret: changeme
-  salt: changeme
+  databaseUrl: ""
+  nextAuthSecret: ""
+  salt: ""
   telemetryEnabled: "false"
   resources: {}
 

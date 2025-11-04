@@ -33,6 +33,36 @@ subject_capabilities[cap] {
   cap := capabilities[_]
 }
 
+subject_roles[role] {
+  roles := object.get(input.subject, "roles", [])
+  role := roles[_]
+}
+
+role_capabilities[cap] {
+  role := subject_roles[_]
+  bindings := object.get(object.get(data, "capabilities", {}), "role_bindings", {})
+  caps := object.get(bindings, role, [])
+  cap := caps[_]
+}
+
+tenant_role_capabilities[cap] {
+  tenant := object.get(input.subject, "tenant_id", "")
+  tenant != ""
+  role := subject_roles[_]
+  tenants := object.get(object.get(data, "capabilities", {}), "tenant_role_bindings", {})
+  tenant_bindings := object.get(tenants, tenant, {})
+  caps := object.get(tenant_bindings, role, [])
+  cap := caps[_]
+}
+
+effective_capabilities[cap] {
+  subject_capabilities[cap]
+} else {
+  role_capabilities[cap]
+} else {
+  tenant_role_capabilities[cap]
+}
+
 action_capabilities[cap] {
   capabilities := object.get(input.action, "capabilities", [])
   cap := capabilities[_]
@@ -45,7 +75,7 @@ subject_approvals[cap] {
 
 missing_capability[cap] {
   action_capabilities[cap]
-  not subject_capabilities[cap]
+  not effective_capabilities[cap]
 }
 
 missing_approval[cap] {
