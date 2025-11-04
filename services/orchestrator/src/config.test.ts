@@ -595,6 +595,21 @@ server:
     expect(() => loadConfig()).toThrow("server.rateLimits.auth maxRequests must be a positive number");
   });
 
+  it("throws when OIDC is enabled without a client secret", () => {
+    const configPath = createTempConfigFile(`
+auth:
+  oidc:
+    enabled: true
+    issuer: https://issuer.example.com
+    clientId: example-client
+`);
+    process.env.APP_CONFIG = configPath;
+
+    expect(() => loadConfig()).toThrow(
+      "OIDC client secret must be configured when OIDC authentication is enabled",
+    );
+  });
+
   it("accepts minimal positive rate limit values", () => {
     const configPath = createTempConfigFile(`
 providers:
@@ -637,6 +652,7 @@ server:
     process.env.OIDC_ENABLED = "true";
     process.env.OIDC_ISSUER_URL = "https://roles-issuer.example.com";
     process.env.OIDC_CLIENT_ID = "roles-client";
+    process.env.OIDC_CLIENT_SECRET = "roles-secret";
     process.env.OIDC_ROLE_CLAIM = "groups";
     process.env.OIDC_DEFAULT_ROLES = "viewer,editor";
     process.env.OIDC_ROLE_MAPPINGS = JSON.stringify({
@@ -684,6 +700,7 @@ server:
     delete process.env.OIDC_ENABLED;
     delete process.env.OIDC_ISSUER_URL;
     delete process.env.OIDC_CLIENT_ID;
+    delete process.env.OIDC_CLIENT_SECRET;
     delete process.env.RETENTION_PLAN_STATE_DAYS;
     delete process.env.RETENTION_PLAN_ARTIFACT_DAYS;
     delete process.env.CONTENT_CAPTURE_ENABLED;

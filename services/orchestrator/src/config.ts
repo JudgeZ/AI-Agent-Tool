@@ -1596,6 +1596,9 @@ export function loadConfig(): AppConfig {
     if (!resolvedOidcClientId) {
       throw new Error("OIDC client ID must be configured when OIDC authentication is enabled");
     }
+    if (!resolvedOidcClientSecret) {
+      throw new Error("OIDC client secret must be configured when OIDC authentication is enabled");
+    }
   }
 
   const retentionPlanStateDays = normalizeRetentionDays(
