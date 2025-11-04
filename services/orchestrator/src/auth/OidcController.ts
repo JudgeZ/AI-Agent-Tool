@@ -81,12 +81,16 @@ function determineSecureCookieFlag(tlsEnabled: boolean): boolean {
 }
 
 function computeCookieOptions(maxAgeSeconds: number, secure: boolean) {
+  const normalizedSeconds = Number.isFinite(maxAgeSeconds)
+    ? Math.max(0, Math.floor(maxAgeSeconds))
+    : 0;
+  const maxAgeMs = normalizedSeconds * 1000;
   return {
     httpOnly: true,
     secure,
     sameSite: "lax" as const,
     path: "/",
-    maxAge: maxAgeSeconds,
+    maxAge: maxAgeMs,
   };
 }
 

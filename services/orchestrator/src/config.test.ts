@@ -201,6 +201,9 @@ server:
     chat:
       windowMs: 30000
       maxRequests: 200
+    auth:
+      windowMs: 45000
+      maxRequests: 50
   sseQuotas:
     perIp: 3
     perSubject: 1
@@ -287,6 +290,7 @@ observability:
     expect(config.server.sseKeepAliveMs).toBe(10000);
     expect(config.server.rateLimits.plan).toEqual({ windowMs: 120000, maxRequests: 20 });
     expect(config.server.rateLimits.chat).toEqual({ windowMs: 30000, maxRequests: 200 });
+    expect(config.server.rateLimits.auth).toEqual({ windowMs: 45000, maxRequests: 50 });
     expect(config.server.sseQuotas).toEqual({ perIp: 3, perSubject: 1 });
     expect(config.server.tls).toEqual({
       enabled: true,
@@ -352,6 +356,9 @@ observability:
       mappings: {},
       tenantMappings: {}
     });
+    expect(config.server.rateLimits.plan).toEqual({ windowMs: 60000, maxRequests: 60 });
+    expect(config.server.rateLimits.chat).toEqual({ windowMs: 60000, maxRequests: 600 });
+    expect(config.server.rateLimits.auth).toEqual({ windowMs: 60000, maxRequests: 120 });
     expect(config.server.sseQuotas).toEqual({ perIp: 7, perSubject: 4 });
     expect(config.retention).toEqual({
       planStateDays: 30,
@@ -499,6 +506,7 @@ secrets:
     expect(config.providers.circuitBreaker).toEqual({ failureThreshold: 5, resetTimeoutMs: 30000 });
     expect(config.server.rateLimits.plan).toEqual({ windowMs: 60000, maxRequests: 60 });
     expect(config.server.rateLimits.chat).toEqual({ windowMs: 60000, maxRequests: 600 });
+    expect(config.server.rateLimits.auth).toEqual({ windowMs: 60000, maxRequests: 120 });
     expect(config.observability.tracing).toEqual({
       enabled: false,
       serviceName: "oss-ai-orchestrator",
@@ -568,6 +576,25 @@ server:
     expect(() => loadConfig()).toThrow("server.rateLimits.plan windowMs must be a positive number");
   });
 
+  it("throws when the auth rate limit max requests are non-positive", () => {
+    const configPath = createTempConfigFile(`
+server:
+  rateLimits:
+    plan:
+      windowMs: 1000
+      maxRequests: 10
+    chat:
+      windowMs: 1000
+      maxRequests: 10
+    auth:
+      windowMs: 1000
+      maxRequests: 0
+`);
+    process.env.APP_CONFIG = configPath;
+
+    expect(() => loadConfig()).toThrow("server.rateLimits.auth maxRequests must be a positive number");
+  });
+
   it("accepts minimal positive rate limit values", () => {
     const configPath = createTempConfigFile(`
 providers:
@@ -582,6 +609,9 @@ server:
     chat:
       windowMs: 1
       maxRequests: 1
+    auth:
+      windowMs: 1
+      maxRequests: 1
 `);
     process.env.APP_CONFIG = configPath;
 
@@ -590,6 +620,7 @@ server:
     expect(config.providers.rateLimit).toEqual({ windowMs: 1, maxRequests: 1 });
     expect(config.server.rateLimits.plan).toEqual({ windowMs: 1, maxRequests: 1 });
     expect(config.server.rateLimits.chat).toEqual({ windowMs: 1, maxRequests: 1 });
+    expect(config.server.rateLimits.auth).toEqual({ windowMs: 1, maxRequests: 1 });
   });
 
   it("defaults to vault secrets in enterprise mode when unspecified", () => {

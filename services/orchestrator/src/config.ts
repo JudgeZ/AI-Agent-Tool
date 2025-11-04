@@ -133,6 +133,7 @@ export type AppConfig = {
     rateLimits: {
       plan: RateLimitConfig;
       chat: RateLimitConfig;
+      auth: RateLimitConfig;
     };
     sseQuotas: SseQuotaConfig;
     tls: TlsConfig;
@@ -325,6 +326,10 @@ const DEFAULT_CONFIG: AppConfig = {
       chat: {
         windowMs: 60_000,
         maxRequests: 600
+      },
+      auth: {
+        windowMs: 60_000,
+        maxRequests: 120
       }
     },
     sseQuotas: {
@@ -390,6 +395,7 @@ type PartialMessagingConfig = {
 type PartialServerRateLimitsConfig = {
   plan?: PartialRateLimitConfig;
   chat?: PartialRateLimitConfig;
+  auth?: PartialRateLimitConfig;
 };
 
 type PartialServerConfig = {
@@ -1256,7 +1262,8 @@ export function loadConfig(): AppConfig {
                 rateLimits: serverRateLimits
                   ? {
                       plan: parseRateLimitConfig(serverRateLimits.plan),
-                      chat: parseRateLimitConfig(serverRateLimits.chat)
+                      chat: parseRateLimitConfig(serverRateLimits.chat),
+                      auth: parseRateLimitConfig(serverRateLimits.auth)
                     }
                   : undefined,
                 tls: parseTlsConfig(server.tls),
@@ -1475,6 +1482,14 @@ export function loadConfig(): AppConfig {
     "server.rateLimits.chat"
   );
 
+  const serverAuthRateLimit = ensurePositiveRateLimit(
+    {
+      windowMs: fileCfg.server?.rateLimits?.auth?.windowMs ?? DEFAULT_CONFIG.server.rateLimits.auth.windowMs,
+      maxRequests: fileCfg.server?.rateLimits?.auth?.maxRequests ?? DEFAULT_CONFIG.server.rateLimits.auth.maxRequests,
+    },
+    "server.rateLimits.auth",
+  );
+
   const serverSseQuotaConfig: SseQuotaConfig = {
     perIp: sanitizeQuotaValue(
       envSseMaxConnectionsPerIp ??
@@ -1662,7 +1677,8 @@ export function loadConfig(): AppConfig {
         envSseKeepAlive ?? fileCfg.server?.sseKeepAliveMs ?? DEFAULT_CONFIG.server.sseKeepAliveMs,
       rateLimits: {
         plan: serverPlanRateLimit,
-        chat: serverChatRateLimit
+        chat: serverChatRateLimit,
+        auth: serverAuthRateLimit
       },
       sseQuotas: serverSseQuotaConfig,
       tls: {

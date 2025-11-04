@@ -319,6 +319,13 @@ export function createServer(appConfig?: AppConfig): Express {
     legacyHeaders: false,
     keyGenerator: (req: Request) => buildRateLimitKey(createRequestIdentity(req, config)),
   });
+  const authLimiter = rateLimit({
+    windowMs: config.server.rateLimits.auth.windowMs,
+    limit: config.server.rateLimits.auth.maxRequests,
+    standardHeaders: true,
+    legacyHeaders: false,
+    keyGenerator: (req: Request) => buildRateLimitKey(createRequestIdentity(req, config)),
+  });
 
   app.get("/healthz", (_req: Request, res: Response) => {
     res.status(200).json({ status: "ok" });
@@ -337,6 +344,8 @@ export function createServer(appConfig?: AppConfig): Express {
       }
     },
   );
+
+  app.use("/auth", authLimiter);
 
   app.get("/auth/oidc/config", getOidcConfiguration);
   app.post("/auth/oidc/callback", handleOidcCallback);

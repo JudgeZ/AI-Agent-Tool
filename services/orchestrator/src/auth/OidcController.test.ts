@@ -1,4 +1,5 @@
 import express from "express";
+import rateLimit from "express-rate-limit";
 import request from "supertest";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -57,7 +58,8 @@ vi.mock("../config.js", () => {
         sseKeepAliveMs: 25000,
         rateLimits: {
           plan: { windowMs: 60000, maxRequests: 60 },
-          chat: { windowMs: 60000, maxRequests: 600 }
+          chat: { windowMs: 60000, maxRequests: 600 },
+          auth: { windowMs: 60000, maxRequests: 120 }
         },
         tls: {
           enabled: false,
@@ -84,6 +86,13 @@ vi.mock("../config.js", () => {
 function createApp() {
   const app = express();
   app.use(express.json());
+  const authLimiter = rateLimit({
+    windowMs: 60000,
+    limit: 120,
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+  app.use("/auth", authLimiter);
   app.get("/auth/oidc/config", getOidcConfiguration);
   app.post("/auth/oidc/callback", handleOidcCallback);
   app.get("/auth/session", getSessionHandler);
