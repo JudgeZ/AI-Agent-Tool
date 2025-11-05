@@ -76,10 +76,11 @@ type EventsHandler struct {
 	orchestratorURL   string
 	heartbeatInterval time.Duration
 	limiter           *connectionLimiter
+	trustedProxies    []*net.IPNet
 }
 
 // NewEventsHandler constructs an SSE proxy handler that forwards requests to the orchestrator.
-func NewEventsHandler(client *http.Client, orchestratorURL string, heartbeat time.Duration, limiter *connectionLimiter) *EventsHandler {
+func NewEventsHandler(client *http.Client, orchestratorURL string, heartbeat time.Duration, limiter *connectionLimiter, trustedProxies []*net.IPNet) *EventsHandler {
 	if client == nil {
 		client = &http.Client{}
 	}
@@ -92,6 +93,7 @@ func NewEventsHandler(client *http.Client, orchestratorURL string, heartbeat tim
 		orchestratorURL:   orchestratorURL,
 		heartbeatInterval: heartbeat,
 		limiter:           limiter,
+		trustedProxies:    trustedProxies,
 	}
 }
 
@@ -103,7 +105,12 @@ func RegisterEventRoutes(mux *http.ServeMux) {
 		panic(fmt.Sprintf("failed to configure orchestrator client: %v", err))
 	}
 	maxConnections := getIntEnv("GATEWAY_SSE_MAX_CONNECTIONS_PER_IP", 4)
-	handler := NewEventsHandler(client, orchestratorURL, 0, newConnectionLimiter(maxConnections))
+	trustedProxyCIDRs := strings.TrimSpace(os.Getenv("GATEWAY_TRUSTED_PROXY_CIDRS"))
+	trustedProxies, err := parseTrustedProxyCIDRs(trustedProxyCIDRs)
+	if err != nil {
+		panic(fmt.Sprintf("invalid GATEWAY_TRUSTED_PROXY_CIDRS: %v", err))
+	}
+	handler := NewEventsHandler(client, orchestratorURL, 0, newConnectionLimiter(maxConnections), trustedProxies)
 	mux.Handle("/events", handler)
 }
 
@@ -120,7 +127,7 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientIP := clientIPFromRequest(r)
+	clientIP := clientIPFromRequest(r, h.trustedProxies)
 	if h.limiter != nil {
 		if !h.limiter.Acquire(clientIP) {
 			http.Error(w, "too many concurrent event streams", http.StatusTooManyRequests)
@@ -226,19 +233,94 @@ func (fw *flushingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func clientIPFromRequest(r *http.Request) string {
-	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-		parts := strings.Split(forwarded, ",")
-		candidate := strings.TrimSpace(parts[0])
-		if candidate != "" {
-			return candidate
+func clientIPFromRequest(r *http.Request, trustedProxies []*net.IPNet) string {
+	remoteAddr := strings.TrimSpace(r.RemoteAddr)
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	remoteIP := net.ParseIP(host)
+	if remoteIP != nil && isTrustedProxy(remoteIP, trustedProxies) {
+		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
+			parts := strings.Split(forwarded, ",")
+			var lastValid net.IP
+			for i := len(parts) - 1; i >= 0; i-- {
+				candidate := strings.TrimSpace(parts[i])
+				if candidate == "" {
+					continue
+				}
+				ip := net.ParseIP(candidate)
+				if ip == nil {
+					continue
+				}
+				lastValid = ip
+				if !isTrustedProxy(ip, trustedProxies) {
+					return ip.String()
+				}
+			}
+			if lastValid != nil {
+				return lastValid.String()
+			}
+		}
+		if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
+			if ip := net.ParseIP(realIP); ip != nil {
+				if !isTrustedProxy(ip, trustedProxies) {
+					return ip.String()
+				}
+				return ip.String()
+			}
 		}
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil && host != "" {
-		return host
+	if remoteIP != nil {
+		return remoteIP.String()
 	}
-	return r.RemoteAddr
+	return host
+}
+
+func isTrustedProxy(ip net.IP, trusted []*net.IPNet) bool {
+	if ip == nil {
+		return false
+	}
+	for _, network := range trusted {
+		if network != nil && network.Contains(ip) {
+			return true
+		}
+	}
+	return false
+}
+
+func parseTrustedProxyCIDRs(raw string) ([]*net.IPNet, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	proxies := make([]*net.IPNet, 0, len(parts))
+	for _, part := range parts {
+		token := strings.TrimSpace(part)
+		if token == "" {
+			continue
+		}
+		if strings.Contains(token, "/") {
+			_, network, err := net.ParseCIDR(token)
+			if err != nil {
+				return nil, fmt.Errorf("invalid CIDR %q: %w", token, err)
+			}
+			proxies = append(proxies, network)
+			continue
+		}
+		ip := net.ParseIP(token)
+		if ip == nil {
+			return nil, fmt.Errorf("invalid IP %q", token)
+		}
+		if ipv4 := ip.To4(); ipv4 != nil {
+			mask := net.CIDRMask(net.IPv4len*8, net.IPv4len*8)
+			proxies = append(proxies, &net.IPNet{IP: ipv4, Mask: mask})
+			continue
+		}
+		mask := net.CIDRMask(net.IPv6len*8, net.IPv6len*8)
+		proxies = append(proxies, &net.IPNet{IP: ip, Mask: mask})
+	}
+	return proxies, nil
 }
 
 func getIntEnv(key string, fallback int) int {

@@ -62,7 +62,7 @@ func TestEventsHandlerForwardsSSEStream(t *testing.T) {
 	}))
 	defer orchestrator.Close()
 
-	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 50*time.Millisecond, nil)
+	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 50*time.Millisecond, nil, nil)
 
 	mux := http.NewServeMux()
 	mux.Handle("/events", handler)
@@ -112,7 +112,7 @@ func TestEventsHandlerForwardsSSEStream(t *testing.T) {
 }
 
 func TestEventsHandlerRejectsInvalidPlanID(t *testing.T) {
-	handler := NewEventsHandler(nil, "http://orchestrator", 0, nil)
+	handler := NewEventsHandler(nil, "http://orchestrator", 0, nil, nil)
 
 	req := httptest.NewRequest(http.MethodGet, "/events?plan_id=not-valid", nil)
 	rec := httptest.NewRecorder()
@@ -144,7 +144,7 @@ func TestEventsHandlerEnforcesConnectionLimit(t *testing.T) {
 	}))
 	defer orchestrator.Close()
 
-	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 0, newConnectionLimiter(1))
+	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 0, newConnectionLimiter(1), nil)
 	mux := http.NewServeMux()
 	mux.Handle("/events", handler)
 
