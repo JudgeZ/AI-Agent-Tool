@@ -125,7 +125,14 @@ function resolveClaimValue(
     if (!current || typeof current !== "object") {
       return undefined;
     }
-    current = (current as Record<string, unknown>)[segment];
+    if (segment === "__proto__" || segment === "prototype" || segment === "constructor") {
+      return undefined;
+    }
+    const record = current as Record<string, unknown>;
+    if (!Object.prototype.hasOwnProperty.call(record, segment)) {
+      return undefined;
+    }
+    current = record[segment];
   }
   return current;
 }

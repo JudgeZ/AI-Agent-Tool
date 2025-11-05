@@ -42,7 +42,14 @@ const DEFAULT_RETRY_DELAY_MS = 1000;
 const DEFAULT_TOPIC_PARTITIONS = 1;
 const DEFAULT_REPLICATION_FACTOR = 1;
 const DEFAULT_DEAD_LETTER_SUFFIX = ".dead";
-const BUILTIN_COMPACT_REGEXES: RegExp[] = [/\.state$/, /\.state-store$/, /\.job-state$/];
+
+type TopicMatcher = (value: string) => boolean;
+
+const BUILTIN_COMPACT_MATCHERS: TopicMatcher[] = [
+  value => value.endsWith(".state"),
+  value => value.endsWith(".state-store"),
+  value => value.endsWith(".job-state")
+];
 
 type Logger = Pick<typeof console, "info" | "warn" | "error">;
 
@@ -119,7 +126,7 @@ export class KafkaAdapter implements QueueAdapter {
   private readonly numPartitions: number;
   private readonly replicationFactor: number;
   private readonly topicConfig: Record<string, string>;
-  private readonly compactTopicRegexes: RegExp[];
+  private readonly compactTopicMatchers: TopicMatcher[];
   private readonly deadLetterSuffix: string;
 
   private producer: Producer | null = null;
@@ -153,9 +160,9 @@ export class KafkaAdapter implements QueueAdapter {
     this.topicConfig = { ...defaultTopicConfig };
     const compactPatterns = options.compactTopicPatterns ?? parseList(process.env.KAFKA_TOPIC_COMPACT_PATTERNS) ?? [];
     const compiledPatterns = compactPatterns.map(pattern =>
-      pattern instanceof RegExp ? pattern : compileTopicPattern(pattern)
+      pattern instanceof RegExp ? ((value: string) => pattern.test(value)) : compileTopicPattern(pattern)
     );
-    this.compactTopicRegexes = [...BUILTIN_COMPACT_REGEXES, ...compiledPatterns];
+    this.compactTopicMatchers = [...BUILTIN_COMPACT_MATCHERS, ...compiledPatterns];
     this.deadLetterSuffix =
       options.deadLetterSuffix ?? process.env.KAFKA_DEAD_LETTER_SUFFIX ?? DEFAULT_DEAD_LETTER_SUFFIX;
 
@@ -389,7 +396,7 @@ export class KafkaAdapter implements QueueAdapter {
   }
 
   private shouldCompactTopic(topic: string): boolean {
-    return matchesAny(this.compactTopicRegexes, topic);
+    return matchesAny(this.compactTopicMatchers, topic);
   }
 
   private async handleMessage({ topic, partition, message }: EachMessagePayload): Promise<void> {
@@ -772,14 +779,55 @@ function resolveKafkaSaslOptions(config: KafkaSaslConfig | undefined, logger: Lo
   }
 }
 
-function compileTopicPattern(pattern: string): RegExp {
-  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
-  const source = `^${escaped.replace(/\\\*/g, ".*")}$`;
-  return new RegExp(source);
+function compileTopicPattern(pattern: string): TopicMatcher {
+  if (!/^[A-Za-z0-9._-]*(\*[A-Za-z0-9._-]*)*$/.test(pattern)) {
+    throw new Error("Kafka compact topic patterns may only include alphanumerics, '.', '-', '_', and '*'");
+  }
+  if (pattern.length === 0) {
+    return (value: string) => value.length === 0;
+  }
+  if (pattern === "*") {
+    return () => true;
+  }
+  const segments = pattern.split("*");
+  const startsWithWildcard = pattern.startsWith("*");
+  const endsWithWildcard = pattern.endsWith("*");
+  return (value: string) => {
+    let cursor = 0;
+    if (!startsWithWildcard) {
+      const first = segments[0] ?? "";
+      if (!value.startsWith(first)) {
+        return false;
+      }
+      cursor = first.length;
+    }
+    for (let index = startsWithWildcard ? 0 : 1; index < segments.length; index += 1) {
+      const segment = segments[index];
+      if (!segment) {
+        continue;
+      }
+      const foundAt = value.indexOf(segment, cursor);
+      if (foundAt === -1) {
+        return false;
+      }
+      cursor = foundAt + segment.length;
+    }
+    if (!endsWithWildcard) {
+      const lastSegment = segments[segments.length - 1] ?? "";
+      return value.endsWith(lastSegment);
+    }
+    return true;
+  };
 }
 
-function matchesAny(regexes: RegExp[], value: string): boolean {
-  return regexes.some(regex => regex.test(value));
+function matchesAny(matchers: TopicMatcher[], value: string): boolean {
+  return matchers.some(matcher => {
+    try {
+      return matcher(value);
+    } catch {
+      return false;
+    }
+  });
 }
 
 function isTopicExistsError(error: unknown): boolean {

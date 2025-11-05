@@ -155,7 +155,7 @@ messaging:
         - /etc/kafka/ca.pem
       certPath: /etc/kafka/client.crt
       keyPath: /etc/kafka/client.key
-      rejectUnauthorized: false
+      rejectUnauthorized: true
     sasl:
       mechanism: plain
       username: kafka-user
@@ -248,7 +248,7 @@ observability:
         caPaths: ["/etc/kafka/ca.pem"],
         certPath: "/etc/kafka/client.crt",
         keyPath: "/etc/kafka/client.key",
-        rejectUnauthorized: false
+        rejectUnauthorized: true
       },
       sasl: {
         mechanism: "plain",
@@ -455,7 +455,7 @@ messaging:
         - /etc/kafka/ca.pem
       certPath: /etc/kafka/client.crt
       keyPath: /etc/kafka/client.key
-      rejectUnauthorized: false
+      rejectUnauthorized: true
     sasl:
       mechanism: plain
       username: kafka-user

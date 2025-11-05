@@ -83,13 +83,20 @@ function cleanupPlanArtifacts(baseDir: string, retentionDays: number): void {
   }
   const retentionMs = retentionDays * MILLIS_PER_DAY;
   try {
-    const entries = fs.readdirSync(baseDir, { withFileTypes: true });
+    const resolvedBase = path.resolve(baseDir);
+    const entries = fs.readdirSync(resolvedBase, { withFileTypes: true });
     const cutoff = Date.now() - retentionMs;
     for (const entry of entries) {
       if (!entry.isDirectory()) {
         continue;
       }
-      const target = path.join(baseDir, entry.name);
+      const target = path.resolve(resolvedBase, entry.name);
+      if (target === resolvedBase) {
+        continue;
+      }
+      if (!target.startsWith(resolvedBase + path.sep)) {
+        continue;
+      }
       let stats: fs.Stats;
       try {
         stats = fs.statSync(target);
