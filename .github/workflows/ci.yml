@@ -85,6 +85,18 @@ jobs:
           cache: 'npm'
           cache-dependency-path: ${{ matrix.project.path }}/package-lock.json
 
+      - name: Verify CLI build scripts use supported package manager
+        if: matrix.project.name == 'cli'
+        run: |
+          node -e "const scripts = require('./package.json').scripts || {}; const unsupported = Object.values(scripts).some((value) => /(?:npm|yarn)\s+(?:ci|install)/.test(String(value))); if (unsupported) { console.error('CLI scripts must not invoke npm install/ci or yarn install directly.'); process.exit(1); }"
+
+      - name: Install pnpm for orchestrator builds
+        if: matrix.project.name == 'cli'
+        run: |
+          corepack enable
+          corepack prepare pnpm@latest --activate
+          pnpm --version
+
       - name: Start Docker daemon
         if: matrix.project.name == 'orchestrator'
         run: |
