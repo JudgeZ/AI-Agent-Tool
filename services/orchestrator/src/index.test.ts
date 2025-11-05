@@ -189,6 +189,143 @@ describe("orchestrator http api", () => {
     }
   });
 
+  it("cleans up keep-alive intervals when clients disconnect", async () => {
+    const { createServer, createHttpServer } = await import("./index.js");
+    const { loadConfig } = await import("./config.js");
+
+    const baseConfig = loadConfig();
+    const config = {
+      ...baseConfig,
+      server: {
+        ...baseConfig.server,
+        sseKeepAliveMs: 10,
+        sseQuotas: {
+          perIp: 1,
+          perSubject: 1,
+        },
+      },
+    };
+
+    const app = createServer(config);
+    const planResponse = await request(app)
+      .post("/plan")
+      .send({ goal: "resilient keep alive" })
+      .expect(201);
+
+    const planId: string = planResponse.body.plan.id;
+
+    const server = createHttpServer(app, config);
+    await new Promise<void>((resolve) => {
+      server.listen(0, resolve);
+    });
+
+    let serverClosed = false;
+    const address = server.address() as AddressInfo | null;
+    if (!address || typeof address.port !== "number") {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve();
+        });
+      });
+      serverClosed = true;
+      throw new Error("failed to determine server address");
+    }
+
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const openSse = (url: string) =>
+      new Promise<{ request: http.ClientRequest; response: http.IncomingMessage }>((resolve, reject) => {
+        const req = http.request(
+          url,
+          {
+            headers: {
+              Accept: "text/event-stream",
+            },
+          },
+          (res) => {
+            resolve({ request: req, response: res });
+          },
+        );
+        req.on("error", reject);
+        req.end();
+      });
+
+    let shouldFailWrites = false;
+    let keepAliveWriteFailed = false;
+    const originalWrite = http.ServerResponse.prototype.write;
+    const writeSpy = vi
+      .spyOn(http.ServerResponse.prototype, "write")
+      .mockImplementation(function (this: http.ServerResponse, chunk: unknown, encoding?: unknown, cb?: unknown) {
+        if (typeof chunk === "string" && chunk.includes(": keep-alive") && shouldFailWrites) {
+          keepAliveWriteFailed = true;
+          throw new Error("simulated stream failure");
+        }
+        return originalWrite.call(this, chunk as never, encoding as never, cb as never);
+      });
+
+    let firstConnection: { request: http.ClientRequest; response: http.IncomingMessage } | undefined;
+    try {
+      firstConnection = await openSse(`${baseUrl}/plan/${planId}/events`);
+      expect(firstConnection.response.statusCode).toBe(200);
+      firstConnection.response.resume();
+
+      await new Promise((resolve) => setTimeout(resolve, config.server.sseKeepAliveMs * 2));
+
+      const connectionClosed = new Promise<void>((resolve) => {
+        firstConnection?.response.on("close", resolve);
+        firstConnection?.response.on("end", resolve);
+        firstConnection?.response.on("error", () => resolve());
+      });
+
+      shouldFailWrites = true;
+      firstConnection.request.destroy();
+      await connectionClosed;
+
+      await new Promise((resolve) => setTimeout(resolve, config.server.sseKeepAliveMs * 2));
+
+      expect(keepAliveWriteFailed).toBe(true);
+
+      shouldFailWrites = false;
+
+      const secondConnection = await openSse(`${baseUrl}/plan/${planId}/events`);
+      expect(secondConnection.response.statusCode).toBe(200);
+      secondConnection.response.resume();
+      secondConnection.request.destroy();
+
+      const healthStatus = await new Promise<number>((resolve, reject) => {
+        http
+          .get(`${baseUrl}/healthz`, (res) => {
+            const status = res.statusCode ?? 0;
+            res.resume();
+            resolve(status);
+          })
+          .on("error", reject);
+      });
+      expect(healthStatus).toBe(200);
+    } finally {
+      writeSpy.mockRestore();
+      if (firstConnection) {
+        firstConnection.request.destroy();
+      }
+      if (!serverClosed) {
+        await new Promise<void>((resolve, reject) => {
+          server.close((err) => {
+            if (err) {
+              reject(err);
+              return;
+            }
+            serverClosed = true;
+            resolve();
+          });
+        });
+      }
+    }
+  });
+
   it("exposes Prometheus metrics", async () => {
     const { createServer } = await import("./index.js");
     const app = createServer();
