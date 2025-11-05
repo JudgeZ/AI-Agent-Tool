@@ -55,6 +55,29 @@ describe("planner", () => {
     expect(fs.existsSync(path.join(plansDir, plan.id))).toBe(true);
   });
 
+  it("skips suspicious directory names when cleaning up old plans", () => {
+    const suspiciousDir = path.join(plansDir, "plan..sneaky");
+    fs.mkdirSync(suspiciousDir, { recursive: true });
+    const suspiciousPlanFile = path.join(suspiciousDir, "plan.json");
+    fs.writeFileSync(suspiciousPlanFile, JSON.stringify({ id: "plan..sneaky" }));
+
+    const safeDir = path.join(plansDir, "plan-safe-old");
+    fs.mkdirSync(safeDir, { recursive: true });
+    const safePlanFile = path.join(safeDir, "plan.json");
+    fs.writeFileSync(safePlanFile, JSON.stringify({ id: "plan-safe-old" }));
+
+    const oldTime = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+    for (const candidate of [suspiciousDir, suspiciousPlanFile, safeDir, safePlanFile]) {
+      fs.utimesSync(candidate, oldTime, oldTime);
+    }
+
+    const plan = createPlan("Suspicious cleanup", { retentionDays: 30 });
+
+    expect(fs.existsSync(safeDir)).toBe(false);
+    expect(fs.existsSync(suspiciousDir)).toBe(true);
+    expect(fs.existsSync(path.join(plansDir, plan.id))).toBe(true);
+  });
+
   it("does not follow symlinks outside the plans directory during cleanup", () => {
     const outsideDir = path.join(process.cwd(), "outside-plan-artifacts");
     fs.rmSync(outsideDir, { recursive: true, force: true });

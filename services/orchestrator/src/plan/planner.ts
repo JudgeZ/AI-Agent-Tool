@@ -11,6 +11,18 @@ export type { Plan, PlanStep, PlanSubject } from "./validation.js";
 const DEFAULT_PLAN_ARTIFACT_RETENTION_DAYS = 30;
 const MILLIS_PER_DAY = 24 * 60 * 60 * 1000;
 
+function getRealpathSync(): (target: string) => string {
+  const withNative = fs.realpathSync as typeof fs.realpathSync & {
+    native?: typeof fs.realpathSync;
+  };
+  if (typeof withNative.native === "function") {
+    return withNative.native.bind(fs);
+  }
+  return fs.realpathSync.bind(fs);
+}
+
+const realpathSync = getRealpathSync();
+
 const DEFAULT_CAPABILITY_LABELS: Record<string, string> = {
   "repo.read": "Read repository",
   "repo.write": "Apply repository changes",
@@ -79,10 +91,31 @@ function buildSteps(goal: string): PlanStep[] {
 
 function isChildPath(base: string, candidate: string): boolean {
   const relative = path.relative(base, candidate);
-  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+  if (!relative || path.isAbsolute(relative)) {
+    return false;
+  }
+  const segments = relative.split(path.sep);
+  if (segments.some(segment => segment === "..")) {
+    return false;
+  }
+  const posixSegments = relative.split(path.posix.sep);
+  if (posixSegments.some(segment => segment === "..")) {
     return false;
   }
   return true;
+}
+
+function isSafeDirentName(name: string): boolean {
+  if (!name) {
+    return false;
+  }
+  if (name.includes("..")) {
+    return false;
+  }
+  if (name.includes(path.sep) || name.includes(path.posix.sep)) {
+    return false;
+  }
+  return path.basename(name) === name;
 }
 
 function cleanupPlanArtifacts(baseDir: string, retentionDays: number): void {
@@ -91,14 +124,26 @@ function cleanupPlanArtifacts(baseDir: string, retentionDays: number): void {
   }
   const retentionMs = retentionDays * MILLIS_PER_DAY;
   try {
-    const resolvedBase = path.resolve(baseDir);
+    const resolvedBase = realpathSync(baseDir);
     const entries = fs.readdirSync(resolvedBase, { withFileTypes: true });
     const cutoff = Date.now() - retentionMs;
     for (const entry of entries) {
       if (entry.isSymbolicLink() || !entry.isDirectory()) {
         continue;
       }
-      const target = path.join(resolvedBase, entry.name);
+      const entryName = entry.name;
+      if (!isSafeDirentName(entryName)) {
+        continue;
+      }
+      const targetCandidate = resolvedBase.endsWith(path.sep)
+        ? `${resolvedBase}${entryName}`
+        : `${resolvedBase}${path.sep}${entryName}`;
+      let target: string;
+      try {
+        target = realpathSync(targetCandidate);
+      } catch {
+        continue;
+      }
       if (!isChildPath(resolvedBase, target)) {
         continue;
       }
