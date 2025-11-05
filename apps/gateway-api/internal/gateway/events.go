@@ -70,6 +70,11 @@ func (l *connectionLimiter) Release(key string) {
 	l.counts[key] = current - 1
 }
 
+// EventRouteConfig captures configuration for the events endpoint wiring.
+type EventRouteConfig struct {
+	TrustedProxyCIDRs []string
+}
+
 // EventsHandler proxies Server-Sent Events streams from the orchestrator.
 type EventsHandler struct {
 	client            *http.Client
@@ -98,17 +103,16 @@ func NewEventsHandler(client *http.Client, orchestratorURL string, heartbeat tim
 }
 
 // RegisterEventRoutes wires the /events endpoint into the provided mux.
-func RegisterEventRoutes(mux *http.ServeMux) {
+func RegisterEventRoutes(mux *http.ServeMux, cfg EventRouteConfig) {
 	orchestratorURL := getEnv("ORCHESTRATOR_URL", "http://127.0.0.1:4000")
 	client, err := getOrchestratorClient()
 	if err != nil {
 		panic(fmt.Sprintf("failed to configure orchestrator client: %v", err))
 	}
 	maxConnections := getIntEnv("GATEWAY_SSE_MAX_CONNECTIONS_PER_IP", 4)
-	trustedProxyCIDRs := strings.TrimSpace(os.Getenv("GATEWAY_TRUSTED_PROXY_CIDRS"))
-	trustedProxies, err := parseTrustedProxyCIDRs(trustedProxyCIDRs)
+	trustedProxies, err := parseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs)
 	if err != nil {
-		panic(fmt.Sprintf("invalid GATEWAY_TRUSTED_PROXY_CIDRS: %v", err))
+		panic(fmt.Sprintf("invalid trusted proxy configuration: %v", err))
 	}
 	handler := NewEventsHandler(client, orchestratorURL, 0, newConnectionLimiter(maxConnections), trustedProxies)
 	mux.Handle("/events", handler)
@@ -241,40 +245,53 @@ func clientIPFromRequest(r *http.Request, trustedProxies []*net.IPNet) string {
 	}
 	remoteIP := net.ParseIP(host)
 	if remoteIP != nil && isTrustedProxy(remoteIP, trustedProxies) {
-		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-			parts := strings.Split(forwarded, ",")
-			var lastValid net.IP
-			for i := len(parts) - 1; i >= 0; i-- {
-				candidate := strings.TrimSpace(parts[i])
-				if candidate == "" {
-					continue
-				}
-				ip := net.ParseIP(candidate)
-				if ip == nil {
-					continue
-				}
-				lastValid = ip
-				if !isTrustedProxy(ip, trustedProxies) {
-					return ip.String()
-				}
-			}
-			if lastValid != nil {
-				return lastValid.String()
-			}
+		if forwarded := extractClientIPFromForwardedFor(r.Header.Get("X-Forwarded-For"), trustedProxies); forwarded != nil {
+			return forwarded.String()
 		}
-		if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
-			if ip := net.ParseIP(realIP); ip != nil {
-				if !isTrustedProxy(ip, trustedProxies) {
-					return ip.String()
-				}
-				return ip.String()
-			}
+		if real := extractClientIP(strings.TrimSpace(r.Header.Get("X-Real-IP")), trustedProxies); real != nil {
+			return real.String()
 		}
+		return remoteIP.String()
 	}
 	if remoteIP != nil {
 		return remoteIP.String()
 	}
 	return host
+}
+
+func extractClientIPFromForwardedFor(header string, trustedProxies []*net.IPNet) net.IP {
+	if header == "" {
+		return nil
+	}
+	parts := strings.Split(header, ",")
+	for i := len(parts) - 1; i >= 0; i-- {
+		candidate := strings.TrimSpace(parts[i])
+		if candidate == "" {
+			continue
+		}
+		ip := net.ParseIP(candidate)
+		if ip == nil {
+			continue
+		}
+		if !isTrustedProxy(ip, trustedProxies) {
+			return ip
+		}
+	}
+	return nil
+}
+
+func extractClientIP(candidate string, trustedProxies []*net.IPNet) net.IP {
+	if candidate == "" {
+		return nil
+	}
+	ip := net.ParseIP(candidate)
+	if ip == nil {
+		return nil
+	}
+	if isTrustedProxy(ip, trustedProxies) {
+		return nil
+	}
+	return ip
 }
 
 func isTrustedProxy(ip net.IP, trusted []*net.IPNet) bool {
@@ -289,14 +306,13 @@ func isTrustedProxy(ip net.IP, trusted []*net.IPNet) bool {
 	return false
 }
 
-func parseTrustedProxyCIDRs(raw string) ([]*net.IPNet, error) {
-	if strings.TrimSpace(raw) == "" {
+func parseTrustedProxyCIDRs(entries []string) ([]*net.IPNet, error) {
+	if len(entries) == 0 {
 		return nil, nil
 	}
-	parts := strings.Split(raw, ",")
-	proxies := make([]*net.IPNet, 0, len(parts))
-	for _, part := range parts {
-		token := strings.TrimSpace(part)
+	proxies := make([]*net.IPNet, 0, len(entries))
+	for _, entry := range entries {
+		token := strings.TrimSpace(entry)
 		if token == "" {
 			continue
 		}
@@ -319,6 +335,9 @@ func parseTrustedProxyCIDRs(raw string) ([]*net.IPNet, error) {
 		}
 		mask := net.CIDRMask(net.IPv6len*8, net.IPv6len*8)
 		proxies = append(proxies, &net.IPNet{IP: ip, Mask: mask})
+	}
+	if len(proxies) == 0 {
+		return nil, nil
 	}
 	return proxies, nil
 }
