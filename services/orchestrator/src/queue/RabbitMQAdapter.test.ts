@@ -7,6 +7,7 @@ import {
   queueAckCounter,
   queueDeadLetterCounter,
   queueDepthGauge,
+  queueLagGauge,
   queueRetryCounter,
   resetMetrics
 } from "../observability/metrics.js";
@@ -178,6 +179,8 @@ describe("RabbitMQAdapter", () => {
     expect(channel.getDepth("plan.steps")).toBe(0);
     const depthMetric = await getMetricValue(queueDepthGauge, { queue: "plan.steps" });
     expect(depthMetric).toBe(0);
+    const lagMetric = await getMetricValue(queueLagGauge, { queue: "plan.steps" });
+    expect(lagMetric).toBe(0);
     const ackMetric = await getMetricValue(queueAckCounter, { queue: "plan.steps" });
     expect(ackMetric).toBe(1);
   });

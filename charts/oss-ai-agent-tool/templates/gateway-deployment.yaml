@@ -1,5 +1,34 @@
 {{- $root := . -}}
 {{- $defaultGatewayEnv := dict "ORCHESTRATOR_URL" (printf "http://%s-orchestrator:%d" (include "oss-ai-agent-tool.fullname" $root) ($root.Values.orchestrator.service.port | default 4000)) "INDEXER_URL" (printf "http://%s-indexer:%d" (include "oss-ai-agent-tool.fullname" $root) ($root.Values.indexer.service.port | default 7070)) -}}
+{{- $_ := set $defaultGatewayEnv "GATEWAY_SSE_MAX_CONNECTIONS_PER_IP" (printf "%v" ($root.Values.gatewayApi.sse.maxConnectionsPerIP | default 4)) -}}
+{{- if $root.Values.auth.oidc.enabled -}}
+  {{- $oidc := $root.Values.auth.oidc -}}
+  {{- $_ := set $defaultGatewayEnv "OIDC_ENABLED" "true" -}}
+  {{- if $oidc.issuer }}
+    {{- $_ := set $defaultGatewayEnv "OIDC_ISSUER_URL" (printf "%v" $oidc.issuer) -}}
+  {{- end -}}
+  {{- if $oidc.clientId }}
+    {{- $_ := set $defaultGatewayEnv "OIDC_CLIENT_ID" (printf "%v" $oidc.clientId) -}}
+  {{- end -}}
+  {{- if $oidc.redirectBaseUrl }}
+    {{- $_ := set $defaultGatewayEnv "OIDC_REDIRECT_BASE_URL" (printf "%v" $oidc.redirectBaseUrl) -}}
+  {{- end -}}
+  {{- if $oidc.logoutUrl }}
+    {{- $_ := set $defaultGatewayEnv "OIDC_LOGOUT_URL" (printf "%v" $oidc.logoutUrl) -}}
+  {{- end -}}
+  {{- if $oidc.tenantClaim }}
+    {{- $_ := set $defaultGatewayEnv "OIDC_TENANT_CLAIM" (printf "%v" $oidc.tenantClaim) -}}
+  {{- end -}}
+  {{- if $oidc.audience }}
+    {{- $_ := set $defaultGatewayEnv "OIDC_AUDIENCE" (printf "%v" $oidc.audience) -}}
+  {{- end -}}
+  {{- $scopes := $oidc.scopes | default (list) -}}
+  {{- $extraScopes := $oidc.extraScopes | default (list) -}}
+  {{- $allScopes := concat $scopes $extraScopes -}}
+  {{- if gt (len $allScopes) 0 -}}
+    {{- $_ := set $defaultGatewayEnv "OIDC_SCOPES" (join " " $allScopes) -}}
+  {{- end -}}
+{{- end -}}
 {{- $gatewayEnv := merge $defaultGatewayEnv ($root.Values.gatewayApi.env | default dict) -}}
 {{- if and .Values.gatewayApi.tls.enabled (not .Values.gatewayApi.tls.secretName) -}}
   {{- fail "gatewayApi.tls.secretName must be provided when gatewayApi.tls.enabled is true" -}}
@@ -39,6 +68,13 @@ spec:
           {{- range $key, $value := $gatewayEnv }}
             - name: {{ $key }}
               value: {{ $value | quote }}
+          {{- end }}
+          {{- if and $root.Values.auth.oidc.enabled $root.Values.auth.oidc.clientSecretSecretName }}
+            - name: OIDC_CLIENT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $root.Values.auth.oidc.clientSecretSecretName | quote }}
+                  key: {{ ($root.Values.auth.oidc.clientSecretKey | default "client-secret") | quote }}
           {{- end }}
           {{- if .Values.gatewayApi.tls.enabled }}
             {{- $mountPath := .Values.gatewayApi.tls.mountPath | default "/etc/orchestrator/tls" -}}

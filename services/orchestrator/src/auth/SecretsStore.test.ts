@@ -1,8 +1,9 @@
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, test, vi } from "vitest";
 import { mkdtemp, readFile, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { Agent } from "undici";
+import { GenericContainer, type StartedTestContainer } from "testcontainers";
 
 import { LocalFileStore, VaultStore } from "./SecretsStore.js";
 
@@ -146,7 +147,9 @@ describe("VaultStore", () => {
     process.env.VAULT_ADDR = "https://vault.example.com";
     process.env.VAULT_TOKEN = "token";
 
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 404 }));
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(null, { status: 404 }));
     vi.stubGlobal("fetch", fetchMock);
 
     const store = new VaultStore();
@@ -158,4 +161,194 @@ describe("VaultStore", () => {
       expect.objectContaining({ dispatcher: undefined })
     );
   });
+
+  test("throws when token and auth configuration are not provided", () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    delete process.env.VAULT_TOKEN;
+    delete process.env.VAULT_AUTH_METHOD;
+
+    expect(() => new VaultStore()).toThrow("VaultStore requires VAULT_TOKEN or supported auth configuration");
+  });
+
+  test("authenticates with kubernetes when no token is provided", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "vault-k8s-auth-"));
+    const jwtPath = path.join(dir, "token");
+    await writeFile(jwtPath, "jwt-token");
+
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    delete process.env.VAULT_TOKEN;
+    process.env.VAULT_KV_MOUNT = "secrets";
+    process.env.VAULT_AUTH_METHOD = "kubernetes";
+    process.env.VAULT_ROLE = "orchestrator";
+    process.env.VAULT_K8S_TOKEN_PATH = jwtPath;
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ auth: { client_token: "vault-token", lease_duration: 120 } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ data: { data: { value: "secret-value" } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    const value = await store.get("provider:anthropic:apiKey");
+
+    expect(value).toBe("secret-value");
+    expect(fetchMock).toHaveBeenCalledTimes(2);
+
+    const loginCall = fetchMock.mock.calls[0];
+    expect(loginCall[0]).toBe("https://vault.example.com/v1/auth/kubernetes/login");
+    const loginInit = loginCall[1] as RequestInit;
+    const loginHeaders = new Headers(loginInit?.headers);
+    expect(loginHeaders.get("X-Vault-Token")).toBeNull();
+    expect(JSON.parse((loginInit?.body as string) ?? "")).toEqual({ role: "orchestrator", jwt: "jwt-token" });
+
+    const secretCall = fetchMock.mock.calls[1];
+    const secretHeaders = new Headers((secretCall[1] as RequestInit | undefined)?.headers);
+    expect(secretHeaders.get("X-Vault-Token")).toBe("vault-token");
+  });
+
+  test("retries kubernetes authentication when token is rejected", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "vault-k8s-refresh-"));
+    const jwtPath = path.join(dir, "token");
+    await writeFile(jwtPath, "jwt-token");
+
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    delete process.env.VAULT_TOKEN;
+    process.env.VAULT_KV_MOUNT = "secret";
+    process.env.VAULT_AUTH_METHOD = "kubernetes";
+    process.env.VAULT_ROLE = "orchestrator";
+    process.env.VAULT_K8S_TOKEN_PATH = jwtPath;
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ auth: { client_token: "vault-token", lease_duration: 60 } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      )
+      .mockResolvedValueOnce(new Response(null, { status: 403 }))
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ auth: { client_token: "vault-token-2", lease_duration: 60 } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      )
+      .mockResolvedValueOnce(
+        new Response(
+          JSON.stringify({ data: { data: { value: "refreshed" } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } }
+        )
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    const value = await store.get("provider:openai:apiKey");
+
+    expect(value).toBe("refreshed");
+    expect(fetchMock).toHaveBeenCalledTimes(4);
+
+    const retryLoginInit = fetchMock.mock.calls[2][1] as RequestInit;
+    expect(JSON.parse((retryLoginInit?.body as string) ?? "")).toEqual({ role: "orchestrator", jwt: "jwt-token" });
+
+    const finalHeaders = new Headers((fetchMock.mock.calls[3][1] as RequestInit | undefined)?.headers);
+    expect(finalHeaders.get("X-Vault-Token")).toBe("vault-token-2");
+  });
+});
+
+describe("VaultStore (integration)", () => {
+  const rootToken = "test-root";
+  let container: StartedTestContainer | null = null;
+  let baseUrl: string | null = null;
+  let skipSuite = false;
+
+  beforeAll(async () => {
+    try {
+      container = await new GenericContainer("hashicorp/vault:1.15")
+        .withCommand(["server", "-dev", "-dev-root-token-id=" + rootToken, "-dev-listen-address=0.0.0.0:8200"])
+        .withExposedPorts(8200)
+        .start();
+      const host = container.getHost();
+      const port = container.getMappedPort(8200);
+      baseUrl = `http://${host}:${port}`;
+      // Wait for Vault to be ready
+      for (let attempt = 0; attempt < 10; attempt += 1) {
+        try {
+          const health = await fetch(`${baseUrl}/v1/sys/health`);
+          if (health.status === 200 || health.status === 472 || health.status === 473) {
+            break;
+          }
+        } catch {
+          // ignore
+        }
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+    } catch (error) {
+      skipSuite = true;
+      console.warn("Skipping Vault integration test because no container runtime is available");
+      console.warn(String(error));
+    }
+  }, 90000);
+
+  afterAll(async () => {
+    if (container) {
+      await container.stop().catch(() => undefined);
+      container = null;
+    }
+  });
+
+  it(
+    "reads and writes secrets through a Vault dev server",
+    async () => {
+      if (skipSuite || !baseUrl) {
+        expect(true).toBe(true);
+        return;
+      }
+
+      const secretPath = "app/service";
+      const initialValue = "s3cr3t";
+      const updatedValue = "rotated";
+
+      const writeResp = await fetch(`${baseUrl}/v1/secret/data/${secretPath}`, {
+        method: "POST",
+        headers: {
+          "X-Vault-Token": rootToken,
+          "Content-Type": "application/json"
+        },
+        body: JSON.stringify({ data: { value: initialValue } })
+      });
+      expect(writeResp.ok).toBe(true);
+
+      const store = new VaultStore({
+        url: baseUrl,
+        token: rootToken
+      });
+
+      await expect(store.get(secretPath)).resolves.toBe(initialValue);
+
+      await store.set(secretPath, updatedValue);
+
+      const verify = await fetch(`${baseUrl}/v1/secret/data/${secretPath}`, {
+        headers: {
+          "X-Vault-Token": rootToken
+        }
+      });
+      expect(verify.ok).toBe(true);
+      const payload = (await verify.json()) as { data?: { data?: { value?: string } } };
+      expect(payload.data?.data?.value).toBe(updatedValue);
+
+      await store.delete(secretPath);
+      await expect(store.get(secretPath)).resolves.toBeUndefined();
+    },
+    90000
+  );
 });

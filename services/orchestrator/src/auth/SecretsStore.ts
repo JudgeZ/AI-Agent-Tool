@@ -4,6 +4,7 @@ import path from "node:path";
 import { Agent, type Dispatcher } from "undici";
 
 import { LocalKeystore } from "./LocalKeystore.js";
+import { resolveEnv } from "../utils/env.js";
 
 export interface SecretsStore {
   get(key: string): Promise<string | undefined>;
@@ -16,6 +17,21 @@ type LocalStoreOptions = {
   passphrase?: string;
 };
 
+type VaultStoreOptions = {
+  url?: string;
+  token?: string;
+  namespace?: string;
+  kvMountPath?: string;
+  caCert?: string;
+  rejectUnauthorized?: boolean;
+  authMethod?: string;
+  role?: string;
+  authMountPath?: string;
+  kubernetesToken?: string;
+  kubernetesTokenPath?: string;
+  dispatcher?: Dispatcher;
+};
+
 export class LocalFileStore implements SecretsStore {
   private cache: Map<string, string> = new Map();
   private ready: Promise<void>;
@@ -25,9 +41,18 @@ export class LocalFileStore implements SecretsStore {
   private readonly keystore: LocalKeystore;
 
   constructor(options?: LocalStoreOptions) {
-    const defaultPath = path.join(process.cwd(), "config", "secrets", "local", "secrets.json");
-    this.filePath = options?.filePath ?? process.env.LOCAL_SECRETS_PATH ?? defaultPath;
-    this.passphrase = options?.passphrase ?? process.env.LOCAL_SECRETS_PASSPHRASE ?? "";
+    const defaultPath = path.join(
+      process.cwd(),
+      "config",
+      "secrets",
+      "local",
+      "secrets.json",
+    );
+    const resolvedPath =
+      resolveEnv("LOCAL_SECRETS_PATH", defaultPath) ?? defaultPath;
+    this.filePath = options?.filePath ?? resolvedPath;
+    this.passphrase =
+      options?.passphrase ?? resolveEnv("LOCAL_SECRETS_PASSPHRASE") ?? "";
     this.keystore = new LocalKeystore(this.filePath, this.passphrase);
     this.ready = this.initialize();
   }
@@ -51,7 +76,9 @@ export class LocalFileStore implements SecretsStore {
 
   private async initialize() {
     if (!this.passphrase) {
-      throw new Error("LocalFileStore requires LOCAL_SECRETS_PASSPHRASE to be set");
+      throw new Error(
+        "LocalFileStore requires LOCAL_SECRETS_PASSPHRASE to be set",
+      );
     }
     await mkdir(path.dirname(this.filePath), { recursive: true });
     const existing = await this.keystore.read();
@@ -70,14 +97,19 @@ export class LocalFileStore implements SecretsStore {
   }
 }
 
-type VaultStoreOptions = {
-  url?: string;
+const DEFAULT_KUBERNETES_TOKEN_PATH =
+  "/var/run/secrets/kubernetes.io/serviceaccount/token";
+const MIN_TOKEN_RENEW_BUFFER_SECONDS = 30;
+
+type KubernetesAuthConfig = {
+  method: "kubernetes";
+  mountPath: string;
+  role: string;
+  tokenPath?: string;
   token?: string;
-  namespace?: string;
-  kvMountPath?: string;
-  caCert?: string;
-  rejectUnauthorized?: boolean;
 };
+
+type VaultAuthConfig = KubernetesAuthConfig;
 
 function parseBoolean(value: string | undefined): boolean | undefined {
   if (value === undefined) {
@@ -87,10 +119,20 @@ function parseBoolean(value: string | undefined): boolean | undefined {
   if (!trimmed) {
     return undefined;
   }
-  if (trimmed === "true" || trimmed === "1" || trimmed === "yes" || trimmed === "on") {
+  if (
+    trimmed === "true" ||
+    trimmed === "1" ||
+    trimmed === "yes" ||
+    trimmed === "on"
+  ) {
     return true;
   }
-  if (trimmed === "false" || trimmed === "0" || trimmed === "no" || trimmed === "off") {
+  if (
+    trimmed === "false" ||
+    trimmed === "0" ||
+    trimmed === "no" ||
+    trimmed === "off"
+  ) {
     return false;
   }
   return undefined;
@@ -142,21 +184,56 @@ function toSecretPath(key: string): string {
     segments.push(current);
   }
   const encoded = segments
-    .map(segment => segment.trim())
-    .filter(segment => segment.length > 0)
-    .map(segment => encodeURIComponent(segment));
+    .map((segment) => segment.trim())
+    .filter((segment) => segment.length > 0)
+    .map((segment) => encodeURIComponent(segment));
   if (encoded.length === 0) {
     throw new Error("Secret keys must contain at least one valid segment");
   }
   return encoded.join("/");
 }
 
+function readFileContent(filePath: string): string {
+  try {
+    const content = readFileSync(filePath, "utf-8").trim();
+    if (!content) {
+      throw new Error(`File at ${filePath} is empty`);
+    }
+    return content;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to read file at ${filePath}: ${message}`);
+  }
+}
+
+function computeRenewalDeadline(
+  leaseDurationSeconds: number | undefined,
+): number | undefined {
+  if (
+    !leaseDurationSeconds ||
+    !Number.isFinite(leaseDurationSeconds) ||
+    leaseDurationSeconds <= 0
+  ) {
+    return undefined;
+  }
+  const bufferSeconds = Math.min(
+    MIN_TOKEN_RENEW_BUFFER_SECONDS,
+    Math.max(5, Math.floor(leaseDurationSeconds * 0.1)),
+  );
+  const effectiveSeconds = Math.max(5, leaseDurationSeconds - bufferSeconds);
+  return Date.now() + effectiveSeconds * 1000;
+}
+
 export class VaultStore implements SecretsStore {
   private readonly baseUrl: URL;
-  private readonly token: string;
+  private token?: string;
   private readonly namespace?: string;
   private readonly mountPath: string;
   private readonly dispatcher?: Dispatcher;
+  private readonly authConfig?: VaultAuthConfig;
+  private readonly managedToken: boolean;
+  private tokenExpiresAt?: number;
+  private loginPromise: Promise<void> | null = null;
 
   constructor(options: VaultStoreOptions = {}) {
     const url = (options.url ?? process.env.VAULT_ADDR ?? "").trim();
@@ -165,24 +242,28 @@ export class VaultStore implements SecretsStore {
     }
     this.baseUrl = new URL(url);
 
-    const token = (options.token ?? process.env.VAULT_TOKEN ?? "").trim();
-    if (!token) {
-      throw new Error("VaultStore requires VAULT_TOKEN to be set");
-    }
-    this.token = token;
-
-    const namespace = (options.namespace ?? process.env.VAULT_NAMESPACE)?.trim();
+    const rawToken = options.token ?? process.env.VAULT_TOKEN;
+    const trimmedToken = rawToken?.trim();
+    const namespace = (
+      options.namespace ?? process.env.VAULT_NAMESPACE
+    )?.trim();
     this.namespace = namespace && namespace.length > 0 ? namespace : undefined;
 
-    const mountCandidate = options.kvMountPath ?? process.env.VAULT_KV_MOUNT ?? "secret";
+    const mountCandidate =
+      options.kvMountPath ?? process.env.VAULT_KV_MOUNT ?? "secret";
     const normalizedMount = trimSlashes(mountCandidate);
     this.mountPath = normalizedMount.length > 0 ? normalizedMount : "secret";
 
-    const caCert = resolveCaCertificate(options.caCert ?? process.env.VAULT_CA_CERT);
+    const caCert = resolveCaCertificate(
+      options.caCert ?? process.env.VAULT_CA_CERT,
+    );
     const rejectUnauthorized =
-      options.rejectUnauthorized ?? parseBoolean(process.env.VAULT_TLS_REJECT_UNAUTHORIZED);
+      options.rejectUnauthorized ??
+      parseBoolean(process.env.VAULT_TLS_REJECT_UNAUTHORIZED);
 
-    if (caCert || rejectUnauthorized !== undefined) {
+    if (options.dispatcher) {
+      this.dispatcher = options.dispatcher;
+    } else if (caCert || rejectUnauthorized !== undefined) {
       const agentOptions: ConstructorParameters<typeof Agent>[0] = {};
       agentOptions.connect = {};
       if (caCert) {
@@ -193,29 +274,206 @@ export class VaultStore implements SecretsStore {
       }
       this.dispatcher = new Agent(agentOptions);
     }
+
+    const authMethod = (options.authMethod ?? process.env.VAULT_AUTH_METHOD)
+      ?.trim()
+      ?.toLowerCase();
+    let authConfig: VaultAuthConfig | undefined;
+
+    if (!trimmedToken) {
+      if (authMethod === "kubernetes") {
+        const role = (options.role ?? process.env.VAULT_ROLE)?.trim();
+        if (!role) {
+          throw new Error(
+            "VaultStore requires VAULT_ROLE when using kubernetes auth",
+          );
+        }
+        const mount = trimSlashes(
+          options.authMountPath ?? process.env.VAULT_AUTH_MOUNT ?? "kubernetes",
+        );
+        const mountPath = mount.length > 0 ? mount : "kubernetes";
+        const inlineToken = (
+          options.kubernetesToken ?? process.env.VAULT_K8S_TOKEN
+        )?.trim();
+        const tokenPath =
+          options.kubernetesTokenPath ??
+          process.env.VAULT_K8S_TOKEN_PATH ??
+          DEFAULT_KUBERNETES_TOKEN_PATH;
+        authConfig = {
+          method: "kubernetes",
+          mountPath,
+          role,
+          token:
+            inlineToken && inlineToken.length > 0 ? inlineToken : undefined,
+          tokenPath: tokenPath?.trim() || undefined,
+        };
+      } else if (authMethod) {
+        throw new Error(
+          `VaultStore auth method '${authMethod}' is not supported`,
+        );
+      }
+    }
+
+    this.authConfig = authConfig;
+    this.managedToken = authConfig !== undefined;
+
+    if (!this.managedToken) {
+      if (!trimmedToken) {
+        throw new Error(
+          "VaultStore requires VAULT_TOKEN or supported auth configuration",
+        );
+      }
+      this.token = trimmedToken;
+    }
   }
 
   private buildUrl(path: string): string {
     return new URL(path, this.baseUrl).toString();
   }
 
-  private async request(path: string, init: RequestInit = {}): Promise<Response> {
-    const headers = new Headers(init.headers);
-    headers.set("X-Vault-Token", this.token);
+  private createBaseHeaders(init?: HeadersInit): Headers {
+    const headers = new Headers(init);
     if (this.namespace) {
       headers.set("X-Vault-Namespace", this.namespace);
     }
+    return headers;
+  }
+
+  private async send(path: string, init: RequestInit = {}): Promise<Response> {
     const requestInit: RequestInit & { dispatcher?: Dispatcher } = {
       ...init,
-      headers,
-      dispatcher: this.dispatcher
+      dispatcher: this.dispatcher,
     };
     return fetch(this.buildUrl(path), requestInit);
   }
 
+  private invalidateToken(): void {
+    this.token = undefined;
+    this.tokenExpiresAt = undefined;
+  }
+
+  private updateToken(token: string, leaseDuration?: number): void {
+    this.token = token.trim();
+    this.tokenExpiresAt = computeRenewalDeadline(leaseDuration);
+  }
+
+  private shouldRefreshToken(): boolean {
+    if (!this.token) {
+      return true;
+    }
+    if (this.tokenExpiresAt === undefined) {
+      return false;
+    }
+    return Date.now() >= this.tokenExpiresAt;
+  }
+
+  private async ensureToken(force = false): Promise<void> {
+    if (!this.managedToken) {
+      if (!this.token) {
+        throw new Error(
+          "VaultStore requires VAULT_TOKEN or supported auth configuration",
+        );
+      }
+      return;
+    }
+    const needsAuthentication = force || this.shouldRefreshToken();
+    if (!needsAuthentication) {
+      return;
+    }
+    if (!this.loginPromise) {
+      this.loginPromise = this.authenticate().finally(() => {
+        this.loginPromise = null;
+      });
+    }
+    await this.loginPromise;
+  }
+
+  private async authenticate(): Promise<void> {
+    if (!this.authConfig) {
+      throw new Error("Vault authentication configuration is missing");
+    }
+    switch (this.authConfig.method) {
+      case "kubernetes":
+        await this.loginWithKubernetes(this.authConfig);
+        break;
+      default:
+        throw new Error(
+          `VaultStore auth method '${this.authConfig.method}' is not supported`,
+        );
+    }
+  }
+
+  private resolveKubernetesJwt(config: KubernetesAuthConfig): string {
+    if (config.token && config.token.trim().length > 0) {
+      return config.token.trim();
+    }
+    const tokenPath = config.tokenPath ?? DEFAULT_KUBERNETES_TOKEN_PATH;
+    return readFileContent(tokenPath);
+  }
+
+  private async loginWithKubernetes(
+    config: KubernetesAuthConfig,
+  ): Promise<void> {
+    const jwt = this.resolveKubernetesJwt(config);
+    if (!jwt) {
+      throw new Error("Vault Kubernetes auth requires a non-empty JWT");
+    }
+    const mountPath = trimSlashes(config.mountPath) || "kubernetes";
+    const headers = this.createBaseHeaders({
+      "Content-Type": "application/json",
+    });
+    const body = JSON.stringify({ role: config.role, jwt });
+    const response = await this.send(`/v1/auth/${mountPath}/login`, {
+      method: "POST",
+      headers,
+      body,
+    });
+    if (!response.ok) {
+      throw new Error(
+        `Vault authentication failed with status ${response.status}`,
+      );
+    }
+    const payload = (await response.json()) as {
+      auth?: { client_token?: string; lease_duration?: number };
+    };
+    const clientToken = payload.auth?.client_token?.trim();
+    if (!clientToken) {
+      throw new Error("Vault authentication response missing client_token");
+    }
+    this.updateToken(clientToken, payload.auth?.lease_duration);
+  }
+
+  private async request(
+    path: string,
+    init: RequestInit = {},
+    retry = true,
+  ): Promise<Response> {
+    await this.ensureToken();
+    if (!this.token) {
+      throw new Error("Vault authentication did not yield a token");
+    }
+    const headers = this.createBaseHeaders(init.headers);
+    headers.set("X-Vault-Token", this.token);
+    const response = await this.send(path, {
+      ...init,
+      headers,
+    });
+    if (
+      (response.status === 401 || response.status === 403) &&
+      this.managedToken &&
+      retry
+    ) {
+      this.invalidateToken();
+      return this.request(path, init, false);
+    }
+    return response;
+  }
+
   async get(key: string): Promise<string | undefined> {
     const secretPath = toSecretPath(key);
-    const response = await this.request(`/v1/${this.mountPath}/data/${secretPath}`);
+    const response = await this.request(
+      `/v1/${this.mountPath}/data/${secretPath}`,
+    );
     if (response.status === 404) {
       return undefined;
     }
@@ -231,11 +489,14 @@ export class VaultStore implements SecretsStore {
 
   async set(key: string, value: string): Promise<void> {
     const secretPath = toSecretPath(key);
-    const response = await this.request(`/v1/${this.mountPath}/data/${secretPath}`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ data: { value } })
-    });
+    const response = await this.request(
+      `/v1/${this.mountPath}/data/${secretPath}`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ data: { value } }),
+      },
+    );
     if (!response.ok) {
       throw new Error(`Vault request failed with status ${response.status}`);
     }
@@ -243,9 +504,12 @@ export class VaultStore implements SecretsStore {
 
   async delete(key: string): Promise<void> {
     const secretPath = toSecretPath(key);
-    const response = await this.request(`/v1/${this.mountPath}/metadata/${secretPath}`, {
-      method: "DELETE"
-    });
+    const response = await this.request(
+      `/v1/${this.mountPath}/metadata/${secretPath}`,
+      {
+        method: "DELETE",
+      },
+    );
     if (response.status === 404) {
       return;
     }

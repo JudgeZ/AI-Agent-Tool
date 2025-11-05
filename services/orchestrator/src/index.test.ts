@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import http from "node:http";
 import https from "node:https";
+import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
 
@@ -72,6 +73,129 @@ describe("orchestrator http api", () => {
 
     expect(eventsResponse.body.events).toHaveLength(planResponse.body.plan.steps.length);
     expect(eventsResponse.body.events[0].step.capability).toBeDefined();
+  });
+
+  it("returns validation errors when the plan goal is empty", async () => {
+    const { createServer } = await import("./index.js");
+    const app = createServer();
+
+    const response = await request(app).post("/plan").send({ goal: "   " }).expect(400);
+
+    expect(response.body.error).toBe("invalid request");
+    expect(response.body.details).toEqual(
+      expect.arrayContaining([expect.objectContaining({ path: "goal" })]),
+    );
+  });
+
+  it("limits concurrent SSE connections per IP", async () => {
+    const { createServer, createHttpServer } = await import("./index.js");
+    const { loadConfig } = await import("./config.js");
+
+    const baseConfig = loadConfig();
+    const config = {
+      ...baseConfig,
+      server: {
+        ...baseConfig.server,
+        sseQuotas: {
+          perIp: 1,
+          perSubject: 1,
+        },
+      },
+    };
+
+    const app = createServer(config);
+    const planResponse = await request(app)
+      .post("/plan")
+      .send({ goal: "limit sse" })
+      .expect(201);
+
+    const planId: string = planResponse.body.plan.id;
+
+    const server = createHttpServer(app, config);
+    await new Promise<void>((resolve) => {
+      server.listen(0, resolve);
+    });
+
+    let serverClosed = false;
+    const address = server.address() as AddressInfo | null;
+    if (!address || typeof address.port !== "number") {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve();
+        });
+      });
+      serverClosed = true;
+      throw new Error("failed to determine server address");
+    }
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const openSse = (url: string) =>
+      new Promise<{ request: http.ClientRequest; response: http.IncomingMessage }>((resolve, reject) => {
+        const req = http.request(
+          url,
+          {
+            headers: {
+              Accept: "text/event-stream",
+            },
+          },
+          (res) => {
+            resolve({ request: req, response: res });
+          },
+        );
+        req.on("error", reject);
+        req.end();
+      });
+
+    let firstConnection: { request: http.ClientRequest; response: http.IncomingMessage } | undefined;
+    try {
+      firstConnection = await openSse(`${baseUrl}/plan/${planId}/events`);
+      expect(firstConnection.response.statusCode).toBe(200);
+
+      const secondConnection = await openSse(`${baseUrl}/plan/${planId}/events`);
+      expect(secondConnection.response.statusCode).toBe(429);
+
+      const body = await new Promise<string>((resolve, reject) => {
+        let data = "";
+        secondConnection.response.setEncoding("utf8");
+        secondConnection.response.on("data", (chunk) => {
+          data += chunk;
+        });
+        secondConnection.response.on("end", () => resolve(data));
+        secondConnection.response.on("error", reject);
+      });
+      expect(body).toContain("too many concurrent event streams");
+      secondConnection.request.destroy();
+      secondConnection.request.destroy();
+    } finally {
+      if (firstConnection) {
+        firstConnection.request.destroy();
+      }
+      if (!serverClosed) {
+        await new Promise<void>((resolve, reject) => {
+          server.close((err) => {
+            if (err) {
+              reject(err);
+              return;
+            }
+            resolve();
+          });
+        });
+        serverClosed = true;
+      }
+    }
+  });
+
+  it("exposes Prometheus metrics", async () => {
+    const { createServer } = await import("./index.js");
+    const app = createServer();
+
+    const metricsResponse = await request(app).get("/metrics").expect(200);
+    expect(metricsResponse.headers["content-type"]).toContain("text/plain");
+    expect(metricsResponse.text).toContain("orchestrator_queue_depth");
   });
 
   describe("step approvals", () => {
@@ -231,7 +355,13 @@ describe("orchestrator http api", () => {
     const app = createServer();
 
     const invalidResponse = await request(app).post("/chat").send({}).expect(400);
-    expect(invalidResponse.body.error).toContain("messages");
+    expect(invalidResponse.body.error).toBe("invalid request");
+    expect(Array.isArray(invalidResponse.body.details)).toBe(true);
+    expect(invalidResponse.body.details).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ path: "messages" }),
+      ]),
+    );
   });
 });
 

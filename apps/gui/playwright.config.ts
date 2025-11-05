@@ -1,5 +1,8 @@
 import type { PlaywrightTestConfig } from '@playwright/test';
 
+const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env ?? {};
+const isCI = Boolean(env.CI);
+
 const config: PlaywrightTestConfig = {
   testDir: './tests',
   use: {
@@ -10,14 +13,14 @@ const config: PlaywrightTestConfig = {
     {
       command: 'npm run mock:orchestrator',
       port: 4010,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: !isCI,
       stdout: 'pipe',
       stderr: 'pipe'
     },
     {
       command: 'npm run dev:test',
       port: 4173,
-      reuseExistingServer: !process.env.CI,
+      reuseExistingServer: !isCI,
       timeout: 120_000
     }
   ]

@@ -6,6 +6,8 @@ export const QUEUE_ACK_NAME = "orchestrator_queue_acks_total";
 export const QUEUE_DEADLETTER_NAME = "orchestrator_queue_dead_letters_total";
 export const QUEUE_RESULTS_NAME = "orchestrator_queue_results_total";
 export const QUEUE_PROCESSING_SECONDS_NAME = "orchestrator_queue_processing_seconds";
+export const QUEUE_PARTITION_LAG_NAME = "orchestrator_queue_partition_lag";
+export const QUEUE_LAG_NAME = "orchestrator_queue_lag";
 
 function getOrCreateGauge(): Gauge<string> {
   const existing = register.getSingleMetric(QUEUE_DEPTH_NAME) as Gauge<string> | undefined;
@@ -55,10 +57,36 @@ function getOrCreateDeadLetterCounter(): Counter<string> {
   });
 }
 
+function getOrCreateLagGauge(): Gauge<string> {
+  const existing = register.getSingleMetric(QUEUE_LAG_NAME) as Gauge<string> | undefined;
+  if (existing) {
+    return existing;
+  }
+  return new Gauge({
+    name: QUEUE_LAG_NAME,
+    help: "Total consumer lag for orchestrator queues (messages)",
+    labelNames: ["queue"]
+  });
+}
+
+function getOrCreatePartitionLagGauge(): Gauge<string> {
+  const existing = register.getSingleMetric(QUEUE_PARTITION_LAG_NAME) as Gauge<string> | undefined;
+  if (existing) {
+    return existing;
+  }
+  return new Gauge({
+    name: QUEUE_PARTITION_LAG_NAME,
+    help: "Consumer lag for orchestrator queues by partition",
+    labelNames: ["queue", "partition"]
+  });
+}
+
 export const queueDepthGauge = getOrCreateGauge();
 export const queueRetryCounter = getOrCreateRetryCounter();
 export const queueAckCounter = getOrCreateAckCounter();
 export const queueDeadLetterCounter = getOrCreateDeadLetterCounter();
+export const queueLagGauge = getOrCreateLagGauge();
+export const queuePartitionLagGauge = getOrCreatePartitionLagGauge();
 const resultCounter = getOrCreateResultCounter();
 const processingHistogram = getOrCreateProcessingHistogram();
 
@@ -68,6 +96,8 @@ export function resetMetrics(): void {
   queueRetryCounter.reset();
   queueAckCounter.reset();
   queueDeadLetterCounter.reset();
+  queueLagGauge.reset();
+  queuePartitionLagGauge.reset();
   resultCounter.reset();
   processingHistogram.reset();
 }
@@ -99,3 +129,11 @@ function getOrCreateProcessingHistogram(): Histogram<string> {
 
 export const queueResultCounter = resultCounter;
 export const queueProcessingHistogram = processingHistogram;
+
+export function getMetricsContentType(): string {
+  return register.contentType;
+}
+
+export function getMetricsSnapshot(): Promise<string> {
+  return register.metrics();
+}

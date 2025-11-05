@@ -62,7 +62,7 @@ func TestEventsHandlerForwardsSSEStream(t *testing.T) {
 	}))
 	defer orchestrator.Close()
 
-	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 50*time.Millisecond)
+	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 50*time.Millisecond, nil)
 
 	mux := http.NewServeMux()
 	mux.Handle("/events", handler)
@@ -70,7 +70,7 @@ func TestEventsHandlerForwardsSSEStream(t *testing.T) {
 	gatewaySrv := httptest.NewServer(mux)
 	defer gatewaySrv.Close()
 
-	req, err := http.NewRequest(http.MethodGet, gatewaySrv.URL+"/events?plan_id=abc-123", nil)
+	req, err := http.NewRequest(http.MethodGet, gatewaySrv.URL+"/events?plan_id=plan-deadbeef", nil)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
@@ -103,10 +103,81 @@ func TestEventsHandlerForwardsSSEStream(t *testing.T) {
 
 	select {
 	case path := <-planPath:
-		if path != "/plan/abc-123/events" {
+		if path != "/plan/plan-deadbeef/events" {
 			t.Fatalf("unexpected upstream path: %s", path)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("gateway did not call orchestrator")
 	}
+}
+
+func TestEventsHandlerRejectsInvalidPlanID(t *testing.T) {
+	handler := NewEventsHandler(nil, "http://orchestrator", 0, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/events?plan_id=not-valid", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid plan_id, got %d", rec.Code)
+	}
+
+	if !strings.Contains(rec.Body.String(), "plan_id is invalid") {
+		t.Fatalf("expected validation message, got %q", rec.Body.String())
+	}
+}
+
+func TestEventsHandlerEnforcesConnectionLimit(t *testing.T) {
+	block := make(chan struct{})
+	orchestrator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("upstream recorder missing flusher")
+		}
+		if _, err := io.WriteString(w, "data: first\n\n"); err != nil {
+			t.Fatalf("failed to write upstream event: %v", err)
+		}
+		flusher.Flush()
+		<-block
+	}))
+	defer orchestrator.Close()
+
+	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 0, newConnectionLimiter(1))
+	mux := http.NewServeMux()
+	mux.Handle("/events", handler)
+
+	gatewaySrv := httptest.NewServer(mux)
+	defer gatewaySrv.Close()
+
+	req1, err := http.NewRequest(http.MethodGet, gatewaySrv.URL+"/events?plan_id=plan-deadbeef", nil)
+	if err != nil {
+		t.Fatalf("failed to create first request: %v", err)
+	}
+	req1.Header.Set("Accept", "text/event-stream")
+	resp1, err := gatewaySrv.Client().Do(req1)
+	if err != nil {
+		t.Fatalf("first request failed: %v", err)
+	}
+	if resp1.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 for first stream, got %d", resp1.StatusCode)
+	}
+
+	req2, err := http.NewRequest(http.MethodGet, gatewaySrv.URL+"/events?plan_id=plan-deadbeef", nil)
+	if err != nil {
+		t.Fatalf("failed to create second request: %v", err)
+	}
+	req2.Header.Set("Accept", "text/event-stream")
+	resp2, err := gatewaySrv.Client().Do(req2)
+	if err != nil {
+		t.Fatalf("second request failed: %v", err)
+	}
+	if resp2.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 for second stream, got %d", resp2.StatusCode)
+	}
+	resp2.Body.Close()
+
+	close(block)
+	resp1.Body.Close()
 }

@@ -9,6 +9,11 @@ export type RateLimitConfig = {
   maxRequests: number;
 };
 
+export type SseQuotaConfig = {
+  perIp: number;
+  perSubject: number;
+};
+
 export type CircuitBreakerConfig = {
   failureThreshold: number;
   resetTimeoutMs: number;
@@ -22,20 +27,102 @@ export type TlsConfig = {
   requestClientCert: boolean;
 };
 
+export type KafkaSaslMechanism = "plain" | "scram-sha-256" | "scram-sha-512" | "aws" | "oauthbearer";
+
+export type KafkaSaslConfig = {
+  mechanism: KafkaSaslMechanism;
+  username?: string;
+  password?: string;
+  authorizationIdentity?: string;
+};
+
+export type KafkaTlsConfig = {
+  enabled: boolean;
+  caPaths: string[];
+  certPath?: string;
+  keyPath?: string;
+  rejectUnauthorized: boolean;
+};
+
+export type KafkaTopicsConfig = {
+  planSteps: string;
+  planCompletions: string;
+  planEvents: string;
+  planState: string;
+  deadLetterSuffix: string;
+};
+
+export type KafkaMessagingConfig = {
+  brokers: string[];
+  clientId: string;
+  consumerGroup: string;
+  consumeFromBeginning: boolean;
+  retryDelayMs: number;
+  topics: KafkaTopicsConfig;
+  tls: KafkaTlsConfig;
+  sasl?: KafkaSaslConfig;
+  ensureTopics: boolean;
+  topicPartitions?: number;
+  replicationFactor?: number;
+  topicConfig: Record<string, string>;
+  compactTopics: string[];
+};
+
 export type ObservabilityConfig = {
   tracing: TracingConfig;
 };
 
+export type ContentCaptureConfig = {
+  enabled: boolean;
+};
+
+export type RetentionConfig = {
+  planStateDays: number;
+  planArtifactsDays: number;
+  contentCapture: ContentCaptureConfig;
+};
+
+export type OidcSessionConfig = {
+  cookieName: string;
+  ttlSeconds: number;
+};
+
+export type OidcRolesConfig = {
+  claim?: string;
+  fallback: string[];
+  mappings: Record<string, string[]>;
+  tenantMappings: Record<string, Record<string, string[]>>;
+};
+
+export type OidcAuthConfig = {
+  enabled: boolean;
+  issuer: string;
+  clientId: string;
+  clientSecret?: string;
+  redirectBaseUrl: string;
+  redirectUri: string;
+  scopes: string[];
+  tenantClaim?: string;
+  audience?: string;
+  logoutUrl?: string;
+  roles: OidcRolesConfig;
+  session: OidcSessionConfig;
+};
+
 export type AppConfig = {
   runMode: "consumer" | "enterprise";
-  messaging: { type: "rabbitmq" | "kafka" };
+  messaging: { type: "rabbitmq" | "kafka"; kafka: KafkaMessagingConfig };
   providers: {
     defaultRoute: "balanced" | "high_quality" | "low_cost";
     enabled: string[];
     rateLimit: RateLimitConfig;
     circuitBreaker: CircuitBreakerConfig;
   };
-  auth: { oauth: { redirectBaseUrl: string } };
+  auth: {
+    oauth: { redirectBaseUrl: string };
+    oidc: OidcAuthConfig;
+  };
+  retention: RetentionConfig;
   secrets: { backend: "localfile" | "vault" };
   tooling: {
     agentEndpoint: string;
@@ -47,7 +134,9 @@ export type AppConfig = {
     rateLimits: {
       plan: RateLimitConfig;
       chat: RateLimitConfig;
+      auth: RateLimitConfig;
     };
+    sseQuotas: SseQuotaConfig;
     tls: TlsConfig;
   };
   observability: ObservabilityConfig;
@@ -63,9 +152,22 @@ function ensurePositiveRateLimit(value: RateLimitConfig, context: string): RateL
   return value;
 }
 
+function sanitizeQuotaValue(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return Math.max(0, Math.floor(fallback));
+  }
+  const normalized = Math.floor(value);
+  return normalized < 0 ? 0 : normalized;
+}
+
 type PartialRateLimitConfig = {
   windowMs?: number;
   maxRequests?: number;
+};
+
+type PartialSseQuotaConfig = {
+  perIp?: number;
+  perSubject?: number;
 };
 
 type PartialCircuitBreakerConfig = {
@@ -90,6 +192,10 @@ type PartialTracingConfig = {
   sampleRatio?: number;
 };
 
+type PartialObservabilityConfig = {
+  tracing?: PartialTracingConfig;
+};
+
 type PartialProvidersConfig = {
   defaultRoute?: AppConfig["providers"]["defaultRoute"];
   enabled?: string[];
@@ -97,17 +203,31 @@ type PartialProvidersConfig = {
   circuitBreaker?: PartialCircuitBreakerConfig;
 };
 
-type PartialServerConfig = {
-  sseKeepAliveMs?: number;
-  rateLimits?: {
-    plan?: PartialRateLimitConfig;
-    chat?: PartialRateLimitConfig;
-  };
-  tls?: PartialTlsConfig;
+type PartialContentCaptureConfig = {
+  enabled?: boolean;
 };
 
-type PartialObservabilityConfig = {
-  tracing?: PartialTracingConfig;
+type PartialRetentionConfig = {
+  planStateDays?: number;
+  planArtifactsDays?: number;
+  contentCapture?: PartialContentCaptureConfig;
+};
+
+type PartialAuthConfig = {
+  oauth?: Partial<AppConfig["auth"]["oauth"]>;
+  oidc?: PartialOidcAuthConfig;
+};
+
+type PartialAppConfig = {
+  runMode?: AppConfig["runMode"];
+  messaging?: PartialMessagingConfig;
+  providers?: PartialProvidersConfig;
+  auth?: PartialAuthConfig;
+  retention?: PartialRetentionConfig;
+  secrets?: Partial<AppConfig["secrets"]>;
+  tooling?: Partial<AppConfig["tooling"]>;
+  server?: PartialServerConfig;
+  observability?: PartialObservabilityConfig;
 };
 
 const DEFAULT_TRACING_CONFIG: TracingConfig = {
@@ -119,20 +239,38 @@ const DEFAULT_TRACING_CONFIG: TracingConfig = {
   sampleRatio: 1
 };
 
-type PartialAppConfig = {
-  runMode?: AppConfig["runMode"];
-  messaging?: Partial<AppConfig["messaging"]>;
-  providers?: PartialProvidersConfig;
-  auth?: { oauth?: Partial<AppConfig["auth"]["oauth"]> };
-  secrets?: Partial<AppConfig["secrets"]>;
-  tooling?: Partial<AppConfig["tooling"]>;
-  server?: PartialServerConfig;
-  observability?: PartialObservabilityConfig;
-};
-
 const DEFAULT_CONFIG: AppConfig = {
   runMode: "consumer",
-  messaging: { type: "rabbitmq" },
+  messaging: {
+    type: "rabbitmq",
+    kafka: {
+      brokers: ["localhost:9092"],
+      clientId: "oss-ai-orchestrator",
+      consumerGroup: "oss-ai-orchestrator-plan-executor",
+      consumeFromBeginning: false,
+      retryDelayMs: 1000,
+      topics: {
+        planSteps: "plan.steps",
+        planCompletions: "plan.completions",
+        planEvents: "plan.events",
+        planState: "plan.state",
+        deadLetterSuffix: ".dead"
+      },
+      tls: {
+        enabled: false,
+        caPaths: [],
+        certPath: undefined,
+        keyPath: undefined,
+        rejectUnauthorized: true
+      },
+      sasl: undefined,
+      ensureTopics: true,
+      topicPartitions: 1,
+      replicationFactor: 1,
+      topicConfig: {},
+      compactTopics: []
+    }
+  },
   providers: {
     defaultRoute: "balanced",
     enabled: ["openai", "local_ollama"],
@@ -145,7 +283,38 @@ const DEFAULT_CONFIG: AppConfig = {
       resetTimeoutMs: 30_000
     }
   },
-  auth: { oauth: { redirectBaseUrl: "http://127.0.0.1:8080" } },
+  auth: {
+    oauth: { redirectBaseUrl: "http://127.0.0.1:8080" },
+    oidc: {
+      enabled: false,
+      issuer: "",
+      clientId: "",
+      clientSecret: undefined,
+      redirectBaseUrl: "http://127.0.0.1:8080",
+      redirectUri: "http://127.0.0.1:8080/auth/oidc/callback",
+      scopes: ["openid", "profile", "email"],
+      tenantClaim: undefined,
+      audience: undefined,
+      logoutUrl: undefined,
+      roles: {
+        claim: "roles",
+        fallback: [],
+        mappings: {},
+        tenantMappings: {}
+      },
+      session: {
+        cookieName: "oss_session",
+        ttlSeconds: 60 * 60 * 8
+      }
+    }
+  },
+  retention: {
+    planStateDays: 30,
+    planArtifactsDays: 30,
+    contentCapture: {
+      enabled: false
+    }
+  },
   secrets: { backend: "localfile" },
   tooling: {
     agentEndpoint: "127.0.0.1:50051",
@@ -162,7 +331,15 @@ const DEFAULT_CONFIG: AppConfig = {
       chat: {
         windowMs: 60_000,
         maxRequests: 600
+      },
+      auth: {
+        windowMs: 60_000,
+        maxRequests: 120
       }
+    },
+    sseQuotas: {
+      perIp: 4,
+      perSubject: 2
     },
     tls: {
       enabled: false,
@@ -175,6 +352,90 @@ const DEFAULT_CONFIG: AppConfig = {
   observability: {
     tracing: { ...DEFAULT_TRACING_CONFIG }
   }
+};
+
+type PartialKafkaTopicsConfig = {
+  planSteps?: string;
+  planCompletions?: string;
+  planEvents?: string;
+  planState?: string;
+  deadLetterSuffix?: string;
+};
+
+type PartialKafkaTlsConfig = {
+  enabled?: boolean;
+  caPaths?: string[];
+  certPath?: string;
+  keyPath?: string;
+  rejectUnauthorized?: boolean;
+};
+
+type PartialKafkaSaslConfig = {
+  mechanism?: KafkaSaslMechanism;
+  username?: string;
+  password?: string;
+  authorizationIdentity?: string;
+};
+
+type PartialKafkaMessagingConfig = {
+  brokers?: string[];
+  clientId?: string;
+  consumerGroup?: string;
+  consumeFromBeginning?: boolean;
+  retryDelayMs?: number;
+  topics?: PartialKafkaTopicsConfig;
+  tls?: PartialKafkaTlsConfig;
+  sasl?: PartialKafkaSaslConfig | null;
+  ensureTopics?: boolean;
+  topicPartitions?: number;
+  replicationFactor?: number;
+  topicConfig?: Record<string, string>;
+  compactTopics?: string[];
+};
+
+type PartialMessagingConfig = {
+  type?: AppConfig["messaging"]["type"];
+  kafka?: PartialKafkaMessagingConfig;
+};
+
+type PartialServerRateLimitsConfig = {
+  plan?: PartialRateLimitConfig;
+  chat?: PartialRateLimitConfig;
+  auth?: PartialRateLimitConfig;
+};
+
+type PartialServerConfig = {
+  sseKeepAliveMs?: number;
+  rateLimits?: PartialServerRateLimitsConfig;
+  tls?: PartialTlsConfig;
+  sseQuotas?: PartialSseQuotaConfig;
+};
+
+type PartialOidcSessionConfig = {
+  cookieName?: string;
+  ttlSeconds?: number;
+};
+
+type PartialOidcRolesConfig = {
+  claim?: string;
+  fallback?: string[];
+  mappings?: Record<string, string[]>;
+  tenantMappings?: Record<string, Record<string, string[]>>;
+};
+
+type PartialOidcAuthConfig = {
+  enabled?: boolean;
+  issuer?: string;
+  clientId?: string;
+  clientSecret?: string;
+  redirectBaseUrl?: string;
+  redirectUri?: string;
+  scopes?: string[];
+  tenantClaim?: string;
+  audience?: string;
+  logoutUrl?: string;
+  roles?: PartialOidcRolesConfig;
+  session?: PartialOidcSessionConfig;
 };
 
 export class ConfigLoadError extends Error {
@@ -241,6 +502,25 @@ function parseRateLimitConfig(value: unknown): PartialRateLimitConfig | undefine
   }
   if (maxRequests !== undefined) {
     result.maxRequests = maxRequests;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseSseQuotaConfig(value: unknown): PartialSseQuotaConfig | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const perIp = asNumber(record.perIp ?? record.per_ip ?? record.ip);
+  const perSubject = asNumber(
+    record.perSubject ?? record.per_subject ?? record.perUser ?? record.user ?? record.session,
+  );
+  const result: PartialSseQuotaConfig = {};
+  if (perIp !== undefined) {
+    result.perIp = perIp;
+  }
+  if (perSubject !== undefined) {
+    result.perSubject = perSubject;
   }
   return Object.keys(result).length > 0 ? result : undefined;
 }
@@ -396,6 +676,368 @@ function parseStringList(value: string | undefined): string[] | undefined {
     .filter(entry => entry.length > 0);
   return items.length > 0 ? items : undefined;
 }
+function asString(value: unknown): string | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+function parseStringArrayFlexible(value: unknown): string[] | undefined {
+  if (Array.isArray(value)) {
+    const entries = value
+      .map(item => {
+        if (typeof item === "string") {
+          return item.trim();
+        }
+        if (typeof item === "number") {
+          return String(item);
+        }
+        return undefined;
+      })
+      .filter((entry): entry is string => !!entry && entry.length > 0);
+    return entries.length > 0 ? entries : undefined;
+  }
+  if (typeof value === "string") {
+    return parseStringList(value);
+  }
+  return undefined;
+}
+function parseKafkaMechanism(value: unknown): KafkaSaslMechanism | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  switch (normalized) {
+    case "plain":
+    case "scram-sha-256":
+    case "scram-sha-512":
+    case "aws":
+      return normalized as KafkaSaslMechanism;
+    case "oauthbearer":
+    case "oauthbearertoken":
+      return "oauthbearer";
+    default:
+      return undefined;
+  }
+}
+function parseKafkaTopicsRecord(value: unknown): PartialKafkaTopicsConfig | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const result: PartialKafkaTopicsConfig = {};
+  const planSteps = asString(record.planSteps ?? record.plan_steps);
+  if (planSteps) {
+    result.planSteps = planSteps;
+  }
+  const planCompletions = asString(record.planCompletions ?? record.plan_completions);
+  if (planCompletions) {
+    result.planCompletions = planCompletions;
+  }
+  const planEvents = asString(record.planEvents ?? record.plan_events);
+  if (planEvents) {
+    result.planEvents = planEvents;
+  }
+  const planState = asString(record.planState ?? record.plan_state);
+  if (planState) {
+    result.planState = planState;
+  }
+  const deadLetterSuffix = asString(record.deadLetterSuffix ?? record.dead_letter_suffix ?? record.deadLetter);
+  if (deadLetterSuffix) {
+    result.deadLetterSuffix = deadLetterSuffix;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+function parseKafkaTlsRecord(value: unknown): PartialKafkaTlsConfig | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const result: PartialKafkaTlsConfig = {};
+  const enabled = asBoolean(record.enabled);
+  if (enabled !== undefined) {
+    result.enabled = enabled;
+  }
+  const caPaths = parseStringArrayFlexible(record.caPaths ?? record.ca_paths ?? record.ca);
+  if (caPaths) {
+    result.caPaths = caPaths;
+  }
+  const certPath = asString(record.certPath ?? record.cert_path ?? record.cert);
+  if (certPath) {
+    result.certPath = certPath;
+  }
+  const keyPath = asString(record.keyPath ?? record.key_path ?? record.key);
+  if (keyPath) {
+    result.keyPath = keyPath;
+  }
+  const rejectUnauthorized = asBoolean(record.rejectUnauthorized ?? record.reject_unauthorized);
+  if (rejectUnauthorized !== undefined) {
+    result.rejectUnauthorized = rejectUnauthorized;
+  } else {
+    const skipVerify = asBoolean(record.skipVerify ?? record.insecureSkipVerify ?? record.insecureSkipTlsVerify);
+    if (skipVerify !== undefined) {
+      result.rejectUnauthorized = !skipVerify;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+function parseKafkaSaslRecord(value: unknown): PartialKafkaSaslConfig | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const result: PartialKafkaSaslConfig = {};
+  const mechanism = parseKafkaMechanism(record.mechanism ?? record.type);
+  if (mechanism) {
+    result.mechanism = mechanism;
+  }
+  const username = asString(record.username ?? record.user ?? record.clientId ?? record.principal);
+  if (username) {
+    result.username = username;
+  }
+  const password = asString(record.password ?? record.pass ?? record.secret);
+  if (password) {
+    result.password = password;
+  }
+  const authorizationIdentity = asString(
+    record.authorizationIdentity ?? record.authorization_identity ?? record.authzIdentity ?? record.authz_identity
+  );
+  if (authorizationIdentity) {
+    result.authorizationIdentity = authorizationIdentity;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+function parseKafkaMessagingRecord(value: unknown): PartialKafkaMessagingConfig | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const result: PartialKafkaMessagingConfig = {};
+  const brokers = parseStringArrayFlexible(record.brokers);
+  if (brokers) {
+    result.brokers = brokers;
+  }
+  const clientId = asString(record.clientId ?? record.client_id ?? record.client);
+  if (clientId) {
+    result.clientId = clientId;
+  }
+  const consumerGroup = asString(record.consumerGroup ?? record.groupId ?? record.consumer_group ?? record.group);
+  if (consumerGroup) {
+    result.consumerGroup = consumerGroup;
+  }
+  const consumeFromBeginning = asBoolean(
+    record.consumeFromBeginning ?? record.fromBeginning ?? record.startFromEarliest
+  );
+  if (consumeFromBeginning !== undefined) {
+    result.consumeFromBeginning = consumeFromBeginning;
+  }
+  const retryDelayMs = asNumber(record.retryDelayMs ?? record.retry_delay_ms ?? record.retryDelay);
+  if (retryDelayMs !== undefined) {
+    result.retryDelayMs = retryDelayMs;
+  }
+  const topics = parseKafkaTopicsRecord(record.topics);
+  if (topics) {
+    result.topics = topics;
+  }
+  const tls = parseKafkaTlsRecord(record.tls);
+  if (tls) {
+    result.tls = tls;
+  }
+  if (record.sasl === null) {
+    result.sasl = null;
+  } else {
+    const sasl = parseKafkaSaslRecord(record.sasl);
+    if (sasl) {
+      result.sasl = sasl;
+    }
+  }
+  const ensureTopics = asBoolean(record.ensureTopics ?? record.ensure_topics);
+  if (ensureTopics !== undefined) {
+    result.ensureTopics = ensureTopics;
+  }
+  const topicPartitions = asNumber(record.topicPartitions ?? record.topic_partitions);
+  if (topicPartitions !== undefined) {
+    result.topicPartitions = topicPartitions;
+  }
+  const replicationFactor = asNumber(record.replicationFactor ?? record.replication_factor);
+  if (replicationFactor !== undefined) {
+    result.replicationFactor = replicationFactor;
+  }
+  const topicConfigString = asString(record.topicDefaultConfig ?? record.topic_default_config);
+  if (topicConfigString) {
+    const parsedConfig = parseTopicConfig(topicConfigString);
+    if (parsedConfig) {
+      result.topicConfig = parsedConfig;
+    }
+  }
+  const compactTopics = parseStringArrayFlexible(record.compactTopics ?? record.compact_topics);
+  if (compactTopics && compactTopics.length > 0) {
+    result.compactTopics = compactTopics;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseTopicConfig(value: string): Record<string, string> | undefined {
+  const record = asRecord(YAML.parse(value));
+  if (!record) {
+    return undefined;
+  }
+  const result: Record<string, string> = {};
+  for (const [key, raw] of Object.entries(record)) {
+    if (typeof raw === "string") {
+      result[key] = raw;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseScopesString(value: string | undefined): string[] | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const items = value
+    .split(/[\s,]+/)
+    .map(item => item.trim())
+    .filter(item => item.length > 0);
+  return items.length > 0 ? Array.from(new Set(items)) : undefined;
+}
+
+function parseScopesValue(value: unknown): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const arrayValue = parseStringArrayFlexible(value);
+  if (arrayValue && arrayValue.length > 0) {
+    return arrayValue;
+  }
+  if (typeof value === "string") {
+    return parseScopesString(value);
+  }
+  return undefined;
+}
+
+function normalizeScopes(scopes: string[]): string[] {
+  const normalized = scopes
+    .map(scope => scope.trim())
+    .filter(scope => scope.length > 0);
+  const set = new Set(normalized);
+  set.add("openid");
+  return Array.from(set);
+}
+
+function normalizeRetentionDays(value: number | undefined, fallback: number): number {
+  if (value === undefined || Number.isNaN(value)) {
+    return fallback;
+  }
+  if (value <= 0) {
+    return 0;
+  }
+  return Math.round(value);
+}
+
+function parseOidcSessionRecord(value: unknown): PartialOidcSessionConfig | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const result: PartialOidcSessionConfig = {};
+  const cookieName = asString(record.cookieName ?? record.cookie_name);
+  if (cookieName) {
+    result.cookieName = cookieName;
+  }
+  const ttlSeconds = asNumber(record.ttlSeconds ?? record.ttl_seconds ?? record.ttl);
+  if (ttlSeconds !== undefined) {
+    result.ttlSeconds = ttlSeconds;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseOidcConfigRecord(value: unknown): PartialOidcAuthConfig | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const result: PartialOidcAuthConfig = {};
+  const enabled = asBoolean(record.enabled);
+  if (enabled !== undefined) {
+    result.enabled = enabled;
+  }
+  const issuer = asString(record.issuer ?? record.issuerUrl ?? record.issuer_url);
+  if (issuer) {
+    result.issuer = issuer;
+  }
+  const clientId = asString(record.clientId ?? record.client_id);
+  if (clientId) {
+    result.clientId = clientId;
+  }
+  const clientSecret = asString(record.clientSecret ?? record.client_secret);
+  if (clientSecret) {
+    result.clientSecret = clientSecret;
+  }
+  const redirectBase = asString(record.redirectBaseUrl ?? record.redirect_base_url ?? record.redirectBase);
+  if (redirectBase) {
+    result.redirectBaseUrl = redirectBase;
+  }
+  const redirectUri = asString(record.redirectUri ?? record.redirect_uri);
+  if (redirectUri) {
+    result.redirectUri = redirectUri;
+  }
+  const scopes = parseScopesValue(record.scopes);
+  if (scopes) {
+    result.scopes = scopes;
+  }
+  const tenantClaim = asString(record.tenantClaim ?? record.tenant_claim ?? record.tenant);
+  if (tenantClaim) {
+    result.tenantClaim = tenantClaim;
+  }
+  const audience = asString(record.audience ?? record.aud);
+  if (audience) {
+    result.audience = audience;
+  }
+  const logoutUrl = asString(record.logoutUrl ?? record.logout_url ?? record.endSessionEndpoint ?? record.end_session_endpoint);
+  if (logoutUrl) {
+    result.logoutUrl = logoutUrl;
+  }
+  const session = parseOidcSessionRecord(record.session);
+  if (session) {
+    result.session = session;
+  }
+  const roles = parseOidcRolesRecord(record.roles);
+  if (roles) {
+    result.roles = roles;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseOidcRolesRecord(value: unknown): PartialOidcRolesConfig | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const result: PartialOidcRolesConfig = {};
+  const claim = asString(record.claim ?? record.roleClaim ?? record.claimName ?? record.claim_field);
+  if (claim) {
+    result.claim = claim;
+  }
+  const fallback = parseRolesValue(record.fallback ?? record.default ?? record.defaults ?? record.static);
+  if (fallback) {
+    result.fallback = normalizeStringSet(fallback);
+  }
+  const mappings =
+    parseRoleMappingsRecord(record.mappings ?? record.mapping ?? record.bindings ?? record.roleMappings) ?? undefined;
+  if (mappings) {
+    result.mappings = mappings;
+  }
+  const tenantMappings =
+    parseTenantRoleMappingsRecord(
+      record.tenantMappings ?? record.tenant_mapping ?? record.tenants ?? record.tenantRoleMappings
+    ) ?? undefined;
+  if (tenantMappings) {
+    result.tenantMappings = tenantMappings;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
 
 function normalizeSampleRatio(value: number | undefined, fallback: number): number {
   if (value === undefined || Number.isNaN(value)) {
@@ -420,6 +1062,14 @@ function normalizeOtlpEndpoint(value: string, defaultValue: string): string {
     return sanitized;
   }
   return `${sanitized}/v1/traces`;
+}
+
+function normalizeBaseUrl(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return trimmed;
+  }
+  return trimmed.replace(/\/+$/, "");
 }
 
 function extractResourceAttribute(resourceString: string | undefined, key: string): string | undefined {
@@ -452,6 +1102,99 @@ export function __resetLegacyMessagingWarningForTests(): void {
   legacyMessageBusWarningIssued = false;
 }
 
+function parseRolesString(value: string): string[] {
+  return value
+    .split(/[\s,]+/)
+    .map(entry => entry.trim())
+    .filter(entry => entry.length > 0);
+}
+
+function parseRolesValue(value: unknown): string[] | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  const arrayValue = parseStringArrayFlexible(value);
+  if (arrayValue && arrayValue.length > 0) {
+    return arrayValue;
+  }
+  if (typeof value === "string") {
+    const parsed = parseRolesString(value);
+    return parsed.length > 0 ? parsed : undefined;
+  }
+  return undefined;
+}
+
+function normalizeStringSet(values: string[]): string[] {
+  const normalized = values
+    .map(value => value.trim())
+    .filter(value => value.length > 0);
+  return Array.from(new Set(normalized)).sort((a, b) => a.localeCompare(b));
+}
+
+function parseRoleMappingsRecord(value: unknown): Record<string, string[]> | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const result: Record<string, string[]> = {};
+  for (const [key, raw] of Object.entries(record)) {
+    const mappingKey = key.trim();
+    if (!mappingKey) {
+      continue;
+    }
+    const roles = parseRolesValue(raw);
+    if (roles && roles.length > 0) {
+      result[mappingKey] = normalizeStringSet(roles);
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseTenantRoleMappingsRecord(
+  value: unknown
+): Record<string, Record<string, string[]>> | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const result: Record<string, Record<string, string[]>> = {};
+  for (const [tenant, raw] of Object.entries(record)) {
+    const tenantKey = tenant.trim();
+    if (!tenantKey) {
+      continue;
+    }
+    const mapping = parseRoleMappingsRecord(raw);
+    if (mapping) {
+      result[tenantKey] = mapping;
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseRetentionConfigRecord(value: unknown): PartialRetentionConfig | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const result: PartialRetentionConfig = {};
+  const planStateDays = asNumber(record.planStateDays ?? record.plan_state_days ?? record.stateDays);
+  if (planStateDays !== undefined) {
+    result.planStateDays = planStateDays;
+  }
+  const planArtifactsDays = asNumber(record.planArtifactsDays ?? record.plan_artifacts_days ?? record.artifactDays);
+  if (planArtifactsDays !== undefined) {
+    result.planArtifactsDays = planArtifactsDays;
+  }
+  const contentCaptureRecord = asRecord(record.contentCapture ?? record.content_capture ?? record.capture);
+  if (contentCaptureRecord) {
+    const enabled = asBoolean(contentCaptureRecord.enabled ?? contentCaptureRecord.default);
+    if (enabled !== undefined) {
+      result.contentCapture = { enabled };
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
 export function loadConfig(): AppConfig {
   const cfgPath = process.env.APP_CONFIG || path.join(process.cwd(), "config", "app.yaml");
   let fileCfg: PartialAppConfig = {};
@@ -461,23 +1204,48 @@ export function loadConfig(): AppConfig {
       const parsed = YAML.parse(rawFile);
       const doc = asRecord(parsed);
       if (doc) {
-        const messaging = asRecord(doc.messaging);
+        const messagingRecord = asRecord(doc.messaging);
         const providers = asRecord(doc.providers);
         const auth = asRecord(doc.auth);
         const oauth = asRecord(auth?.oauth);
+        const oidc = asRecord(auth?.oidc);
         const secrets = asRecord(doc.secrets);
         const tooling = asRecord(doc.tooling);
         const server = asRecord(doc.server);
         const observability = asRecord(doc.observability);
         const tracing = parseTracingConfigRecord(observability?.tracing);
+        const retention = parseRetentionConfigRecord(doc.retention);
 
         const providerRateLimit = providers ? parseRateLimitConfig(providers.rateLimit) : undefined;
         const providerCircuitBreaker = providers ? parseCircuitBreakerConfig(providers.circuitBreaker) : undefined;
         const serverRateLimits = server ? asRecord(server.rateLimits) : undefined;
+        const serverSseQuotas = server
+          ? parseSseQuotaConfig(server.sseQuotas ?? server.sse_quotas ?? server.quotas)
+          : undefined;
+        const kafkaMessaging = messagingRecord ? parseKafkaMessagingRecord(messagingRecord.kafka) : undefined;
+        const fileOidc = parseOidcConfigRecord(oidc);
+
+        const authPartial: PartialAuthConfig = {};
+        let hasAuthConfig = false;
+        if (oauth) {
+          authPartial.oauth = {
+            redirectBaseUrl: typeof oauth.redirectBaseUrl === "string" ? oauth.redirectBaseUrl : undefined
+          };
+          hasAuthConfig = true;
+        }
+        if (fileOidc) {
+          authPartial.oidc = fileOidc;
+          hasAuthConfig = true;
+        }
 
         fileCfg = {
           runMode: asRunMode(doc.runMode),
-          messaging: messaging ? { type: asMessagingType(messaging.type) } : undefined,
+          messaging: messagingRecord
+            ? {
+                type: asMessagingType(messagingRecord.type),
+                kafka: kafkaMessaging
+              }
+            : undefined,
           providers: providers
             ? {
                 defaultRoute: asDefaultRoute(providers.defaultRoute),
@@ -490,13 +1258,8 @@ export function loadConfig(): AppConfig {
                 circuitBreaker: providerCircuitBreaker
               }
             : undefined,
-          auth: oauth
-            ? {
-                oauth: {
-                  redirectBaseUrl: typeof oauth.redirectBaseUrl === "string" ? oauth.redirectBaseUrl : undefined
-                }
-              }
-            : undefined,
+          auth: hasAuthConfig ? authPartial : undefined,
+          retention,
           secrets: { backend: asSecretsBackend(secrets?.backend) },
           tooling: tooling
             ? {
@@ -511,10 +1274,12 @@ export function loadConfig(): AppConfig {
                 rateLimits: serverRateLimits
                   ? {
                       plan: parseRateLimitConfig(serverRateLimits.plan),
-                      chat: parseRateLimitConfig(serverRateLimits.chat)
+                      chat: parseRateLimitConfig(serverRateLimits.chat),
+                      auth: parseRateLimitConfig(serverRateLimits.auth)
                     }
                   : undefined,
-                tls: parseTlsConfig(server.tls)
+                tls: parseTlsConfig(server.tls),
+                sseQuotas: serverSseQuotas
               }
             : undefined,
           observability: tracing ? { tracing } : undefined
@@ -551,6 +1316,8 @@ export function loadConfig(): AppConfig {
   const envAgentRetries = asNumber(process.env.TOOL_AGENT_RETRIES);
   const envAgentTimeout = asNumber(process.env.TOOL_AGENT_TIMEOUT_MS);
   const envSseKeepAlive = asNumber(process.env.SSE_KEEP_ALIVE_MS);
+  const envSseMaxConnectionsPerIp = asNumber(process.env.SSE_MAX_CONNECTIONS_PER_IP);
+  const envSseMaxConnectionsPerSubject = asNumber(process.env.SSE_MAX_CONNECTIONS_PER_SUBJECT);
   const envTracingEnabled = asBoolean(process.env.TRACING_ENABLED ?? process.env.OTEL_TRACES_EXPORTER_ENABLED);
   const envTracingServiceName = process.env.TRACING_SERVICE_NAME ?? process.env.OTEL_SERVICE_NAME;
   const envTracingEnvironment =
@@ -571,6 +1338,57 @@ export function loadConfig(): AppConfig {
   const envServerTlsCertPath = process.env.SERVER_TLS_CERT_PATH;
   const envServerTlsCaPaths = parseStringList(process.env.SERVER_TLS_CA_PATHS);
   const envServerTlsRequestClientCert = asBoolean(process.env.SERVER_TLS_REQUEST_CLIENT_CERT);
+  const envKafkaBrokers = parseStringList(process.env.KAFKA_BROKERS);
+  const envKafkaClientId = asString(process.env.KAFKA_CLIENT_ID);
+  const envKafkaGroupId = asString(process.env.KAFKA_GROUP_ID);
+  const envKafkaConsumeFromBeginning = asBoolean(process.env.KAFKA_CONSUME_FROM_BEGINNING);
+  const envKafkaRetryDelayMs = asNumber(process.env.KAFKA_RETRY_DELAY_MS);
+  const envKafkaTopicPlanSteps = asString(process.env.KAFKA_TOPIC_PLAN_STEPS);
+  const envKafkaTopicPlanCompletions = asString(process.env.KAFKA_TOPIC_PLAN_COMPLETIONS);
+  const envKafkaTopicPlanEvents = asString(process.env.KAFKA_TOPIC_PLAN_EVENTS);
+  const envKafkaTopicPlanState = asString(process.env.KAFKA_TOPIC_PLAN_STATE);
+  const envKafkaTopicDeadLetterSuffix = asString(process.env.KAFKA_TOPIC_DEAD_LETTER_SUFFIX);
+  const envKafkaTlsEnabled = asBoolean(process.env.KAFKA_TLS_ENABLED);
+  const envKafkaTlsCaPaths = parseStringList(process.env.KAFKA_TLS_CA_PATHS);
+  const envKafkaTlsCertPath = asString(process.env.KAFKA_TLS_CERT_PATH);
+  const envKafkaTlsKeyPath = asString(process.env.KAFKA_TLS_KEY_PATH);
+  const envKafkaTlsRejectUnauthorized = asBoolean(process.env.KAFKA_TLS_REJECT_UNAUTHORIZED);
+  const envKafkaSaslMechanism = parseKafkaMechanism(process.env.KAFKA_SASL_MECHANISM);
+  const envKafkaSaslUsername = asString(process.env.KAFKA_SASL_USERNAME);
+  const envKafkaSaslPassword = asString(process.env.KAFKA_SASL_PASSWORD);
+  const envKafkaSaslAuthorizationIdentity = asString(process.env.KAFKA_SASL_AUTHORIZATION_IDENTITY);
+  const envKafkaEnsureTopics = asBoolean(process.env.KAFKA_ENSURE_TOPICS);
+  const envKafkaTopicPartitions = asNumber(process.env.KAFKA_TOPIC_PARTITIONS);
+  const envKafkaReplicationFactor = asNumber(process.env.KAFKA_TOPIC_REPLICATION_FACTOR);
+  const envKafkaTopicDefaultConfig = process.env.KAFKA_TOPIC_DEFAULT_CONFIG;
+  const envKafkaCompactPatterns = parseScopesString(process.env.KAFKA_TOPIC_COMPACT_PATTERNS);
+  const envOidcEnabled = asBoolean(process.env.OIDC_ENABLED);
+  const envOidcIssuer = process.env.OIDC_ISSUER_URL?.trim();
+  const envOidcClientId = process.env.OIDC_CLIENT_ID?.trim();
+  const envOidcClientSecret = process.env.OIDC_CLIENT_SECRET?.trim();
+  const envOidcRedirectBase = process.env.OIDC_REDIRECT_BASE?.trim();
+  const envOidcScopes = parseScopesString(process.env.OIDC_SCOPES);
+  const envOidcTenantClaim = process.env.OIDC_TENANT_CLAIM?.trim();
+  const envOidcAudience = process.env.OIDC_AUDIENCE?.trim();
+  const envOidcLogoutUrl = process.env.OIDC_LOGOUT_URL?.trim();
+  const envOidcSessionCookieName = process.env.OIDC_SESSION_COOKIE_NAME?.trim();
+  const envOidcSessionTtl = asNumber(process.env.OIDC_SESSION_TTL_SECONDS);
+  const envPlanStateRetentionDays = asNumber(process.env.RETENTION_PLAN_STATE_DAYS);
+  const envPlanArtifactRetentionDays = asNumber(process.env.RETENTION_PLAN_ARTIFACT_DAYS);
+  const envContentCaptureEnabled = asBoolean(process.env.CONTENT_CAPTURE_ENABLED);
+  const envOidcRoleClaim = process.env.OIDC_ROLE_CLAIM?.trim();
+  const envOidcFallbackRoles = parseRolesValue(process.env.OIDC_DEFAULT_ROLES);
+  const envOidcRoleMappingsValue = parseJsonEnv(process.env.OIDC_ROLE_MAPPINGS, "OIDC_ROLE_MAPPINGS");
+  const envOidcRoleMappings = envOidcRoleMappingsValue
+    ? parseRoleMappingsRecord(envOidcRoleMappingsValue)
+    : undefined;
+  const envOidcTenantRoleMappingsValue = parseJsonEnv(
+    process.env.OIDC_TENANT_ROLE_MAPPINGS,
+    "OIDC_TENANT_ROLE_MAPPINGS"
+  );
+  const envOidcTenantRoleMappings = envOidcTenantRoleMappingsValue
+    ? parseTenantRoleMappingsRecord(envOidcTenantRoleMappingsValue)
+    : undefined;
 
   const providersEnabledFromEnv = envProviders !== undefined
     ? envProviders
@@ -580,6 +1398,66 @@ export function loadConfig(): AppConfig {
     : undefined;
 
   const providersEnabledFromFile = fileCfg.providers?.enabled;
+  const defaultKafka = DEFAULT_CONFIG.messaging.kafka;
+  const fileKafkaConfig = fileCfg.messaging?.kafka;
+  const fileKafkaSasl = fileKafkaConfig?.sasl === null ? undefined : fileKafkaConfig?.sasl;
+  const kafkaBrokers = envKafkaBrokers ?? fileKafkaConfig?.brokers ?? defaultKafka.brokers;
+  const kafkaClientId = envKafkaClientId ?? fileKafkaConfig?.clientId ?? defaultKafka.clientId;
+  const kafkaConsumerGroup = envKafkaGroupId ?? fileKafkaConfig?.consumerGroup ?? defaultKafka.consumerGroup;
+  const kafkaConsumeFromBeginning =
+    envKafkaConsumeFromBeginning ?? fileKafkaConfig?.consumeFromBeginning ?? defaultKafka.consumeFromBeginning;
+  const kafkaRetryDelayMs = envKafkaRetryDelayMs ?? fileKafkaConfig?.retryDelayMs ?? defaultKafka.retryDelayMs;
+  const kafkaTopics: KafkaTopicsConfig = {
+    planSteps: envKafkaTopicPlanSteps ?? fileKafkaConfig?.topics?.planSteps ?? defaultKafka.topics.planSteps,
+    planCompletions:
+      envKafkaTopicPlanCompletions ?? fileKafkaConfig?.topics?.planCompletions ?? defaultKafka.topics.planCompletions,
+    planEvents: envKafkaTopicPlanEvents ?? fileKafkaConfig?.topics?.planEvents ?? defaultKafka.topics.planEvents,
+    planState: envKafkaTopicPlanState ?? fileKafkaConfig?.topics?.planState ?? defaultKafka.topics.planState,
+    deadLetterSuffix:
+      envKafkaTopicDeadLetterSuffix ?? fileKafkaConfig?.topics?.deadLetterSuffix ?? defaultKafka.topics.deadLetterSuffix
+  };
+  const kafkaTls: KafkaTlsConfig = {
+    enabled: envKafkaTlsEnabled ?? fileKafkaConfig?.tls?.enabled ?? defaultKafka.tls.enabled,
+    caPaths: envKafkaTlsCaPaths ?? fileKafkaConfig?.tls?.caPaths ?? defaultKafka.tls.caPaths,
+    certPath: envKafkaTlsCertPath ?? fileKafkaConfig?.tls?.certPath ?? defaultKafka.tls.certPath,
+    keyPath: envKafkaTlsKeyPath ?? fileKafkaConfig?.tls?.keyPath ?? defaultKafka.tls.keyPath,
+    rejectUnauthorized:
+      envKafkaTlsRejectUnauthorized ?? fileKafkaConfig?.tls?.rejectUnauthorized ?? defaultKafka.tls.rejectUnauthorized
+  };
+  const resolvedSaslMechanism = envKafkaSaslMechanism ?? fileKafkaSasl?.mechanism;
+  let kafkaSasl: KafkaSaslConfig | undefined;
+  if (resolvedSaslMechanism) {
+    kafkaSasl = {
+      mechanism: resolvedSaslMechanism,
+      username: envKafkaSaslUsername ?? fileKafkaSasl?.username,
+      password: envKafkaSaslPassword ?? fileKafkaSasl?.password,
+      authorizationIdentity:
+        envKafkaSaslAuthorizationIdentity ?? fileKafkaSasl?.authorizationIdentity
+    };
+  }
+  const kafkaEnsureTopics = envKafkaEnsureTopics ?? fileKafkaConfig?.ensureTopics ?? defaultKafka.ensureTopics;
+  const kafkaTopicPartitions = envKafkaTopicPartitions ?? fileKafkaConfig?.topicPartitions ?? defaultKafka.topicPartitions;
+  const kafkaReplicationFactor = envKafkaReplicationFactor ?? fileKafkaConfig?.replicationFactor ?? defaultKafka.replicationFactor;
+  const kafkaTopicConfig = envKafkaTopicDefaultConfig
+    ? parseTopicConfig(envKafkaTopicDefaultConfig) ?? fileKafkaConfig?.topicConfig ?? defaultKafka.topicConfig
+    : fileKafkaConfig?.topicConfig ?? defaultKafka.topicConfig;
+  const kafkaCompactTopics = envKafkaCompactPatterns ?? fileKafkaConfig?.compactTopics ?? defaultKafka.compactTopics;
+  const messagingType = fileCfg.messaging?.type ?? envMessageType ?? DEFAULT_CONFIG.messaging.type;
+  const kafkaConfig: KafkaMessagingConfig = {
+    brokers: kafkaBrokers,
+    clientId: kafkaClientId,
+    consumerGroup: kafkaConsumerGroup,
+    consumeFromBeginning: kafkaConsumeFromBeginning,
+    retryDelayMs: kafkaRetryDelayMs,
+    topics: kafkaTopics,
+    tls: kafkaTls,
+    sasl: kafkaSasl,
+    ensureTopics: kafkaEnsureTopics,
+    topicPartitions: kafkaTopicPartitions,
+    replicationFactor: kafkaReplicationFactor,
+    topicConfig: kafkaTopicConfig,
+    compactTopics: kafkaCompactTopics
+  };
 
   const runMode = fileCfg.runMode ?? envRunMode ?? DEFAULT_CONFIG.runMode;
 
@@ -618,6 +1496,29 @@ export function loadConfig(): AppConfig {
     },
     "server.rateLimits.chat"
   );
+
+  const serverAuthRateLimit = ensurePositiveRateLimit(
+    {
+      windowMs: fileCfg.server?.rateLimits?.auth?.windowMs ?? DEFAULT_CONFIG.server.rateLimits.auth.windowMs,
+      maxRequests: fileCfg.server?.rateLimits?.auth?.maxRequests ?? DEFAULT_CONFIG.server.rateLimits.auth.maxRequests,
+    },
+    "server.rateLimits.auth",
+  );
+
+  const serverSseQuotaConfig: SseQuotaConfig = {
+    perIp: sanitizeQuotaValue(
+      envSseMaxConnectionsPerIp ??
+        fileCfg.server?.sseQuotas?.perIp ??
+        DEFAULT_CONFIG.server.sseQuotas.perIp,
+      DEFAULT_CONFIG.server.sseQuotas.perIp,
+    ),
+    perSubject: sanitizeQuotaValue(
+      envSseMaxConnectionsPerSubject ??
+        fileCfg.server?.sseQuotas?.perSubject ??
+        DEFAULT_CONFIG.server.sseQuotas.perSubject,
+      DEFAULT_CONFIG.server.sseQuotas.perSubject,
+    ),
+  };
 
   const fileTls = fileCfg.server?.tls;
   const tlsEnabled = envServerTlsEnabled ?? fileTls?.enabled ?? DEFAULT_CONFIG.server.tls.enabled;
@@ -663,10 +1564,76 @@ export function loadConfig(): AppConfig {
     envTracingSampleRatio ?? fileTracing?.sampleRatio ?? DEFAULT_TRACING_CONFIG.sampleRatio;
   const tracingSampleRatio = normalizeSampleRatio(tracingSampleRatioCandidate, DEFAULT_TRACING_CONFIG.sampleRatio);
 
+  const oauthRedirectBaseRaw =
+    envRedirectBaseUrl ?? fileCfg.auth?.oauth?.redirectBaseUrl ?? DEFAULT_CONFIG.auth.oauth.redirectBaseUrl;
+  const oauthRedirectBase = normalizeBaseUrl(oauthRedirectBaseRaw);
+  const fileOidcConfig = fileCfg.auth?.oidc;
+  const oidcRedirectBaseCandidate =
+    envOidcRedirectBase ?? fileOidcConfig?.redirectBaseUrl ?? oauthRedirectBase ?? DEFAULT_CONFIG.auth.oidc.redirectBaseUrl;
+  const oidcRedirectBaseNormalized = normalizeBaseUrl(
+    oidcRedirectBaseCandidate || DEFAULT_CONFIG.auth.oidc.redirectBaseUrl
+  );
+  const oidcRedirectBase =
+    oidcRedirectBaseNormalized || normalizeBaseUrl(DEFAULT_CONFIG.auth.oidc.redirectBaseUrl) || oauthRedirectBase;
+  const resolvedOidcScopes = normalizeScopes(
+    envOidcScopes ?? fileOidcConfig?.scopes ?? DEFAULT_CONFIG.auth.oidc.scopes
+  );
+  const resolvedOidcSessionCookieName =
+    envOidcSessionCookieName ?? fileOidcConfig?.session?.cookieName ?? DEFAULT_CONFIG.auth.oidc.session.cookieName;
+  const resolvedOidcSessionTtlSeconds =
+    envOidcSessionTtl ?? fileOidcConfig?.session?.ttlSeconds ?? DEFAULT_CONFIG.auth.oidc.session.ttlSeconds;
+  const resolvedOidcEnabled = envOidcEnabled ?? fileOidcConfig?.enabled ?? DEFAULT_CONFIG.auth.oidc.enabled;
+  const resolvedOidcIssuer = (envOidcIssuer ?? fileOidcConfig?.issuer ?? DEFAULT_CONFIG.auth.oidc.issuer).trim();
+  const resolvedOidcClientId = envOidcClientId ?? fileOidcConfig?.clientId ?? DEFAULT_CONFIG.auth.oidc.clientId;
+  const resolvedOidcClientSecret = envOidcClientSecret ?? fileOidcConfig?.clientSecret ?? DEFAULT_CONFIG.auth.oidc.clientSecret;
+  const resolvedOidcRedirectUri =
+    fileOidcConfig?.redirectUri ?? `${oidcRedirectBase || oauthRedirectBase}/auth/oidc/callback`;
+  const resolvedOidcTenantClaim =
+    envOidcTenantClaim ?? fileOidcConfig?.tenantClaim ?? DEFAULT_CONFIG.auth.oidc.tenantClaim;
+  const resolvedOidcAudience = envOidcAudience ?? fileOidcConfig?.audience ?? DEFAULT_CONFIG.auth.oidc.audience;
+  const resolvedOidcLogoutUrl = envOidcLogoutUrl ?? fileOidcConfig?.logoutUrl ?? DEFAULT_CONFIG.auth.oidc.logoutUrl;
+  const resolvedOidcRoleClaim =
+    envOidcRoleClaim ?? fileOidcConfig?.roles?.claim ?? DEFAULT_CONFIG.auth.oidc.roles.claim;
+  const resolvedOidcFallbackRolesSource =
+    envOidcFallbackRoles ?? fileOidcConfig?.roles?.fallback ?? DEFAULT_CONFIG.auth.oidc.roles.fallback;
+  const resolvedOidcFallbackRoles = normalizeStringSet(resolvedOidcFallbackRolesSource ?? []);
+  const resolvedOidcRoleMappings =
+    envOidcRoleMappings ?? fileOidcConfig?.roles?.mappings ?? DEFAULT_CONFIG.auth.oidc.roles.mappings;
+  const resolvedOidcTenantRoleMappings =
+    envOidcTenantRoleMappings ??
+    fileOidcConfig?.roles?.tenantMappings ??
+    DEFAULT_CONFIG.auth.oidc.roles.tenantMappings;
+
+  if (resolvedOidcEnabled) {
+    if (!resolvedOidcIssuer) {
+      throw new Error("OIDC issuer must be configured when OIDC authentication is enabled");
+    }
+    if (!resolvedOidcClientId) {
+      throw new Error("OIDC client ID must be configured when OIDC authentication is enabled");
+    }
+    if (!resolvedOidcClientSecret) {
+      throw new Error("OIDC client secret must be configured when OIDC authentication is enabled");
+    }
+  }
+
+  const retentionPlanStateDays = normalizeRetentionDays(
+    envPlanStateRetentionDays ?? fileCfg.retention?.planStateDays,
+    DEFAULT_CONFIG.retention.planStateDays
+  );
+  const retentionPlanArtifactsDays = normalizeRetentionDays(
+    envPlanArtifactRetentionDays ?? fileCfg.retention?.planArtifactsDays,
+    DEFAULT_CONFIG.retention.planArtifactsDays
+  );
+  const resolvedContentCaptureEnabled =
+    envContentCaptureEnabled ??
+    fileCfg.retention?.contentCapture?.enabled ??
+    DEFAULT_CONFIG.retention.contentCapture.enabled;
+
   return {
     runMode,
     messaging: {
-      type: fileCfg.messaging?.type ?? envMessageType ?? DEFAULT_CONFIG.messaging.type
+      type: messagingType,
+      kafka: kafkaConfig
     },
     providers: {
       defaultRoute: fileCfg.providers?.defaultRoute ?? DEFAULT_CONFIG.providers.defaultRoute,
@@ -676,10 +1643,43 @@ export function loadConfig(): AppConfig {
     },
     auth: {
       oauth: {
-        redirectBaseUrl:
-          envRedirectBaseUrl ??
-          fileCfg.auth?.oauth?.redirectBaseUrl ??
-          DEFAULT_CONFIG.auth.oauth.redirectBaseUrl
+        redirectBaseUrl: oauthRedirectBase
+      },
+      oidc: {
+        enabled: resolvedOidcEnabled,
+        issuer: resolvedOidcIssuer,
+        clientId: resolvedOidcClientId,
+        clientSecret: resolvedOidcClientSecret,
+        redirectBaseUrl: oidcRedirectBase,
+        redirectUri: resolvedOidcRedirectUri,
+        scopes: resolvedOidcScopes,
+        tenantClaim: resolvedOidcTenantClaim,
+        audience: resolvedOidcAudience,
+        logoutUrl: resolvedOidcLogoutUrl,
+        roles: {
+          claim: resolvedOidcRoleClaim,
+          fallback: [...resolvedOidcFallbackRoles],
+          mappings: Object.fromEntries(
+            Object.entries(resolvedOidcRoleMappings ?? {}).map(([role, caps]) => [role, [...caps]])
+          ),
+          tenantMappings: Object.fromEntries(
+            Object.entries(resolvedOidcTenantRoleMappings ?? {}).map(([tenant, mapping]) => [
+              tenant,
+              Object.fromEntries(Object.entries(mapping).map(([role, caps]) => [role, [...caps]]))
+            ])
+          )
+        },
+        session: {
+          cookieName: resolvedOidcSessionCookieName,
+          ttlSeconds: resolvedOidcSessionTtlSeconds
+        }
+      }
+    },
+    retention: {
+      planStateDays: retentionPlanStateDays,
+      planArtifactsDays: retentionPlanArtifactsDays,
+      contentCapture: {
+        enabled: resolvedContentCaptureEnabled
       }
     },
     secrets: {
@@ -695,8 +1695,10 @@ export function loadConfig(): AppConfig {
         envSseKeepAlive ?? fileCfg.server?.sseKeepAliveMs ?? DEFAULT_CONFIG.server.sseKeepAliveMs,
       rateLimits: {
         plan: serverPlanRateLimit,
-        chat: serverChatRateLimit
+        chat: serverChatRateLimit,
+        auth: serverAuthRateLimit
       },
+      sseQuotas: serverSseQuotaConfig,
       tls: {
         enabled: tlsEnabled,
         keyPath: tlsKeyPath,
@@ -716,4 +1718,16 @@ export function loadConfig(): AppConfig {
       }
     }
   };
+}
+
+function parseJsonEnv(value: string | undefined, context: string): unknown | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  try {
+    return JSON.parse(value);
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : "unknown";
+    throw new Error(`${context} must be valid JSON: ${reason}`);
+  }
 }

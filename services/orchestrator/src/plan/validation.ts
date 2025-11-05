@@ -85,12 +85,23 @@ export const ToolEventSchema = z.object({
   attempt: z.number().int().nonnegative().optional()
 });
 
+export const PlanSubjectSchema = z.object({
+  sessionId: z.string().min(1).optional(),
+  tenantId: z.string().min(1).optional(),
+  userId: z.string().min(1).optional(),
+  email: z.string().min(1).optional(),
+  name: z.string().min(1).optional(),
+  roles: z.array(z.string()).default([]),
+  scopes: z.array(z.string()).default([])
+});
+
 export const PlanJobSchema = z.object({
   planId: z.string().min(1),
   step: PlanStepSchema,
   traceId: z.string().min(1),
   attempt: z.number().int().nonnegative().default(0),
-  createdAt: z.string().datetime()
+  createdAt: z.string().datetime(),
+  subject: PlanSubjectSchema.optional()
 });
 
 export type CapabilityLabel = z.infer<typeof CapabilityLabelSchema>;
@@ -98,6 +109,7 @@ export type PlanStep = z.infer<typeof PlanStepSchema>;
 export type Plan = z.infer<typeof PlanSchema>;
 export type PlanStepEvent = z.infer<typeof PlanStepEventSchema>;
 export type PlanStepState = z.infer<typeof PlanStepStateSchema>;
+export type PlanSubject = z.infer<typeof PlanSubjectSchema>;
 export type ToolInvocation = z.infer<typeof ToolInvocationSchema>;
 export type ToolEvent = z.infer<typeof ToolEventSchema>;
 export type PlanJob = z.infer<typeof PlanJobSchema>;

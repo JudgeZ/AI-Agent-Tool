@@ -114,6 +114,12 @@ jobs:
           TESTCONTAINERS_RYUK_DISABLED: true
         run: npm run test -- PlanQueueRuntime.rabbitmq PlanQueueRuntime.kafka
 
+      - name: Run Vault integration tests
+        if: matrix.project.name == 'orchestrator'
+        env:
+          TESTCONTAINERS_RYUK_DISABLED: true
+        run: npm run test -- SecretsStore
+
       - name: Build (if configured)
         if: matrix.project.name != 'cli'
         run: npm run build --if-present

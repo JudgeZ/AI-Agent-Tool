@@ -10,16 +10,30 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/url"
 	"os"
+	"sort"
 	"strings"
+	"sync"
 	"time"
+	"unicode"
 )
 
 var stateTTL = getDurationEnv("OAUTH_STATE_TTL", 10*time.Minute)
 var orchestratorTimeout = getDurationEnv("ORCHESTRATOR_CALLBACK_TIMEOUT", 10*time.Second)
 var allowedRedirectOrigins = loadAllowedRedirectOrigins()
+
+type oidcDiscovery struct {
+	authorizationEndpoint string
+}
+
+var oidcDiscoveryCache struct {
+	metadata oidcDiscovery
+	expires  time.Time
+	mu       sync.RWMutex
+}
 
 type redirectOrigin struct {
 	scheme string
@@ -44,54 +58,68 @@ type stateData struct {
 }
 
 func getProviderConfig(provider string) (oauthProvider, error) {
-	redirectBase := strings.TrimRight(getEnv("OAUTH_REDIRECT_BASE", "http://127.0.0.1:8080"), "/")
-	configs := map[string]oauthProvider{
-		"openrouter": {
-			Name:         "openrouter",
-			AuthorizeURL: "https://openrouter.ai/oauth/authorize",
-			RedirectURI:  fmt.Sprintf("%s/auth/openrouter/callback", redirectBase),
-			ClientID:     os.Getenv("OPENROUTER_CLIENT_ID"),
-			Scopes:       []string{"offline", "openid", "profile"},
-		},
-		"google": {
-			Name:         "google",
-			AuthorizeURL: "https://accounts.google.com/o/oauth2/v2/auth",
-			RedirectURI:  fmt.Sprintf("%s/auth/google/callback", redirectBase),
-			ClientID:     os.Getenv("GOOGLE_OAUTH_CLIENT_ID"),
-			Scopes:       []string{"openid", "profile", "email", "https://www.googleapis.com/auth/cloud-platform"},
-		},
-	}
-	cfg, ok := configs[provider]
-	if !ok {
+	switch provider {
+	case "openrouter", "google":
+		redirectBase := strings.TrimRight(getEnv("OAUTH_REDIRECT_BASE", "http://127.0.0.1:8080"), "/")
+		configs := map[string]oauthProvider{
+			"openrouter": {
+				Name:         "openrouter",
+				AuthorizeURL: "https://openrouter.ai/oauth/authorize",
+				RedirectURI:  fmt.Sprintf("%s/auth/openrouter/callback", redirectBase),
+				ClientID:     os.Getenv("OPENROUTER_CLIENT_ID"),
+				Scopes:       []string{"offline", "openid", "profile"},
+			},
+			"google": {
+				Name:         "google",
+				AuthorizeURL: "https://accounts.google.com/o/oauth2/v2/auth",
+				RedirectURI:  fmt.Sprintf("%s/auth/google/callback", redirectBase),
+				ClientID:     os.Getenv("GOOGLE_OAUTH_CLIENT_ID"),
+				Scopes:       []string{"openid", "profile", "email", "https://www.googleapis.com/auth/cloud-platform"},
+			},
+		}
+		cfg, ok := configs[provider]
+		if !ok {
+			return oauthProvider{}, fmt.Errorf("unknown provider: %s", provider)
+		}
+		if cfg.ClientID == "" {
+			return oauthProvider{}, fmt.Errorf("provider %s is not configured", provider)
+		}
+		return cfg, nil
+	case "oidc":
+		return getOidcProvider()
+	default:
 		return oauthProvider{}, fmt.Errorf("unknown provider: %s", provider)
 	}
-	if cfg.ClientID == "" {
-		return oauthProvider{}, fmt.Errorf("provider %s is not configured", provider)
-	}
-	return cfg, nil
 }
 
 func authorizeHandler(w http.ResponseWriter, r *http.Request) {
 	provider := strings.TrimPrefix(r.URL.Path, "/auth/")
 	provider = strings.TrimSuffix(provider, "/authorize")
+	baseAttrs := append(auditRequestAttrs(r), slog.String("provider", provider))
 	cfg, err := getProviderConfig(provider)
 	if err != nil {
+		logAudit(r.Context(), "oauth.authorize", "failure", append(baseAttrs, slog.String("error", err.Error()))...)
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
 
 	redirectURI := r.URL.Query().Get("redirect_uri")
 	if redirectURI == "" {
+		logAudit(r.Context(), "oauth.authorize", "failure", append(baseAttrs, slog.String("error", "redirect_uri is required"))...)
 		http.Error(w, "redirect_uri is required", http.StatusBadRequest)
 		return
 	}
 	if err := validateClientRedirect(redirectURI); err != nil {
+		attrs := append(baseAttrs, slog.String("redirect_uri", redirectURI), slog.String("error", err.Error()))
+		logAudit(r.Context(), "oauth.authorize", "failure", attrs...)
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
 	state, codeVerifier, codeChallenge, err := generateStateAndPKCE()
 	if err != nil {
+		attrs := append(baseAttrs, slog.String("redirect_uri", redirectURI), slog.String("error", "state generation failed"))
+		logAudit(r.Context(), "oauth.authorize", "failure", attrs...)
 		http.Error(w, "failed to generate state", http.StatusInternalServerError)
 		return
 	}
@@ -105,15 +133,22 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if err := setStateCookie(w, r, data); err != nil {
+		attrs := append(baseAttrs, slog.String("redirect_uri", redirectURI), slog.String("error", "state persistence failed"))
+		logAudit(r.Context(), "oauth.authorize", "failure", attrs...)
 		http.Error(w, "failed to persist state", http.StatusInternalServerError)
 		return
 	}
 
 	authURL, err := buildAuthorizeURL(cfg, state, codeChallenge)
 	if err != nil {
+		attrs := append(baseAttrs, slog.String("redirect_uri", redirectURI), slog.String("error", "authorize url build failed"))
+		logAudit(r.Context(), "oauth.authorize", "failure", attrs...)
 		http.Error(w, "failed to build authorize url", http.StatusInternalServerError)
 		return
 	}
+
+	successAttrs := append(baseAttrs, slog.String("redirect_uri", redirectURI))
+	logAudit(r.Context(), "oauth.authorize", "success", successAttrs...)
 
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
@@ -121,9 +156,11 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request) {
 func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	provider := strings.TrimPrefix(r.URL.Path, "/auth/")
 	provider = strings.TrimSuffix(provider, "/callback")
+	baseAttrs := append(auditRequestAttrs(r), slog.String("provider", provider))
 
 	cfg, err := getProviderConfig(provider)
 	if err != nil {
+		logAudit(r.Context(), "oauth.callback", "failure", append(baseAttrs, slog.String("error", err.Error()))...)
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
@@ -136,12 +173,15 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	code := r.URL.Query().Get("code")
 	state := r.URL.Query().Get("state")
 	if code == "" || state == "" {
+		logAudit(r.Context(), "oauth.callback", "failure", append(baseAttrs, slog.String("error", "code and state are required"))...)
 		http.Error(w, "code and state are required", http.StatusBadRequest)
 		return
 	}
 
 	data, err := readStateCookie(r, state)
 	if err != nil || data.Provider != provider {
+		attrs := append(baseAttrs, slog.String("state", state), slog.String("error", "invalid or expired state"))
+		logAudit(r.Context(), "oauth.callback", "failure", attrs...)
 		http.Error(w, "invalid or expired state", http.StatusBadRequest)
 		return
 	}
@@ -156,6 +196,8 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 
 	buf, err := json.Marshal(payload)
 	if err != nil {
+		attrs := append(baseAttrs, slog.String("redirect_uri", data.RedirectURI), slog.String("error", "payload encoding failed"))
+		logAudit(r.Context(), "oauth.callback", "failure", attrs...)
 		http.Error(w, "failed to encode payload", http.StatusInternalServerError)
 		return
 	}
@@ -166,6 +208,8 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(buf))
 	if err != nil {
+		attrs := append(baseAttrs, slog.String("redirect_uri", data.RedirectURI), slog.String("error", "failed to create upstream request"))
+		logAudit(r.Context(), "oauth.callback", "failure", attrs...)
 		http.Error(w, "failed to create upstream request", http.StatusInternalServerError)
 		return
 	}
@@ -173,21 +217,35 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 
 	client, clientErr := getOrchestratorClient()
 	if clientErr != nil {
+		attrs := append(baseAttrs, slog.String("redirect_uri", data.RedirectURI), slog.String("error", "orchestrator client misconfigured"))
+		logAudit(r.Context(), "oauth.callback", "failure", attrs...)
 		http.Error(w, "orchestrator client not configured", http.StatusInternalServerError)
 		return
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
+		attrs := append(baseAttrs, slog.String("redirect_uri", data.RedirectURI), slog.String("error", "failed to contact orchestrator"))
+		logAudit(r.Context(), "oauth.callback", "failure", attrs...)
 		http.Error(w, "failed to contact orchestrator", http.StatusBadGateway)
 		return
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		redirectWithStatus(w, r, data.RedirectURI, data.State, "error", extractErrorMessage(body))
+		errorMessage := extractErrorMessage(body)
+		attrs := append(baseAttrs, slog.String("redirect_uri", data.RedirectURI), slog.Int("status_code", resp.StatusCode), slog.String("error", errorMessage))
+		logAudit(r.Context(), "oauth.callback", "failure", attrs...)
+		redirectWithStatus(w, r, data.RedirectURI, data.State, "error", errorMessage)
 		return
 	}
+
+	for _, cookie := range resp.Cookies() {
+		http.SetCookie(w, cookie)
+	}
+
+	successAttrs := append(baseAttrs, slog.String("redirect_uri", data.RedirectURI))
+	logAudit(r.Context(), "oauth.callback", "success", successAttrs...)
 
 	redirectWithStatus(w, r, data.RedirectURI, data.State, "success", "")
 }
@@ -195,15 +253,21 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 func redirectError(w http.ResponseWriter, r *http.Request, _ string, errParam string) {
 	state := r.URL.Query().Get("state")
 	if state == "" {
+		attrs := append(auditRequestAttrs(r), slog.String("error", errParam))
+		logAudit(r.Context(), "oauth.callback", "failure", attrs...)
 		http.Error(w, errParam, http.StatusBadRequest)
 		return
 	}
 	data, err := readStateCookie(r, state)
 	if err != nil {
+		attrs := append(auditRequestAttrs(r), slog.String("state", state), slog.String("error", errParam))
+		logAudit(r.Context(), "oauth.callback", "failure", attrs...)
 		http.Error(w, errParam, http.StatusBadRequest)
 		return
 	}
 	deleteStateCookie(w, r, state)
+	attrs := append(auditRequestAttrs(r), slog.String("state", state), slog.String("redirect_uri", data.RedirectURI), slog.String("error", errParam))
+	logAudit(r.Context(), "oauth.callback", "failure", attrs...)
 	redirectWithStatus(w, r, data.RedirectURI, data.State, "error", errParam)
 }
 
@@ -516,4 +580,115 @@ func getDurationEnv(key string, fallback time.Duration) time.Duration {
 		}
 	}
 	return fallback
+}
+
+func parseScopeList(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		raw = "openid"
+	}
+	items := strings.FieldsFunc(raw, func(r rune) bool {
+		return unicode.IsSpace(r) || r == ','
+	})
+	set := make(map[string]struct{}, len(items)+1)
+	for _, item := range items {
+		trimmed := strings.TrimSpace(item)
+		if trimmed != "" {
+			set[trimmed] = struct{}{}
+		}
+	}
+	set["openid"] = struct{}{}
+	result := make([]string, 0, len(set))
+	for scope := range set {
+		result = append(result, scope)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func loadOidcMetadata(issuer string) (oidcDiscovery, error) {
+	trimmed := strings.TrimRight(issuer, "/")
+	now := time.Now()
+	cache := &oidcDiscoveryCache
+
+	cache.mu.RLock()
+	if cache.metadata.authorizationEndpoint != "" && now.Before(cache.expires) {
+		metadata := cache.metadata
+		cache.mu.RUnlock()
+		return metadata, nil
+	}
+	cache.mu.RUnlock()
+
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	if cache.metadata.authorizationEndpoint != "" && now.Before(cache.expires) {
+		return cache.metadata, nil
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	discoveryURL := fmt.Sprintf("%s/.well-known/openid-configuration", trimmed)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, discoveryURL, nil)
+	if err != nil {
+		return oidcDiscovery{}, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return oidcDiscovery{}, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return oidcDiscovery{}, fmt.Errorf("oidc discovery returned %d", resp.StatusCode)
+	}
+
+	var payload struct {
+		AuthorizationEndpoint string `json:"authorization_endpoint"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		return oidcDiscovery{}, err
+	}
+	if payload.AuthorizationEndpoint == "" {
+		return oidcDiscovery{}, errors.New("oidc discovery missing authorization_endpoint")
+	}
+
+	metadata := oidcDiscovery{authorizationEndpoint: payload.AuthorizationEndpoint}
+	cache.metadata = metadata
+	cache.expires = now.Add(15 * time.Minute)
+	return metadata, nil
+}
+
+func getOidcProvider() (oauthProvider, error) {
+	issuer := strings.TrimSpace(os.Getenv("OIDC_ISSUER_URL"))
+	if issuer == "" {
+		return oauthProvider{}, fmt.Errorf("oidc issuer not configured")
+	}
+	clientID := strings.TrimSpace(os.Getenv("OIDC_CLIENT_ID"))
+	if clientID == "" {
+		return oauthProvider{}, fmt.Errorf("oidc client id not configured")
+	}
+
+	metadata, err := loadOidcMetadata(issuer)
+	if err != nil {
+		return oauthProvider{}, err
+	}
+
+	redirectBase := strings.TrimRight(getEnv("OIDC_REDIRECT_BASE", getEnv("OAUTH_REDIRECT_BASE", "http://127.0.0.1:8080")), "/")
+	if redirectBase == "" {
+		redirectBase = "http://127.0.0.1:8080"
+	}
+	rawScopes := os.Getenv("OIDC_SCOPES")
+	if strings.TrimSpace(rawScopes) == "" {
+		rawScopes = "openid profile email"
+	}
+	scopes := parseScopeList(rawScopes)
+
+	return oauthProvider{
+		Name:         "oidc",
+		AuthorizeURL: metadata.authorizationEndpoint,
+		RedirectURI:  fmt.Sprintf("%s/auth/oidc/callback", redirectBase),
+		ClientID:     clientID,
+		Scopes:       scopes,
+	}, nil
 }

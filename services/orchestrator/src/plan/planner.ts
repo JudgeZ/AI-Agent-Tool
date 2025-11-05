@@ -6,7 +6,22 @@ import { publishPlanStepEvent } from "./events.js";
 import { startSpan } from "../observability/tracing.js";
 import { parsePlan, PlanStepSchema, type Plan, type PlanStep } from "./validation.js";
 
-export type { Plan, PlanStep } from "./validation.js";
+export type { Plan, PlanStep, PlanSubject } from "./validation.js";
+
+const DEFAULT_PLAN_ARTIFACT_RETENTION_DAYS = 30;
+const MILLIS_PER_DAY = 24 * 60 * 60 * 1000;
+
+function getRealpathSync(): (target: string) => string {
+  const withNative = fs.realpathSync as typeof fs.realpathSync & {
+    native?: typeof fs.realpathSync;
+  };
+  if (typeof withNative.native === "function") {
+    return withNative.native.bind(fs);
+  }
+  return fs.realpathSync.bind(fs);
+}
+
+const realpathSync = getRealpathSync();
 
 const DEFAULT_CAPABILITY_LABELS: Record<string, string> = {
   "repo.read": "Read repository",
@@ -74,7 +89,84 @@ function buildSteps(goal: string): PlanStep[] {
   ].map(step => PlanStepSchema.parse(step));
 }
 
-export function createPlan(goal: string): Plan {
+function isChildPath(base: string, candidate: string): boolean {
+  const relative = path.relative(base, candidate);
+  if (!relative || path.isAbsolute(relative)) {
+    return false;
+  }
+  const segments = relative.split(path.sep);
+  if (segments.some(segment => segment === "..")) {
+    return false;
+  }
+  const posixSegments = relative.split(path.posix.sep);
+  if (posixSegments.some(segment => segment === "..")) {
+    return false;
+  }
+  return true;
+}
+
+function isSafeDirentName(name: string): boolean {
+  if (!name) {
+    return false;
+  }
+  if (name.includes("..")) {
+    return false;
+  }
+  if (name.includes(path.sep) || name.includes(path.posix.sep)) {
+    return false;
+  }
+  return path.basename(name) === name;
+}
+
+function cleanupPlanArtifacts(baseDir: string, retentionDays: number): void {
+  if (retentionDays <= 0) {
+    return;
+  }
+  const retentionMs = retentionDays * MILLIS_PER_DAY;
+  try {
+    const resolvedBase = realpathSync(baseDir);
+    const entries = fs.readdirSync(resolvedBase, { withFileTypes: true });
+    const cutoff = Date.now() - retentionMs;
+    for (const entry of entries) {
+      if (entry.isSymbolicLink() || !entry.isDirectory()) {
+        continue;
+      }
+      const entryName = entry.name;
+      if (!isSafeDirentName(entryName)) {
+        continue;
+      }
+      const targetCandidate = resolvedBase.endsWith(path.sep)
+        ? `${resolvedBase}${entryName}`
+        : `${resolvedBase}${path.sep}${entryName}`;
+      let target: string;
+      try {
+        target = realpathSync(targetCandidate);
+      } catch {
+        continue;
+      }
+      if (!isChildPath(resolvedBase, target)) {
+        continue;
+      }
+      let stats: fs.Stats;
+      try {
+        stats = fs.statSync(target);
+      } catch {
+        continue;
+      }
+      const lastModified = stats.mtimeMs ?? stats.ctimeMs ?? 0;
+      if (lastModified <= cutoff) {
+        fs.rmSync(target, { recursive: true, force: true });
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+}
+
+export function createPlan(goal: string, options?: { retentionDays?: number }): Plan {
   const span = startSpan("planner.createPlan", { goal });
   try {
     const id = "plan-" + crypto.randomBytes(4).toString("hex");
@@ -88,7 +180,8 @@ export function createPlan(goal: string): Plan {
       successCriteria: ["All tests pass", "CI green", "Docs updated"]
     });
 
-    const dir = path.join(process.cwd(), ".plans", id);
+    const plansRoot = path.join(process.cwd(), ".plans");
+    const dir = path.join(plansRoot, id);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(path.join(dir, "plan.json"), JSON.stringify(plan, null, 2));
     fs.writeFileSync(
@@ -102,6 +195,11 @@ export function createPlan(goal: string): Plan {
           )
           .join("\n")
     );
+
+    const retentionDays = options?.retentionDays ?? DEFAULT_PLAN_ARTIFACT_RETENTION_DAYS;
+    if (retentionDays > 0) {
+      cleanupPlanArtifacts(plansRoot, retentionDays);
+    }
 
     for (const step of steps) {
       const state = step.approvalRequired ? "waiting_approval" : "queued";

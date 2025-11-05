@@ -10,34 +10,49 @@ services:
     security_opt:
       - no-new-privileges:true
     read_only: true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
     environment:
       PORT: "8080"
       ORCHESTRATOR_URL: http://orchestrator:4000
       INDEXER_URL: http://indexer:7070
+      GATEWAY_SSE_MAX_CONNECTIONS_PER_IP: "4"
     ports:
       - "8080:8080"
     depends_on:
       orchestrator:
         condition: service_started
     restart: unless-stopped
+    networks:
+      - frontend
+      - backend
 
   orchestrator:
     image: "${REGISTRY:-ghcr.io/yourorg/oss-ai-agent-tool}/orchestrator:${TAG:-latest}"
     security_opt:
       - no-new-privileges:true
     read_only: true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
     environment:
       NODE_ENV: production
       PORT: "4000"
       RUN_MODE: ${RUN_MODE:-consumer}
       REDIS_URL: redis://redis:6379/0
-      POSTGRES_URL: postgres://ossaat:${POSTGRES_PASSWORD:-ossaat}@postgres:5432/ossaat
-      RABBITMQ_URL: amqp://guest:${RABBITMQ_PASSWORD:-guest}@rabbitmq:5672
+      POSTGRES_URL_FILE: /run/secrets/orchestrator_postgres_url
+      RABBITMQ_URL_FILE: /run/secrets/orchestrator_rabbitmq_url
       KAFKA_BROKERS: kafka:9092
       LANGFUSE_BASE_URL: http://langfuse:3000
       LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-changeme}
-      LANGFUSE_SECRET_KEY: ${LANGFUSE_SECRET_KEY:-changeme}
+      LANGFUSE_SECRET_KEY_FILE: /run/secrets/langfuse_secret_key
+      LOCAL_SECRETS_PASSPHRASE_FILE: /run/secrets/local_secrets_passphrase
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
+      SSE_MAX_CONNECTIONS_PER_IP: ${SSE_MAX_CONNECTIONS_PER_IP:-4}
+      SSE_MAX_CONNECTIONS_PER_SUBJECT: ${SSE_MAX_CONNECTIONS_PER_SUBJECT:-2}
     ports:
       - "4000:4000"
     depends_on:
@@ -48,23 +63,37 @@ services:
       rabbitmq:
         condition: service_started
     restart: unless-stopped
+    networks:
+      - backend
+      - data
+    secrets:
+      - orchestrator_postgres_url
+      - orchestrator_rabbitmq_url
+      - langfuse_secret_key
+      - local_secrets_passphrase
 
   indexer:
     image: "${REGISTRY:-ghcr.io/yourorg/oss-ai-agent-tool}/indexer:${TAG:-latest}"
     security_opt:
       - no-new-privileges:true
     read_only: true
+    cap_drop:
+      - ALL
+    tmpfs:
+      - /tmp
     environment:
       RUST_LOG: info
-    ports:
-      - "7070:7070"
     restart: unless-stopped
+    networks:
+      - backend
 
   redis:
     image: redis/redis-stack-server:7.2.0-v9
     security_opt:
       - no-new-privileges:true
     read_only: true
+    cap_drop:
+      - ALL
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 10s
@@ -73,15 +102,19 @@ services:
     volumes:
       - redis-data:/data
     restart: unless-stopped
+    networks:
+      - data
 
   postgres:
     image: postgres:15-alpine
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
-      POSTGRES_USER: ossaat
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-ossaat}
-      POSTGRES_DB: ossaat
+      POSTGRES_USER: ${POSTGRES_USER:-ossaat}
+      POSTGRES_DB: ${POSTGRES_DB:-ossaat}
+      POSTGRES_PASSWORD_FILE: /run/secrets/postgres_password
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ossaat"]
       interval: 10s
@@ -90,24 +123,32 @@ services:
     volumes:
       - postgres-data:/var/lib/postgresql/data
     restart: unless-stopped
+    networks:
+      - data
+    secrets:
+      - postgres_password
 
   rabbitmq:
     image: rabbitmq:3.13-management
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
-      RABBITMQ_DEFAULT_USER: guest
-      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-guest}
-    ports:
-      - "15672:15672"
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?set RABBITMQ_USER}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD}
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
     restart: unless-stopped
+    networks:
+      - data
 
   kafka:
     image: bitnami/kafka:3.7.0
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
       KAFKA_ENABLE_KRAFT: "yes"
       KAFKA_CFG_NODE_ID: "1"
@@ -122,6 +163,8 @@ services:
     volumes:
       - kafka-data:/bitnami/kafka
     restart: unless-stopped
+    networks:
+      - data
 
   jaeger:
     image: jaegertracing/all-in-one:1.57
@@ -132,16 +175,20 @@ services:
     ports:
       - "16686:16686"
     restart: unless-stopped
+    networks:
+      - backend
 
   langfuse:
     image: langfuse/langfuse:2.14.1
     security_opt:
       - no-new-privileges:true
+    cap_drop:
+      - ALL
     environment:
-      DATABASE_URL: postgres://ossaat:${POSTGRES_PASSWORD:-ossaat}@postgres:5432/ossaat
-      NEXTAUTH_SECRET: ${NEXTAUTH_SECRET:-replace-me}
+      DATABASE_URL: ${LANGFUSE_DATABASE_URL:?set LANGFUSE_DATABASE_URL}
+      NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?set LANGFUSE_NEXTAUTH_SECRET}
       NEXTAUTH_URL: ${LANGFUSE_PUBLIC_URL:-http://localhost:3000}
-      SALT: ${LANGFUSE_SALT:-replace-me}
+      SALT: ${LANGFUSE_SALT:?set LANGFUSE_SALT}
       TELEMETRY_ENABLED: "false"
     depends_on:
       postgres:
@@ -151,6 +198,8 @@ services:
     volumes:
       - langfuse-data:/app/.langfuse
     restart: unless-stopped
+    networks:
+      - backend
 
 volumes:
   postgres-data:
@@ -158,3 +207,21 @@ volumes:
   rabbitmq-data:
   kafka-data:
   langfuse-data:
+
+secrets:
+  orchestrator_postgres_url:
+    file: ./secrets/prod/orchestrator_postgres_url.txt
+  orchestrator_rabbitmq_url:
+    file: ./secrets/prod/orchestrator_rabbitmq_url.txt
+  langfuse_secret_key:
+    file: ./secrets/prod/langfuse_secret_key.txt
+  local_secrets_passphrase:
+    file: ./secrets/prod/local_secrets_passphrase.txt
+  postgres_password:
+    file: ./secrets/prod/postgres_password.txt
+
+networks:
+  frontend:
+  backend:
+  data:
+    internal: true

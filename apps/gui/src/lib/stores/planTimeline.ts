@@ -249,7 +249,7 @@ function upsertStep(state: TimelineState, payload: StepEventPayload): TimelineSt
     if (payload.step.state === 'waiting_approval') {
       return steps.find((step) => step.id === payload.step.id) ?? null;
     }
-    if (state.awaitingApproval && state.awaitingApproval.id === payload.step.id && payload.step.state !== 'waiting_approval') {
+    if (state.awaitingApproval && state.awaitingApproval.id === payload.step.id) {
       return null;
     }
     return state.awaitingApproval;
@@ -273,6 +273,7 @@ async function postApproval(decision: 'approve' | 'reject', rationale?: string) 
     headers: {
       'Content-Type': 'application/json'
     },
+    credentials: 'include',
     body: JSON.stringify({ decision, rationale })
   });
 
@@ -297,20 +298,7 @@ function connect(planId: string) {
   disconnect();
   const url = ssePath(planId);
   set({ ...initialState, planId });
-  eventSource = new EventSource(url, { withCredentials: false });
-
-  eventSource.addEventListener('open', () => {
-    update((state) => ({ ...state, connected: true, connectionError: null }));
-  });
-
-  eventSource.addEventListener('error', () => {
-    update((state) => ({ ...state, connected: false, connectionError: 'Connection lost' }));
-  });
-
-  eventSource.addEventListener('plan.step', (event) => {
-    const detail = JSON.parse((event as MessageEvent).data) as StepEventPayload;
-    update((state) => upsertStep(state, detail));
-  });
+  eventSource = new EventSource(url, { withCredentials: true });
 }
 
 async function submitApproval(decision: 'approve' | 'reject', rationale?: string) {
@@ -331,5 +319,3 @@ export const timeline = {
   disconnect,
   submitApproval
 };
-
-export type { DiffPayload, DiffFile, PlanStep, StepHistoryEntry, StepState, TimelineState };
