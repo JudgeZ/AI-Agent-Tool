@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -181,3 +182,130 @@ func TestEventsHandlerEnforcesConnectionLimit(t *testing.T) {
 	close(block)
 	resp1.Body.Close()
 }
+
+func TestEventsHandlerLimiterRejectsSpoofedForwardedForFromUntrustedClient(t *testing.T) {
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	orchestrator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("upstream recorder missing flusher")
+		}
+		if _, err := io.WriteString(w, "data: first\n\n"); err != nil {
+			t.Fatalf("failed to write upstream event: %v", err)
+		}
+		flusher.Flush()
+		started <- struct{}{}
+		<-release
+	}))
+	defer orchestrator.Close()
+
+	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 0, newConnectionLimiter(1), nil)
+
+	req1 := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil)
+	req1.RemoteAddr = "203.0.113.10:1234"
+	req1.Header.Set("Accept", "text/event-stream")
+	req1.Header.Set("X-Forwarded-For", "198.51.100.1")
+
+	rec1 := newFlushingRecorder()
+	done1 := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(rec1, req1)
+		close(done1)
+	}()
+
+	<-started
+
+	req2 := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil)
+	req2.RemoteAddr = "203.0.113.10:5678"
+	req2.Header.Set("Accept", "text/event-stream")
+	req2.Header.Set("X-Forwarded-For", "203.0.113.200")
+
+	rec2 := newFlushingRecorder()
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected 429 for spoofed forwarded for, got %d", rec2.Code)
+	}
+
+	close(release)
+	<-done1
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected first request to succeed, got %d", rec1.Code)
+	}
+}
+
+func TestEventsHandlerLimiterHonorsTrustedProxyForwardedFor(t *testing.T) {
+	_, trustedNet, err := net.ParseCIDR("10.0.0.0/8")
+	if err != nil {
+		t.Fatalf("failed to parse CIDR: %v", err)
+	}
+
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	orchestrator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("upstream recorder missing flusher")
+		}
+		if _, err := io.WriteString(w, "data: first\n\n"); err != nil {
+			t.Fatalf("failed to write upstream event: %v", err)
+		}
+		flusher.Flush()
+		started <- struct{}{}
+		<-release
+	}))
+	defer orchestrator.Close()
+
+	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 0, newConnectionLimiter(1), []*net.IPNet{trustedNet})
+
+	req1 := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil)
+	req1.RemoteAddr = "10.1.2.3:1234"
+	req1.Header.Set("Accept", "text/event-stream")
+	req1.Header.Set("X-Forwarded-For", "198.51.100.1, 10.1.2.3")
+
+	rec1 := newFlushingRecorder()
+	done1 := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(rec1, req1)
+		close(done1)
+	}()
+
+	<-started
+
+	req2 := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil)
+	req2.RemoteAddr = "10.1.2.3:5678"
+	req2.Header.Set("Accept", "text/event-stream")
+	req2.Header.Set("X-Forwarded-For", "203.0.113.200, 10.1.2.3")
+
+	rec2 := newFlushingRecorder()
+	done2 := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(rec2, req2)
+		close(done2)
+	}()
+
+	<-started
+
+	close(release)
+	<-done1
+	<-done2
+
+	if rec1.Code != http.StatusOK {
+		t.Fatalf("expected first proxied request to succeed, got %d", rec1.Code)
+	}
+	if rec2.Code != http.StatusOK {
+		t.Fatalf("expected second proxied request to succeed, got %d", rec2.Code)
+	}
+}
+
+type flushingRecorder struct {
+	*httptest.ResponseRecorder
+}
+
+func newFlushingRecorder() *flushingRecorder {
+	return &flushingRecorder{ResponseRecorder: httptest.NewRecorder()}
+}
+
+func (r *flushingRecorder) Flush() {}

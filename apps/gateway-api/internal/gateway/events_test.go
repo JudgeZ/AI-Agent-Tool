@@ -79,7 +79,7 @@ func TestClientIPFromRequestAcceptsRealIPHeaderFromTrustedProxy(t *testing.T) {
 }
 
 func TestParseTrustedProxyCIDRsNormalizesIPv4(t *testing.T) {
-	proxies, err := parseTrustedProxyCIDRs("192.0.2.10")
+	proxies, err := parseTrustedProxyCIDRs([]string{"192.0.2.10"})
 	if err != nil {
 		t.Fatalf("unexpected error parsing proxies: %v", err)
 	}

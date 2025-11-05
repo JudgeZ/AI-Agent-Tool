@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -18,7 +19,7 @@ func main() {
 	startTime := time.Now()
 	gateway.RegisterAuthRoutes(mux)
 	gateway.RegisterHealthRoutes(mux, startTime)
-	gateway.RegisterEventRoutes(mux)
+	gateway.RegisterEventRoutes(mux, gateway.EventRouteConfig{TrustedProxyCIDRs: trustedProxyCIDRsFromEnv()})
 
 	port := os.Getenv("PORT")
 	if port == "" {
@@ -51,4 +52,24 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+func trustedProxyCIDRsFromEnv() []string {
+	raw := strings.TrimSpace(os.Getenv("GATEWAY_TRUSTED_PROXY_CIDRS"))
+	if raw == "" {
+		return nil
+	}
+	parts := strings.Split(raw, ",")
+	cidrs := make([]string, 0, len(parts))
+	for _, part := range parts {
+		token := strings.TrimSpace(part)
+		if token == "" {
+			continue
+		}
+		cidrs = append(cidrs, token)
+	}
+	if len(cidrs) == 0 {
+		return nil
+	}
+	return cidrs
 }
