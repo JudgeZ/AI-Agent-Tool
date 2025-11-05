@@ -26,6 +26,7 @@ import {
   initializePlanQueueRuntime,
   resolvePlanStepApproval,
   submitPlanSteps,
+  type ApprovalDecision,
 } from "./queue/PlanQueueRuntime.js";
 import {
   authorize as oauthAuthorize,
@@ -48,7 +49,11 @@ import {
   getMetricsContentType,
   getMetricsSnapshot,
 } from "./observability/metrics.js";
-import { logAuditEvent, type AuditSubject } from "./observability/audit.js";
+import {
+  logAuditEvent,
+  type AuditOutcome,
+  type AuditSubject,
+} from "./observability/audit.js";
 import { SseQuotaManager } from "./server/SseQuotaManager.js";
 import {
   ChatRequestSchema,
@@ -57,6 +62,7 @@ import {
   PlanRequestSchema,
   StepIdSchema,
   formatValidationIssues,
+  type PlanApprovalPayload,
 } from "./http/validation.js";
 
 function formatSse(event: PlanStepEvent): string {
@@ -525,7 +531,11 @@ export function createServer(appConfig?: AppConfig): Express {
       }
       const planId = planIdResult.data;
       const stepId = stepIdResult.data;
-      const { decision, rationale } = approvalResult.data;
+      const approval = approvalResult.data as PlanApprovalPayload;
+      const decision: ApprovalDecision =
+        approval.decision === "rejected" ? "rejected" : "approved";
+      const rationale = approval.rationale;
+      const auditOutcome: AuditOutcome = decision;
 
       const latest = getLatestPlanStepEvent(planId, stepId);
       if (!latest) {
@@ -570,7 +580,7 @@ export function createServer(appConfig?: AppConfig): Express {
         await resolvePlanStepApproval({ planId, stepId, decision, summary });
         logAuditEvent({
           action: "plan.step.approval",
-          outcome: decision,
+          outcome: auditOutcome,
           traceId: latest.traceId,
           requestId,
           agent: agentName,

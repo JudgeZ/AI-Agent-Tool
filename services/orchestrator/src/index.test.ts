@@ -116,6 +116,7 @@ describe("orchestrator http api", () => {
       server.listen(0, resolve);
     });
 
+    let serverClosed = false;
     const address = server.address() as AddressInfo | null;
     if (!address || typeof address.port !== "number") {
       await new Promise<void>((resolve, reject) => {
@@ -150,7 +151,6 @@ describe("orchestrator http api", () => {
       });
 
     let firstConnection: { request: http.ClientRequest; response: http.IncomingMessage } | undefined;
-    let serverClosed = false;
     try {
       firstConnection = await openSse(`${baseUrl}/plan/${planId}/events`);
       expect(firstConnection.response.statusCode).toBe(200);

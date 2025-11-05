@@ -200,12 +200,16 @@ describe("OidcController", () => {
     });
     const cookies = response.headers["set-cookie"];
     expect(Array.isArray(cookies)).toBe(true);
-    const sessionCookie = (cookies as string[]).find(cookie => cookie.startsWith("oss_session="));
+    const sessionCookieList = Array.isArray(cookies) ? cookies : [];
+    const sessionCookie = sessionCookieList.find((cookie) =>
+      cookie.startsWith("oss_session="),
+    );
     expect(sessionCookie).toBeDefined();
+    const sessionCookieValue = sessionCookie!;
 
     const sessionCheck = await request(app)
       .get("/auth/session")
-      .set("Cookie", sessionCookie as string);
+      .set("Cookie", sessionCookieValue);
     expect(sessionCheck.status).toBe(200);
     expect(sessionCheck.body.session).toMatchObject({
       id: response.body.sessionId,
@@ -215,7 +219,7 @@ describe("OidcController", () => {
 
     const logoutResponse = await request(app)
       .post("/auth/logout")
-      .set("Cookie", sessionCookie as string);
+      .set("Cookie", sessionCookieValue);
     expect(logoutResponse.status).toBe(204);
 
     const postLogout = await request(app)

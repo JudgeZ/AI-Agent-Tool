@@ -192,6 +192,10 @@ type PartialTracingConfig = {
   sampleRatio?: number;
 };
 
+type PartialObservabilityConfig = {
+  tracing?: PartialTracingConfig;
+};
+
 type PartialProvidersConfig = {
   defaultRoute?: AppConfig["providers"]["defaultRoute"];
   enabled?: string[];

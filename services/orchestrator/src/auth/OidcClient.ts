@@ -22,7 +22,7 @@ export type OidcTokenResponse = {
 const METADATA_TTL_MS = 15 * 60 * 1000;
 
 const metadataCache = new Map<string, { metadata: OidcMetadata; expiresAt: number }>();
-const jwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet<false>>>();
+const jwksCache = new Map<string, ReturnType<typeof createRemoteJWKSet>>();
 
 function cacheMetadata(issuer: string, metadata: OidcMetadata): void {
   metadataCache.set(issuer, { metadata, expiresAt: Date.now() + METADATA_TTL_MS });

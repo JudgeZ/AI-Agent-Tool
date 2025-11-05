@@ -475,7 +475,7 @@ export async function submitPlanSteps(
   queueDepthGauge.labels(PLAN_STEPS_QUEUE).set(depth);
 }
 
-type ApprovalDecision = "approved" | "rejected";
+export type ApprovalDecision = "approved" | "rejected";
 
 export async function resolvePlanStepApproval(options: {
   planId: string;

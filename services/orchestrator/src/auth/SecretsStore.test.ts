@@ -147,7 +147,9 @@ describe("VaultStore", () => {
     process.env.VAULT_ADDR = "https://vault.example.com";
     process.env.VAULT_TOKEN = "token";
 
-    const fetchMock = vi.fn().mockResolvedValue(new Response(null, { status: 404 }));
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(null, { status: 404 }));
     vi.stubGlobal("fetch", fetchMock);
 
     const store = new VaultStore();
@@ -181,7 +183,7 @@ describe("VaultStore", () => {
     process.env.VAULT_K8S_TOKEN_PATH = jwtPath;
 
     const fetchMock = vi
-      .fn<Parameters<typeof fetch>, ReturnType<typeof fetch>>()
+      .fn<typeof fetch>()
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({ auth: { client_token: "vault-token", lease_duration: 120 } }),
@@ -227,7 +229,7 @@ describe("VaultStore", () => {
     process.env.VAULT_K8S_TOKEN_PATH = jwtPath;
 
     const fetchMock = vi
-      .fn<Parameters<typeof fetch>, ReturnType<typeof fetch>>()
+      .fn<typeof fetch>()
       .mockResolvedValueOnce(
         new Response(
           JSON.stringify({ auth: { client_token: "vault-token", lease_duration: 60 } }),

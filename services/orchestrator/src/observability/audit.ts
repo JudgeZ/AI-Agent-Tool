@@ -1,4 +1,9 @@
-type AuditOutcome = "success" | "failure" | "denied" | "approved" | "rejected";
+export type AuditOutcome =
+  | "success"
+  | "failure"
+  | "denied"
+  | "approved"
+  | "rejected";
 
 export type AuditSubject = {
   sessionId?: string;

@@ -17,6 +17,21 @@ type LocalStoreOptions = {
   passphrase?: string;
 };
 
+type VaultStoreOptions = {
+  url?: string;
+  token?: string;
+  namespace?: string;
+  kvMountPath?: string;
+  caCert?: string;
+  rejectUnauthorized?: boolean;
+  authMethod?: string;
+  role?: string;
+  authMountPath?: string;
+  kubernetesToken?: string;
+  kubernetesTokenPath?: string;
+  dispatcher?: Dispatcher;
+};
+
 export class LocalFileStore implements SecretsStore {
   private cache: Map<string, string> = new Map();
   private ready: Promise<void>;
@@ -246,7 +261,9 @@ export class VaultStore implements SecretsStore {
       options.rejectUnauthorized ??
       parseBoolean(process.env.VAULT_TLS_REJECT_UNAUTHORIZED);
 
-    if (caCert || rejectUnauthorized !== undefined) {
+    if (options.dispatcher) {
+      this.dispatcher = options.dispatcher;
+    } else if (caCert || rejectUnauthorized !== undefined) {
       const agentOptions: ConstructorParameters<typeof Agent>[0] = {};
       agentOptions.connect = {};
       if (caCert) {
