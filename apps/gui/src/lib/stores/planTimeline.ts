@@ -128,6 +128,7 @@ function resolveTimestamp(payload: StepEventPayload): string {
 }
 
 let eventSource: EventSource | null = null;
+let stepEventListener: ((event: MessageEvent<string>) => void) | null = null;
 
 function toHistoryEntry(payload: StepEventPayload): StepHistoryEntry {
   return {
@@ -288,9 +289,16 @@ const { subscribe, set, update } = timelineStore;
 
 function disconnect() {
   if (eventSource) {
+    if (stepEventListener) {
+      eventSource.removeEventListener('plan.step', stepEventListener);
+      stepEventListener = null;
+    }
+    eventSource.onopen = null;
+    eventSource.onerror = null;
     eventSource.close();
     eventSource = null;
   }
+  update((state) => ({ ...state, connected: false }));
 }
 
 function connect(planId: string) {
@@ -298,7 +306,44 @@ function connect(planId: string) {
   disconnect();
   const url = ssePath(planId);
   set({ ...initialState, planId });
-  eventSource = new EventSource(url, { withCredentials: true });
+  const source = new EventSource(url, { withCredentials: true });
+  eventSource = source;
+
+  source.onopen = () => {
+    update((state) => ({ ...state, connected: true, connectionError: null }));
+  };
+
+  source.onerror = (event) => {
+    let message: string | null = null;
+    if (event instanceof MessageEvent) {
+      message = typeof event.data === 'string' && event.data ? event.data : null;
+    } else if (typeof (event as { message?: unknown }).message === 'string') {
+      message = (event as { message: string }).message;
+    }
+    update((state) => ({
+      ...state,
+      connected: false,
+      connectionError: message ?? 'Connection lost'
+    }));
+  };
+
+  const fallbackPlanId = planId;
+  stepEventListener = (event: MessageEvent<string>) => {
+    try {
+      const payload = JSON.parse(event.data) as StepEventPayload;
+      update((state) => {
+        const resolvedPlanId =
+          coalesce(payload.planId, payload.plan_id) ?? state.planId ?? fallbackPlanId;
+        const baseState = { ...state, planId: resolvedPlanId };
+        return upsertStep(baseState, payload);
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to parse event payload';
+      update((state) => ({ ...state, connectionError: message }));
+    }
+  };
+
+  source.addEventListener('plan.step', stepEventListener);
 }
 
 async function submitApproval(decision: 'approve' | 'reject', rationale?: string) {

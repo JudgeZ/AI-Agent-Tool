@@ -10,8 +10,9 @@
     "preview": "vite preview",
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "npm run check",
-    "test": "npm run test:e2e",
+    "test": "npm run test:unit",
     "test:e2e": "playwright test",
+    "test:unit": "vitest run",
     "mock:orchestrator": "node ./tests/mock-orchestrator.js",
     "tauri": "tauri dev",
     "tauri:build": "tauri build"
@@ -29,7 +30,9 @@
     "svelte-check": "^4.0.0",
     "tslib": "^2.6.2",
     "typescript": "^5.4.5",
-    "vite": "^6.3.0"
+    "jsdom": "^25.0.1",
+    "vite": "^6.3.0",
+    "vitest": "^2.1.4"
   },
   "overrides": {
     "cookie": "^0.7.0",
