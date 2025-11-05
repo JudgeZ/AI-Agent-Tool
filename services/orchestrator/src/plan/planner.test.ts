@@ -54,4 +54,28 @@ describe("planner", () => {
     expect(fs.existsSync(oldPlanDir)).toBe(false);
     expect(fs.existsSync(path.join(plansDir, plan.id))).toBe(true);
   });
+
+  it("does not follow symlinks outside the plans directory during cleanup", () => {
+    const outsideDir = path.join(process.cwd(), "outside-plan-artifacts");
+    fs.rmSync(outsideDir, { recursive: true, force: true });
+    fs.mkdirSync(outsideDir, { recursive: true });
+
+    fs.rmSync(plansDir, { recursive: true, force: true });
+    fs.mkdirSync(plansDir, { recursive: true });
+
+    const symlinkPath = path.join(plansDir, "linked-old-plan");
+    fs.symlinkSync(outsideDir, symlinkPath, "dir");
+
+    const oldTime = new Date(Date.now() - 40 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(outsideDir, oldTime, oldTime);
+    fs.utimesSync(symlinkPath, oldTime, oldTime);
+
+    const plan = createPlan("Symlink safety", { retentionDays: 30 });
+
+    expect(fs.existsSync(outsideDir)).toBe(true);
+    expect(fs.existsSync(symlinkPath)).toBe(true);
+    expect(fs.existsSync(path.join(plansDir, plan.id))).toBe(true);
+
+    fs.rmSync(outsideDir, { recursive: true, force: true });
+  });
 });

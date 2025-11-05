@@ -77,6 +77,14 @@ function buildSteps(goal: string): PlanStep[] {
   ].map(step => PlanStepSchema.parse(step));
 }
 
+function isChildPath(base: string, candidate: string): boolean {
+  const relative = path.relative(base, candidate);
+  if (!relative || relative.startsWith("..") || path.isAbsolute(relative)) {
+    return false;
+  }
+  return true;
+}
+
 function cleanupPlanArtifacts(baseDir: string, retentionDays: number): void {
   if (retentionDays <= 0) {
     return;
@@ -87,14 +95,11 @@ function cleanupPlanArtifacts(baseDir: string, retentionDays: number): void {
     const entries = fs.readdirSync(resolvedBase, { withFileTypes: true });
     const cutoff = Date.now() - retentionMs;
     for (const entry of entries) {
-      if (!entry.isDirectory()) {
+      if (entry.isSymbolicLink() || !entry.isDirectory()) {
         continue;
       }
-      const target = path.resolve(resolvedBase, entry.name);
-      if (target === resolvedBase) {
-        continue;
-      }
-      if (!target.startsWith(resolvedBase + path.sep)) {
+      const target = path.join(resolvedBase, entry.name);
+      if (!isChildPath(resolvedBase, target)) {
         continue;
       }
       let stats: fs.Stats;
