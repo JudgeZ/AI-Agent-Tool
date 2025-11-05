@@ -6,7 +6,7 @@
     "aidt": "dist/index.js"
   },
   "scripts": {
-    "prebuild": "npm install --prefix ../../services/orchestrator --include=dev --no-package-lock",
+    "prebuild": "node ./scripts/install-orchestrator-deps.cjs",
     "build": "npm run build --prefix ../../services/orchestrator && esbuild src/index.ts --bundle --platform=node --outfile=dist/index.js",
     "dev": "ts-node src/index.ts",
     "test": "npm run build && node --test tests/*.test.js"
