@@ -467,12 +467,35 @@ export function createServer(appConfig?: AppConfig): Express {
 
       let replayingHistory = true;
       const buffered: PlanStepEvent[] = [];
+      let keepAlive: NodeJS.Timeout | undefined;
+      let cleanedUp = false;
+      let unsubscribe: () => void = () => {};
+
+      const cleanup = () => {
+        if (cleanedUp) {
+          return;
+        }
+        cleanedUp = true;
+        if (keepAlive) {
+          clearInterval(keepAlive);
+          keepAlive = undefined;
+        }
+        unsubscribe();
+        releaseQuota();
+        if (!res.writableEnded) {
+          try {
+            res.end();
+          } catch {
+            // ignore errors while ending the response during cleanup
+          }
+        }
+      };
 
       const writeEvent = (event: PlanStepEvent) => {
         res.write(formatSse(event));
       };
 
-      const unsubscribe = subscribeToPlanSteps(planId, (event) => {
+      unsubscribe = subscribeToPlanSteps(planId, (event) => {
         if (replayingHistory) {
           buffered.push(event);
           return;
@@ -487,15 +510,16 @@ export function createServer(appConfig?: AppConfig): Express {
       buffered.splice(0).forEach(writeEvent);
 
       const keepAliveInterval = config.server.sseKeepAliveMs;
-      const keepAlive = setInterval(() => {
-        res.write(": keep-alive\n\n");
+      keepAlive = setInterval(() => {
+        try {
+          res.write(": keep-alive\n\n");
+        } catch {
+          cleanup();
+        }
       }, keepAliveInterval);
 
       req.on("close", () => {
-        clearInterval(keepAlive);
-        unsubscribe();
-        releaseQuota();
-        res.end();
+        cleanup();
       });
     } else {
       const events = getPlanHistory(planId);
