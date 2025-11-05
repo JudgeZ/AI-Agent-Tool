@@ -1,4 +1,5 @@
-import fs from "fs";
+import fs from "node:fs";
+import fsPromises from "node:fs/promises";
 import path from "path";
 import crypto from "crypto";
 
@@ -11,17 +12,17 @@ export type { Plan, PlanStep, PlanSubject } from "./validation.js";
 const DEFAULT_PLAN_ARTIFACT_RETENTION_DAYS = 30;
 const MILLIS_PER_DAY = 24 * 60 * 60 * 1000;
 
-function getRealpathSync(): (target: string) => string {
-  const withNative = fs.realpathSync as typeof fs.realpathSync & {
-    native?: typeof fs.realpathSync;
+function getRealpath(): (target: string) => Promise<string> {
+  const withNative = fsPromises.realpath as typeof fsPromises.realpath & {
+    native?: typeof fsPromises.realpath;
   };
   if (typeof withNative.native === "function") {
-    return withNative.native.bind(fs);
+    return withNative.native.bind(fsPromises);
   }
-  return fs.realpathSync.bind(fs);
+  return fsPromises.realpath.bind(fsPromises);
 }
 
-const realpathSync = getRealpathSync();
+const realpath = getRealpath();
 
 const DEFAULT_CAPABILITY_LABELS: Record<string, string> = {
   "repo.read": "Read repository",
@@ -118,52 +119,155 @@ function isSafeDirentName(name: string): boolean {
   return path.basename(name) === name;
 }
 
-function cleanupPlanArtifacts(baseDir: string, retentionDays: number): void {
+async function cleanupPlanArtifacts(baseDir: string, retentionDays: number): Promise<void> {
   if (retentionDays <= 0) {
     return;
   }
   const retentionMs = retentionDays * MILLIS_PER_DAY;
+  let resolvedBase: string;
   try {
-    const resolvedBase = realpathSync(baseDir);
-    const entries = fs.readdirSync(resolvedBase, { withFileTypes: true });
-    const cutoff = Date.now() - retentionMs;
-    for (const entry of entries) {
-      if (entry.isSymbolicLink() || !entry.isDirectory()) {
-        continue;
-      }
-      const entryName = entry.name;
-      if (!isSafeDirentName(entryName)) {
-        continue;
-      }
-      const targetCandidate = resolvedBase.endsWith(path.sep)
-        ? `${resolvedBase}${entryName}`
-        : `${resolvedBase}${path.sep}${entryName}`;
-      let target: string;
-      try {
-        target = realpathSync(targetCandidate);
-      } catch {
-        continue;
-      }
-      if (!isChildPath(resolvedBase, target)) {
-        continue;
-      }
-      let stats: fs.Stats;
-      try {
-        stats = fs.statSync(target);
-      } catch {
-        continue;
-      }
-      const lastModified = stats.mtimeMs ?? stats.ctimeMs ?? 0;
-      if (lastModified <= cutoff) {
-        fs.rmSync(target, { recursive: true, force: true });
-      }
-    }
+    resolvedBase = await realpath(baseDir);
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
       return;
     }
     throw error;
   }
+
+  let entries: fs.Dirent[];
+  try {
+    entries = await fsPromises.readdir(resolvedBase, { withFileTypes: true });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return;
+    }
+    throw error;
+  }
+
+  const cutoff = Date.now() - retentionMs;
+  for (const entry of entries) {
+    if (entry.isSymbolicLink() || !entry.isDirectory()) {
+      continue;
+    }
+    const entryName = entry.name;
+    if (!isSafeDirentName(entryName)) {
+      continue;
+    }
+
+    const targetCandidate = resolvedBase.endsWith(path.sep)
+      ? `${resolvedBase}${entryName}`
+      : `${resolvedBase}${path.sep}${entryName}`;
+
+    let target: string;
+    try {
+      target = await realpath(targetCandidate);
+    } catch {
+      continue;
+    }
+
+    if (!isChildPath(resolvedBase, target)) {
+      continue;
+    }
+
+    let stats: fs.Stats;
+    try {
+      stats = await fsPromises.stat(target);
+    } catch {
+      continue;
+    }
+
+    const lastModified = stats.mtimeMs ?? stats.ctimeMs ?? 0;
+    if (lastModified <= cutoff) {
+      try {
+        await fsPromises.rm(target, { recursive: true, force: true });
+      } catch {
+        // Ignore failures and continue attempting to clean other entries.
+      }
+    }
+  }
+}
+
+const CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
+
+type CleanupState = {
+  baseDir?: string;
+  retentionDays?: number;
+  interval?: NodeJS.Timeout;
+  immediateTimer?: NodeJS.Timeout;
+  pending?: Promise<void> | null;
+};
+
+const cleanupState: CleanupState = {
+  pending: null
+};
+
+async function runScheduledCleanup(): Promise<void> {
+  if (!cleanupState.baseDir || !cleanupState.retentionDays || cleanupState.retentionDays <= 0) {
+    return;
+  }
+
+  if (cleanupState.pending) {
+    await cleanupState.pending;
+    return;
+  }
+
+  cleanupState.pending = cleanupPlanArtifacts(cleanupState.baseDir, cleanupState.retentionDays)
+    .catch(error => {
+      if (process.env.NODE_ENV !== "test") {
+        console.error("Failed to clean plan artifacts", error);
+      }
+    })
+    .finally(() => {
+      cleanupState.pending = null;
+    });
+
+  await cleanupState.pending;
+}
+
+function schedulePlanArtifactCleanup(baseDir: string, retentionDays: number): void {
+  if (retentionDays <= 0) {
+    return;
+  }
+
+  cleanupState.baseDir = baseDir;
+  cleanupState.retentionDays = retentionDays;
+
+  if (!cleanupState.immediateTimer) {
+    cleanupState.immediateTimer = setTimeout(() => {
+      cleanupState.immediateTimer = undefined;
+      void runScheduledCleanup();
+    }, 0);
+    cleanupState.immediateTimer.unref?.();
+  }
+
+  if (!cleanupState.interval) {
+    cleanupState.interval = setInterval(() => {
+      void runScheduledCleanup();
+    }, CLEANUP_INTERVAL_MS);
+    cleanupState.interval.unref?.();
+  }
+}
+
+export async function flushPlanArtifactCleanup(): Promise<void> {
+  if (cleanupState.immediateTimer) {
+    clearTimeout(cleanupState.immediateTimer);
+    cleanupState.immediateTimer = undefined;
+  }
+  await runScheduledCleanup();
+}
+
+export function resetPlanArtifactCleanupSchedulerForTests(): void {
+  if (cleanupState.interval) {
+    clearInterval(cleanupState.interval);
+  }
+  if (cleanupState.immediateTimer) {
+    clearTimeout(cleanupState.immediateTimer);
+  }
+  cleanupState.baseDir = undefined;
+  cleanupState.retentionDays = undefined;
+  cleanupState.interval = undefined;
+  cleanupState.immediateTimer = undefined;
+  cleanupState.pending = null;
 }
 
 export function createPlan(goal: string, options?: { retentionDays?: number }): Plan {
@@ -197,9 +301,7 @@ export function createPlan(goal: string, options?: { retentionDays?: number }): 
     );
 
     const retentionDays = options?.retentionDays ?? DEFAULT_PLAN_ARTIFACT_RETENTION_DAYS;
-    if (retentionDays > 0) {
-      cleanupPlanArtifacts(plansRoot, retentionDays);
-    }
+    schedulePlanArtifactCleanup(plansRoot, retentionDays);
 
     for (const step of steps) {
       const state = step.approvalRequired ? "waiting_approval" : "queued";

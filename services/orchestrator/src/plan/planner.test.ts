@@ -4,7 +4,11 @@ import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { clearPlanHistory, getPlanHistory } from "./events.js";
-import { createPlan } from "./planner.js";
+import {
+  createPlan,
+  flushPlanArtifactCleanup,
+  resetPlanArtifactCleanupSchedulerForTests
+} from "./planner.js";
 import { parsePlan } from "./validation.js";
 
 describe("planner", () => {
@@ -13,11 +17,13 @@ describe("planner", () => {
   beforeEach(() => {
     clearPlanHistory();
     fs.rmSync(plansDir, { recursive: true, force: true });
+    resetPlanArtifactCleanupSchedulerForTests();
   });
 
   afterEach(() => {
     clearPlanHistory();
     fs.rmSync(plansDir, { recursive: true, force: true });
+    resetPlanArtifactCleanupSchedulerForTests();
   });
 
   it("creates a validated plan with enriched metadata", () => {
@@ -40,7 +46,7 @@ describe("planner", () => {
     expect(events.every(event => Boolean(event.occurredAt))).toBe(true);
   });
 
-  it("purges plan artifacts older than the retention window", () => {
+  it("purges plan artifacts older than the retention window", async () => {
     const oldPlanDir = path.join(plansDir, "plan-old");
     fs.mkdirSync(oldPlanDir, { recursive: true });
     const oldPlanFile = path.join(oldPlanDir, "plan.json");
@@ -51,11 +57,13 @@ describe("planner", () => {
 
     const plan = createPlan("Retention test", { retentionDays: 30 });
 
+    await flushPlanArtifactCleanup();
+
     expect(fs.existsSync(oldPlanDir)).toBe(false);
     expect(fs.existsSync(path.join(plansDir, plan.id))).toBe(true);
   });
 
-  it("skips suspicious directory names when cleaning up old plans", () => {
+  it("skips suspicious directory names when cleaning up old plans", async () => {
     const suspiciousDir = path.join(plansDir, "plan..sneaky");
     fs.mkdirSync(suspiciousDir, { recursive: true });
     const suspiciousPlanFile = path.join(suspiciousDir, "plan.json");
@@ -73,12 +81,14 @@ describe("planner", () => {
 
     const plan = createPlan("Suspicious cleanup", { retentionDays: 30 });
 
+    await flushPlanArtifactCleanup();
+
     expect(fs.existsSync(safeDir)).toBe(false);
     expect(fs.existsSync(suspiciousDir)).toBe(true);
     expect(fs.existsSync(path.join(plansDir, plan.id))).toBe(true);
   });
 
-  it("does not follow symlinks outside the plans directory during cleanup", () => {
+  it("does not follow symlinks outside the plans directory during cleanup", async () => {
     const outsideDir = path.join(process.cwd(), "outside-plan-artifacts");
     fs.rmSync(outsideDir, { recursive: true, force: true });
     fs.mkdirSync(outsideDir, { recursive: true });
@@ -95,10 +105,30 @@ describe("planner", () => {
 
     const plan = createPlan("Symlink safety", { retentionDays: 30 });
 
+    await flushPlanArtifactCleanup();
+
     expect(fs.existsSync(outsideDir)).toBe(true);
     expect(fs.existsSync(symlinkPath)).toBe(true);
     expect(fs.existsSync(path.join(plansDir, plan.id))).toBe(true);
 
     fs.rmSync(outsideDir, { recursive: true, force: true });
+  });
+
+  it("retains recent plan artifacts within the retention window", async () => {
+    const recentDir = path.join(plansDir, "plan-recent");
+    fs.mkdirSync(recentDir, { recursive: true });
+    const recentFile = path.join(recentDir, "plan.json");
+    fs.writeFileSync(recentFile, JSON.stringify({ id: "plan-recent" }));
+
+    const almostOldTime = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(recentDir, almostOldTime, almostOldTime);
+    fs.utimesSync(recentFile, almostOldTime, almostOldTime);
+
+    createPlan("Retention boundary", { retentionDays: 30 });
+
+    await flushPlanArtifactCleanup();
+
+    expect(fs.existsSync(recentDir)).toBe(true);
+    expect(fs.existsSync(recentFile)).toBe(true);
   });
 });
