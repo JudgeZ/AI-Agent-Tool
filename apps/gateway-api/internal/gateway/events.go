@@ -243,18 +243,30 @@ func clientIPFromRequest(r *http.Request, trustedProxies []*net.IPNet) string {
 	if remoteIP != nil && isTrustedProxy(remoteIP, trustedProxies) {
 		if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
 			parts := strings.Split(forwarded, ",")
-			for _, part := range parts {
-				candidate := strings.TrimSpace(part)
+			var lastValid net.IP
+			for i := len(parts) - 1; i >= 0; i-- {
+				candidate := strings.TrimSpace(parts[i])
 				if candidate == "" {
 					continue
 				}
-				if ip := net.ParseIP(candidate); ip != nil {
+				ip := net.ParseIP(candidate)
+				if ip == nil {
+					continue
+				}
+				lastValid = ip
+				if !isTrustedProxy(ip, trustedProxies) {
 					return ip.String()
 				}
+			}
+			if lastValid != nil {
+				return lastValid.String()
 			}
 		}
 		if realIP := strings.TrimSpace(r.Header.Get("X-Real-IP")); realIP != "" {
 			if ip := net.ParseIP(realIP); ip != nil {
+				if !isTrustedProxy(ip, trustedProxies) {
+					return ip.String()
+				}
 				return ip.String()
 			}
 		}

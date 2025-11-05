@@ -33,6 +33,21 @@ func TestClientIPFromRequestAcceptsForwardedForFromTrustedProxy(t *testing.T) {
 	}
 }
 
+func TestClientIPFromRequestSkipsSpoofedForwardedForEntriesFromTrustedProxy(t *testing.T) {
+	_, trustedNet, err := net.ParseCIDR("10.0.0.0/8")
+	if err != nil {
+		t.Fatalf("failed to parse CIDR: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/events", nil)
+	req.RemoteAddr = "10.1.2.3:4321"
+	req.Header.Set("X-Forwarded-For", "203.0.113.5, 198.51.100.9, 10.1.2.3")
+
+	ip := clientIPFromRequest(req, []*net.IPNet{trustedNet})
+	if ip != "198.51.100.9" {
+		t.Fatalf("expected to ignore spoofed entries and return %q, got %q", "198.51.100.9", ip)
+	}
+}
+
 func TestClientIPFromRequestFallsBackWhenForwardedForInvalid(t *testing.T) {
 	_, trustedNet, err := net.ParseCIDR("10.0.0.0/8")
 	if err != nil {
