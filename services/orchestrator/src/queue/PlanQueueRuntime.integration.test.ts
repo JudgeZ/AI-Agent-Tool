@@ -17,6 +17,7 @@ import type {
 import type { PlanStepCompletionPayload } from "./PlanQueueRuntime.js";
 import type { PlanStepEvent } from "../plan/events.js";
 import { ToolClientError } from "../grpc/AgentClient.js";
+import type { PlanStep } from "../plan/planner.js";
 type EventsModule = typeof import("../plan/events.js");
 type PublishSpy = Mock<EventsModule["publishPlanStepEvent"]>;
 
@@ -369,7 +370,7 @@ describe("PlanQueueRuntime integration", () => {
   });
 
   it("clears approvals and persisted state when a rejected completion is processed", async () => {
-    const step = {
+    const step: PlanStep = {
       id: "s-rejected",
       action: "apply_edits",
       capability: "repo.write",
@@ -380,7 +381,7 @@ describe("PlanQueueRuntime integration", () => {
       approvalRequired: true,
       input: {},
       metadata: {}
-    } as const;
+    };
     const planId = "plan-rejected";
     const traceId = "trace-rejected";
 

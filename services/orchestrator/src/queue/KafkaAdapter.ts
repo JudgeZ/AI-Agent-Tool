@@ -708,10 +708,13 @@ function parseSaslConfigFromEnv(): KafkaSaslConfig | undefined {
   }
   const username = process.env.KAFKA_SASL_USERNAME?.trim();
   const password = process.env.KAFKA_SASL_PASSWORD?.trim();
+  const authorizationIdentity = process.env.KAFKA_SASL_AUTHORIZATION_IDENTITY?.trim();
   return {
     mechanism,
     username: username && username.length > 0 ? username : undefined,
-    password: password && password.length > 0 ? password : undefined
+    password: password && password.length > 0 ? password : undefined,
+    authorizationIdentity:
+      authorizationIdentity && authorizationIdentity.length > 0 ? authorizationIdentity : undefined
   };
 }
 function readFileBuffer(filePath: string): Buffer {
@@ -767,7 +770,8 @@ function resolveKafkaSaslOptions(config: KafkaSaslConfig | undefined, logger: Lo
       return {
         mechanism: "aws",
         accessKeyId: config.username,
-        secretAccessKey: config.password
+        secretAccessKey: config.password,
+        authorizationIdentity: config.authorizationIdentity ?? config.username ?? ""
       };
     }
     case "oauthbearer":

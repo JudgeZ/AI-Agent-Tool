@@ -33,6 +33,7 @@ export type KafkaSaslConfig = {
   mechanism: KafkaSaslMechanism;
   username?: string;
   password?: string;
+  authorizationIdentity?: string;
 };
 
 export type KafkaTlsConfig = {
@@ -369,6 +370,7 @@ type PartialKafkaSaslConfig = {
   mechanism?: KafkaSaslMechanism;
   username?: string;
   password?: string;
+  authorizationIdentity?: string;
 };
 
 type PartialKafkaMessagingConfig = {
@@ -793,6 +795,12 @@ function parseKafkaSaslRecord(value: unknown): PartialKafkaSaslConfig | undefine
   const password = asString(record.password ?? record.pass ?? record.secret);
   if (password) {
     result.password = password;
+  }
+  const authorizationIdentity = asString(
+    record.authorizationIdentity ?? record.authorization_identity ?? record.authzIdentity ?? record.authz_identity
+  );
+  if (authorizationIdentity) {
+    result.authorizationIdentity = authorizationIdentity;
   }
   return Object.keys(result).length > 0 ? result : undefined;
 }
@@ -1344,6 +1352,7 @@ export function loadConfig(): AppConfig {
   const envKafkaSaslMechanism = parseKafkaMechanism(process.env.KAFKA_SASL_MECHANISM);
   const envKafkaSaslUsername = asString(process.env.KAFKA_SASL_USERNAME);
   const envKafkaSaslPassword = asString(process.env.KAFKA_SASL_PASSWORD);
+  const envKafkaSaslAuthorizationIdentity = asString(process.env.KAFKA_SASL_AUTHORIZATION_IDENTITY);
   const envKafkaEnsureTopics = asBoolean(process.env.KAFKA_ENSURE_TOPICS);
   const envKafkaTopicPartitions = asNumber(process.env.KAFKA_TOPIC_PARTITIONS);
   const envKafkaReplicationFactor = asNumber(process.env.KAFKA_TOPIC_REPLICATION_FACTOR);
@@ -1417,7 +1426,9 @@ export function loadConfig(): AppConfig {
     kafkaSasl = {
       mechanism: resolvedSaslMechanism,
       username: envKafkaSaslUsername ?? fileKafkaSasl?.username,
-      password: envKafkaSaslPassword ?? fileKafkaSasl?.password
+      password: envKafkaSaslPassword ?? fileKafkaSasl?.password,
+      authorizationIdentity:
+        envKafkaSaslAuthorizationIdentity ?? fileKafkaSasl?.authorizationIdentity
     };
   }
   const kafkaEnsureTopics = envKafkaEnsureTopics ?? fileKafkaConfig?.ensureTopics ?? defaultKafka.ensureTopics;
