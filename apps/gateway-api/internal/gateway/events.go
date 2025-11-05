@@ -312,11 +312,12 @@ func parseTrustedProxyCIDRs(raw string) ([]*net.IPNet, error) {
 		if ip == nil {
 			return nil, fmt.Errorf("invalid IP %q", token)
 		}
-		bits := 32
-		if ip.To4() == nil {
-			bits = 128
+		if ipv4 := ip.To4(); ipv4 != nil {
+			mask := net.CIDRMask(net.IPv4len*8, net.IPv4len*8)
+			proxies = append(proxies, &net.IPNet{IP: ipv4, Mask: mask})
+			continue
 		}
-		mask := net.CIDRMask(bits, bits)
+		mask := net.CIDRMask(net.IPv6len*8, net.IPv6len*8)
 		proxies = append(proxies, &net.IPNet{IP: ip, Mask: mask})
 	}
 	return proxies, nil

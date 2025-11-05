@@ -77,3 +77,20 @@ func TestClientIPFromRequestAcceptsRealIPHeaderFromTrustedProxy(t *testing.T) {
 		t.Fatalf("expected real ip header, got %q", ip)
 	}
 }
+
+func TestParseTrustedProxyCIDRsNormalizesIPv4(t *testing.T) {
+	proxies, err := parseTrustedProxyCIDRs("192.0.2.10")
+	if err != nil {
+		t.Fatalf("unexpected error parsing proxies: %v", err)
+	}
+	if len(proxies) != 1 {
+		t.Fatalf("expected 1 proxy entry, got %d", len(proxies))
+	}
+	target := net.ParseIP("192.0.2.10")
+	if target == nil {
+		t.Fatalf("failed to parse target ip")
+	}
+	if !proxies[0].Contains(target) {
+		t.Fatalf("expected proxy network to contain %q", target)
+	}
+}
