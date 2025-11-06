@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
-import { __resetLegacyMessagingWarningForTests, loadConfig } from "./config.js";
+import { __resetLegacyMessagingWarningForTests, invalidateConfigCache, loadConfig } from "./config.js";
 
 const ENV_KEYS = [
   "RUN_MODE",
@@ -118,6 +118,7 @@ describe("loadConfig", () => {
   beforeEach(() => {
     restoreEnv();
     __resetLegacyMessagingWarningForTests();
+    invalidateConfigCache();
     warnSpy = vi.spyOn(console, "warn");
     warnSpy.mockImplementation(() => {});
   });
@@ -127,6 +128,7 @@ describe("loadConfig", () => {
       fs.rmSync(dir, { recursive: true, force: true });
     });
     restoreEnv();
+    invalidateConfigCache();
     warnSpy.mockRestore();
   });
 
@@ -312,6 +314,32 @@ observability:
         enabled: false
       }
     });
+  });
+
+  it("memoizes configuration reads until the file changes", () => {
+    const configPath = createTempConfigFile(`
+runMode: enterprise
+`);
+    process.env.APP_CONFIG = configPath;
+    const readSpy = vi.spyOn(fs, "readFileSync");
+
+    const first = loadConfig();
+    const second = loadConfig();
+
+    expect(second).toBe(first);
+    expect(readSpy).toHaveBeenCalledTimes(1);
+
+    fs.writeFileSync(configPath, "runMode: consumer\n", "utf-8");
+    const future = new Date(Date.now() + 60_000);
+    fs.utimesSync(configPath, future, future);
+
+    const third = loadConfig();
+
+    expect(third).not.toBe(first);
+    expect(third.runMode).toBe("consumer");
+    expect(readSpy).toHaveBeenCalledTimes(2);
+
+    readSpy.mockRestore();
   });
 
   it("derives configuration from environment variables when file values are absent", () => {
