@@ -26,8 +26,8 @@ describe("planner", () => {
     resetPlanArtifactCleanupSchedulerForTests();
   });
 
-  it("creates a validated plan with enriched metadata", () => {
-    const plan = createPlan("Ship feature X");
+  it("creates a validated plan with enriched metadata", async () => {
+    const plan = await createPlan("Ship feature X");
     expect(plan.steps).not.toHaveLength(0);
     expect(() => parsePlan(plan)).not.toThrow();
 
@@ -55,7 +55,7 @@ describe("planner", () => {
     fs.utimesSync(oldPlanDir, oldTime, oldTime);
     fs.utimesSync(oldPlanFile, oldTime, oldTime);
 
-    const plan = createPlan("Retention test", { retentionDays: 30 });
+    const plan = await createPlan("Retention test", { retentionDays: 30 });
 
     await flushPlanArtifactCleanup();
 
@@ -73,7 +73,7 @@ describe("planner", () => {
     fs.utimesSync(oldPlanDir, oldTime, oldTime);
     fs.utimesSync(oldPlanFile, oldTime, oldTime);
 
-    createPlan("Background cleanup", { retentionDays: 30 });
+    await createPlan("Background cleanup", { retentionDays: 30 });
 
     await new Promise(resolve => setTimeout(resolve, 25));
 
@@ -96,7 +96,7 @@ describe("planner", () => {
       fs.utimesSync(candidate, oldTime, oldTime);
     }
 
-    const plan = createPlan("Suspicious cleanup", { retentionDays: 30 });
+    const plan = await createPlan("Suspicious cleanup", { retentionDays: 30 });
 
     await flushPlanArtifactCleanup();
 
@@ -120,7 +120,7 @@ describe("planner", () => {
     fs.utimesSync(outsideDir, oldTime, oldTime);
     fs.utimesSync(symlinkPath, oldTime, oldTime);
 
-    const plan = createPlan("Symlink safety", { retentionDays: 30 });
+    const plan = await createPlan("Symlink safety", { retentionDays: 30 });
 
     await flushPlanArtifactCleanup();
 
@@ -141,7 +141,7 @@ describe("planner", () => {
     fs.utimesSync(recentDir, almostOldTime, almostOldTime);
     fs.utimesSync(recentFile, almostOldTime, almostOldTime);
 
-    createPlan("Retention boundary", { retentionDays: 30 });
+    await createPlan("Retention boundary", { retentionDays: 30 });
 
     await flushPlanArtifactCleanup();
 
@@ -159,10 +159,27 @@ describe("planner", () => {
     fs.utimesSync(oldPlanDir, oldTime, oldTime);
     fs.utimesSync(oldPlanFile, oldTime, oldTime);
 
-    createPlan("Retention disabled", { retentionDays: 0 });
+    await createPlan("Retention disabled", { retentionDays: 0 });
 
     await new Promise(resolve => setTimeout(resolve, 25));
 
     expect(fs.existsSync(oldPlanDir)).toBe(true);
+  });
+
+  it("creates multiple plans concurrently without blocking the event loop", async () => {
+    const goals = Array.from({ length: 5 }, (_, index) => `Concurrent goal ${index}`);
+
+    const timerPromise = new Promise<number>(resolve => {
+      const started = Date.now();
+      setTimeout(() => resolve(Date.now() - started), 25);
+    });
+
+    const plansPromise = Promise.all(goals.map(goal => createPlan(goal)));
+
+    const [elapsed, plans] = await Promise.all([timerPromise, plansPromise]);
+
+    expect(plans).toHaveLength(goals.length);
+    expect(plans.every(plan => Boolean(plan.id))).toBe(true);
+    expect(elapsed).toBeLessThan(200);
   });
 });

@@ -11,8 +11,8 @@ function formatSuccessCriteria(plan: Plan): string[] {
   return (plan.successCriteria ?? []).map(criteria => `  - ${criteria}`);
 }
 
-export function runPlan(goal: string): Plan {
-  const plan = createPlan(goal);
+export async function runPlan(goal: string): Promise<Plan> {
+  const plan = await createPlan(goal);
   console.log(`Plan created: ${plan.id}`);
   console.log("Goal:", plan.goal);
   console.log("Steps:");

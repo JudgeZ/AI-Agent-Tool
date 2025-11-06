@@ -287,7 +287,7 @@ export function resetPlanArtifactCleanupSchedulerForTests(): void {
   cleanupState.pending = null;
 }
 
-export function createPlan(goal: string, options?: { retentionDays?: number }): Plan {
+export async function createPlan(goal: string, options?: { retentionDays?: number }): Promise<Plan> {
   const span = startSpan("planner.createPlan", { goal });
   try {
     const id = "plan-" + crypto.randomBytes(4).toString("hex");
@@ -303,19 +303,21 @@ export function createPlan(goal: string, options?: { retentionDays?: number }): 
 
     const plansRoot = path.join(process.cwd(), ".plans");
     const dir = path.join(plansRoot, id);
-    fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, "plan.json"), JSON.stringify(plan, null, 2));
-    fs.writeFileSync(
-      path.join(dir, "plan.md"),
-      `# Plan ${id}\n\nGoal: ${goal}\n\nSteps:\n` +
-        plan.steps
-          .map(step =>
-            `- **${step.action}** (${step.capabilityLabel}) — tool: ${step.tool}, timeout: ${step.timeoutSeconds}s, approval: ${
-              step.approvalRequired ? "required" : "auto"
-            }`
-          )
-          .join("\n")
-    );
+    await fsPromises.mkdir(dir, { recursive: true });
+    await Promise.all([
+      fsPromises.writeFile(path.join(dir, "plan.json"), JSON.stringify(plan, null, 2)),
+      fsPromises.writeFile(
+        path.join(dir, "plan.md"),
+        `# Plan ${id}\n\nGoal: ${goal}\n\nSteps:\n` +
+          plan.steps
+            .map(step =>
+              `- **${step.action}** (${step.capabilityLabel}) — tool: ${step.tool}, timeout: ${step.timeoutSeconds}s, approval: ${
+                step.approvalRequired ? "required" : "auto"
+              }`
+            )
+            .join("\n")
+      )
+    ]);
 
     const retentionDays = options?.retentionDays ?? DEFAULT_PLAN_ARTIFACT_RETENTION_DAYS;
     schedulePlanArtifactCleanup(plansRoot, retentionDays);
