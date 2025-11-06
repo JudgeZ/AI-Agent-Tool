@@ -63,6 +63,23 @@ describe("planner", () => {
     expect(fs.existsSync(path.join(plansDir, plan.id))).toBe(true);
   });
 
+  it("cleans up expired artifacts via the background scheduler", async () => {
+    const oldPlanDir = path.join(plansDir, "plan-background-old");
+    fs.mkdirSync(oldPlanDir, { recursive: true });
+    const oldPlanFile = path.join(oldPlanDir, "plan.json");
+    fs.writeFileSync(oldPlanFile, JSON.stringify({ id: "plan-background-old" }));
+
+    const oldTime = new Date(Date.now() - 45 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(oldPlanDir, oldTime, oldTime);
+    fs.utimesSync(oldPlanFile, oldTime, oldTime);
+
+    createPlan("Background cleanup", { retentionDays: 30 });
+
+    await new Promise(resolve => setTimeout(resolve, 25));
+
+    expect(fs.existsSync(oldPlanDir)).toBe(false);
+  });
+
   it("skips suspicious directory names when cleaning up old plans", async () => {
     const suspiciousDir = path.join(plansDir, "plan..sneaky");
     fs.mkdirSync(suspiciousDir, { recursive: true });
@@ -130,5 +147,22 @@ describe("planner", () => {
 
     expect(fs.existsSync(recentDir)).toBe(true);
     expect(fs.existsSync(recentFile)).toBe(true);
+  });
+
+  it("honors disabled retention policies", async () => {
+    const oldPlanDir = path.join(plansDir, "plan-disabled-retention");
+    fs.mkdirSync(oldPlanDir, { recursive: true });
+    const oldPlanFile = path.join(oldPlanDir, "plan.json");
+    fs.writeFileSync(oldPlanFile, JSON.stringify({ id: "plan-disabled-retention" }));
+
+    const oldTime = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);
+    fs.utimesSync(oldPlanDir, oldTime, oldTime);
+    fs.utimesSync(oldPlanFile, oldTime, oldTime);
+
+    createPlan("Retention disabled", { retentionDays: 0 });
+
+    await new Promise(resolve => setTimeout(resolve, 25));
+
+    expect(fs.existsSync(oldPlanDir)).toBe(true);
   });
 });

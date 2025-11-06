@@ -134,9 +134,9 @@ async function cleanupPlanArtifacts(baseDir: string, retentionDays: number): Pro
     throw error;
   }
 
-  let entries: fs.Dirent[];
+  let dir: fs.Dir | null = null;
   try {
-    entries = await fsPromises.readdir(resolvedBase, { withFileTypes: true });
+    dir = await fsPromises.opendir(resolvedBase);
   } catch (error) {
     if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
       return;
@@ -145,45 +145,50 @@ async function cleanupPlanArtifacts(baseDir: string, retentionDays: number): Pro
   }
 
   const cutoff = Date.now() - retentionMs;
-  for (const entry of entries) {
-    if (entry.isSymbolicLink() || !entry.isDirectory()) {
-      continue;
-    }
-    const entryName = entry.name;
-    if (!isSafeDirentName(entryName)) {
-      continue;
-    }
 
-    const targetCandidate = resolvedBase.endsWith(path.sep)
-      ? `${resolvedBase}${entryName}`
-      : `${resolvedBase}${path.sep}${entryName}`;
+  try {
+    for await (const entry of dir) {
+      if (entry.isSymbolicLink() || !entry.isDirectory()) {
+        continue;
+      }
+      const entryName = entry.name;
+      if (!isSafeDirentName(entryName)) {
+        continue;
+      }
 
-    let target: string;
-    try {
-      target = await realpath(targetCandidate);
-    } catch {
-      continue;
-    }
+      const targetCandidate = resolvedBase.endsWith(path.sep)
+        ? `${resolvedBase}${entryName}`
+        : `${resolvedBase}${path.sep}${entryName}`;
 
-    if (!isChildPath(resolvedBase, target)) {
-      continue;
-    }
-
-    let stats: fs.Stats;
-    try {
-      stats = await fsPromises.stat(target);
-    } catch {
-      continue;
-    }
-
-    const lastModified = stats.mtimeMs ?? stats.ctimeMs ?? 0;
-    if (lastModified <= cutoff) {
+      let target: string;
       try {
-        await fsPromises.rm(target, { recursive: true, force: true });
+        target = await realpath(targetCandidate);
       } catch {
-        // Ignore failures and continue attempting to clean other entries.
+        continue;
+      }
+
+      if (!isChildPath(resolvedBase, target)) {
+        continue;
+      }
+
+      let stats: fs.Stats;
+      try {
+        stats = await fsPromises.stat(target);
+      } catch {
+        continue;
+      }
+
+      const lastModified = stats.mtimeMs ?? stats.ctimeMs ?? 0;
+      if (lastModified <= cutoff) {
+        try {
+          await fsPromises.rm(target, { recursive: true, force: true });
+        } catch {
+          // Ignore failures and continue attempting to clean other entries.
+        }
       }
     }
+  } finally {
+    await dir?.close();
   }
 }
 
@@ -224,14 +229,27 @@ async function runScheduledCleanup(): Promise<void> {
   await cleanupState.pending;
 }
 
-function schedulePlanArtifactCleanup(baseDir: string, retentionDays: number): void {
-  if (retentionDays <= 0) {
-    return;
+function cancelCleanupTimers(): void {
+  if (cleanupState.interval) {
+    clearInterval(cleanupState.interval);
+    cleanupState.interval = undefined;
   }
+  if (cleanupState.immediateTimer) {
+    clearTimeout(cleanupState.immediateTimer);
+    cleanupState.immediateTimer = undefined;
+  }
+}
 
-  cleanupState.baseDir = baseDir;
-  cleanupState.retentionDays = retentionDays;
+function ensureCleanupInterval(): void {
+  if (!cleanupState.interval) {
+    cleanupState.interval = setInterval(() => {
+      void runScheduledCleanup();
+    }, CLEANUP_INTERVAL_MS);
+    cleanupState.interval.unref?.();
+  }
+}
 
+function queueImmediateCleanup(): void {
   if (!cleanupState.immediateTimer) {
     cleanupState.immediateTimer = setTimeout(() => {
       cleanupState.immediateTimer = undefined;
@@ -239,13 +257,19 @@ function schedulePlanArtifactCleanup(baseDir: string, retentionDays: number): vo
     }, 0);
     cleanupState.immediateTimer.unref?.();
   }
+}
 
-  if (!cleanupState.interval) {
-    cleanupState.interval = setInterval(() => {
-      void runScheduledCleanup();
-    }, CLEANUP_INTERVAL_MS);
-    cleanupState.interval.unref?.();
+function schedulePlanArtifactCleanup(baseDir: string, retentionDays: number): void {
+  cleanupState.baseDir = baseDir;
+  cleanupState.retentionDays = retentionDays;
+
+  if (retentionDays <= 0) {
+    cancelCleanupTimers();
+    return;
   }
+
+  ensureCleanupInterval();
+  queueImmediateCleanup();
 }
 
 export async function flushPlanArtifactCleanup(): Promise<void> {
@@ -257,16 +281,9 @@ export async function flushPlanArtifactCleanup(): Promise<void> {
 }
 
 export function resetPlanArtifactCleanupSchedulerForTests(): void {
-  if (cleanupState.interval) {
-    clearInterval(cleanupState.interval);
-  }
-  if (cleanupState.immediateTimer) {
-    clearTimeout(cleanupState.immediateTimer);
-  }
+  cancelCleanupTimers();
   cleanupState.baseDir = undefined;
   cleanupState.retentionDays = undefined;
-  cleanupState.interval = undefined;
-  cleanupState.immediateTimer = undefined;
   cleanupState.pending = null;
 }
 
