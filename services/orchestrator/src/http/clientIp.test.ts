@@ -58,13 +58,13 @@ describe("resolveClientIp", () => {
       .toBe("192.0.2.33");
   });
 
-  it("uses the first valid entry in a forwarded-for chain", () => {
+  it("uses the closest untrusted hop in a forwarded-for chain", () => {
     const req = createMockRequest({
       remoteAddress: "10.0.0.9",
       forwardedFor: "203.0.113.44, 198.51.100.2",
     });
 
-    expect(resolveClientIp(req, ["10.0.0.0/8"])).toBe("203.0.113.44");
+    expect(resolveClientIp(req, ["10.0.0.0/8"])).toBe("198.51.100.2");
   });
 
   it("supports IPv6 trusted proxies", () => {
@@ -73,8 +73,17 @@ describe("resolveClientIp", () => {
       forwardedFor: "2001:db8::abcd",
     });
 
-    expect(resolveClientIp(req, ["2001:db8::/32"]))
+    expect(resolveClientIp(req, ["2001:db8::1"]))
       .toBe("2001:db8::abcd");
+  });
+
+  it("ignores spoofed values that precede the trusted proxy hops", () => {
+    const req = createMockRequest({
+      remoteAddress: "10.0.0.10",
+      forwardedFor: "1.2.3.4, 203.0.113.9",
+    });
+
+    expect(resolveClientIp(req, ["10.0.0.0/8"])).toBe("203.0.113.9");
   });
 });
 

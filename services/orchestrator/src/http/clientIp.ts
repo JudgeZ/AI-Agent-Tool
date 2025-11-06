@@ -126,11 +126,20 @@ export function resolveClientIp(req: Request, trustedProxyCidrs: readonly string
     return remote.formatted;
   }
 
-  for (const entry of forwarded.split(",")) {
-    const parsed = parseIpAddress(entry);
-    if (parsed) {
-      return formatIpAddress(parsed);
+  const entries = forwarded
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+
+  for (let i = entries.length - 1; i >= 0; i -= 1) {
+    const parsed = parseIpAddress(entries[i]);
+    if (!parsed) {
+      continue;
     }
+    if (isTrustedProxy(parsed, trustedProxyCidrs)) {
+      continue;
+    }
+    return formatIpAddress(parsed);
   }
 
   return remote.formatted;
