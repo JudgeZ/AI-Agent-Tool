@@ -1,7 +1,9 @@
 import type { Request } from "express";
 import ipaddr from "ipaddr.js";
 
-function parseIpAddress(raw: string | undefined): ipaddr.IPAddress | undefined {
+type IpAddress = ipaddr.IPv4 | ipaddr.IPv6;
+
+function parseIpAddress(raw: string | undefined): IpAddress | undefined {
   if (!raw) {
     return undefined;
   }
@@ -21,12 +23,12 @@ function parseIpAddress(raw: string | undefined): ipaddr.IPAddress | undefined {
   }
 }
 
-function formatIpAddress(address: ipaddr.IPAddress): string {
+function formatIpAddress(address: IpAddress): string {
   return address.toString();
 }
 
 type TrustedCidr = {
-  network: ipaddr.IPAddress;
+  network: IpAddress;
   prefixLength: number;
 };
 
@@ -55,7 +57,7 @@ function parseTrustedEntry(entry: string): TrustedCidr | undefined {
     const maxPrefix = normalized.kind() === "ipv6" ? 128 : 32;
     const boundedPrefix = Math.max(0, Math.min(prefixLength, maxPrefix));
     return {
-      network: normalized,
+      network: normalized as IpAddress,
       prefixLength: boundedPrefix,
     };
   } catch {
@@ -63,7 +65,7 @@ function parseTrustedEntry(entry: string): TrustedCidr | undefined {
   }
 }
 
-function isTrustedProxy(remote: ipaddr.IPAddress, trustedCidrs: readonly string[]): boolean {
+function isTrustedProxy(remote: IpAddress, trustedCidrs: readonly string[]): boolean {
   if (trustedCidrs.length === 0) {
     return false;
   }
@@ -82,7 +84,7 @@ function isTrustedProxy(remote: ipaddr.IPAddress, trustedCidrs: readonly string[
   return false;
 }
 
-function resolveRemoteAddress(req: Request): { address: ipaddr.IPAddress; formatted: string } | undefined {
+function resolveRemoteAddress(req: Request): { address: IpAddress; formatted: string } | undefined {
   const candidates = [req.socket?.remoteAddress, req.ip];
   for (const candidate of candidates) {
     const parsed = parseIpAddress(candidate);
