@@ -382,7 +382,7 @@ export function createServer(appConfig?: AppConfig): Express {
               resource: "plan",
               metadata: { route: "/plan", method: req.method },
             });
-            const plan = createPlan(goal, {
+            const plan = await createPlan(goal, {
               retentionDays: config.retention.planArtifactsDays,
             });
             span.setAttribute("plan.id", plan.id);

@@ -75,6 +75,29 @@ describe("orchestrator http api", () => {
     expect(eventsResponse.body.events[0].step.capability).toBeDefined();
   });
 
+  it("handles concurrent plan creation requests without blocking the event loop", async () => {
+    const { createServer } = await import("./index.js");
+    const app = createServer();
+
+    const timerPromise = new Promise<number>(resolve => {
+      const started = Date.now();
+      setTimeout(() => resolve(Date.now() - started), 25);
+    });
+
+    const requests = Array.from({ length: 5 }, (_, index) =>
+      request(app).post("/plan").send({ goal: `Concurrent request ${index}` }).expect(201)
+    );
+
+    const [elapsed, responses] = await Promise.all([timerPromise, Promise.all(requests)]);
+
+    for (const response of responses) {
+      expect(response.body.plan?.id).toBeTruthy();
+      expect(response.body.traceId).toBeTruthy();
+    }
+
+    expect(elapsed).toBeLessThan(200);
+  });
+
   it("returns validation errors when the plan goal is empty", async () => {
     const { createServer } = await import("./index.js");
     const app = createServer();

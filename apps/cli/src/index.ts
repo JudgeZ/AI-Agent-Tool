@@ -35,7 +35,7 @@ async function main() {
   }
   if (cmd === "plan") {
     const goal = rest.join(" ").trim() || "General improvement";
-    runPlan(goal);
+    await runPlan(goal);
     return;
   }
   usage();
