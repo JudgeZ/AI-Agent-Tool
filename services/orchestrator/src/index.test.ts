@@ -256,13 +256,19 @@ describe("orchestrator http api", () => {
 
     let shouldFailWrites = false;
     let keepAliveWriteFailed = false;
+    let keepAliveWrites = 0;
+    let keepAliveWritesAtFailure = 0;
     const originalWrite = http.ServerResponse.prototype.write;
     const writeSpy = vi
       .spyOn(http.ServerResponse.prototype, "write")
       .mockImplementation(function (this: http.ServerResponse, chunk: unknown, encoding?: unknown, cb?: unknown) {
-        if (typeof chunk === "string" && chunk.includes(": keep-alive") && shouldFailWrites) {
-          keepAliveWriteFailed = true;
-          throw new Error("simulated stream failure");
+        if (typeof chunk === "string" && chunk.includes(": keep-alive")) {
+          keepAliveWrites += 1;
+          if (shouldFailWrites) {
+            keepAliveWriteFailed = true;
+            keepAliveWritesAtFailure = keepAliveWrites;
+            return false;
+          }
         }
         return originalWrite.call(this, chunk as never, encoding as never, cb as never);
       });
@@ -288,6 +294,8 @@ describe("orchestrator http api", () => {
       await new Promise((resolve) => setTimeout(resolve, config.server.sseKeepAliveMs * 2));
 
       expect(keepAliveWriteFailed).toBe(true);
+      expect(keepAliveWritesAtFailure).toBeGreaterThan(0);
+      expect(keepAliveWrites).toBe(keepAliveWritesAtFailure);
 
       shouldFailWrites = false;
 

@@ -495,13 +495,21 @@ export function createServer(appConfig?: AppConfig): Express {
       buffered.splice(0).forEach(writeEvent);
 
       const keepAliveInterval = config.server.sseKeepAliveMs;
-      keepAlive = setInterval(() => {
+      const sendKeepAlive = () => {
+        if (cleanedUp) {
+          cleanup();
+          return;
+        }
         try {
-          res.write(": keep-alive\n\n");
+          const ok = res.write(": keep-alive\n\n");
+          if (!ok) {
+            cleanup();
+          }
         } catch {
           cleanup();
         }
-      }, keepAliveInterval);
+      };
+      keepAlive = setInterval(sendKeepAlive, keepAliveInterval);
 
       req.on("close", () => {
         cleanup();
