@@ -50,6 +50,19 @@ secrets:
   backend: localfile
 ```
 
+### Running behind load balancers
+
+When the orchestrator sits behind a reverse proxy or load balancer, configure the proxy's CIDR ranges so rate limiting and SSE quotas continue to bind to the caller's real IP address. Add the trusted ranges to `config/app.yaml`:
+
+```yaml
+server:
+  trustedProxyCidrs:
+    - 10.0.0.0/8          # internal load balancer subnet
+    - 192.168.100.0/24    # regional ingress controller
+```
+
+Alternatively, set the environment variable `SERVER_TRUSTED_PROXY_CIDRS=10.0.0.0/8,192.168.100.0/24`. Only proxies listed here can supply `x-forwarded-for` addresses; forged headers from other sources are ignored.
+
 ## 2. Start the stack
 
 ```bash

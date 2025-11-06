@@ -55,6 +55,7 @@ import {
   type AuditSubject,
 } from "./observability/audit.js";
 import { SseQuotaManager } from "./server/SseQuotaManager.js";
+import { resolveClientIp } from "./http/clientIp.js";
 import {
   ChatRequestSchema,
   PlanApprovalSchema,
@@ -190,29 +191,13 @@ type RequestSubjectContext = {
   };
 };
 
-type RequestIdentity = {
+export type RequestIdentity = {
   subjectId?: string;
   agentName?: string;
   ip: string;
 };
 
-function getClientIp(req: Request): string {
-  const forwarded = req.header("x-forwarded-for");
-  if (forwarded) {
-    const [first] = forwarded.split(",");
-    const candidate = first?.trim();
-    if (candidate) {
-      return candidate;
-    }
-  }
-  if (typeof req.ip === "string" && req.ip.length > 0) {
-    return req.ip;
-  }
-  const remote = req.socket?.remoteAddress;
-  return remote && remote.length > 0 ? remote : "unknown";
-}
-
-function createRequestIdentity(
+export function createRequestIdentity(
   req: Request,
   config: AppConfig,
   subject?: RequestSubjectContext,
@@ -221,11 +206,11 @@ function createRequestIdentity(
   return {
     subjectId: resolvedSubject?.sessionId,
     agentName: extractAgent(req),
-    ip: getClientIp(req),
+    ip: resolveClientIp(req, config.server.trustedProxyCidrs),
   };
 }
 
-function buildRateLimitKey(identity: RequestIdentity): string {
+export function buildRateLimitKey(identity: RequestIdentity): string {
   if (identity.subjectId) {
     return `subject:${identity.subjectId}`;
   }

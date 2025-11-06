@@ -235,6 +235,7 @@ describe("PolicyEnforcer", () => {
     process.env.OIDC_ENABLED = "true";
     process.env.OIDC_ISSUER_URL = "https://issuer.example.com";
     process.env.OIDC_CLIENT_ID = "policy-client";
+    process.env.OIDC_CLIENT_SECRET = "policy-secret";
     process.env.OIDC_ROLE_MAPPINGS = JSON.stringify({ engineer: ["repo.write"] });
 
     const enforcer = await createEnforcer();
@@ -260,6 +261,7 @@ describe("PolicyEnforcer", () => {
     delete process.env.OIDC_ENABLED;
     delete process.env.OIDC_ISSUER_URL;
     delete process.env.OIDC_CLIENT_ID;
+    delete process.env.OIDC_CLIENT_SECRET;
     delete process.env.OIDC_ROLE_MAPPINGS;
   });
 });

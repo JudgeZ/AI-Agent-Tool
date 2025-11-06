@@ -138,6 +138,7 @@ export type AppConfig = {
     };
     sseQuotas: SseQuotaConfig;
     tls: TlsConfig;
+    trustedProxyCidrs: string[];
   };
   observability: ObservabilityConfig;
 };
@@ -347,7 +348,8 @@ const DEFAULT_CONFIG: AppConfig = {
       certPath: undefined,
       caPaths: [],
       requestClientCert: true
-    }
+    },
+    trustedProxyCidrs: []
   },
   observability: {
     tracing: { ...DEFAULT_TRACING_CONFIG }
@@ -409,6 +411,7 @@ type PartialServerConfig = {
   rateLimits?: PartialServerRateLimitsConfig;
   tls?: PartialTlsConfig;
   sseQuotas?: PartialSseQuotaConfig;
+  trustedProxyCidrs?: string[];
 };
 
 type PartialOidcSessionConfig = {
@@ -1222,6 +1225,14 @@ export function loadConfig(): AppConfig {
         const serverSseQuotas = server
           ? parseSseQuotaConfig(server.sseQuotas ?? server.sse_quotas ?? server.quotas)
           : undefined;
+        const serverTrustedProxies = server
+          ? parseStringArrayFlexible(
+              server.trustedProxyCidrs ??
+                server.trusted_proxy_cidrs ??
+                server.trustedProxies ??
+                server.trusted_proxies,
+            )
+          : undefined;
         const kafkaMessaging = messagingRecord ? parseKafkaMessagingRecord(messagingRecord.kafka) : undefined;
         const fileOidc = parseOidcConfigRecord(oidc);
 
@@ -1279,7 +1290,8 @@ export function loadConfig(): AppConfig {
                     }
                   : undefined,
                 tls: parseTlsConfig(server.tls),
-                sseQuotas: serverSseQuotas
+                sseQuotas: serverSseQuotas,
+                trustedProxyCidrs: serverTrustedProxies
               }
             : undefined,
           observability: tracing ? { tracing } : undefined
@@ -1318,6 +1330,9 @@ export function loadConfig(): AppConfig {
   const envSseKeepAlive = asNumber(process.env.SSE_KEEP_ALIVE_MS);
   const envSseMaxConnectionsPerIp = asNumber(process.env.SSE_MAX_CONNECTIONS_PER_IP);
   const envSseMaxConnectionsPerSubject = asNumber(process.env.SSE_MAX_CONNECTIONS_PER_SUBJECT);
+  const envTrustedProxyCidrs = parseStringList(
+    process.env.SERVER_TRUSTED_PROXY_CIDRS ?? process.env.TRUSTED_PROXY_CIDRS,
+  );
   const envTracingEnabled = asBoolean(process.env.TRACING_ENABLED ?? process.env.OTEL_TRACES_EXPORTER_ENABLED);
   const envTracingServiceName = process.env.TRACING_SERVICE_NAME ?? process.env.OTEL_SERVICE_NAME;
   const envTracingEnvironment =
@@ -1520,6 +1535,16 @@ export function loadConfig(): AppConfig {
     ),
   };
 
+  const resolvedTrustedProxyCidrs =
+    envTrustedProxyCidrs ??
+    fileCfg.server?.trustedProxyCidrs ??
+    DEFAULT_CONFIG.server.trustedProxyCidrs;
+  const normalizedTrustedProxyCidrs = resolvedTrustedProxyCidrs
+    ? resolvedTrustedProxyCidrs
+        .map(entry => entry.trim())
+        .filter(entry => entry.length > 0)
+    : [];
+
   const fileTls = fileCfg.server?.tls;
   const tlsEnabled = envServerTlsEnabled ?? fileTls?.enabled ?? DEFAULT_CONFIG.server.tls.enabled;
   const tlsKeyPath = envServerTlsKeyPath ?? fileTls?.keyPath ?? DEFAULT_CONFIG.server.tls.keyPath;
@@ -1705,7 +1730,8 @@ export function loadConfig(): AppConfig {
         certPath: tlsCertPath,
         caPaths: tlsCaPaths ?? [],
         requestClientCert: tlsRequestClientCert
-      }
+      },
+      trustedProxyCidrs: [...normalizedTrustedProxyCidrs]
     },
     observability: {
       tracing: {
