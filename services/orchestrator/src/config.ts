@@ -1198,10 +1198,61 @@ function parseRetentionConfigRecord(value: unknown): PartialRetentionConfig | un
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
+type ConfigCacheState = {
+  path: string;
+  mtimeMs: number | null;
+  config: AppConfig;
+};
+
+type ConfigFileMetadata = {
+  exists: boolean;
+  mtimeMs: number | null;
+};
+
+let configCache: ConfigCacheState | undefined;
+
+function readConfigFileMetadata(filePath: string): ConfigFileMetadata {
+  try {
+    const stats = fs.statSync(filePath);
+    return { exists: true, mtimeMs: stats.mtimeMs };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
+      return { exists: false, mtimeMs: null };
+    }
+    throw error;
+  }
+}
+
+function getCachedConfig(filePath: string, metadata: ConfigFileMetadata): AppConfig | undefined {
+  if (!configCache || configCache.path !== filePath) {
+    return undefined;
+  }
+
+  if (!metadata.exists) {
+    return configCache.mtimeMs === null ? configCache.config : undefined;
+  }
+
+  if (configCache.mtimeMs === null) {
+    return undefined;
+  }
+
+  return metadata.mtimeMs === configCache.mtimeMs ? configCache.config : undefined;
+}
+
+export function invalidateConfigCache(): void {
+  configCache = undefined;
+}
+
 export function loadConfig(): AppConfig {
   const cfgPath = process.env.APP_CONFIG || path.join(process.cwd(), "config", "app.yaml");
+  const metadataBefore = readConfigFileMetadata(cfgPath);
+  const cached = getCachedConfig(cfgPath, metadataBefore);
+  if (cached) {
+    return cached;
+  }
+
   let fileCfg: PartialAppConfig = {};
-  if (fs.existsSync(cfgPath)) {
+  if (metadataBefore.exists) {
     try {
       const rawFile = fs.readFileSync(cfgPath, "utf-8");
       const parsed = YAML.parse(rawFile);
@@ -1654,7 +1705,7 @@ export function loadConfig(): AppConfig {
     fileCfg.retention?.contentCapture?.enabled ??
     DEFAULT_CONFIG.retention.contentCapture.enabled;
 
-  return {
+  const resolvedConfig: AppConfig = {
     runMode,
     messaging: {
       type: messagingType,
@@ -1744,6 +1795,13 @@ export function loadConfig(): AppConfig {
       }
     }
   };
+  const metadataAfter = readConfigFileMetadata(cfgPath);
+  configCache = {
+    path: cfgPath,
+    mtimeMs: metadataAfter.exists ? metadataAfter.mtimeMs ?? null : null,
+    config: resolvedConfig,
+  };
+  return resolvedConfig;
 }
 
 function parseJsonEnv(value: string | undefined, context: string): unknown | undefined {
