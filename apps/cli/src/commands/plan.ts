@@ -173,8 +173,21 @@ async function requestPlan(goal: string, config: GatewayConfig): Promise<Plan> {
   }
 }
 
+const PLAN_ID_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9_-]{0,127}$/;
+
+function ensureSafePlanId(planId: string | undefined): string {
+  const trimmed = planId?.trim() ?? "";
+  if (!PLAN_ID_PATTERN.test(trimmed)) {
+    throw new Error(
+      `Gateway returned invalid plan id \"${planId ?? ""}\". Plan ids must match ${PLAN_ID_PATTERN}.`
+    );
+  }
+  return trimmed;
+}
+
 async function persistPlanArtifacts(plan: Plan): Promise<void> {
-  const plansRoot = path.join(process.cwd(), ".plans", plan.id);
+  const safePlanId = ensureSafePlanId(plan.id);
+  const plansRoot = path.join(process.cwd(), ".plans", safePlanId);
   await fs.mkdir(plansRoot, { recursive: true });
   const planJsonPath = path.join(plansRoot, "plan.json");
   const planMdPath = path.join(plansRoot, "plan.md");
@@ -187,7 +200,7 @@ async function persistPlanArtifacts(plan: Plan): Promise<void> {
     })
     .join("\n");
 
-  const markdown = `# Plan ${plan.id}\n\nGoal: ${plan.goal}\n\nSteps:\n${markdownSteps}`;
+  const markdown = `# Plan ${safePlanId}\n\nGoal: ${plan.goal}\n\nSteps:\n${markdownSteps}`;
 
   await Promise.all([
     fs.writeFile(planJsonPath, JSON.stringify(plan, null, 2), "utf8"),

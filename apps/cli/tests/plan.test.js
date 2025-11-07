@@ -96,3 +96,51 @@ test("aidt plan requests plan from gateway", async () => {
     await new Promise(resolve => server.close(resolve));
   }
 });
+
+test("aidt plan rejects invalid plan id from gateway", async () => {
+  resetPlansDir();
+  const goal = "Handle invalid plan id";
+  const planResponse = {
+    id: "../bad",
+    goal,
+    steps: [],
+    successCriteria: []
+  };
+
+  const server = http.createServer((req, res) => {
+    if (req.method === "POST" && req.url === "/plan") {
+      res.statusCode = 200;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify(planResponse));
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  const { port } = server.address();
+  assert.ok(port, "server should provide a port");
+
+  const env = {
+    ...process.env,
+    AIDT_GATEWAY_URL: `http://127.0.0.1:${port}`
+  };
+
+  try {
+    await assert.rejects(
+      execFileAsync("node", ["dist/index.js", "plan", goal], {
+        cwd: cliRoot,
+        env
+      }),
+      error => {
+        assert.match(String(error), /invalid plan id/i);
+        return true;
+      }
+    );
+    assert.ok(!fs.existsSync(plansDir), "should not create artifacts for invalid ids");
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
