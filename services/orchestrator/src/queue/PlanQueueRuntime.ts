@@ -11,6 +11,7 @@ import { logAuditEvent, type AuditSubject } from "../observability/audit.js";
 import {
   getLatestPlanStepEvent,
   publishPlanStepEvent,
+  HISTORY_RETENTION_MS,
 } from "../plan/events.js";
 import type { Plan, PlanStep, PlanSubject } from "../plan/planner.js";
 import {
@@ -71,6 +72,43 @@ const stepRegistry = new Map<
 >();
 const approvalCache = new Map<string, Record<string, boolean>>();
 const planSubjects = new Map<string, PlanSubject>();
+const retainedPlanSubjects = new Map<
+  string,
+  { subject: PlanSubject; timeout?: NodeJS.Timeout }
+>();
+
+function clonePlanSubject(subject: PlanSubject): PlanSubject {
+  return {
+    ...subject,
+    roles: [...subject.roles],
+    scopes: [...subject.scopes],
+  };
+}
+
+function clearRetainedPlanSubject(planId: string): void {
+  const entry = retainedPlanSubjects.get(planId);
+  if (entry?.timeout) {
+    clearTimeout(entry.timeout);
+  }
+  retainedPlanSubjects.delete(planId);
+}
+
+function retainCompletedPlanSubject(planId: string, subject: PlanSubject): void {
+  clearRetainedPlanSubject(planId);
+  const timeout = setTimeout(() => {
+    retainedPlanSubjects.delete(planId);
+  }, HISTORY_RETENTION_MS);
+  timeout.unref?.();
+  retainedPlanSubjects.set(planId, { subject: clonePlanSubject(subject), timeout });
+}
+
+function getRetainedPlanSubject(planId: string): PlanSubject | undefined {
+  const entry = retainedPlanSubjects.get(planId);
+  if (!entry) {
+    return undefined;
+  }
+  return clonePlanSubject(entry.subject);
+}
 const policyEnforcer = getPolicyEnforcer();
 let planStateStore: PlanStateStore | null = createPlanStateStore(
   planStateStoreOptions,
@@ -347,6 +385,12 @@ export function resetPlanQueueRuntime(): void {
   stepRegistry.clear();
   approvalCache.clear();
   planSubjects.clear();
+  retainedPlanSubjects.forEach(({ timeout }) => {
+    if (timeout) {
+      clearTimeout(timeout);
+    }
+  });
+  retainedPlanSubjects.clear();
   resetToolAgentClient();
   planStateStore = createPlanStateStore(planStateStoreOptions);
   stepConsumerReady = false;
@@ -364,13 +408,11 @@ export async function submitPlanSteps(
   const adapter = await getQueueAdapter();
 
   if (subject) {
-    planSubjects.set(plan.id, {
-      ...subject,
-      roles: [...subject.roles],
-      scopes: [...subject.scopes],
-    });
+    planSubjects.set(plan.id, clonePlanSubject(subject));
+    clearRetainedPlanSubject(plan.id);
   } else {
     planSubjects.delete(plan.id);
+    clearRetainedPlanSubject(plan.id);
   }
 
   const submissions = plan.steps.map(async (step) => {
@@ -741,11 +783,8 @@ async function setupStepConsumer(): Promise<void> {
             const persisted = await planStateStore?.getEntry(planId, step.id);
             const subjectContext = job.subject ?? planSubjects.get(planId);
             if (job.subject) {
-              planSubjects.set(planId, {
-                ...job.subject,
-                roles: [...job.subject.roles],
-                scopes: [...job.subject.scopes],
-              });
+              planSubjects.set(planId, clonePlanSubject(job.subject));
+              clearRetainedPlanSubject(planId);
             }
             if (!persisted) {
               await planStateStore?.rememberStep(planId, step, traceId, {
@@ -965,11 +1004,8 @@ async function rehydratePendingSteps(): Promise<void> {
     stepRegistry.set(key, { step: entry.step, traceId: entry.traceId, job });
     cacheApprovals(entry.planId, entry.stepId, entry.approvals ?? {});
     if (entry.subject) {
-      planSubjects.set(entry.planId, {
-        ...entry.subject,
-        roles: [...entry.subject.roles],
-        scopes: [...entry.subject.scopes],
-      });
+      planSubjects.set(entry.planId, clonePlanSubject(entry.subject));
+      clearRetainedPlanSubject(entry.planId);
     }
     publishPlanStepEvent({
       event: "plan.step",
@@ -1021,5 +1057,39 @@ function prunePlanSubject(planId: string): void {
       return;
     }
   }
+  const subject = planSubjects.get(planId);
   planSubjects.delete(planId);
+  if (subject) {
+    retainCompletedPlanSubject(planId, subject);
+  }
+}
+
+export async function getPlanSubject(
+  planId: string,
+): Promise<PlanSubject | undefined> {
+  const cached = planSubjects.get(planId);
+  if (cached) {
+    return clonePlanSubject(cached);
+  }
+  const store = planStateStore;
+  if (!store) {
+    return getRetainedPlanSubject(planId);
+  }
+  const pending = await store.listActiveSteps();
+  if (!pending) {
+    return getRetainedPlanSubject(planId);
+  }
+  for (const entry of pending) {
+    if (entry.planId !== planId) {
+      continue;
+    }
+    if (!entry.subject) {
+      continue;
+    }
+    const subject = clonePlanSubject(entry.subject);
+    planSubjects.set(planId, subject);
+    clearRetainedPlanSubject(planId);
+    return subject;
+  }
+  return getRetainedPlanSubject(planId);
 }

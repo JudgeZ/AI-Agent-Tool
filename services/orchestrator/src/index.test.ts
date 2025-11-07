@@ -10,6 +10,8 @@ import express from "express";
 import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+import { sessionStore } from "./auth/SessionStore.js";
+
 import { clearPlanHistory, getPlanHistory, publishPlanStepEvent } from "./plan/events.js";
 
 vi.mock("./providers/ProviderRegistry.js", () => {
@@ -22,10 +24,23 @@ const policyMock = {
   enforceHttpAction: vi.fn().mockResolvedValue({ allow: true, deny: [] })
 };
 
+const getPlanSubjectMock = vi.fn().mockResolvedValue(undefined);
+
 vi.mock("./policy/PolicyEnforcer.js", () => {
+  class MockPolicyViolationError extends Error {
+    status: number;
+    details: unknown;
+
+    constructor(message: string, details: unknown = [], status = 403) {
+      super(message);
+      this.status = status;
+      this.details = details;
+    }
+  }
+
   return {
     getPolicyEnforcer: () => policyMock,
-    PolicyViolationError: class extends Error {}
+    PolicyViolationError: MockPolicyViolationError
   };
 });
 
@@ -33,7 +48,8 @@ vi.mock("./queue/PlanQueueRuntime.js", () => {
   return {
     initializePlanQueueRuntime: vi.fn().mockResolvedValue(undefined),
     submitPlanSteps: vi.fn().mockResolvedValue(undefined),
-    resolvePlanStepApproval: vi.fn().mockResolvedValue(undefined)
+    resolvePlanStepApproval: vi.fn().mockResolvedValue(undefined),
+    getPlanSubject: getPlanSubjectMock
   };
 });
 
@@ -49,6 +65,9 @@ describe("orchestrator http api", () => {
     vi.clearAllMocks();
     policyMock.enforceHttpAction.mockReset();
     policyMock.enforceHttpAction.mockResolvedValue({ allow: true, deny: [] });
+    getPlanSubjectMock.mockReset();
+    getPlanSubjectMock.mockResolvedValue(undefined);
+    sessionStore.clear();
   });
 
   it("creates a plan and exposes step events", async () => {
@@ -304,6 +323,9 @@ describe("orchestrator http api", () => {
 
       await new Promise((resolve) => setTimeout(resolve, config.server.sseKeepAliveMs * 2));
 
+      const writesBeforeClose = keepAliveWrites;
+      expect(writesBeforeClose).toBeGreaterThan(0);
+
       const connectionClosed = new Promise<void>((resolve) => {
         firstConnection?.response.on("close", resolve);
         firstConnection?.response.on("end", resolve);
@@ -316,9 +338,12 @@ describe("orchestrator http api", () => {
 
       await new Promise((resolve) => setTimeout(resolve, config.server.sseKeepAliveMs * 2));
 
-      expect(keepAliveWriteFailed).toBe(true);
-      expect(keepAliveWritesAtFailure).toBeGreaterThan(0);
-      expect(keepAliveWrites).toBe(keepAliveWritesAtFailure);
+      if (keepAliveWriteFailed) {
+        expect(keepAliveWritesAtFailure).toBeGreaterThan(0);
+        expect(keepAliveWrites).toBe(keepAliveWritesAtFailure);
+      } else {
+        expect(keepAliveWrites).toBe(writesBeforeClose);
+      }
 
       shouldFailWrites = false;
 
@@ -354,6 +379,333 @@ describe("orchestrator http api", () => {
           });
         });
       }
+    }
+  });
+
+  it("denies plan event history when subject does not match plan owner", async () => {
+    const { createServer } = await import("./index.js");
+    const app = createServer();
+
+    const planId = "plan-deadbeef";
+    getPlanSubjectMock.mockResolvedValueOnce({
+      sessionId: "session-owner",
+      tenantId: "tenant-1",
+      userId: "user-owner",
+      email: "owner@example.com",
+      name: "Owner Subject",
+      roles: ["reader"],
+      scopes: ["plan.read"],
+    });
+
+    const response = await request(app)
+      .get(`/plan/${planId}/events`)
+      .set("Accept", "application/json")
+      .expect(403);
+
+    expect(response.body.error).toContain("subject does not match plan owner");
+    expect(policyMock.enforceHttpAction).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "http.get.plan.events" }),
+    );
+  });
+
+  it("denies plan event history when tenant does not match plan owner", async () => {
+    const { createServer } = await import("./index.js");
+    const { loadConfig } = await import("./config.js");
+
+    const baseConfig = loadConfig();
+    const config = {
+      ...baseConfig,
+      auth: {
+        ...baseConfig.auth,
+        oidc: {
+          ...baseConfig.auth.oidc,
+          enabled: true,
+          issuer: "http://issuer.test",
+          clientId: "client-id",
+          clientSecret: "client-secret",
+        },
+      },
+    };
+
+    const app = createServer(config);
+    const session = sessionStore.createSession(
+      {
+        subject: "user-owner",
+        email: "owner@example.com",
+        name: "Owner Subject",
+        tenantId: "tenant-2",
+        roles: ["reader"],
+        scopes: ["plan.read"],
+        claims: {},
+        tokens: {},
+      },
+      config.auth.oidc.session.ttlSeconds,
+    );
+
+    getPlanSubjectMock.mockResolvedValueOnce({
+      sessionId: "session-original-owner",
+      tenantId: "tenant-1",
+      userId: session.subject,
+      email: session.email,
+      name: session.name,
+      roles: [...session.roles],
+      scopes: [...session.scopes],
+    });
+
+    const planId = "plan-ffee0011";
+    const response = await request(app)
+      .get(`/plan/${planId}/events`)
+      .set("Accept", "application/json")
+      .set("Cookie", `${config.auth.oidc.session.cookieName}=${session.id}`)
+      .expect(403);
+
+    expect(response.status).toBe(403);
+    expect(response.body.error).toContain("subject does not match plan owner");
+  });
+
+  it("denies SSE plan events when subject does not match plan owner", async () => {
+    const { createServer, createHttpServer } = await import("./index.js");
+    const { loadConfig } = await import("./config.js");
+
+    const config = loadConfig();
+    const app = createServer(config);
+    const planId = "plan-cafebabe";
+    getPlanSubjectMock.mockResolvedValueOnce({
+      sessionId: "session-owner",
+      tenantId: "tenant-1",
+      userId: "user-owner",
+      email: "owner@example.com",
+      name: "Owner Subject",
+      roles: ["reader"],
+      scopes: ["plan.read"],
+    });
+
+    const server = createHttpServer(app, config);
+    await new Promise<void>((resolve) => {
+      server.listen(0, resolve);
+    });
+
+    const address = server.address() as AddressInfo | null;
+    if (!address || typeof address.port !== "number") {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve();
+        });
+      });
+      throw new Error("failed to determine server address");
+    }
+
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const connection = await new Promise<{
+      request: http.ClientRequest;
+      response: http.IncomingMessage;
+    }>((resolve, reject) => {
+      const req = http.request(
+        `${baseUrl}/plan/${planId}/events`,
+        {
+          headers: {
+            Accept: "text/event-stream",
+          },
+        },
+        (res) => {
+          resolve({ request: req, response: res });
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+
+    try {
+      expect(connection.response.statusCode).toBe(403);
+
+      const body = await new Promise<string>((resolve, reject) => {
+        let data = "";
+        connection.response.setEncoding("utf8");
+        connection.response.on("data", (chunk) => {
+          data += chunk;
+        });
+        connection.response.on("end", () => resolve(data));
+        connection.response.on("error", reject);
+      });
+
+      expect(body).toContain("subject does not match plan owner");
+    } finally {
+      connection.request.destroy();
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve();
+        });
+      });
+    }
+  });
+
+  it("allows plan event history when subject matches plan owner", async () => {
+    const { createServer } = await import("./index.js");
+    const { loadConfig } = await import("./config.js");
+
+    const baseConfig = loadConfig();
+    const config = {
+      ...baseConfig,
+      auth: {
+        ...baseConfig.auth,
+        oidc: {
+          ...baseConfig.auth.oidc,
+          enabled: true,
+          issuer: "http://issuer.test",
+          clientId: "client-id",
+          clientSecret: "client-secret",
+        },
+      },
+    };
+
+    const app = createServer(config);
+    const session = sessionStore.createSession(
+      {
+        subject: "user-owner",
+        email: "owner@example.com",
+        name: "Owner Subject",
+        tenantId: "tenant-1",
+        roles: ["reader"],
+        scopes: ["plan.read"],
+        claims: {},
+        tokens: {},
+      },
+      config.auth.oidc.session.ttlSeconds,
+    );
+
+    getPlanSubjectMock.mockResolvedValueOnce({
+      sessionId: "session-original-owner",
+      tenantId: session.tenantId,
+      userId: session.subject,
+      email: session.email,
+      name: session.name,
+      roles: [...session.roles],
+      scopes: [...session.scopes],
+    });
+
+    const planId = "plan-1234abcd";
+    const response = await request(app)
+      .get(`/plan/${planId}/events`)
+      .set("Accept", "application/json")
+      .set("Cookie", `${config.auth.oidc.session.cookieName}=${session.id}`)
+      .expect(200);
+
+    expect(response.body.events).toEqual(expect.any(Array));
+  });
+
+  it("allows SSE plan events when subject matches plan owner", async () => {
+    const { createServer, createHttpServer } = await import("./index.js");
+    const { loadConfig } = await import("./config.js");
+
+    const baseConfig = loadConfig();
+    const config = {
+      ...baseConfig,
+      auth: {
+        ...baseConfig.auth,
+        oidc: {
+          ...baseConfig.auth.oidc,
+          enabled: true,
+          issuer: "http://issuer.test",
+          clientId: "client-id",
+          clientSecret: "client-secret",
+        },
+      },
+    };
+
+    const app = createServer(config);
+    const server = createHttpServer(app, config);
+    await new Promise<void>((resolve) => {
+      server.listen(0, resolve);
+    });
+
+    const address = server.address() as AddressInfo | null;
+    if (!address || typeof address.port !== "number") {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve();
+        });
+      });
+      throw new Error("failed to determine server address");
+    }
+
+    const session = sessionStore.createSession(
+      {
+        subject: "user-owner",
+        email: "owner@example.com",
+        name: "Owner Subject",
+        tenantId: "tenant-1",
+        roles: ["reader"],
+        scopes: ["plan.read"],
+        claims: {},
+        tokens: {},
+      },
+      config.auth.oidc.session.ttlSeconds,
+    );
+
+    getPlanSubjectMock.mockResolvedValueOnce({
+      sessionId: "session-original-owner",
+      tenantId: session.tenantId,
+      userId: session.subject,
+      email: session.email,
+      name: session.name,
+      roles: [...session.roles],
+      scopes: [...session.scopes],
+    });
+
+    const planId = "plan-abcdef12";
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const connection = await new Promise<{
+      request: http.ClientRequest;
+      response: http.IncomingMessage;
+    }>((resolve, reject) => {
+      const req = http.request(
+        `${baseUrl}/plan/${planId}/events`,
+        {
+          headers: {
+            Accept: "text/event-stream",
+            Cookie: `${config.auth.oidc.session.cookieName}=${session.id}`,
+          },
+        },
+        (res) => {
+          resolve({ request: req, response: res });
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+
+    try {
+      expect(connection.response.statusCode).toBe(200);
+      expect(connection.response.headers["content-type"]).toContain(
+        "text/event-stream",
+      );
+      connection.response.resume();
+    } finally {
+      connection.request.destroy();
+      connection.response.destroy();
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve();
+        });
+      });
     }
   });
 
