@@ -112,6 +112,114 @@ func TestEventsHandlerForwardsSSEStream(t *testing.T) {
 	}
 }
 
+func TestEventsHandlerPropagatesForwardingHeaders(t *testing.T) {
+	type headerSnapshot struct {
+		agent        string
+		requestID    string
+		forwardedFor string
+		realIP       []string
+	}
+
+	captured := make(chan headerSnapshot, 1)
+	orchestrator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		captured <- headerSnapshot{
+			agent:        r.Header.Get("X-Agent"),
+			requestID:    r.Header.Get("X-Request-Id"),
+			forwardedFor: r.Header.Get("X-Forwarded-For"),
+			realIP:       r.Header.Values("X-Real-IP"),
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("upstream recorder missing flusher")
+		}
+		if _, err := io.WriteString(w, "data: ok\n\n"); err != nil {
+			t.Fatalf("failed to write upstream event: %v", err)
+		}
+		flusher.Flush()
+	}))
+	defer orchestrator.Close()
+
+	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 0, nil, nil)
+
+	mux := http.NewServeMux()
+	mux.Handle("/events", handler)
+
+	gatewaySrv := httptest.NewServer(mux)
+	defer gatewaySrv.Close()
+
+	req, err := http.NewRequest(http.MethodGet, gatewaySrv.URL+"/events?plan_id=plan-deadbeef", nil)
+	if err != nil {
+		t.Fatalf("failed to create request: %v", err)
+	}
+	req.Header.Set("X-Agent", "gui-client")
+	req.Header.Set("X-Request-ID", "req-abc123")
+	req.Header.Set("X-Forwarded-For", "198.51.100.10")
+	req.Header.Set("X-Real-IP", "198.51.100.11")
+
+	resp, err := gatewaySrv.Client().Do(req)
+	if err != nil {
+		t.Fatalf("request failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200 from gateway, got %d", resp.StatusCode)
+	}
+
+	if _, err := io.ReadAll(resp.Body); err != nil {
+		t.Fatalf("failed to read response body: %v", err)
+	}
+
+	select {
+	case snapshot := <-captured:
+		if snapshot.agent != "gui-client" {
+			t.Fatalf("unexpected X-Agent header: %s", snapshot.agent)
+		}
+		if snapshot.requestID != "req-abc123" {
+			t.Fatalf("unexpected X-Request-ID header: %s", snapshot.requestID)
+		}
+		parts := strings.Split(snapshot.forwardedFor, ",")
+		if len(parts) < 2 {
+			t.Fatalf("expected forwarded chain to include gateway, got %q", snapshot.forwardedFor)
+		}
+		first := strings.TrimSpace(parts[0])
+		expectedFirst := "198.51.100.10"
+		if first != expectedFirst {
+			t.Fatalf("expected first forwarded entry %q, got %q", expectedFirst, first)
+		}
+		last := strings.TrimSpace(parts[len(parts)-1])
+		expectedGateway := hostOnly(gatewaySrv.Listener.Addr())
+		if last != expectedGateway {
+			t.Fatalf("expected gateway addr %q, got %q", expectedGateway, last)
+		}
+		if len(snapshot.realIP) == 0 {
+			t.Fatal("expected X-Real-IP headers to be forwarded")
+		}
+		realFirst := strings.TrimSpace(snapshot.realIP[0])
+		if realFirst != "198.51.100.11" {
+			t.Fatalf("expected first X-Real-IP value %q, got %q", "198.51.100.11", realFirst)
+		}
+		realLast := strings.TrimSpace(snapshot.realIP[len(snapshot.realIP)-1])
+		if realLast != expectedGateway {
+			t.Fatalf("expected gateway real ip %q, got %q", expectedGateway, realLast)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("gateway did not forward headers")
+	}
+}
+
+func hostOnly(addr net.Addr) string {
+	if addr == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return addr.String()
+	}
+	return host
+}
+
 func TestEventsHandlerRejectsInvalidPlanID(t *testing.T) {
 	handler := NewEventsHandler(nil, "http://orchestrator", 0, nil, nil)
 
