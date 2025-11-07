@@ -38,6 +38,7 @@ Creates a plan by calling the Gateway API (`POST /plan`) and prints a human-read
 - Defaults to the goal `"General improvement"` when no text is provided
 - Uses `AIDT_GATEWAY_URL` (`http://localhost:8080` by default) and an optional bearer token from `AIDT_AUTH_TOKEN`
 - Echoes the SSE endpoint for subsequent monitoring (`/plan/<ID>/events`)
+- Retains plan artifacts for 30 days by default (configurable via orchestrator retention settings)
 
 Example output:
 
@@ -51,6 +52,8 @@ Success criteria:
   - All steps complete
 SSE stream: /plan/plan-92a390d6/events
 ```
+
+Artifacts are persisted to `.plans/plan-92a390d6/plan.json` and `.plans/plan-92a390d6/plan.md` for follow-up work.
 
 ## Exit Codes
 

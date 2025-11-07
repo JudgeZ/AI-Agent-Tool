@@ -21,6 +21,17 @@ const (
 	heartbeatPayload         = ": ping\n\n"
 )
 
+var forwardedSSEHeaders = []string{
+	"Cookie",
+	"X-Agent",
+	"X-Request-Id",
+	"X-B3-Traceid",
+	"X-B3-Spanid",
+	"X-B3-Sampled",
+	"Traceparent",
+	"Tracestate",
+}
+
 var planIDPattern = regexp.MustCompile(`^plan-[0-9a-f]{8}$`)
 
 type connectionLimiter struct {
@@ -157,6 +168,7 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if lastEventID := r.Header.Get("Last-Event-ID"); lastEventID != "" {
 		req.Header.Set("Last-Event-ID", lastEventID)
 	}
+	cloneHeaders(req.Header, r.Header, forwardedSSEHeaders)
 
 	resp, err := h.client.Do(req)
 	if err != nil {
@@ -355,4 +367,23 @@ func getIntEnv(key string, fallback int) int {
 		return 0
 	}
 	return value
+}
+
+func cloneHeaders(dst, src http.Header, headers []string) {
+	if len(headers) == 0 {
+		return
+	}
+	for _, header := range headers {
+		values := src.Values(header)
+		if len(values) == 0 {
+			continue
+		}
+		dst.Del(header)
+		for _, value := range values {
+			if value == "" {
+				continue
+			}
+			dst.Add(header, value)
+		}
+	}
 }
