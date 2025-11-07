@@ -108,6 +108,33 @@ function coalesce<T>(...values: Array<T | null | undefined>): T | undefined {
   return undefined;
 }
 
+function parseStepId(stepId: string): { prefix: string; number: number | null } {
+  const match = stepId.match(/^(.*?)(\d+)$/);
+  if (!match) {
+    return { prefix: stepId, number: null };
+  }
+  return { prefix: match[1], number: Number.parseInt(match[2], 10) };
+}
+
+function compareStepIds(a: string, b: string): number {
+  const parsedA = parseStepId(a);
+  const parsedB = parseStepId(b);
+
+  const prefixCompare = parsedA.prefix.localeCompare(parsedB.prefix);
+  if (parsedA.number !== null && parsedB.number !== null && prefixCompare === 0) {
+    if (parsedA.number !== parsedB.number) {
+      return parsedA.number - parsedB.number;
+    }
+    return a.localeCompare(b);
+  }
+
+  if (prefixCompare !== 0) {
+    return prefixCompare;
+  }
+
+  return a.localeCompare(b);
+}
+
 function resolveTimestamp(payload: StepEventPayload): string {
   const transitionedAt = coalesce(
     payload.step.transitioned_at,
@@ -244,7 +271,7 @@ function upsertStep(state: TimelineState, payload: StepEventPayload): TimelineSt
     };
   }
 
-  steps.sort((a, b) => a.id.localeCompare(b.id));
+  steps.sort((a, b) => compareStepIds(a.id, b.id));
 
   const awaitingApproval = (() => {
     if (payload.step.state === 'waiting_approval') {

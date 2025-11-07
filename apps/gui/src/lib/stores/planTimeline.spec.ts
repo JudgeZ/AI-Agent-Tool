@@ -71,6 +71,32 @@ describe('timeline.connect', () => {
     expect(afterStep.awaitingApproval).toBeNull();
   });
 
+  it('orders steps with numeric suffixes based on their numeric value', () => {
+    timeline.connect('plan-ordering');
+    const source = MockEventSource.instances.at(-1);
+    expect(source).toBeTruthy();
+
+    source?.triggerOpen();
+
+    const emitStep = (id: string) => {
+      source?.emit('plan.step', {
+        plan_id: 'plan-ordering',
+        step: {
+          id,
+          capability: 'repo.read',
+          state: 'queued'
+        }
+      });
+    };
+
+    emitStep('s1');
+    emitStep('s10');
+    emitStep('s2');
+
+    const afterSteps = get(timeline);
+    expect(afterSteps.steps.map((step) => step.id)).toEqual(['s1', 's2', 's10']);
+  });
+
   it('captures stream errors and marks the connection as disconnected', () => {
     timeline.connect('plan-err');
     const source = MockEventSource.instances.at(-1);
