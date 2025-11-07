@@ -4,6 +4,7 @@ import {
   HISTORY_RETENTION_MS,
   clearPlanHistory,
   getPlanHistory,
+  subscribeToPlanSteps,
   publishPlanStepEvent,
   type PlanStepEvent,
 } from "./events.js";
@@ -141,5 +142,23 @@ describe("plan events history", () => {
 
     const [event] = getPlanHistory(baseEvent.planId);
     expect(event?.occurredAt).toBe(occurredAt);
+  });
+
+  it("does not emit warnings when more than ten listeners are registered", () => {
+    const warningSpy = vi.spyOn(process, "emitWarning");
+    const unsubscribers = new Array<() => void>();
+
+    try {
+      for (let index = 0; index < 12; index += 1) {
+        unsubscribers.push(subscribeToPlanSteps(baseEvent.planId, () => {}));
+      }
+
+      expect(warningSpy).not.toHaveBeenCalled();
+    } finally {
+      for (const unsubscribe of unsubscribers) {
+        unsubscribe();
+      }
+      warningSpy.mockRestore();
+    }
   });
 });

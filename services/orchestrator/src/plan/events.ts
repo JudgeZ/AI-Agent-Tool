@@ -38,6 +38,9 @@ function hasActiveSteps(entry: PlanHistoryEntry): boolean {
 }
 
 const emitter = new EventEmitter();
+// Allow arbitrarily many listeners so streaming multiple plan subscriptions does not trigger
+// the Node.js default memory leak warning for EventEmitter listeners.
+emitter.setMaxListeners(0);
 const history = new Map<string, PlanHistoryEntry>();
 
 function scheduleCleanup(planId: string): void {
