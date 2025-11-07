@@ -17,9 +17,10 @@ import (
 func main() {
 	mux := http.NewServeMux()
 	startTime := time.Now()
-	gateway.RegisterAuthRoutes(mux)
+	trustedProxyCIDRs := trustedProxyCIDRsFromEnv()
+	gateway.RegisterAuthRoutes(mux, gateway.AuthRouteConfig{TrustedProxyCIDRs: trustedProxyCIDRs})
 	gateway.RegisterHealthRoutes(mux, startTime)
-	gateway.RegisterEventRoutes(mux, gateway.EventRouteConfig{TrustedProxyCIDRs: trustedProxyCIDRsFromEnv()})
+	gateway.RegisterEventRoutes(mux, gateway.EventRouteConfig{TrustedProxyCIDRs: trustedProxyCIDRs})
 
 	port := os.Getenv("PORT")
 	if port == "" {

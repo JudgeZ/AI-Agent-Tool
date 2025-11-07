@@ -6,7 +6,6 @@ import (
 	"net"
 	"net/http"
 	"os"
-	"strings"
 	"sync"
 )
 
@@ -33,23 +32,8 @@ func logAudit(ctx context.Context, action, outcome string, attrs ...slog.Attr) {
 	logger.LogAttrs(ctx, slog.LevelInfo, "audit.event", fields...)
 }
 
-func clientIP(r *http.Request) string {
-	forwarded := r.Header.Get("X-Forwarded-For")
-	if forwarded != "" {
-		parts := strings.Split(forwarded, ",")
-		if len(parts) > 0 {
-			return strings.TrimSpace(parts[0])
-		}
-	}
-	ip, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err == nil && ip != "" {
-		return ip
-	}
-	return r.RemoteAddr
-}
-
-func auditRequestAttrs(r *http.Request) []slog.Attr {
-	attrs := []slog.Attr{slog.String("client_ip", clientIP(r))}
+func auditRequestAttrs(r *http.Request, trustedProxies []*net.IPNet) []slog.Attr {
+	attrs := []slog.Attr{slog.String("client_ip", clientIPFromRequest(r, trustedProxies))}
 	if requestID := r.Header.Get("X-Request-Id"); requestID != "" {
 		attrs = append(attrs, slog.String("request_id", requestID))
 	}

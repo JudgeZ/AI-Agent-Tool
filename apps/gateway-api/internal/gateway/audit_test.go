@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -94,46 +95,13 @@ func attrsToMap(attrs []slog.Attr) map[string]slog.Value {
 	return m
 }
 
-func TestClientIP(t *testing.T) {
-	tests := []struct {
-		name      string
-		forwarded string
-		remote    string
-		want      string
-	}{
-		{
-			name:      "forwarded header uses first value",
-			forwarded: "203.0.113.1, 70.41.3.18",
-			remote:    "192.0.2.1:1234",
-			want:      "203.0.113.1",
-		},
-		{
-			name:   "remote addr fallback",
-			remote: "198.51.100.23:8080",
-			want:   "198.51.100.23",
-		},
-		{
-			name:   "malformed remote addr",
-			remote: "malformed",
-			want:   "malformed",
-		},
+func mustTrustedProxies(t *testing.T, entries ...string) []*net.IPNet {
+	t.Helper()
+	proxies, err := parseTrustedProxyCIDRs(entries)
+	if err != nil {
+		t.Fatalf("failed to parse trusted proxies: %v", err)
 	}
-
-	for _, tt := range tests {
-		tt := tt
-		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
-			req.RemoteAddr = tt.remote
-			if tt.forwarded != "" {
-				req.Header.Set("X-Forwarded-For", tt.forwarded)
-			}
-
-			got := clientIP(req)
-			if got != tt.want {
-				t.Fatalf("clientIP() = %q, want %q", got, tt.want)
-			}
-		})
-	}
+	return proxies
 }
 
 func TestAuditRequestAttrs(t *testing.T) {
@@ -142,15 +110,16 @@ func TestAuditRequestAttrs(t *testing.T) {
 		forwarded string
 		remote    string
 		requestID string
+		proxies   []*net.IPNet
 		want      map[string]string
 	}{
 		{
-			name:      "forwarded ip and request id",
+			name:      "ignores spoofed header without trusted proxy",
 			forwarded: "203.0.113.1, 70.41.3.18",
 			remote:    "192.0.2.1:1234",
 			requestID: "req-123",
 			want: map[string]string{
-				"client_ip":  "203.0.113.1",
+				"client_ip":  "192.0.2.1",
 				"request_id": "req-123",
 			},
 		},
@@ -159,6 +128,24 @@ func TestAuditRequestAttrs(t *testing.T) {
 			remote: "198.51.100.23:8080",
 			want: map[string]string{
 				"client_ip": "198.51.100.23",
+			},
+		},
+		{
+			name:      "uses forwarded when remote is trusted",
+			remote:    "192.0.2.10:443",
+			proxies:   mustTrustedProxies(t, "192.0.2.0/24"),
+			forwarded: "198.51.100.1, 192.0.2.10",
+			want: map[string]string{
+				"client_ip": "198.51.100.1",
+			},
+		},
+		{
+			name:      "falls back when forwarded only trusted proxies",
+			remote:    "192.0.2.10:443",
+			proxies:   mustTrustedProxies(t, "192.0.2.0/24"),
+			forwarded: "192.0.2.20, 192.0.2.10",
+			want: map[string]string{
+				"client_ip": "192.0.2.10",
 			},
 		},
 		{
@@ -182,7 +169,7 @@ func TestAuditRequestAttrs(t *testing.T) {
 				req.Header.Set("X-Request-Id", tt.requestID)
 			}
 
-			attrs := auditRequestAttrs(req)
+			attrs := auditRequestAttrs(req, tt.proxies)
 			got := make(map[string]string, len(attrs))
 			for _, attr := range attrs {
 				got[attr.Key] = attr.Value.String()
@@ -205,11 +192,12 @@ func TestLogAuditEmitsExpectedFields(t *testing.T) {
 	setAuditLoggerForTest(t, handler)
 
 	req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
-	req.RemoteAddr = "203.0.113.5:443"
-	req.Header.Set("X-Forwarded-For", "198.51.100.1")
+	req.RemoteAddr = "192.0.2.10:443"
+	req.Header.Set("X-Forwarded-For", "198.51.100.1, 192.0.2.10")
 	req.Header.Set("X-Request-Id", "req-456")
 
-	attrs := auditRequestAttrs(req)
+	proxies := mustTrustedProxies(t, "192.0.2.0/24")
+	attrs := auditRequestAttrs(req, proxies)
 	logAudit(context.Background(), "test_action", "success", attrs...)
 
 	records := handler.Records()

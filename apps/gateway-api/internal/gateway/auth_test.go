@@ -65,7 +65,7 @@ func TestAuthorizeHandlerGeneratesPKCEChallenge(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/authorize?redirect_uri=https://app.example.com/complete", nil)
 	rec := httptest.NewRecorder()
 
-	authorizeHandler(rec, req)
+	authorizeHandler(rec, req, nil)
 
 	res := rec.Result()
 	if res.StatusCode != http.StatusFound {
@@ -131,7 +131,7 @@ func TestAuthorizeHandlerRejectsInvalidRedirect(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/authorize?redirect_uri=https://evil.example.com", nil)
 	rec := httptest.NewRecorder()
 
-	authorizeHandler(rec, req)
+	authorizeHandler(rec, req, nil)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected invalid redirect_uri to return 400, got %d", rec.Code)
@@ -157,7 +157,7 @@ func TestAuthorizeHandlerAllowsExpectedRedirects(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/authorize?redirect_uri="+url.QueryEscape(redirectURI), nil)
 			rec := httptest.NewRecorder()
 
-			authorizeHandler(rec, req)
+			authorizeHandler(rec, req, nil)
 
 			if rec.Code != http.StatusFound {
 				t.Fatalf("expected authorize handler to redirect for %s, got %d", redirectURI, rec.Code)
@@ -191,7 +191,7 @@ func TestCallbackHandlerRejectsExpiredState(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 
-	callbackHandler(rec, req)
+	callbackHandler(rec, req, nil)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for expired state, got %d", rec.Code)
@@ -223,7 +223,7 @@ func TestCallbackHandlerRejectsStateMismatch(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 
-	callbackHandler(rec, req)
+	callbackHandler(rec, req, nil)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for state mismatch, got %d", rec.Code)
@@ -265,7 +265,7 @@ func TestCallbackHandlerHandlesOrchestratorContactFailure(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 
-	callbackHandler(rec, req)
+	callbackHandler(rec, req, nil)
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("expected 502 when orchestrator contact fails, got %d", rec.Code)
@@ -324,7 +324,7 @@ func TestCallbackHandlerRedirectsOnOrchestratorError(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 
-	callbackHandler(rec, req)
+	callbackHandler(rec, req, nil)
 
 	if callCount != 1 {
 		t.Fatalf("expected single orchestrator call, got %d", callCount)
@@ -405,7 +405,7 @@ func TestCallbackHandlerSuccessPropagatesCookies(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 
-	callbackHandler(rec, req)
+	callbackHandler(rec, req, nil)
 
 	if got := atomic.LoadInt32(&requestCount); got != 1 {
 		t.Fatalf("expected orchestrator to be called once, got %d", got)
