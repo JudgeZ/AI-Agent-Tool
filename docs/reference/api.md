@@ -86,7 +86,7 @@ Body fields:
 
 ## `GET /plan/:planId/events`
 
-Server Sent Events stream mirroring `PlanStepEvent` messages. Clients must supply `Accept: text/event-stream`. When the request is routed through the gateway (`GET /events?plan_id=<id>`), session-authenticated callers must forward their session cookie so the gateway can propagate it upstream to the orchestrator. See [Event Schemas](./events.md#plan-step-events) for payload details.
+Server Sent Events stream mirroring `PlanStepEvent` messages. Clients must supply `Accept: text/event-stream`. When the request is routed through the gateway (`GET /events?plan_id=<id>`), session-authenticated callers must forward their session cookie so the gateway can propagate it upstream to the orchestrator. The gateway merges the incoming `Cookie` header with any cookies already present on the upstream request (for example, values supplied by an HTTP client jar) so session state is preserved end-to-end. See [Event Schemas](./events.md#plan-step-events) for payload details.
 
 Example chunk:
 

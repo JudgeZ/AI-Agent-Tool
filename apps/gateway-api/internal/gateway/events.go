@@ -22,7 +22,6 @@ const (
 )
 
 var forwardedSSEHeaders = []string{
-	"Cookie",
 	"X-Agent",
 	"X-Request-Id",
 	"X-B3-Traceid",
@@ -167,6 +166,14 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if lastEventID := r.Header.Get("Last-Event-ID"); lastEventID != "" {
 		req.Header.Set("Last-Event-ID", lastEventID)
+	}
+	if cookies := r.Header.Values("Cookie"); len(cookies) > 0 {
+		for _, cookie := range cookies {
+			if cookie == "" {
+				continue
+			}
+			req.Header.Add("Cookie", cookie)
+		}
 	}
 	cloneHeaders(req.Header, r.Header, forwardedSSEHeaders)
 

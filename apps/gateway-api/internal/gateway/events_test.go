@@ -163,6 +163,28 @@ func TestEventsHandlerForwardsUpstreamServerErrorBodies(t *testing.T) {
 	}
 }
 
+func TestEventsHandlerForwardsCookieHeader(t *testing.T) {
+	var capturedCookies []string
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		// Simulate cookies already present on the request (e.g., jar-provided) and
+		// capture the full header state observed by the upstream transport.
+		req.Header.Add("Cookie", "jar=existing")
+		capturedCookies = append([]string{}, req.Header.Values("Cookie")...)
+		return nil, context.DeadlineExceeded
+	})}
+
+	handler := NewEventsHandler(client, "http://orchestrator", 0, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil)
+	req.Header.Add("Cookie", "user=abc")
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	require.Contains(t, capturedCookies, "jar=existing")
+	require.Contains(t, capturedCookies, "user=abc")
+}
+
 func TestEventsHandlerErrorsWhenResponseWriterLacksFlusher(t *testing.T) {
 	orchestrator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
