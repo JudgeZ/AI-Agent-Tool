@@ -33,10 +33,10 @@ aidt new-agent release-manager
 
 ### `aidt plan <goal...>`
 
-Creates a plan using the orchestrator planner implementation and prints a human-readable summary.
+Creates a plan by calling the Gateway API (`POST /plan`) and prints a human-readable summary. The CLI writes the plan response to `.plans/<ID>/plan.json` and `.plans/<ID>/plan.md` so you can review or archive artifacts locally.
 
 - Defaults to the goal `"General improvement"` when no text is provided
-- Writes nothing to disk; output is streamed to stdout
+- Uses `AIDT_GATEWAY_URL` (`http://localhost:8080` by default) and an optional bearer token from `AIDT_AUTH_TOKEN`
 - Echoes the SSE endpoint for subsequent monitoring (`/plan/<ID>/events`)
 
 Example output:
@@ -59,5 +59,5 @@ SSE stream: /plan/plan-92a390d6/events
 | `0` | Command completed successfully |
 | `1` | Unexpected error (missing template, filesystem errors, planner exception) |
 
-Logs and errors are printed to stderr. Set `AIDT_DEBUG=1` to surface stack traces during troubleshooting.
+Logs and errors are printed to stderr. Set `AIDT_DEBUG=1` to surface stack traces during troubleshooting. Configure timeouts with `AIDT_GATEWAY_TIMEOUT_MS` (milliseconds) if you expect slower Gateway responses.
 

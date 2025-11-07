@@ -6,13 +6,9 @@
     "aidt": "dist/index.js"
   },
   "scripts": {
-    "prebuild": "node ./scripts/install-orchestrator-deps.cjs",
-    "build": "npm run build --prefix ../../services/orchestrator && esbuild src/index.ts --bundle --platform=node --outfile=dist/index.js",
+    "build": "esbuild src/index.ts --bundle --platform=node --outfile=dist/index.js",
     "dev": "ts-node src/index.ts",
     "test": "npm run build && node --test tests/*.test.js"
-  },
-  "dependencies": {
-    "@oss/orchestrator": "file:../../services/orchestrator"
   },
   "devDependencies": {
     "esbuild": "^0.25.0",
