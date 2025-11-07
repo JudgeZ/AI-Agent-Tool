@@ -11,8 +11,8 @@ use thiserror::Error;
 use tokio::net::TcpListener;
 use tracing::{error, info};
 
-mod audit;
 mod ast;
+mod audit;
 mod lsp;
 mod security;
 mod semantic;
@@ -74,10 +74,14 @@ struct AppState {
 
 impl AppState {
     fn new(security: security::SecurityConfig) -> Self {
-        Self {
-            semantic: semantic::SemanticStore::new(),
-            security,
-        }
+        Self::with_semantic(security, semantic::SemanticStore::new())
+    }
+
+    fn with_semantic(
+        security: security::SecurityConfig,
+        semantic: semantic::SemanticStore,
+    ) -> Self {
+        Self { semantic, security }
     }
 }
 
@@ -527,5 +531,75 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn semantic_store_eviction_limits_growth() {
+        let security = security::SecurityConfig::with_rules(vec!["/".into()], Vec::new());
+        let semantic = semantic::SemanticStore::from_config(semantic::SemanticConfig {
+            max_documents: Some(2),
+        });
+        let state = AppState::with_semantic(security, semantic.clone());
+
+        let app = Router::new()
+            .route("/semantic/documents", axum_post(add_semantic_document))
+            .route("/semantic/history/*path", get(semantic_history))
+            .with_state(state.clone());
+
+        let payloads = [
+            serde_json::json!({
+                "path": "src/lib.rs",
+                "content": "fn one() {}",
+                "commit_id": "commit-1"
+            }),
+            serde_json::json!({
+                "path": "src/lib.rs",
+                "content": "fn two() {}",
+                "commit_id": "commit-2"
+            }),
+            serde_json::json!({
+                "path": "src/lib.rs",
+                "content": "fn three() {}",
+                "commit_id": "commit-3"
+            }),
+        ];
+
+        for payload in payloads.iter() {
+            let response = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri("/semantic/documents")
+                        .header("content-type", "application/json")
+                        .body(Body::from(payload.to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+        }
+
+        let history_response = app
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/semantic/history/src/lib.rs")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(history_response.status(), StatusCode::OK);
+
+        let history = semantic.history_for_path("src/lib.rs");
+        let commits: Vec<_> = history
+            .iter()
+            .filter_map(|entry| entry.commit_id.as_deref())
+            .collect();
+        assert_eq!(commits, vec!["commit-2", "commit-3"]);
+
+        let stats = semantic.stats();
+        assert_eq!(stats.document_count, 2);
     }
 }
