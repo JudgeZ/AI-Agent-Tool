@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -57,6 +58,11 @@ type stateData struct {
 	State        string
 }
 
+// AuthRouteConfig captures configuration for the OAuth routes.
+type AuthRouteConfig struct {
+	TrustedProxyCIDRs []string
+}
+
 func getProviderConfig(provider string) (oauthProvider, error) {
 	switch provider {
 	case "openrouter", "google":
@@ -92,10 +98,10 @@ func getProviderConfig(provider string) (oauthProvider, error) {
 	}
 }
 
-func authorizeHandler(w http.ResponseWriter, r *http.Request) {
+func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet) {
 	provider := strings.TrimPrefix(r.URL.Path, "/auth/")
 	provider = strings.TrimSuffix(provider, "/authorize")
-	baseAttrs := append(auditRequestAttrs(r), slog.String("provider", provider))
+	baseAttrs := append(auditRequestAttrs(r, trustedProxies), slog.String("provider", provider))
 	cfg, err := getProviderConfig(provider)
 	if err != nil {
 		logAudit(r.Context(), "oauth.authorize", "failure", append(baseAttrs, slog.String("error", err.Error()))...)
@@ -153,10 +159,10 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, authURL, http.StatusFound)
 }
 
-func callbackHandler(w http.ResponseWriter, r *http.Request) {
+func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet) {
 	provider := strings.TrimPrefix(r.URL.Path, "/auth/")
 	provider = strings.TrimSuffix(provider, "/callback")
-	baseAttrs := append(auditRequestAttrs(r), slog.String("provider", provider))
+	baseAttrs := append(auditRequestAttrs(r, trustedProxies), slog.String("provider", provider))
 
 	cfg, err := getProviderConfig(provider)
 	if err != nil {
@@ -166,7 +172,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	}
 
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
-		redirectError(w, r, provider, errParam)
+		redirectError(w, r, trustedProxies, errParam)
 		return
 	}
 
@@ -250,23 +256,23 @@ func callbackHandler(w http.ResponseWriter, r *http.Request) {
 	redirectWithStatus(w, r, data.RedirectURI, data.State, "success", "")
 }
 
-func redirectError(w http.ResponseWriter, r *http.Request, _ string, errParam string) {
+func redirectError(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, errParam string) {
 	state := r.URL.Query().Get("state")
 	if state == "" {
-		attrs := append(auditRequestAttrs(r), slog.String("error", errParam))
+		attrs := append(auditRequestAttrs(r, trustedProxies), slog.String("error", errParam))
 		logAudit(r.Context(), "oauth.callback", "failure", attrs...)
 		http.Error(w, errParam, http.StatusBadRequest)
 		return
 	}
 	data, err := readStateCookie(r, state)
 	if err != nil {
-		attrs := append(auditRequestAttrs(r), slog.String("state", state), slog.String("error", errParam))
+		attrs := append(auditRequestAttrs(r, trustedProxies), slog.String("state", state), slog.String("error", errParam))
 		logAudit(r.Context(), "oauth.callback", "failure", attrs...)
 		http.Error(w, errParam, http.StatusBadRequest)
 		return
 	}
 	deleteStateCookie(w, r, state)
-	attrs := append(auditRequestAttrs(r), slog.String("state", state), slog.String("redirect_uri", data.RedirectURI), slog.String("error", errParam))
+	attrs := append(auditRequestAttrs(r, trustedProxies), slog.String("state", state), slog.String("redirect_uri", data.RedirectURI), slog.String("error", errParam))
 	logAudit(r.Context(), "oauth.callback", "failure", attrs...)
 	redirectWithStatus(w, r, data.RedirectURI, data.State, "error", errParam)
 }
@@ -546,7 +552,12 @@ func isRequestSecure(r *http.Request) bool {
 	return false
 }
 
-func RegisterAuthRoutes(mux *http.ServeMux) {
+func RegisterAuthRoutes(mux *http.ServeMux, cfg AuthRouteConfig) {
+	trustedProxies, err := parseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs)
+	if err != nil {
+		panic(fmt.Sprintf("invalid trusted proxy configuration: %v", err))
+	}
+
 	mux.HandleFunc("/auth/", func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/authorize"):
@@ -554,13 +565,13 @@ func RegisterAuthRoutes(mux *http.ServeMux) {
 				methodNotAllowed(w, http.MethodGet)
 				return
 			}
-			authorizeHandler(w, r)
+			authorizeHandler(w, r, trustedProxies)
 		case strings.HasSuffix(r.URL.Path, "/callback"):
 			if r.Method != http.MethodGet {
 				methodNotAllowed(w, http.MethodGet)
 				return
 			}
-			callbackHandler(w, r)
+			callbackHandler(w, r, trustedProxies)
 		default:
 			http.NotFound(w, r)
 		}
