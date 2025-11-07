@@ -12,16 +12,44 @@ Usage:
 `);
 }
 
+function normalizeAgentName(name: string): string {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    throw new Error("Agent name is required");
+  }
+  if (/[\\/]/.test(trimmed)) {
+    throw new Error("Agent name must not contain path separators");
+  }
+  if (trimmed.includes("..")) {
+    throw new Error("Agent name must not contain '..'");
+  }
+  if (trimmed === "." || trimmed === "..") {
+    throw new Error("Agent name must not be '.' or '..'");
+  }
+  return trimmed;
+}
+
 async function newAgent(name: string) {
-  const dir = path.join(process.cwd(), "agents", name);
+  const normalized = normalizeAgentName(name);
+  const repoRoot = process.cwd();
+  const agentsRoot = path.resolve(repoRoot, "agents");
+  const dir = path.resolve(agentsRoot, normalized);
+  const relativeToAgents = path.relative(agentsRoot, dir);
+  if (relativeToAgents.startsWith("..") || path.isAbsolute(relativeToAgents)) {
+    throw new Error(`Refusing to write outside agents directory: ${normalized}`);
+  }
+
   const file = path.join(dir, "agent.md");
-  const templatePath = path.join(process.cwd(), "docs", "agents", "templates", "agent.md");
+  const templatePath = path.join(repoRoot, "docs", "agents", "templates", "agent.md");
   if (!fs.existsSync(templatePath)) {
     console.error("Template not found:", templatePath);
     process.exit(1);
   }
+  fs.mkdirSync(agentsRoot, { recursive: true });
   fs.mkdirSync(dir, { recursive: true });
-  const tpl = fs.readFileSync(templatePath, "utf-8").replace('name: "code-writer"', `name: "${name}"`);
+  const tpl = fs
+    .readFileSync(templatePath, "utf-8")
+    .replace('name: "code-writer"', `name: "${normalized}"`);
   fs.writeFileSync(file, tpl, "utf-8");
   console.log("Created", file);
 }
