@@ -507,25 +507,56 @@ export function createServer(appConfig?: AppConfig): Express {
       const requestSubject = authorization?.requestSubject;
 
       if (acceptsSse) {
-        const identity = createRequestIdentity(req, config, requestSubject);
-      const releaseHandle = sseQuotaManager.acquire({
-        ip: identity.ip,
-        subjectId: identity.subjectId,
-      });
-      if (!releaseHandle) {
-        res
-          .status(429)
-          .json({ error: TOO_MANY_EVENT_STREAMS_MESSAGE });
-        return;
-      }
-      let released = false;
-      const releaseQuota = () => {
-        if (released) {
+        try {
+          await withSpan(
+            "http.get.plan.events.stream",
+            async (span) => {
+              const decision = await policy.enforceHttpAction({
+                action: "http.get.plan.events.stream",
+                requiredCapabilities: ["plan.read"],
+                agent: agentName,
+                traceId: span.context.traceId,
+                subject: toPolicySubject(requestSubject),
+              });
+              ensureAllowed("plan.read", decision, {
+                agent: agentName,
+                subject: requestSubject,
+                traceId: span.context.traceId,
+                requestId,
+                resource: "plan.events",
+                metadata: {
+                  route: "/plan/:id/events",
+                  method: req.method,
+                  planId,
+                  responseType: "sse",
+                },
+              });
+            },
+            { route: "/plan/:id/events", planId, responseType: "sse" },
+          );
+        } catch (error) {
+          next(error);
           return;
         }
-        released = true;
-        releaseHandle();
-      };
+        const identity = createRequestIdentity(req, config, requestSubject);
+        const releaseHandle = sseQuotaManager.acquire({
+          ip: identity.ip,
+          subjectId: identity.subjectId,
+        });
+        if (!releaseHandle) {
+          res
+            .status(429)
+            .json({ error: TOO_MANY_EVENT_STREAMS_MESSAGE });
+          return;
+        }
+        let released = false;
+        const releaseQuota = () => {
+          if (released) {
+            return;
+          }
+          released = true;
+          releaseHandle();
+        };
 
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache, no-transform");
@@ -597,6 +628,37 @@ export function createServer(appConfig?: AppConfig): Express {
         cleanup();
       });
     } else {
+      try {
+        await withSpan(
+          "http.get.plan.events.history",
+          async (span) => {
+            const decision = await policy.enforceHttpAction({
+              action: "http.get.plan.events.history",
+              requiredCapabilities: ["plan.read"],
+              agent: agentName,
+              traceId: span.context.traceId,
+              subject: toPolicySubject(requestSubject),
+            });
+            ensureAllowed("plan.read", decision, {
+              agent: agentName,
+              subject: requestSubject,
+              traceId: span.context.traceId,
+              requestId,
+              resource: "plan.events",
+              metadata: {
+                route: "/plan/:id/events",
+                method: req.method,
+                planId,
+                responseType: "json",
+              },
+            });
+          },
+          { route: "/plan/:id/events", planId, responseType: "json" },
+        );
+      } catch (error) {
+        next(error);
+        return;
+      }
       const events = getPlanHistory(planId);
       res.json({ events });
     }

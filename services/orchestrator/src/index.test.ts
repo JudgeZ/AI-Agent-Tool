@@ -408,6 +408,30 @@ describe("orchestrator http api", () => {
     );
   });
 
+  it("denies plan event history when capability policy denies access", async () => {
+    const { createServer } = await import("./index.js");
+    const app = createServer();
+
+    const planId = "plan-badc0de1";
+
+    policyMock.enforceHttpAction
+      .mockResolvedValueOnce({ allow: true, deny: [] })
+      .mockResolvedValueOnce({
+        allow: false,
+        deny: [{ reason: "forbidden", capability: "plan.read" }],
+      });
+
+    const response = await request(app)
+      .get(`/plan/${planId}/events`)
+      .set("Accept", "application/json")
+      .expect(403);
+
+    expect(response.body.error).toContain("plan.read denied");
+    expect(policyMock.enforceHttpAction).toHaveBeenCalledWith(
+      expect.objectContaining({ action: "http.get.plan.events.history" }),
+    );
+  });
+
   it("denies plan event history when tenant does not match plan owner", async () => {
     const { createServer } = await import("./index.js");
     const { loadConfig } = await import("./config.js");
@@ -534,6 +558,90 @@ describe("orchestrator http api", () => {
       });
 
       expect(body).toContain("subject does not match plan owner");
+    } finally {
+      connection.request.destroy();
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve();
+        });
+      });
+    }
+  });
+
+  it("denies SSE plan events when capability policy denies access", async () => {
+    const { createServer, createHttpServer } = await import("./index.js");
+    const { loadConfig } = await import("./config.js");
+
+    const config = loadConfig();
+    const app = createServer(config);
+    const planId = "plan-feedbabe";
+
+    policyMock.enforceHttpAction
+      .mockResolvedValueOnce({ allow: true, deny: [] })
+      .mockResolvedValueOnce({
+        allow: false,
+        deny: [{ reason: "forbidden", capability: "plan.read" }],
+      });
+
+    const server = createHttpServer(app, config);
+    await new Promise<void>((resolve) => {
+      server.listen(0, resolve);
+    });
+
+    const address = server.address() as AddressInfo | null;
+    if (!address || typeof address.port !== "number") {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve();
+        });
+      });
+      throw new Error("failed to determine server address");
+    }
+
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+
+    const connection = await new Promise<{
+      request: http.ClientRequest;
+      response: http.IncomingMessage;
+    }>((resolve, reject) => {
+      const req = http.request(
+        `${baseUrl}/plan/${planId}/events`,
+        {
+          headers: {
+            Accept: "text/event-stream",
+          },
+        },
+        (res) => {
+          resolve({ request: req, response: res });
+        },
+      );
+      req.on("error", reject);
+      req.end();
+    });
+
+    try {
+      expect(connection.response.statusCode).toBe(403);
+      const body = await new Promise<string>((resolve, reject) => {
+        let data = "";
+        connection.response.setEncoding("utf8");
+        connection.response.on("data", (chunk) => {
+          data += chunk;
+        });
+        connection.response.on("end", () => resolve(data));
+        connection.response.on("error", reject);
+      });
+      expect(body).toContain("plan.read denied");
+      expect(policyMock.enforceHttpAction).toHaveBeenCalledWith(
+        expect.objectContaining({ action: "http.get.plan.events.stream" }),
+      );
     } finally {
       connection.request.destroy();
       await new Promise<void>((resolve, reject) => {
