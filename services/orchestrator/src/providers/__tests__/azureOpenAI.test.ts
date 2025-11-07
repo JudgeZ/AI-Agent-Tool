@@ -1,0 +1,98 @@
+import { describe, it, expect, vi, afterEach } from "vitest";
+
+import type { SecretsStore } from "../../auth/SecretsStore.js";
+import { AzureOpenAIProvider } from "../azureOpenAI.js";
+
+class StubSecretsStore implements SecretsStore {
+  constructor(private readonly values: Record<string, string> = {}) {}
+
+  async get(key: string) {
+    return this.values[key];
+  }
+
+  async set(key: string, value: string) {
+    this.values[key] = value;
+  }
+
+  async delete(key: string) {
+    delete this.values[key];
+  }
+}
+
+describe("AzureOpenAIProvider", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function createProvider(getChatCompletions: ReturnType<typeof vi.fn>) {
+    const secrets = new StubSecretsStore({
+      "provider:azureopenai:apiKey": "sk-az",
+      "provider:azureopenai:endpoint": "https://example.openai.azure.com"
+    });
+    const clientFactory = vi.fn().mockResolvedValue({ getChatCompletions });
+    const provider = new AzureOpenAIProvider(secrets, {
+      clientFactory,
+      retryAttempts: 2,
+      defaultDeployment: "my-deployment"
+    });
+    return { provider, clientFactory };
+  }
+
+  it("returns a chat response with usage mapping", async () => {
+    const getChatCompletions = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "Hello world" } }],
+      usage: { promptTokens: 9, completionTokens: 3, totalTokens: 12 }
+    });
+    const { provider, clientFactory } = createProvider(getChatCompletions);
+
+    const response = await provider.chat({
+      messages: [
+        { role: "system", content: "be helpful" },
+        { role: "user", content: "hi" }
+      ]
+    });
+
+    expect(clientFactory).toHaveBeenCalledTimes(1);
+    expect(getChatCompletions).toHaveBeenCalledWith("my-deployment", [
+      { role: "system", content: "be helpful" },
+      { role: "user", content: "hi" }
+    ], { temperature: 0.2 });
+    expect(response).toEqual({
+      output: "Hello world",
+      provider: "azureopenai",
+      usage: { promptTokens: 9, completionTokens: 3, totalTokens: 12 }
+    });
+  });
+
+  it("retries on retryable errors returned by the client", async () => {
+    const retryableError = { statusCode: 429, message: "too many" };
+    const getChatCompletions = vi
+      .fn()
+      .mockRejectedValueOnce(retryableError)
+      .mockResolvedValueOnce({ choices: [{ message: { content: "ok" } }] });
+    const { provider } = createProvider(getChatCompletions);
+
+    const result = await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+
+    expect(getChatCompletions).toHaveBeenCalledTimes(2);
+    expect(result.output).toBe("ok");
+    expect(result.usage).toBeUndefined();
+  });
+
+  it("does not retry non-retryable errors and exposes normalized details", async () => {
+    const nonRetryable = { statusCode: 400, code: "BadRequest", message: "bad" };
+    const getChatCompletions = vi.fn().mockRejectedValue(nonRetryable);
+    const { provider } = createProvider(getChatCompletions);
+
+    await expect(
+      provider.chat({ messages: [{ role: "user", content: "hi" }] })
+    ).rejects.toMatchObject({
+      message: "bad",
+      status: 400,
+      code: "BadRequest",
+      provider: "azureopenai",
+      retryable: false
+    });
+    expect(getChatCompletions).toHaveBeenCalledTimes(1);
+  });
+});
