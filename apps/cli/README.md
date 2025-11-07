@@ -1,42 +1,34 @@
 # OSS AI Agent Tool CLI
 
-The CLI packages the orchestrator SDK for local workflows. Because the CLI depends on the orchestrator workspace, it expects the same toolchain when preparing build artifacts.
+The CLI talks to the Gateway API over HTTP to create plans and interact with the OSS AI Agent Tool services. It no longer bundles the orchestrator workspace directly, so only the CLI dependencies are required for local builds.
 
 ## Prerequisites
 
 - Node.js 20+
-- [pnpm](https://pnpm.io/) (the orchestrator uses pnpm to manage dependencies and lockfiles)
-
-Install pnpm with Corepack (bundled with recent Node.js releases):
-
-```bash
-corepack enable
-corepack prepare pnpm@latest --activate
-```
+- A reachable Gateway API (`AIDT_GATEWAY_URL`, defaults to `http://localhost:8080`)
+- (Optional) Bearer token for authentication (`AIDT_AUTH_TOKEN`)
 
 ## Development workflow
 
-1. Install CLI dependencies in `apps/cli` using your preferred package manager (`npm ci`, `pnpm install`, etc.).
-2. Build the orchestrator workspace with pnpm to ensure the SDK artifacts are up to date:
-
-   ```bash
-   pnpm install --frozen-lockfile --dir services/orchestrator
-   pnpm --dir services/orchestrator run build
-   ```
-
-3. Bundle the CLI:
+1. Install CLI dependencies in `apps/cli`:
 
    ```bash
    cd apps/cli
    npm run build
    ```
 
-   The `prebuild` hook automatically installs orchestrator dependencies with pnpm using the lockfile above. Ensure pnpm is available on your PATH before running the build.
-
-4. Run tests as needed:
+2. Run tests as needed:
 
    ```bash
    npm test
    ```
+   Tests spin up a stub HTTP server; no orchestrator checkout is required.
 
-When contributing changes, keep the orchestrator dependencies managed via pnpm to avoid divergence between the CLI and the core services.
+Configure Gateway access with environment variables:
+
+```bash
+export AIDT_GATEWAY_URL="https://gateway.example.com"
+export AIDT_AUTH_TOKEN="<bearer token>"
+# Optional timeout override (milliseconds)
+export AIDT_GATEWAY_TIMEOUT_MS="45000"
+```
