@@ -77,20 +77,22 @@ describe("callWithRetry", () => {
 
   it("retries once when the first error is retryable", async () => {
     const operation = vi
-      .fn<[], Promise<string>>()
+      .fn<() => Promise<string>>()
       .mockRejectedValueOnce(new ProviderError("try again", { retryable: true }))
       .mockResolvedValueOnce("success");
 
-    const promise = callWithRetry(() => operation());
+    const promise = callWithRetry(operation);
     await vi.runAllTimersAsync();
     await expect(promise).resolves.toBe("success");
     expect(operation).toHaveBeenCalledTimes(2);
   });
 
   it("does not retry when the error is not retryable", async () => {
-    const operation = vi.fn().mockRejectedValue(new ProviderError("fail", { retryable: false }));
+    const operation = vi.fn<() => Promise<string>>().mockRejectedValue(
+      new ProviderError("fail", { retryable: false })
+    );
 
-    await expect(callWithRetry(() => operation())).rejects.toMatchObject({ message: "fail", retryable: false });
+    await expect(callWithRetry(operation)).rejects.toMatchObject({ message: "fail", retryable: false });
     expect(operation).toHaveBeenCalledTimes(1);
   });
 });
