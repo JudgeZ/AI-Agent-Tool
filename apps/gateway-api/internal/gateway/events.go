@@ -31,7 +31,7 @@ var forwardedSSEHeaders = []string{
 	"Tracestate",
 }
 
-var planIDPattern = regexp.MustCompile(`^plan-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`)
+var planIDPattern = regexp.MustCompile(`(?i)^plan-(?:[0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$`)
 
 type connectionLimiter struct {
 	mu     sync.Mutex
