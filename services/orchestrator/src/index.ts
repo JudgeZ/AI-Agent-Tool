@@ -204,9 +204,10 @@ export function createRequestIdentity(
   subject?: RequestSubjectContext,
 ): RequestIdentity {
   const resolvedSubject = subject ?? resolveRequestSubject(req, config);
+  const agentName = resolvedSubject ? extractAgent(req) : undefined;
   return {
     subjectId: resolvedSubject?.sessionId,
-    agentName: extractAgent(req),
+    agentName,
     ip: resolveClientIp(req, config.server.trustedProxyCidrs),
   };
 }
@@ -214,9 +215,6 @@ export function createRequestIdentity(
 export function buildRateLimitKey(identity: RequestIdentity): string {
   if (identity.subjectId) {
     return `subject:${identity.subjectId}`;
-  }
-  if (identity.agentName) {
-    return `agent:${identity.agentName}`;
   }
   return `ip:${identity.ip}`;
 }
