@@ -6,10 +6,14 @@ const MAX_MODEL_LENGTH = 256;
 const MAX_MESSAGE_LENGTH = 16000;
 const MAX_MESSAGE_COUNT = 50;
 
+const LEGACY_PLAN_ID_REGEX = /^plan-[0-9a-f]{8}$/i;
+const UUID_PLAN_ID_REGEX =
+  /^plan-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
 export const PlanIdSchema = z
   .string()
   .trim()
-  .regex(/^plan-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, {
+  .refine((value) => LEGACY_PLAN_ID_REGEX.test(value) || UUID_PLAN_ID_REGEX.test(value), {
     message: "plan id is invalid",
   });
 

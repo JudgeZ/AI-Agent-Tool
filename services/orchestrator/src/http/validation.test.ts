@@ -17,6 +17,10 @@ describe("PlanIdSchema", () => {
       value: "plan-12345678-1234-1234-1234-1234567890ab",
     },
     {
+      name: "accepts legacy short id",
+      value: "plan-deadbeef",
+    },
+    {
       name: "trims extraneous whitespace",
       value: "  plan-12345678-1234-1234-1234-1234567890ab  ",
     },
@@ -26,7 +30,8 @@ describe("PlanIdSchema", () => {
 
   it.each([
     { name: "invalid prefix", value: "wrong-12345678-1234-1234-1234-1234567890ab" },
-    { name: "too short", value: "plan-12345678" },
+    { name: "truncated uuid", value: "plan-12345678-1234" },
+    { name: "too short for legacy", value: "plan-dead" },
     { name: "non hex characters", value: "plan-zzzzzzzz-1234-1234-1234-1234567890ab" },
   ])("rejects invalid plan ids: $name", ({ value }) => {
     const result = PlanIdSchema.safeParse(value);
