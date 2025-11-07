@@ -33,3 +33,42 @@ test("aidt new-agent scaffolds an agent profile", async () => {
   cleanupAgent(agentName);
 });
 
+test("aidt new-agent rejects traversal attempts", async () => {
+  const traversalName = "../traversal-agent";
+  const escapeDir = path.resolve(repoRoot, "traversal-agent");
+  fs.rmSync(escapeDir, { recursive: true, force: true });
+
+  await assert.rejects(
+    execFileAsync("node", ["apps/cli/dist/index.js", "new-agent", traversalName], { cwd: repoRoot }),
+    err => {
+      assert.strictEqual(err.code, 1);
+      assert.match(err.stderr, /Agent name must not contain/);
+      return true;
+    }
+  );
+
+  assert.ok(!fs.existsSync(escapeDir), `expected no directory created at ${escapeDir}`);
+  if (fs.existsSync(agentsDir)) {
+    const agentEntries = fs.readdirSync(agentsDir);
+    assert.ok(!agentEntries.includes("traversal-agent"), "unexpected traversal-agent directory under agents/");
+  }
+});
+
+test("aidt new-agent rejects unsafe agent names", async () => {
+  const badNames = ["/tmp/escape", "C:evil", "with space", "semi;colon", "star*bad", "-leading-dash"];
+
+  for (const badName of badNames) {
+    await assert.rejects(
+      execFileAsync("node", ["apps/cli/dist/index.js", "new-agent", badName], { cwd: repoRoot }),
+      err => {
+        assert.strictEqual(err.code, 1);
+        assert.ok(
+          /Agent name/.test(err.stderr),
+          `expected validation error message for ${badName}, got: ${err.stderr}`
+        );
+        return true;
+      }
+    );
+  }
+});
+
