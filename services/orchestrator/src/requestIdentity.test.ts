@@ -106,9 +106,7 @@ describe("buildRateLimitKey", () => {
 
     expect(identity.subjectId).toBe("session-123");
     expect(identity.agentName).toBe("code-writer");
-    expect(buildRateLimitKey(identity)).toBe(
-      "subject:session-123:agent:code-writer",
-    );
+    expect(buildRateLimitKey(identity)).toBe("subject:session-123");
   });
 });
 

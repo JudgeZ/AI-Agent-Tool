@@ -214,9 +214,6 @@ export function createRequestIdentity(
 
 export function buildRateLimitKey(identity: RequestIdentity): string {
   if (identity.subjectId) {
-    if (identity.agentName) {
-      return `subject:${identity.subjectId}:agent:${identity.agentName}`;
-    }
     return `subject:${identity.subjectId}`;
   }
   return `ip:${identity.ip}`;
