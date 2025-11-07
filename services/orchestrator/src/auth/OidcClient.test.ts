@@ -1,5 +1,6 @@
 import { beforeEach, afterAll, describe, expect, it, vi } from "vitest";
-import type { OidcAuthConfig, OidcTokenResponse } from "../config.js";
+import type { OidcAuthConfig } from "../config.js";
+import type { OidcTokenResponse } from "./OidcClient.js";
 
 type FetchMock = ReturnType<typeof vi.fn>;
 
@@ -38,9 +39,21 @@ function setupFetchMock(response: unknown): FetchMock {
 }
 
 const baseConfig: OidcAuthConfig = {
+  enabled: true,
   issuer: "https://issuer.example.com",
   clientId: "client-id",
-  redirectUri: "https://app/callback"
+  redirectBaseUrl: "https://app",
+  redirectUri: "https://app/callback",
+  scopes: ["openid"],
+  roles: {
+    fallback: [],
+    mappings: {},
+    tenantMappings: {}
+  },
+  session: {
+    cookieName: "oidc",
+    ttlSeconds: 3600
+  }
 };
 
 const metadata = {
