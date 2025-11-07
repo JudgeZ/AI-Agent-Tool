@@ -1348,7 +1348,12 @@ export function loadConfig(): AppConfig {
           observability: tracing ? { tracing } : undefined
         };
       } else {
-        startSpan("config.file.invalid", { reason: "non_object_root" });
+        const span = startSpan("config.file.invalid", { reason: "non_object_root" });
+        try {
+          // Span intentionally started to capture invalid configuration file structure.
+        } finally {
+          span.end();
+        }
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
