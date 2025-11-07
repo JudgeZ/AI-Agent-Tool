@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { trace, type Tracer } from "@opentelemetry/api";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
 import { __resetLegacyMessagingWarningForTests, invalidateConfigCache, loadConfig } from "./config.js";
@@ -553,6 +554,37 @@ providers:
     process.env.APP_CONFIG = configPath;
 
     expect(() => loadConfig()).toThrow(/Failed to parse configuration file/);
+  });
+
+  it("ends tracing spans when the configuration root is not an object", () => {
+    const configPath = createTempConfigFile(`"invalid-root"`);
+    process.env.APP_CONFIG = configPath;
+
+    const spanEnd = vi.fn();
+    const otelSpan = {
+      spanContext: () => ({ traceId: "trace-id", spanId: "span-id" }),
+      setAttribute: vi.fn(),
+      addEvent: vi.fn(),
+      recordException: vi.fn(),
+      setStatus: vi.fn(),
+      end: spanEnd
+    };
+    const tracerStartSpan = vi.fn(() => otelSpan);
+    const tracerSpy = vi.spyOn(trace, "getTracer").mockReturnValue({
+      startSpan: tracerStartSpan
+    } as unknown as Tracer);
+
+    try {
+      expect(() => loadConfig()).not.toThrow();
+      expect(tracerStartSpan).toHaveBeenCalledTimes(1);
+      expect(tracerStartSpan).toHaveBeenCalledWith(
+        "config.file.invalid",
+        expect.objectContaining({ attributes: { reason: "non_object_root" } })
+      );
+      expect(spanEnd).toHaveBeenCalledTimes(1);
+    } finally {
+      tracerSpy.mockRestore();
+    }
   });
 
   it("honors empty providers arrays from file configuration", () => {
