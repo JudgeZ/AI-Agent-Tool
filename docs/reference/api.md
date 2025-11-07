@@ -168,4 +168,5 @@ The orchestrator exposes thin wrappers to complete OAuth 2.1 + PKCE flows for pr
 - **mTLS**: When `config.server.tls.requestClientCert` is true, all HTTPS callers must present a certificate signed by a configured CA bundle.
 - **Rate limits**: Customize per environment via `config.server.rateLimits.plan|chat` or Helm values. Exceeding limits returns `429 Too Many Requests`.
 - **Capability policies**: All mutating endpoints are evaluated against the OPA capability policy. Use the `X-Agent` header or `agent` payload fields to select the policy context.
+- **Agent header & rate limiting**: The orchestrator only considers `X-Agent` for rate limiting once a trusted session is established. Unauthenticated calls are bucketed by client IP even if they spoof agent names.
 
