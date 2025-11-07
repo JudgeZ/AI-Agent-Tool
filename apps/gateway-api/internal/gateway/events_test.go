@@ -1,10 +1,14 @@
 package gateway
 
 import (
+	"context"
+	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
+	"time"
 )
 
 func TestClientIPFromRequestRejectsSpoofedForwardedForFromUntrustedSource(t *testing.T) {
@@ -94,3 +98,140 @@ func TestParseTrustedProxyCIDRsNormalizesIPv4(t *testing.T) {
 		t.Fatalf("expected proxy network to contain %q", target)
 	}
 }
+
+func TestEventsHandlerPropagatesUpstreamErrors(t *testing.T) {
+	orchestrator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "upstream failure", http.StatusServiceUnavailable)
+	}))
+	defer orchestrator.Close()
+
+	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 0, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 from gateway, got %d", rec.Code)
+	}
+	if body := strings.TrimSpace(rec.Body.String()); body != "upstream failure" {
+		t.Fatalf("expected upstream body to be forwarded, got %q", body)
+	}
+}
+
+func TestEventsHandlerReturnsBadGatewayOnUpstreamTimeout(t *testing.T) {
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return nil, context.DeadlineExceeded
+	})}
+	handler := NewEventsHandler(client, "http://orchestrator", 0, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil)
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("expected 502 when upstream call fails, got %d", rec.Code)
+	}
+}
+
+func TestEventsHandlerEmitsHeartbeats(t *testing.T) {
+	block := make(chan struct{})
+	orchestrator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("orchestrator recorder missing flusher")
+		}
+		flusher.Flush()
+		<-block
+	}))
+	defer orchestrator.Close()
+
+	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 10*time.Millisecond, nil, nil)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	req := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil).WithContext(ctx)
+	req.Header.Set("Accept", "text/event-stream")
+	rec := newFlushingRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	deadline := time.Now().Add(200 * time.Millisecond)
+	for time.Now().Before(deadline) {
+		if strings.Contains(rec.Body.String(), ": ping") {
+			break
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	if !strings.Contains(rec.Body.String(), ": ping") {
+		t.Fatalf("expected heartbeat payload, got %q", rec.Body.String())
+	}
+
+	cancel()
+	close(block)
+	<-done
+}
+
+func TestEventsHandlerReleasesLimiterOnWriterErrors(t *testing.T) {
+	orchestrator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("orchestrator recorder missing flusher")
+		}
+		flusher.Flush()
+		<-r.Context().Done()
+	}))
+	defer orchestrator.Close()
+
+	limiter := newConnectionLimiter(1)
+	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 10*time.Millisecond, limiter, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil)
+	req.RemoteAddr = "203.0.113.5:1234"
+	req.Header.Set("Accept", "text/event-stream")
+
+	rec := newHangingRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(rec, req)
+		close(done)
+	}()
+
+	time.Sleep(25 * time.Millisecond)
+	if limiter.Acquire("203.0.113.5") {
+		t.Fatal("expected limiter to enforce single connection while stream active")
+	}
+
+	close(rec.block)
+	<-done
+
+	if !limiter.Acquire("203.0.113.5") {
+		t.Fatal("expected limiter count to drop after stream ended")
+	}
+	limiter.Release("203.0.113.5")
+}
+
+type hangingRecorder struct {
+	*httptest.ResponseRecorder
+	block chan struct{}
+}
+
+func newHangingRecorder() *hangingRecorder {
+	return &hangingRecorder{ResponseRecorder: httptest.NewRecorder(), block: make(chan struct{})}
+}
+
+func (r *hangingRecorder) Write(p []byte) (int, error) {
+	<-r.block
+	return 0, io.ErrClosedPipe
+}
+
+func (r *hangingRecorder) Flush() {}
