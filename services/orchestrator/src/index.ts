@@ -458,10 +458,14 @@ export function createServer(appConfig?: AppConfig): Express {
             });
             const storedSubject = await getPlanSubject(planId);
             if (storedSubject) {
+              const tenantMatches =
+                storedSubject.tenantId === undefined ||
+                (requestSubject?.tenant !== undefined &&
+                  storedSubject.tenantId === requestSubject.tenant);
               const matches =
-                requestSubject &&
-                storedSubject.sessionId === requestSubject.sessionId &&
-                storedSubject.userId === requestSubject.user.id;
+                !!requestSubject &&
+                storedSubject.userId === requestSubject.user.id &&
+                tenantMatches;
               if (!matches) {
                 logAuditEvent({
                   action: "plan.read",
@@ -476,6 +480,8 @@ export function createServer(appConfig?: AppConfig): Express {
                     reason: "subject_mismatch",
                     storedSessionId: storedSubject.sessionId,
                     storedUserId: storedSubject.userId,
+                    storedTenantId: storedSubject.tenantId,
+                    requestTenantId: requestSubject?.tenant,
                   },
                 });
                 throw new PolicyViolationError(
