@@ -212,6 +212,46 @@ func TestEventsHandlerReturnsBadGatewayOnStreamInterruption(t *testing.T) {
 	}
 }
 
+func TestEventsHandlerForwardsCookieHeaders(t *testing.T) {
+	cookieCh := make(chan string, 1)
+
+	orchestrator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookieCh <- r.Header.Get("Cookie")
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("orchestrator recorder missing flusher")
+		}
+		w.Write([]byte("data: connected\n\n"))
+		flusher.Flush()
+	}))
+	defer orchestrator.Close()
+
+	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 0, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil)
+	req.Header.Set("Cookie", "session=abc123")
+	rec := newFlushingRecorder()
+
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected proxied SSE request to succeed, got %d", rec.Code)
+	}
+	if body := rec.Body.String(); !strings.Contains(body, "data: connected") {
+		t.Fatalf("expected SSE payload to be forwarded, got %q", body)
+	}
+
+	select {
+	case cookie := <-cookieCh:
+		if cookie != "session=abc123" {
+			t.Fatalf("expected cookie header to be forwarded, got %q", cookie)
+		}
+	default:
+		t.Fatal("expected orchestrator to receive cookie header")
+	}
+}
+
 func TestEventsHandlerEmitsHeartbeats(t *testing.T) {
 	block := make(chan struct{})
 	orchestrator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
