@@ -177,6 +177,9 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	cloneHeaders(req.Header, r.Header, forwardedSSEHeaders)
 
+	gatewayAddr := localIP(r)
+	appendForwardingHeaders(req.Header, r.Header, clientAddr, gatewayAddr)
+
 	resp, err := h.client.Do(req)
 	if err != nil {
 		http.Error(w, "failed to contact orchestrator", http.StatusBadGateway)
@@ -371,4 +374,79 @@ func cloneHeaders(dst, src http.Header, headers []string) {
 			dst.Add(header, value)
 		}
 	}
+}
+
+func appendForwardingHeaders(dst, src http.Header, clientAddr, gatewayAddr string) {
+	forwardedFor := uniqueHeaderValues(src.Values("X-Forwarded-For"))
+	forwardedFor = appendAddressIfMissing(forwardedFor, clientAddr)
+	forwardedFor = appendAddressIfMissing(forwardedFor, gatewayAddr)
+	if len(forwardedFor) > 0 {
+		dst.Del("X-Forwarded-For")
+		dst.Add("X-Forwarded-For", strings.Join(forwardedFor, ", "))
+	}
+
+	realIP := uniqueHeaderValues(src.Values("X-Real-IP"))
+	realIP = appendAddressIfMissing(realIP, clientAddr)
+	realIP = appendAddressIfMissing(realIP, gatewayAddr)
+	if len(realIP) > 0 {
+		dst.Del("X-Real-IP")
+		for _, value := range realIP {
+			dst.Add("X-Real-IP", value)
+		}
+	}
+}
+
+func uniqueHeaderValues(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	normalized := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		parts := strings.Split(value, ",")
+		for _, part := range parts {
+			token := strings.TrimSpace(part)
+			if token == "" {
+				continue
+			}
+			if _, ok := seen[token]; ok {
+				continue
+			}
+			seen[token] = struct{}{}
+			normalized = append(normalized, token)
+		}
+	}
+	return normalized
+}
+
+func appendAddressIfMissing(values []string, addr string) []string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == addr {
+			return values
+		}
+	}
+	return append(values, addr)
+}
+
+func localIP(r *http.Request) string {
+	addrVal := r.Context().Value(http.LocalAddrContextKey)
+	if addrVal == nil {
+		return ""
+	}
+	netAddr, ok := addrVal.(net.Addr)
+	if !ok || netAddr == nil {
+		return ""
+	}
+	host, _, err := net.SplitHostPort(netAddr.String())
+	if err != nil {
+		return strings.TrimSpace(netAddr.String())
+	}
+	return strings.TrimSpace(host)
 }
