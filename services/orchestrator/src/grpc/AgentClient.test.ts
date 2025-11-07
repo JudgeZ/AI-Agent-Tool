@@ -1,4 +1,5 @@
 import {
+  ChannelCredentials,
   Server,
   ServerCredentials,
   status,
@@ -6,10 +7,20 @@ import {
   type ServiceError,
   type sendUnaryData
 } from "@grpc/grpc-js";
-import { beforeAll, afterAll, afterEach, describe, expect, it } from "vitest";
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+import { beforeAll, afterAll, afterEach, describe, expect, it, vi } from "vitest";
 
 import { ToolAgentClient, ToolClientError, resetToolAgentClient } from "./AgentClient.js";
-import { AgentServiceService, type ExecuteToolRequest, type ExecuteToolResponse } from "./generated/agent.js";
+import {
+  AgentServiceService,
+  type AgentServiceClient,
+  type ExecuteToolRequest,
+  type ExecuteToolResponse
+} from "./generated/agent.js";
+import * as configModule from "../config.js";
 
 let server: Server;
 let port: number;
@@ -56,6 +67,7 @@ beforeAll(async () => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   resetToolAgentClient();
 });
 
@@ -190,5 +202,64 @@ describe("ToolAgentClient", () => {
       expect(toolError.retryable).toBe(false);
       expect(toolError.message).toContain("bad input");
     }
+  });
+
+  it("uses insecure credentials when TLS config is absent", () => {
+    const baseConfig = configModule.loadConfig();
+    const loadConfigSpy = vi.spyOn(configModule, "loadConfig").mockReturnValue({
+      ...baseConfig,
+      tooling: { ...baseConfig.tooling, tls: undefined }
+    });
+    const createInsecureSpy = vi.spyOn(ChannelCredentials, "createInsecure");
+
+    new ToolAgentClient({
+      clientFactory: vi.fn(() => ({} as unknown as AgentServiceClient))
+    });
+
+    expect(loadConfigSpy).toHaveBeenCalled();
+    expect(createInsecureSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("creates secure credentials when TLS config is provided", () => {
+    const baseConfig = configModule.loadConfig();
+    const tempDir = mkdtempSync(join(tmpdir(), "agent-client-tls-"));
+    const caPath = join(tempDir, "ca.pem");
+    const certPath = join(tempDir, "client.pem");
+    const keyPath = join(tempDir, "client-key.pem");
+    writeFileSync(caPath, "CA-CERT\n");
+    writeFileSync(certPath, "CLIENT-CERT\n");
+    writeFileSync(keyPath, "CLIENT-KEY\n");
+
+    const loadConfigSpy = vi.spyOn(configModule, "loadConfig").mockReturnValue({
+      ...baseConfig,
+      tooling: {
+        ...baseConfig.tooling,
+        tls: {
+          insecure: false,
+          caPaths: [caPath],
+          certPath,
+          keyPath
+        }
+      }
+    });
+
+    const createSslSpy = vi.spyOn(ChannelCredentials, "createSsl").mockReturnValue({} as ChannelCredentials);
+    const createInsecureSpy = vi.spyOn(ChannelCredentials, "createInsecure");
+
+    try {
+      new ToolAgentClient({
+        clientFactory: vi.fn(() => ({} as unknown as AgentServiceClient))
+      });
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+
+    expect(loadConfigSpy).toHaveBeenCalled();
+    expect(createSslSpy).toHaveBeenCalledTimes(1);
+    const [rootCerts, privateKey, certChain] = createSslSpy.mock.calls[0]!;
+    expect(rootCerts?.toString()).toContain("CA-CERT");
+    expect(privateKey?.toString()).toContain("CLIENT-KEY");
+    expect(certChain?.toString()).toContain("CLIENT-CERT");
+    expect(createInsecureSpy).not.toHaveBeenCalled();
   });
 });

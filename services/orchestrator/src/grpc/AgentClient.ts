@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -9,7 +10,7 @@ import {
   type ServiceError
 } from "@grpc/grpc-js";
 
-import { loadConfig } from "../config.js";
+import { loadConfig, type ToolAgentTlsConfig } from "../config.js";
 import {
   parseToolEvent,
   parseToolInvocation,
@@ -26,6 +27,32 @@ const RETRYABLE_CODES = new Set<number>([
 ]);
 
 const DEFAULT_BASE_DELAY_MS = 200;
+
+function buildCredentialsFromTlsConfig(tls: ToolAgentTlsConfig | undefined): ChannelCredentials {
+  if (!tls || tls.insecure) {
+    return ChannelCredentials.createInsecure();
+  }
+
+  if ((tls.certPath && !tls.keyPath) || (!tls.certPath && tls.keyPath)) {
+    throw new Error(
+      "Tool agent TLS configuration requires both certPath and keyPath when configuring client certificates",
+    );
+  }
+
+  let rootCerts: Buffer | undefined;
+  if (tls.caPaths && tls.caPaths.length > 0) {
+    const pemContent = tls.caPaths
+      .map(filePath => readFileSync(filePath, "utf-8"))
+      .map(content => (content.endsWith("\n") ? content : `${content}\n`))
+      .join("");
+    rootCerts = Buffer.from(pemContent, "utf-8");
+  }
+
+  const privateKey = tls.keyPath ? readFileSync(tls.keyPath) : undefined;
+  const certChain = tls.certPath ? readFileSync(tls.certPath) : undefined;
+
+  return ChannelCredentials.createSsl(rootCerts, privateKey, certChain);
+}
 
 export class ToolClientError extends Error {
   readonly retryable: boolean;
@@ -158,7 +185,7 @@ export class ToolAgentClient {
     this.retryAttempts = Math.max(1, options.retryAttempts ?? config.tooling.retryAttempts);
     this.defaultTimeoutMs = Math.max(1000, options.defaultTimeoutMs ?? config.tooling.defaultTimeoutMs);
     this.baseDelayMs = Math.max(50, options.baseDelayMs ?? DEFAULT_BASE_DELAY_MS);
-    this.credentials = options.credentials ?? ChannelCredentials.createInsecure();
+    this.credentials = options.credentials ?? buildCredentialsFromTlsConfig(config.tooling.tls);
     this.clientOptions = options.clientOptions;
     this.factory = options.clientFactory ?? ((address, credentials, clientOptions) => new AgentServiceClient(address, credentials, clientOptions));
   }
