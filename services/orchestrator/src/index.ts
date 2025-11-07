@@ -623,8 +623,21 @@ export function createServer(appConfig?: AppConfig): Express {
         }
       };
 
-      const writeEvent = (event: PlanStepEvent) => {
-        res.write(formatSse(event));
+      const writeEvent = (event: PlanStepEvent): boolean => {
+        if (cleanedUp) {
+          return false;
+        }
+        try {
+          const ok = res.write(formatSse(event));
+          if (!ok) {
+            cleanup();
+            return false;
+          }
+          return true;
+        } catch {
+          cleanup();
+          return false;
+        }
       };
 
       unsubscribe = subscribeToPlanSteps(planId, (event) => {
@@ -636,10 +649,19 @@ export function createServer(appConfig?: AppConfig): Express {
       });
 
       const history = getPlanHistory(planId);
-      history.forEach(writeEvent);
+      for (const event of history) {
+        if (!writeEvent(event)) {
+          return;
+        }
+      }
 
       replayingHistory = false;
-      buffered.splice(0).forEach(writeEvent);
+      const bufferedEvents = buffered.splice(0);
+      for (const event of bufferedEvents) {
+        if (!writeEvent(event)) {
+          return;
+        }
+      }
 
       const keepAliveInterval = config.server.sseKeepAliveMs;
       const sendKeepAlive = () => {

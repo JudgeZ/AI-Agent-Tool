@@ -382,6 +382,145 @@ describe("orchestrator http api", () => {
     }
   });
 
+  it("releases SSE quotas when history replay writes fail", async () => {
+    const { createServer, createHttpServer } = await import("./index.js");
+    const { loadConfig } = await import("./config.js");
+
+    const baseConfig = loadConfig();
+    const config = {
+      ...baseConfig,
+      server: {
+        ...baseConfig.server,
+        sseQuotas: {
+          perIp: 1,
+          perSubject: 1,
+        },
+      },
+    };
+
+    const app = createServer(config);
+    const planResponse = await request(app)
+      .post("/plan")
+      .send({ goal: "history replay resiliency" })
+      .expect(201);
+
+    const planId: string = planResponse.body.plan.id;
+    const firstStep = planResponse.body.plan.steps[0];
+    if (!firstStep) {
+      throw new Error("expected a plan step to exist");
+    }
+
+    publishPlanStepEvent({
+      event: "plan.step",
+      traceId: "trace-history-replay",
+      planId,
+      step: {
+        id: firstStep.id,
+        action: firstStep.action,
+        tool: firstStep.tool,
+        state: "queued",
+        capability: firstStep.capability,
+        capabilityLabel: firstStep.capabilityLabel,
+        labels: firstStep.labels,
+        timeoutSeconds: firstStep.timeoutSeconds,
+        approvalRequired: firstStep.approvalRequired,
+        summary: firstStep.summary ?? undefined,
+      },
+    });
+
+    expect(getPlanHistory(planId).length).toBeGreaterThan(0);
+
+    const server = createHttpServer(app, config);
+    await new Promise<void>((resolve) => {
+      server.listen(0, resolve);
+    });
+
+    let serverClosed = false;
+    const address = server.address() as AddressInfo | null;
+    if (!address || typeof address.port !== "number") {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve();
+        });
+      });
+      serverClosed = true;
+      throw new Error("failed to determine server address");
+    }
+
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const openSse = (url: string) =>
+      new Promise<{ request: http.ClientRequest; response: http.IncomingMessage }>((resolve, reject) => {
+        const req = http.request(
+          url,
+          {
+            headers: {
+              Accept: "text/event-stream",
+            },
+          },
+          (res) => {
+            resolve({ request: req, response: res });
+          },
+        );
+        req.on("error", reject);
+        req.end();
+      });
+
+    const originalWrite = http.ServerResponse.prototype.write;
+    let firstWriteFailed = false;
+    const writeSpy = vi
+      .spyOn(http.ServerResponse.prototype, "write")
+      .mockImplementation(function (this: http.ServerResponse, chunk: unknown, encoding?: unknown, cb?: unknown) {
+        if (!firstWriteFailed && typeof chunk === "string" && chunk.startsWith("event: ")) {
+          firstWriteFailed = true;
+          throw new Error("write failure");
+        }
+        return originalWrite.call(this, chunk as never, encoding as never, cb as never);
+      });
+
+    let firstConnection: { request: http.ClientRequest; response: http.IncomingMessage } | undefined;
+    try {
+      firstConnection = await openSse(`${baseUrl}/plan/${planId}/events`);
+      expect(firstConnection.response.statusCode).toBe(200);
+
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    } finally {
+      writeSpy.mockRestore();
+    }
+
+    expect(firstWriteFailed).toBe(true);
+
+    const secondConnection = await openSse(`${baseUrl}/plan/${planId}/events`);
+    try {
+      expect(secondConnection.response.statusCode).toBe(200);
+      secondConnection.response.resume();
+    } finally {
+      secondConnection.request.destroy();
+      secondConnection.response.destroy();
+    }
+
+    if (firstConnection) {
+      firstConnection.request.destroy();
+      firstConnection.response.destroy();
+    }
+
+    if (!serverClosed) {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          serverClosed = true;
+          resolve();
+        });
+      });
+    }
+  });
+
   it("denies plan event history when subject does not match plan owner", async () => {
     const { createServer } = await import("./index.js");
     const app = createServer();
