@@ -10,6 +10,14 @@ export default defineConfig({
       }
     })
   ],
+  esbuild: {
+    tsconfigRaw: {
+      compilerOptions: {
+        module: 'esnext',
+        moduleResolution: 'bundler'
+      }
+    }
+  },
   resolve: {
     alias: {
       $lib: fileURLToPath(new URL('./src/lib', import.meta.url))
