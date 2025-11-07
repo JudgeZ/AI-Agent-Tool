@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const readFileSyncMock = vi.fn<string | undefined, [string, string]>();
+const readFileSyncMock = vi.fn<(path: string, encoding: BufferEncoding) => string>();
 
 vi.mock("node:fs", () => ({
   readFileSync: readFileSyncMock

@@ -1,10 +1,10 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
 import { logAuditEvent } from "./audit";
 
 describe("logAuditEvent", () => {
-  let logSpy: ReturnType<typeof vi.spyOn>;
-  let errorSpy: ReturnType<typeof vi.spyOn>;
+  let logSpy: MockInstance;
+  let errorSpy: MockInstance;
 
   beforeEach(() => {
     vi.useFakeTimers();
@@ -42,7 +42,7 @@ describe("logAuditEvent", () => {
     });
 
     expect(logSpy).toHaveBeenCalledTimes(1);
-    const payload = JSON.parse(logSpy.mock.calls[0][0]);
+    const payload = JSON.parse(String(logSpy.mock.calls[0][0]));
 
     expect(payload).toMatchObject({
       level: "audit",
