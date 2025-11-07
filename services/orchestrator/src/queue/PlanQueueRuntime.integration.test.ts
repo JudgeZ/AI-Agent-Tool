@@ -194,14 +194,31 @@ vi.mock("./QueueAdapter.js", async actual => {
 
 const executeToolMock = vi.fn<(invocation: unknown) => Promise<any[]>>();
 
+type DenyReason = { reason: string; capability?: string };
+
 const policyMock = vi.hoisted(() => ({
   enforcePlanStep: vi.fn().mockResolvedValue({ allow: true, deny: [] })
 }));
 
+const PolicyViolationErrorMock = vi.hoisted(
+  () =>
+    class PolicyViolationErrorMock extends Error {
+      readonly status: number;
+      readonly details: DenyReason[];
+
+      constructor(message: string, details: DenyReason[] = [], status = 403) {
+        super(message);
+        this.name = "PolicyViolationError";
+        this.status = status;
+        this.details = details;
+      }
+    }
+);
+
 vi.mock("../policy/PolicyEnforcer.js", () => {
   return {
     getPolicyEnforcer: () => policyMock,
-    PolicyViolationError: class extends Error {}
+    PolicyViolationError: PolicyViolationErrorMock
   };
 });
 
@@ -492,6 +509,62 @@ describe("PlanQueueRuntime integration", () => {
     await vi.waitFor(() => expect(executeToolMock).toHaveBeenCalledTimes(1), { timeout: 1000 });
 
     expect(publishSpy.mock.calls.some(([event]) => event.step.state === "completed")).toBe(true);
+  });
+
+  it("marks approval-gated steps as rejected when policy enforcement throws", async () => {
+    const plan = {
+      id: "plan-approval-violation",
+      goal: "approval demo",
+      steps: [
+        {
+          id: "s1",
+          action: "apply_edits",
+          capability: "repo.write",
+          capabilityLabel: "Apply repository changes",
+          labels: ["repo"],
+          tool: "code_writer",
+          timeoutSeconds: 300,
+          approvalRequired: true,
+          input: {},
+          metadata: {}
+        }
+      ],
+      successCriteria: ["ok"]
+    };
+
+    await runtime.submitPlanSteps(plan, "trace-approval-violation");
+
+    const violation = new PolicyViolationErrorMock("Missing agent profile", [
+      { reason: "agent_profile_missing", capability: "repo.write" }
+    ]);
+    policyMock.enforcePlanStep.mockRejectedValueOnce(violation);
+
+    await expect(
+      runtime.resolvePlanStepApproval({
+        planId: plan.id,
+        stepId: "s1",
+        decision: "approved",
+        summary: "Looks good"
+      })
+    ).rejects.toBe(violation);
+
+    const states = publishSpy.mock.calls
+      .filter(([event]) => event.planId === plan.id && event.step.id === "s1")
+      .map(([event]) => event.step.state);
+
+    expect(states).toContain("waiting_approval");
+    expect(states).toContain("rejected");
+    expect(states).not.toContain("approved");
+    expect(states).not.toContain("queued");
+
+    await expect(
+      runtime.resolvePlanStepApproval({
+        planId: plan.id,
+        stepId: "s1",
+        decision: "approved",
+        summary: "Retry"
+      })
+    ).rejects.toThrow(`Plan step ${plan.id}/s1 is not available`);
   });
 
   it("rehydrates approval-gated steps without dispatching them", async () => {

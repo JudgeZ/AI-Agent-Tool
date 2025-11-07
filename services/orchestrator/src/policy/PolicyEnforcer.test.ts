@@ -162,26 +162,22 @@ describe("PolicyEnforcer", () => {
     expect(decision.deny).toEqual([{ reason: "missing_capability", capability: "repo.write" }]);
   });
 
-  it("falls back to step capability when agent profile is missing", async () => {
+  it("throws a policy violation when the agent profile is missing", async () => {
     loadAgentProfileMock.mockImplementation(() => {
       throw new Error("missing profile");
     });
 
-    let receivedInput: unknown;
-    evaluateMock.mockImplementation((input: unknown) => {
-      receivedInput = input;
-      return [{ result: { allow: true, deny: [] } }];
-    });
-
     const enforcer = await createEnforcer();
-    await enforcer.enforcePlanStep(buildStep(), {
-      planId: "plan-fallback",
-      traceId: "trace-fallback"
-    });
 
-    assertPolicyInput(receivedInput);
-    expect(receivedInput.subject.agent).toBe("code-writer");
-    expect(receivedInput.subject.capabilities).toEqual(["repo.write"]);
+    await expect(
+      enforcer.enforcePlanStep(buildStep(), {
+        planId: "plan-fallback",
+        traceId: "trace-fallback"
+      })
+    ).rejects.toMatchObject({
+      name: "PolicyViolationError",
+      details: [{ reason: "agent_profile_missing", capability: "repo.write" }]
+    });
   });
 
   it("loads the policy once and reuses it", async () => {
@@ -229,6 +225,26 @@ describe("PolicyEnforcer", () => {
     assertPolicyInput(receivedInput);
     expect(receivedInput.action.capabilities).toEqual(["plan.create"]);
     expect(receivedInput.subject.agent).toBe("planner");
+  });
+
+  it("throws when the http action agent profile cannot be loaded", async () => {
+    loadAgentProfileMock.mockImplementation(() => {
+      throw new Error("missing profile");
+    });
+
+    const enforcer = await createEnforcer();
+
+    await expect(
+      enforcer.enforceHttpAction({
+        action: "http.post.plan",
+        requiredCapabilities: ["plan.create"],
+        agent: "planner",
+        traceId: "trace-http"
+      })
+    ).rejects.toMatchObject({
+      name: "PolicyViolationError",
+      details: [{ reason: "agent_profile_missing", capability: "plan.create" }]
+    });
   });
 
   it("applies runtime role mappings to the policy data", async () => {
