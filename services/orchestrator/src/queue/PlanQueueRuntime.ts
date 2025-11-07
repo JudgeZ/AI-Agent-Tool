@@ -594,12 +594,56 @@ export async function resolvePlanStepApproval(options: {
   const approvals = await ensureApprovals(planId, stepId);
   const updatedApprovals = { ...approvals, [step.capability]: true };
   const subjectContext = metadata.job.subject ?? planSubjects.get(planId);
-  const policyDecision = await policyEnforcer.enforcePlanStep(step, {
-    planId,
-    traceId,
-    approvals: updatedApprovals,
-    subject: toPolicySubject(subjectContext),
-  });
+  let policyDecision: PolicyDecision;
+  try {
+    policyDecision = await policyEnforcer.enforcePlanStep(step, {
+      planId,
+      traceId,
+      approvals: updatedApprovals,
+      subject: toPolicySubject(subjectContext),
+    });
+  } catch (error) {
+    if (error instanceof PolicyViolationError) {
+      const details = Array.isArray(error.details) ? error.details : [];
+      logAuditEvent({
+        action: "plan.step.authorize",
+        outcome: "denied",
+        traceId,
+        agent: step.tool,
+        resource: "plan.step",
+        subject: planSubjectToAuditSubject(subjectContext),
+        details: {
+          planId,
+          stepId: step.id,
+          capability: step.capability,
+          deny: details,
+          error: error.message,
+        },
+      });
+
+      const summary =
+        details.length > 0
+          ? details
+              .map((entry) =>
+                entry.capability
+                  ? `${entry.reason}:${entry.capability}`
+                  : entry.reason,
+              )
+              .join("; ")
+          : error.message;
+
+      await emitPlanEvent(planId, step, traceId, {
+        state: "rejected",
+        summary,
+        attempt: job.attempt,
+      });
+      stepRegistry.delete(key);
+      clearApprovals(planId, stepId);
+      await planStateStore?.forgetStep(planId, stepId);
+      prunePlanSubject(planId);
+    }
+    throw error;
+  }
 
   if (!policyDecision.allow) {
     const rejectionSummary = policyDecision.deny.length
