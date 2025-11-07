@@ -74,7 +74,7 @@
       <input
         id="plan"
         name="plan"
-        placeholder="plan-1234"
+        placeholder="plan-550e8400-e29b-41d4-a716-446655440000"
         bind:value={planInput}
         disabled={!authenticated || loadingSession}
         on:keydown={(event) => event.key === 'Enter' && handleConnect()}

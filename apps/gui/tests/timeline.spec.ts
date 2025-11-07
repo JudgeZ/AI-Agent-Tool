@@ -1,6 +1,6 @@
 import { expect, test } from '@playwright/test';
 
-const planId = 'plan-smoke';
+const planId = 'plan-550e8400-e29b-41d4-a716-446655440000';
 
 test('timeline renders orchestrator events and captures approval flow', async ({ page }) => {
   await page.goto(`/?plan=${planId}`);

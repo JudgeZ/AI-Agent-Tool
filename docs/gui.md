@@ -27,7 +27,7 @@ VITE_ORCHESTRATOR_URL=http://localhost:4010 npm run dev
 The timeline page accepts a `plan` query parameter to start streaming immediately:
 
 ```
-http://localhost:5173/?plan=plan-1234
+http://localhost:5173/?plan=plan-550e8400-e29b-41d4-a716-446655440000
 ```
 
 ### Tauri shell

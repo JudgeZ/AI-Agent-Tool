@@ -26,6 +26,13 @@ const policyMock = {
 
 const getPlanSubjectMock = vi.fn().mockResolvedValue(undefined);
 
+const TEST_PLAN_ID = "plan-550e8400-e29b-41d4-a716-446655440000";
+const ALT_PLAN_ID = "plan-12345678-9abc-4def-8abc-1234567890ab";
+const THIRD_PLAN_ID = "plan-abcdefab-cdef-4abc-8def-abcdefabcdef";
+const FOURTH_PLAN_ID = "plan-00112233-4455-4677-8899-aabbccddeeff";
+const FIFTH_PLAN_ID = "plan-8899aabb-ccdd-4eef-8a0b-112233445566";
+const SIXTH_PLAN_ID = "plan-ffeeddcc-bbaa-4a99-8c77-665544332211";
+
 vi.mock("./policy/PolicyEnforcer.js", () => {
   class MockPolicyViolationError extends Error {
     status: number;
@@ -525,7 +532,7 @@ describe("orchestrator http api", () => {
     const { createServer } = await import("./index.js");
     const app = createServer();
 
-    const planId = "plan-deadbeef";
+    const planId = TEST_PLAN_ID;
     getPlanSubjectMock.mockResolvedValueOnce({
       sessionId: "session-owner",
       tenantId: "tenant-1",
@@ -551,7 +558,7 @@ describe("orchestrator http api", () => {
     const { createServer } = await import("./index.js");
     const app = createServer();
 
-    const planId = "plan-badc0de1";
+    const planId = ALT_PLAN_ID;
 
     policyMock.enforceHttpAction
       .mockResolvedValueOnce({ allow: true, deny: [] })
@@ -615,7 +622,7 @@ describe("orchestrator http api", () => {
       scopes: [...session.scopes],
     });
 
-    const planId = "plan-ffee0011";
+    const planId = THIRD_PLAN_ID;
     const response = await request(app)
       .get(`/plan/${planId}/events`)
       .set("Accept", "application/json")
@@ -632,7 +639,7 @@ describe("orchestrator http api", () => {
 
     const config = loadConfig();
     const app = createServer(config);
-    const planId = "plan-cafebabe";
+    const planId = FOURTH_PLAN_ID;
     getPlanSubjectMock.mockResolvedValueOnce({
       sessionId: "session-owner",
       tenantId: "tenant-1",
@@ -717,7 +724,7 @@ describe("orchestrator http api", () => {
 
     const config = loadConfig();
     const app = createServer(config);
-    const planId = "plan-feedbabe";
+    const planId = FIFTH_PLAN_ID;
 
     policyMock.enforceHttpAction
       .mockResolvedValueOnce({ allow: true, deny: [] })
@@ -839,7 +846,7 @@ describe("orchestrator http api", () => {
       scopes: [...session.scopes],
     });
 
-    const planId = "plan-1234abcd";
+    const planId = SIXTH_PLAN_ID;
     const response = await request(app)
       .get(`/plan/${planId}/events`)
       .set("Accept", "application/json")
@@ -912,7 +919,7 @@ describe("orchestrator http api", () => {
       scopes: [...session.scopes],
     });
 
-    const planId = "plan-abcdef12";
+    const planId = TEST_PLAN_ID;
     const baseUrl = `http://127.0.0.1:${address.port}`;
 
     const connection = await new Promise<{

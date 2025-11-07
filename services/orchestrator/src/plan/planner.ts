@@ -290,8 +290,9 @@ export function resetPlanArtifactCleanupSchedulerForTests(): void {
 export async function createPlan(goal: string, options?: { retentionDays?: number }): Promise<Plan> {
   const span = startSpan("planner.createPlan", { goal });
   try {
-    const id = "plan-" + crypto.randomBytes(4).toString("hex");
+    const id = `plan-${crypto.randomUUID()}`;
     span.setAttribute("plan.id", id);
+    span.setAttribute("plan.id_length", id.length);
 
     const steps = buildSteps(goal);
     const plan = parsePlan({

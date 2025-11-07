@@ -155,6 +155,7 @@ describe("RabbitMQAdapter", () => {
   let channel: MockChannel;
   let adapter: RabbitMQAdapter;
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
+  const PLAN_ID = "plan-550e8400-e29b-41d4-a716-446655440000";
 
   beforeEach(async () => {
     resetMetrics();
@@ -172,7 +173,7 @@ describe("RabbitMQAdapter", () => {
       await message.ack();
     });
 
-    await adapter.enqueue("plan.steps", { task: "index" }, { idempotencyKey: "plan-1:s1" });
+    await adapter.enqueue("plan.steps", { task: "index" }, { idempotencyKey: `${PLAN_ID}:s1` });
 
     await flushMicrotasks();
 
@@ -196,7 +197,7 @@ describe("RabbitMQAdapter", () => {
       await message.ack();
     });
 
-    await adapter.enqueue("plan.steps", { task: "apply" }, { idempotencyKey: "plan-1:s2" });
+    await adapter.enqueue("plan.steps", { task: "apply" }, { idempotencyKey: `${PLAN_ID}:s2` });
 
     await flushMicrotasks();
     await flushMicrotasks();
@@ -212,7 +213,7 @@ describe("RabbitMQAdapter", () => {
       await message.deadLetter({ reason: "validation" });
     });
 
-    await adapter.enqueue("plan.steps", { task: "apply" }, { idempotencyKey: "plan-1:s3" });
+    await adapter.enqueue("plan.steps", { task: "apply" }, { idempotencyKey: `${PLAN_ID}:s3` });
 
     await flushMicrotasks();
 
