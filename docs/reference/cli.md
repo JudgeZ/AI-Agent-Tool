@@ -33,11 +33,13 @@ aidt new-agent release-manager
 
 ### `aidt plan <goal...>`
 
-Creates a plan using the orchestrator planner implementation and prints a human-readable summary.
+Creates a plan using the orchestrator planner implementation, prints a human-readable summary, and writes artifacts to disk.
 
 - Defaults to the goal `"General improvement"` when no text is provided
-- Writes nothing to disk; output is streamed to stdout
+- Saves plan artifacts to `.plans/<plan-id>/plan.json` (canonical payload) and `.plans/<plan-id>/plan.md` (markdown summary)
+- Prints the summary to stdout for immediate review
 - Echoes the SSE endpoint for subsequent monitoring (`/plan/<ID>/events`)
+- Retains plan artifacts for 30 days by default (configurable via orchestrator retention settings)
 
 Example output:
 
@@ -51,6 +53,8 @@ Success criteria:
   - All steps complete
 SSE stream: /plan/plan-92a390d6/events
 ```
+
+Artifacts are persisted to `.plans/plan-92a390d6/plan.json` and `.plans/plan-92a390d6/plan.md` for follow-up work.
 
 ## Exit Codes
 
