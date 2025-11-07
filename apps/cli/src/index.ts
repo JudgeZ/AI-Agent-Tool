@@ -26,6 +26,15 @@ function normalizeAgentName(name: string): string {
   if (trimmed === "." || trimmed === "..") {
     throw new Error("Agent name must not be '.' or '..'");
   }
+  if (trimmed.includes(":")) {
+    throw new Error("Agent name must not contain ':'");
+  }
+  if (path.isAbsolute(trimmed) || path.win32.isAbsolute(trimmed) || path.posix.isAbsolute(trimmed)) {
+    throw new Error("Agent name must be a relative path segment");
+  }
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]*$/.test(trimmed)) {
+    throw new Error("Agent name may only include alphanumeric characters, '-' or '_'");
+  }
   return trimmed;
 }
 

@@ -54,3 +54,21 @@ test("aidt new-agent rejects traversal attempts", async () => {
   }
 });
 
+test("aidt new-agent rejects unsafe agent names", async () => {
+  const badNames = ["/tmp/escape", "C:evil", "with space", "semi;colon", "star*bad", "-leading-dash"];
+
+  for (const badName of badNames) {
+    await assert.rejects(
+      execFileAsync("node", ["apps/cli/dist/index.js", "new-agent", badName], { cwd: repoRoot }),
+      err => {
+        assert.strictEqual(err.code, 1);
+        assert.ok(
+          /Agent name/.test(err.stderr),
+          `expected validation error message for ${badName}, got: ${err.stderr}`
+        );
+        return true;
+      }
+    );
+  }
+});
+
