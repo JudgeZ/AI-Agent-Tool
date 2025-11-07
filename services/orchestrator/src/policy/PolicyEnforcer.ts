@@ -406,13 +406,15 @@ export class PolicyEnforcer {
       profile = loadAgentProfile(name);
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
-      // eslint-disable-next-line no-console
-      console.warn(
-        `[policy] Falling back to provided capabilities for agent ${name}: ${message}`,
-      );
+      const denyDetails: DenyReason[] = fallbackCapabilities.length
+        ? fallbackCapabilities.map((capability) => ({
+            reason: "agent_profile_missing",
+            capability,
+          }))
+        : [{ reason: "agent_profile_missing" }];
       logAuditEvent({
-        action: "agent.profile_fallback",
-        outcome: "failure",
+        action: "agent.profile.load",
+        outcome: "denied",
         agent: name,
         resource: "agent.profile",
         details: {
@@ -420,14 +422,10 @@ export class PolicyEnforcer {
           capabilities: fallbackCapabilities,
         },
       });
-      profile = {
-        name,
-        role: "Fallback agent",
-        capabilities: fallbackCapabilities,
-        approval_policy: {},
-        constraints: [],
-        body: "",
-      };
+      throw new PolicyViolationError(
+        `Unable to load agent profile for ${name}`,
+        denyDetails,
+      );
     }
     cachedProfiles.set(key, profile);
     return profile;

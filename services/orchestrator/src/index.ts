@@ -125,23 +125,32 @@ function ensureAllowed(
   context?: AuthorizationContext,
 ): void {
   if (!decision.allow) {
-    logAuditEvent({
-      action,
-      outcome: "denied",
-      traceId: context?.traceId,
-      requestId: context?.requestId,
-      agent: context?.agent,
-      resource: context?.resource,
-      subject: toAuditSubject(context?.subject),
-      details: context?.metadata
-        ? { ...context.metadata, deny: decision.deny }
-        : { deny: decision.deny },
-    });
-    throw new PolicyViolationError(
+    const violation = new PolicyViolationError(
       `${action} denied by capability policy`,
       decision.deny,
     );
+    logPolicyViolation(action, violation, context);
+    throw violation;
   }
+}
+
+function logPolicyViolation(
+  action: string,
+  error: PolicyViolationError,
+  context?: AuthorizationContext,
+): void {
+  logAuditEvent({
+    action,
+    outcome: "denied",
+    traceId: context?.traceId,
+    requestId: context?.requestId,
+    agent: context?.agent,
+    resource: context?.resource,
+    subject: toAuditSubject(context?.subject),
+    details: context?.metadata
+      ? { ...context.metadata, deny: error.details, error: error.message }
+      : { deny: error.details, error: error.message },
+  });
 }
 
 function extractSessionIdFromRequest(
@@ -366,21 +375,30 @@ export function createServer(appConfig?: AppConfig): Express {
         const result = await withSpan(
           "http.post.plan",
           async (span) => {
-            const decision = await policy.enforceHttpAction({
-              action: "http.post.plan",
-              requiredCapabilities: ["plan.create"],
-              agent: agentName,
-              traceId: span.context.traceId,
-              subject: toPolicySubject(requestSubject),
-            });
-            ensureAllowed("plan.create", decision, {
+            const authorizationContext: AuthorizationContext = {
               agent: agentName,
               subject: requestSubject,
               traceId: span.context.traceId,
               requestId,
               resource: "plan",
               metadata: { route: "/plan", method: req.method },
-            });
+            };
+            let decision: PolicyDecision;
+            try {
+              decision = await policy.enforceHttpAction({
+                action: "http.post.plan",
+                requiredCapabilities: ["plan.create"],
+                agent: agentName,
+                traceId: span.context.traceId,
+                subject: toPolicySubject(requestSubject),
+              });
+            } catch (error) {
+              if (error instanceof PolicyViolationError) {
+                logPolicyViolation("plan.create", error, authorizationContext);
+              }
+              throw error;
+            }
+            ensureAllowed("plan.create", decision, authorizationContext);
             const plan = await createPlan(goal, {
               retentionDays: config.retention.planArtifactsDays,
             });
@@ -435,14 +453,7 @@ export function createServer(appConfig?: AppConfig): Express {
           "http.get.plan.events",
           async (span) => {
             const requestSubject = resolveRequestSubject(req, config);
-            const decision = await policy.enforceHttpAction({
-              action: "http.get.plan.events",
-              requiredCapabilities: ["plan.read"],
-              agent: agentName,
-              traceId: span.context.traceId,
-              subject: toPolicySubject(requestSubject),
-            });
-            ensureAllowed("plan.read", decision, {
+            const authorizationContext: AuthorizationContext = {
               agent: agentName,
               subject: requestSubject,
               traceId: span.context.traceId,
@@ -453,7 +464,23 @@ export function createServer(appConfig?: AppConfig): Express {
                 method: req.method,
                 planId,
               },
-            });
+            };
+            let decision: PolicyDecision;
+            try {
+              decision = await policy.enforceHttpAction({
+                action: "http.get.plan.events",
+                requiredCapabilities: ["plan.read"],
+                agent: agentName,
+                traceId: span.context.traceId,
+                subject: toPolicySubject(requestSubject),
+              });
+            } catch (error) {
+              if (error instanceof PolicyViolationError) {
+                logPolicyViolation("plan.read", error, authorizationContext);
+              }
+              throw error;
+            }
+            ensureAllowed("plan.read", decision, authorizationContext);
             const storedSubject = await getPlanSubject(planId);
             if (storedSubject) {
               const tenantMatches =
@@ -509,14 +536,7 @@ export function createServer(appConfig?: AppConfig): Express {
           await withSpan(
             "http.get.plan.events.stream",
             async (span) => {
-              const decision = await policy.enforceHttpAction({
-                action: "http.get.plan.events.stream",
-                requiredCapabilities: ["plan.read"],
-                agent: agentName,
-                traceId: span.context.traceId,
-                subject: toPolicySubject(requestSubject),
-              });
-              ensureAllowed("plan.read", decision, {
+              const authorizationContext: AuthorizationContext = {
                 agent: agentName,
                 subject: requestSubject,
                 traceId: span.context.traceId,
@@ -528,7 +548,23 @@ export function createServer(appConfig?: AppConfig): Express {
                   planId,
                   responseType: "sse",
                 },
-              });
+              };
+              let decision: PolicyDecision;
+              try {
+                decision = await policy.enforceHttpAction({
+                  action: "http.get.plan.events.stream",
+                  requiredCapabilities: ["plan.read"],
+                  agent: agentName,
+                  traceId: span.context.traceId,
+                  subject: toPolicySubject(requestSubject),
+                });
+              } catch (error) {
+                if (error instanceof PolicyViolationError) {
+                  logPolicyViolation("plan.read", error, authorizationContext);
+                }
+                throw error;
+              }
+              ensureAllowed("plan.read", decision, authorizationContext);
             },
             { route: "/plan/:id/events", planId, responseType: "sse" },
           );
@@ -630,14 +666,7 @@ export function createServer(appConfig?: AppConfig): Express {
         await withSpan(
           "http.get.plan.events.history",
           async (span) => {
-            const decision = await policy.enforceHttpAction({
-              action: "http.get.plan.events.history",
-              requiredCapabilities: ["plan.read"],
-              agent: agentName,
-              traceId: span.context.traceId,
-              subject: toPolicySubject(requestSubject),
-            });
-            ensureAllowed("plan.read", decision, {
+            const authorizationContext: AuthorizationContext = {
               agent: agentName,
               subject: requestSubject,
               traceId: span.context.traceId,
@@ -649,7 +678,23 @@ export function createServer(appConfig?: AppConfig): Express {
                 planId,
                 responseType: "json",
               },
-            });
+            };
+            let decision: PolicyDecision;
+            try {
+              decision = await policy.enforceHttpAction({
+                action: "http.get.plan.events.history",
+                requiredCapabilities: ["plan.read"],
+                agent: agentName,
+                traceId: span.context.traceId,
+                subject: toPolicySubject(requestSubject),
+              });
+            } catch (error) {
+              if (error instanceof PolicyViolationError) {
+                logPolicyViolation("plan.read", error, authorizationContext);
+              }
+              throw error;
+            }
+            ensureAllowed("plan.read", decision, authorizationContext);
           },
           { route: "/plan/:id/events", planId, responseType: "json" },
         );
@@ -722,21 +767,30 @@ export function createServer(appConfig?: AppConfig): Express {
       const requestId = req.header("x-request-id") ?? undefined;
 
       try {
-        const decisionResult = await policy.enforceHttpAction({
-          action: "http.post.plan.approve",
-          requiredCapabilities: ["plan.approve"],
-          agent: agentName,
-          traceId: latest.traceId,
-          subject: toPolicySubject(requestSubject),
-        });
-        ensureAllowed("plan.approve", decisionResult, {
+        const authorizationContext: AuthorizationContext = {
           agent: agentName,
           subject: requestSubject,
           traceId: latest.traceId,
           requestId,
           resource: "plan.step",
           metadata: { planId, stepId },
-        });
+        };
+        let decisionResult: PolicyDecision;
+        try {
+          decisionResult = await policy.enforceHttpAction({
+            action: "http.post.plan.approve",
+            requiredCapabilities: ["plan.approve"],
+            agent: agentName,
+            traceId: latest.traceId,
+            subject: toPolicySubject(requestSubject),
+          });
+        } catch (error) {
+          if (error instanceof PolicyViolationError) {
+            logPolicyViolation("plan.approve", error, authorizationContext);
+          }
+          throw error;
+        }
+        ensureAllowed("plan.approve", decisionResult, authorizationContext);
         await resolvePlanStepApproval({ planId, stepId, decision, summary });
         logAuditEvent({
           action: "plan.step.approval",
@@ -781,14 +835,7 @@ export function createServer(appConfig?: AppConfig): Express {
         const result = await withSpan(
           "http.post.chat",
           async (span) => {
-            const decisionResult = await policy.enforceHttpAction({
-              action: "http.post.chat",
-              requiredCapabilities: ["chat.invoke"],
-              agent: agentName,
-              traceId: span.context.traceId,
-              subject: toPolicySubject(requestSubject),
-            });
-            ensureAllowed("chat.invoke", decisionResult, {
+            const authorizationContext: AuthorizationContext = {
               agent: agentName,
               subject: requestSubject,
               traceId: span.context.traceId,
@@ -798,7 +845,23 @@ export function createServer(appConfig?: AppConfig): Express {
                 model: typeof model === "string" ? model : undefined,
                 messageCount: messages.length,
               },
-            });
+            };
+            let decisionResult: PolicyDecision;
+            try {
+              decisionResult = await policy.enforceHttpAction({
+                action: "http.post.chat",
+                requiredCapabilities: ["chat.invoke"],
+                agent: agentName,
+                traceId: span.context.traceId,
+                subject: toPolicySubject(requestSubject),
+              });
+            } catch (error) {
+              if (error instanceof PolicyViolationError) {
+                logPolicyViolation("chat.invoke", error, authorizationContext);
+              }
+              throw error;
+            }
+            ensureAllowed("chat.invoke", decisionResult, authorizationContext);
             span.setAttribute("chat.message_count", messages.length);
             if (typeof model === "string") {
               span.setAttribute("chat.model", model);

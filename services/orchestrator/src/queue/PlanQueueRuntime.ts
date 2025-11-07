@@ -26,6 +26,7 @@ import { withSpan } from "../observability/tracing.js";
 import {
   getPolicyEnforcer,
   PolicyViolationError,
+  type PolicyDecision,
 } from "../policy/PolicyEnforcer.js";
 import { loadConfig } from "../config.js";
 
@@ -433,12 +434,34 @@ export async function submitPlanSteps(
         : undefined,
     };
     const approvals = await ensureApprovals(plan.id, step.id);
-    const decision = await policyEnforcer.enforcePlanStep(step, {
-      planId: plan.id,
-      traceId,
-      approvals,
-      subject: toPolicySubject(activeSubject),
-    });
+    let decision: PolicyDecision;
+    try {
+      decision = await policyEnforcer.enforcePlanStep(step, {
+        planId: plan.id,
+        traceId,
+        approvals,
+        subject: toPolicySubject(activeSubject),
+      });
+    } catch (error) {
+      if (error instanceof PolicyViolationError) {
+        logAuditEvent({
+          action: "plan.step.authorize",
+          outcome: "denied",
+          traceId,
+          agent: step.tool,
+          resource: "plan.step",
+          subject: planSubjectToAuditSubject(activeSubject),
+          details: {
+            planId: plan.id,
+            stepId: step.id,
+            capability: step.capability,
+            deny: error.details,
+            error: error.message,
+          },
+        });
+      }
+      throw error;
+    }
     const blockingReasons = decision.deny.filter(
       (reason) => reason.reason !== "approval_required",
     );
