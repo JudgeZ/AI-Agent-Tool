@@ -72,3 +72,28 @@ test("aidt new-agent rejects unsafe agent names", async () => {
   }
 });
 
+test("aidt new-agent fails when agent.md already exists", async () => {
+  const agentName = "existing-agent";
+  cleanupAgent(agentName);
+
+  const agentDir = path.join(agentsDir, agentName);
+  const agentPath = path.join(agentDir, "agent.md");
+  fs.mkdirSync(agentDir, { recursive: true });
+  const originalContent = "# Existing agent\nThis file should remain untouched.";
+  fs.writeFileSync(agentPath, originalContent, "utf8");
+
+  await assert.rejects(
+    execFileAsync("node", ["apps/cli/dist/index.js", "new-agent", agentName], { cwd: repoRoot }),
+    err => {
+      assert.strictEqual(err.code, 1);
+      assert.match(err.stderr, /agent\.md already exists/);
+      return true;
+    }
+  );
+
+  const resultingContent = fs.readFileSync(agentPath, "utf8");
+  assert.strictEqual(resultingContent, originalContent, "existing agent.md should not be modified");
+
+  cleanupAgent(agentName);
+});
+

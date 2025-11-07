@@ -59,7 +59,17 @@ async function newAgent(name: string) {
   const tpl = fs
     .readFileSync(templatePath, "utf-8")
     .replace('name: "code-writer"', `name: "${normalized}"`);
-  fs.writeFileSync(file, tpl, "utf-8");
+  if (fs.existsSync(file)) {
+    throw new Error(`agent.md already exists at ${file}`);
+  }
+  try {
+    fs.writeFileSync(file, tpl, { encoding: "utf-8", flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(`agent.md already exists at ${file}`);
+    }
+    throw error;
+  }
   console.log("Created", file);
 }
 
