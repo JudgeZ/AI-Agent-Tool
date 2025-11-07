@@ -9,7 +9,9 @@ const MAX_MESSAGE_COUNT = 50;
 export const PlanIdSchema = z
   .string()
   .trim()
-  .regex(/^plan-[0-9a-f]{8}$/i, { message: "plan id is invalid" });
+  .regex(/^plan-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i, {
+    message: "plan id is invalid",
+  });
 
 export const PlanRequestSchema = z.object({
   goal: z

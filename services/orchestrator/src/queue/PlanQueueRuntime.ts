@@ -835,6 +835,7 @@ async function setupStepConsumer(): Promise<void> {
           async (span) => {
             span.setAttribute("queue", PLAN_STEPS_QUEUE);
             span.setAttribute("plan.id", planId);
+            span.setAttribute("plan.id_length", planId.length);
             span.setAttribute("plan.step_id", step.id);
             span.setAttribute("queue.attempt", job.attempt);
             span.setAttribute("trace.id", traceId);

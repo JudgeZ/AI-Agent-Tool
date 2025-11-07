@@ -20,6 +20,10 @@ const sampleStep = {
   metadata: {}
 };
 
+const PLAN_ID = "plan-550e8400-e29b-41d4-a716-446655440000";
+const APPROVAL_PLAN_ID = "plan-12345678-9abc-4def-8abc-1234567890ab";
+const RETAIN_PLAN_ID = "plan-00112233-4455-4677-8899-aabbccddeeff";
+
 describe("PlanStateStore", () => {
   let dir: string;
   let storePath: string;
@@ -35,12 +39,12 @@ describe("PlanStateStore", () => {
 
   it("persists queued steps and updates state", async () => {
     const store = new PlanStateStore({ filePath: storePath });
-    await store.rememberStep("plan-1", sampleStep, "trace-1", {
+    await store.rememberStep(PLAN_ID, sampleStep, "trace-1", {
       idempotencyKey: "p1s1",
       attempt: 0,
       createdAt: new Date().toISOString()
     });
-    await store.setState("plan-1", "s1", "running", "Dispatching", { diff: { files: [] } }, 0);
+    await store.setState(PLAN_ID, "s1", "running", "Dispatching", { diff: { files: [] } }, 0);
 
     const reloaded = new PlanStateStore({ filePath: storePath });
     const pending = await reloaded.listActiveSteps();
@@ -53,33 +57,33 @@ describe("PlanStateStore", () => {
 
   it("clears terminal states", async () => {
     const store = new PlanStateStore({ filePath: storePath });
-    await store.rememberStep("plan-1", sampleStep, "trace-1", {
+    await store.rememberStep(PLAN_ID, sampleStep, "trace-1", {
       idempotencyKey: "pTs1",
       attempt: 0,
       createdAt: new Date().toISOString()
     });
-    await store.setState("plan-1", "s1", "completed", "Done");
+    await store.setState(PLAN_ID, "s1", "completed", "Done");
     const remaining = await store.listActiveSteps();
     expect(remaining).toHaveLength(0);
 
-    await store.rememberStep("plan-1", sampleStep, "trace-1", {
+    await store.rememberStep(PLAN_ID, sampleStep, "trace-1", {
       idempotencyKey: "pTs1",
       attempt: 0,
       createdAt: new Date().toISOString()
     });
-    await store.setState("plan-1", "s1", "dead_lettered", "Dropped");
+    await store.setState(PLAN_ID, "s1", "dead_lettered", "Dropped");
     const afterDead = await store.listActiveSteps();
     expect(afterDead).toHaveLength(0);
   });
 
   it("forgets steps explicitly", async () => {
     const store = new PlanStateStore({ filePath: storePath });
-    await store.rememberStep("plan-1", sampleStep, "trace-1", {
+    await store.rememberStep(PLAN_ID, sampleStep, "trace-1", {
       idempotencyKey: "pFs1",
       attempt: 0,
       createdAt: new Date().toISOString()
     });
-    await store.forgetStep("plan-1", "s1");
+    await store.forgetStep(PLAN_ID, "s1");
     const pending = await store.listActiveSteps();
     expect(pending).toHaveLength(0);
   });
@@ -87,7 +91,7 @@ describe("PlanStateStore", () => {
   it("remembers waiting approval state when provided", async () => {
     const store = new PlanStateStore({ filePath: storePath });
     await store.rememberStep(
-      "plan-approval",
+      APPROVAL_PLAN_ID,
       { ...sampleStep, approvalRequired: true },
       "trace-approval",
       {
@@ -107,7 +111,7 @@ describe("PlanStateStore", () => {
   it("records approval metadata for a step", async () => {
     const store = new PlanStateStore({ filePath: storePath });
     await store.rememberStep(
-      "plan-approval",
+      APPROVAL_PLAN_ID,
       { ...sampleStep, approvalRequired: true },
       "trace-approval",
       {
@@ -118,16 +122,16 @@ describe("PlanStateStore", () => {
       }
     );
 
-    await store.recordApproval("plan-approval", "s1", "repo.write", true);
+    await store.recordApproval(APPROVAL_PLAN_ID, "s1", "repo.write", true);
 
-    const entry = await store.getEntry("plan-approval", "s1");
+    const entry = await store.getEntry(APPROVAL_PLAN_ID, "s1");
     expect(entry?.approvals).toEqual({ "repo.write": true });
   });
 
   it("purges entries that exceed the retention window", async () => {
     const store = new PlanStateStore({ filePath: storePath, retentionMs: 100 });
     const oldTimestamp = new Date(Date.now() - 10_000).toISOString();
-    await store.rememberStep("plan-retain", sampleStep, "trace-retain", {
+    await store.rememberStep(RETAIN_PLAN_ID, sampleStep, "trace-retain", {
       idempotencyKey: "retain-1",
       attempt: 0,
       createdAt: oldTimestamp

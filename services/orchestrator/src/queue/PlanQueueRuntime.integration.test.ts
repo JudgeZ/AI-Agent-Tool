@@ -275,7 +275,7 @@ describe("PlanQueueRuntime integration", () => {
 
   it("rehydrates pending steps after restart", async () => {
     const plan = {
-      id: "plan-1",
+      id: "plan-550e8400-e29b-41d4-a716-446655440000",
       goal: "demo",
       steps: [
         {

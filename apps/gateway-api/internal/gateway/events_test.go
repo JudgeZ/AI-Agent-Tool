@@ -1,19 +1,21 @@
 package gateway
 
 import (
-	"bytes"
-	"context"
-	"io"
-	"net"
-	"net/http"
-	"net/http/httptest"
-	"strings"
-	"sync"
-	"testing"
-	"time"
+        "bytes"
+        "context"
+        "io"
+        "net"
+        "net/http"
+        "net/http/httptest"
+        "strings"
+        "sync"
+        "testing"
+        "time"
 
-	"github.com/stretchr/testify/require"
+        "github.com/stretchr/testify/require"
 )
+
+const validPlanID = "plan-550e8400-e29b-41d4-a716-446655440000"
 
 func TestClientIPRejectsSpoofedForwardedForFromUntrustedSource(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/events", nil)
@@ -111,7 +113,7 @@ func TestEventsHandlerPropagatesUpstreamErrors(t *testing.T) {
 
 	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 0, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil)
+        req := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -130,7 +132,7 @@ func TestEventsHandlerReturnsBadGatewayOnUpstreamTimeout(t *testing.T) {
 	})}
 	handler := NewEventsHandler(client, "http://orchestrator", 0, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil)
+        req := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -150,7 +152,7 @@ func TestEventsHandlerForwardsUpstreamServerErrorBodies(t *testing.T) {
 
 	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 0, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil)
+        req := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil)
 	rec := httptest.NewRecorder()
 
 	handler.ServeHTTP(rec, req)
@@ -175,7 +177,7 @@ func TestEventsHandlerForwardsCookieHeader(t *testing.T) {
 
 	handler := NewEventsHandler(client, "http://orchestrator", 0, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil)
+        req := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil)
 	req.Header.Add("Cookie", "user=abc")
 	rec := httptest.NewRecorder()
 
@@ -195,7 +197,7 @@ func TestEventsHandlerErrorsWhenResponseWriterLacksFlusher(t *testing.T) {
 
 	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 0, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil)
+        req := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil)
 	req.Header.Set("Accept", "text/event-stream")
 	rec := newNonFlushingRecorder()
 
@@ -220,7 +222,7 @@ func TestEventsHandlerReturnsBadGatewayOnStreamInterruption(t *testing.T) {
 	})}
 	handler := NewEventsHandler(client, "http://orchestrator", time.Second, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil)
+        req := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil)
 	req.Header.Set("Accept", "text/event-stream")
 	rec := newFlushingRecorder()
 
@@ -251,7 +253,7 @@ func TestEventsHandlerForwardsCookieHeaders(t *testing.T) {
 
 	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 0, nil, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil)
+        req := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil)
 	req.Header.Set("Cookie", "session=abc123")
 	rec := newFlushingRecorder()
 
@@ -291,7 +293,7 @@ func TestEventsHandlerEmitsHeartbeats(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	req := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil).WithContext(ctx)
+    req := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil).WithContext(ctx)
 	req.Header.Set("Accept", "text/event-stream")
 	rec := newFlushingRecorder()
 
@@ -332,7 +334,7 @@ func TestEventsHandlerReleasesLimiterOnWriterErrors(t *testing.T) {
 	limiter := newConnectionLimiter(1)
 	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 10*time.Millisecond, limiter, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil)
+        req := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil)
 	req.RemoteAddr = "203.0.113.5:1234"
 	req.Header.Set("Accept", "text/event-stream")
 
@@ -371,7 +373,7 @@ func TestEventsHandlerTerminatesOnHeartbeatWriteFailure(t *testing.T) {
 	limiter := newConnectionLimiter(1)
 	handler := NewEventsHandler(client, "http://orchestrator", 5*time.Millisecond, limiter, nil)
 
-	req := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-deadbeef", nil)
+        req := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil)
 	req.RemoteAddr = "203.0.113.5:1234"
 	req.Header.Set("Accept", "text/event-stream")
 

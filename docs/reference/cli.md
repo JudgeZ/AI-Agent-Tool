@@ -43,17 +43,17 @@ Creates a plan by calling the Gateway API (`POST /plan`) and prints a human-read
 Example output:
 
 ```
-Plan created: plan-92a390d6
+Plan created: plan-550e8400-e29b-41d4-a716-446655440000
 Goal: Ship the next milestone
 Steps:
   • index_repo (Read repository) [tool=repo_indexer, timeout=120s, auto]
   • apply_changes (Apply repository changes) [tool=code_writer, timeout=300s, requires approval]
 Success criteria:
   - All steps complete
-SSE stream: /plan/plan-92a390d6/events
+SSE stream: /plan/plan-550e8400-e29b-41d4-a716-446655440000/events
 ```
 
-Artifacts are persisted to `.plans/plan-92a390d6/plan.json` and `.plans/plan-92a390d6/plan.md` for follow-up work.
+Artifacts are persisted to `.plans/plan-550e8400-e29b-41d4-a716-446655440000/plan.json` and `.plans/plan-550e8400-e29b-41d4-a716-446655440000/plan.md` for follow-up work.
 
 ## Exit Codes
 

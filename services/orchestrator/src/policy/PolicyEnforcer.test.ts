@@ -121,7 +121,7 @@ describe("PolicyEnforcer", () => {
     const step = buildStep();
 
     const decision = await enforcer.enforcePlanStep(step, {
-      planId: "plan-123",
+      planId: "plan-550e8400-e29b-41d4-a716-446655440000",
       traceId: "trace-abc",
       approvals: { "repo.write": true }
     });
@@ -154,7 +154,7 @@ describe("PolicyEnforcer", () => {
 
     const enforcer = await createEnforcer();
     const decision = await enforcer.enforcePlanStep(buildStep(), {
-      planId: "plan-deny",
+      planId: "plan-12345678-9abc-4def-8abc-1234567890ab",
       traceId: "trace-deny"
     });
 
@@ -171,7 +171,7 @@ describe("PolicyEnforcer", () => {
 
     await expect(
       enforcer.enforcePlanStep(buildStep(), {
-        planId: "plan-fallback",
+        planId: "plan-00112233-4455-4677-8899-aabbccddeeff",
         traceId: "trace-fallback"
       })
     ).rejects.toMatchObject({
@@ -191,8 +191,12 @@ describe("PolicyEnforcer", () => {
     });
 
     const enforcer = await createEnforcer();
-    await enforcer.enforcePlanStep(buildStep(), { planId: "plan-1" });
-    await enforcer.enforcePlanStep(buildStep({ id: "s2" }), { planId: "plan-1" });
+    await enforcer.enforcePlanStep(buildStep(), {
+      planId: "plan-12345678-1234-1234-1234-1234567890ab",
+    });
+    await enforcer.enforcePlanStep(buildStep({ id: "s2" }), {
+      planId: "plan-12345678-1234-1234-1234-1234567890ab",
+    });
 
     expect(loadPolicyMock).toHaveBeenCalledTimes(1);
   });
@@ -264,7 +268,10 @@ describe("PolicyEnforcer", () => {
       body: ""
     });
 
-    await enforcer.enforcePlanStep(buildStep(), { planId: "plan-role", traceId: "trace-role" });
+    await enforcer.enforcePlanStep(buildStep(), {
+      planId: "plan-abcdefab-cdef-4abc-8def-abcdefabcdef",
+      traceId: "trace-role",
+    });
 
     expect(setDataMock).toHaveBeenCalledWith(
       expect.objectContaining({

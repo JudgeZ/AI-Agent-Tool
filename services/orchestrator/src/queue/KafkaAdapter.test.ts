@@ -103,6 +103,7 @@ function makeKafkaMessage(value: unknown, headers: Record<string, string> = {}, 
 describe("KafkaAdapter", () => {
   let adapter: KafkaAdapter;
   let mocks: ReturnType<typeof createKafkaMocks>;
+  const PLAN_ID = "plan-550e8400-e29b-41d4-a716-446655440000";
 
   beforeEach(async () => {
     resetMetrics();
@@ -130,7 +131,7 @@ describe("KafkaAdapter", () => {
       })
     );
 
-    await adapter.enqueue("plan.steps", { task: "index" }, { idempotencyKey: "plan-1:s1" });
+    await adapter.enqueue("plan.steps", { task: "index" }, { idempotencyKey: `${PLAN_ID}:s1` });
 
     const handler = mocks.getEachMessage();
     await handler({
@@ -138,7 +139,7 @@ describe("KafkaAdapter", () => {
       partition: 0,
       heartbeat: async () => {},
       pause: () => () => undefined,
-      message: makeKafkaMessage({ task: "index" }, { "x-attempts": "0", "x-idempotency-key": "plan-1:s1" })
+      message: makeKafkaMessage({ task: "index" }, { "x-attempts": "0", "x-idempotency-key": `${PLAN_ID}:s1` })
     });
 
     expect(mocks.commitOffsets).toHaveBeenCalledWith([
@@ -160,7 +161,7 @@ describe("KafkaAdapter", () => {
       await message.ack();
     });
 
-    await adapter.enqueue("plan.steps", { task: "apply" }, { idempotencyKey: "plan-1:s2" });
+    await adapter.enqueue("plan.steps", { task: "apply" }, { idempotencyKey: `${PLAN_ID}:s2` });
 
     const handler = mocks.getEachMessage();
     await handler({
@@ -170,7 +171,7 @@ describe("KafkaAdapter", () => {
       pause: () => () => undefined,
       message: makeKafkaMessage(
         { task: "apply", job: { attempt: 0 } },
-        { "x-attempts": "0", "x-idempotency-key": "plan-1:s2" }
+        { "x-attempts": "0", "x-idempotency-key": `${PLAN_ID}:s2` }
       )
     });
 
@@ -188,7 +189,7 @@ describe("KafkaAdapter", () => {
       await message.deadLetter({ reason: "validation" });
     });
 
-    await adapter.enqueue("plan.steps", { task: "apply" }, { idempotencyKey: "plan-1:s3" });
+    await adapter.enqueue("plan.steps", { task: "apply" }, { idempotencyKey: `${PLAN_ID}:s3` });
 
     const handler = mocks.getEachMessage();
     await handler({
@@ -198,7 +199,7 @@ describe("KafkaAdapter", () => {
       pause: () => () => undefined,
       message: makeKafkaMessage(
         { task: "apply" },
-        { "x-attempts": "0", "x-idempotency-key": "plan-1:s3" }
+        { "x-attempts": "0", "x-idempotency-key": `${PLAN_ID}:s3` }
       )
     });
 
@@ -226,7 +227,7 @@ describe("KafkaAdapter", () => {
       await message.deadLetter({ reason: "custom" });
     });
 
-    await customAdapter.enqueue("plan.steps", { task: "apply" }, { idempotencyKey: "plan-1:s4" });
+    await customAdapter.enqueue("plan.steps", { task: "apply" }, { idempotencyKey: `${PLAN_ID}:s4` });
 
     const handler = mocks.getEachMessage();
     await handler({
@@ -236,7 +237,7 @@ describe("KafkaAdapter", () => {
       pause: () => () => undefined,
       message: makeKafkaMessage(
         { task: "apply" },
-        { "x-attempts": "0", "x-idempotency-key": "plan-1:s4" }
+        { "x-attempts": "0", "x-idempotency-key": `${PLAN_ID}:s4` }
       )
     });
 
@@ -300,7 +301,7 @@ describe("KafkaAdapter", () => {
     await adapter.consume("plan.steps", async () => {});
     const initialCalls = mocks.createTopics.mock.calls.length;
     expect(initialCalls).toBeGreaterThan(0);
-    await adapter.enqueue("plan.steps", { task: "rerun" }, { idempotencyKey: "plan-1:s4" });
+    await adapter.enqueue("plan.steps", { task: "rerun" }, { idempotencyKey: `${PLAN_ID}:s4` });
     expect(mocks.createTopics.mock.calls.length).toBe(initialCalls);
   });
 });

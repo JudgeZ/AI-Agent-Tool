@@ -85,7 +85,7 @@ describe("ToolAgentClient", () => {
         events: [
           {
             invocationId: request.invocation?.invocationId ?? "inv", 
-            planId: request.invocation?.planId ?? "plan-1",
+            planId: request.invocation?.planId ?? "plan-550e8400-e29b-41d4-a716-446655440000",
             stepId: request.invocation?.stepId ?? "s1",
             state: "completed",
             summary: "done",
@@ -104,7 +104,7 @@ describe("ToolAgentClient", () => {
 
     const events = await client.executeTool({
       invocationId: "inv-1",
-      planId: "plan-1",
+      planId: "plan-550e8400-e29b-41d4-a716-446655440000",
       stepId: "s1",
       tool: "code_writer",
       capability: "repo.write",

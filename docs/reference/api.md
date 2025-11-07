@@ -62,7 +62,7 @@ Body fields:
 ```json
 {
   "plan": {
-    "id": "plan-92a390d6",
+    "id": "plan-550e8400-e29b-41d4-a716-446655440000",
     "goal": "Ship the next milestone",
     "steps": [
       {
@@ -101,7 +101,7 @@ Example chunk:
 
 ```
 event: plan.step
-data: {"planId":"plan-92a390d6","traceId":"trace-123","step":{"id":"s1","state":"queued"}}
+data: {"planId":"plan-550e8400-e29b-41d4-a716-446655440000","traceId":"trace-123","step":{"id":"s1","state":"queued"}}
 
 ```
 
@@ -114,7 +114,7 @@ Records a human decision for approval-required steps.
 ### Request
 
 ```http
-POST /plan/plan-92a390d6/steps/s2/approve
+POST /plan/plan-550e8400-e29b-41d4-a716-446655440000/steps/s2/approve
 Content-Type: application/json
 
 { "decision": "approve", "rationale": "Validated by reviewer" }

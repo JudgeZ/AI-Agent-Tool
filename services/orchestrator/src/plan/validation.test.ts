@@ -10,7 +10,7 @@ import {
 describe("plan validation schemas", () => {
   it("validates a minimal plan", () => {
     const plan = parsePlan({
-      id: "plan-1",
+      id: "plan-550e8400-e29b-41d4-a716-446655440000",
       goal: "Test",
       successCriteria: ["Pass"],
       steps: [
@@ -36,7 +36,7 @@ describe("plan validation schemas", () => {
       parsePlanStepEvent({
         event: "plan.step",
         traceId: "trace",
-        planId: "plan-1",
+        planId: "plan-550e8400-e29b-41d4-a716-446655440000",
         step: {
           id: "s1",
           state: "running",
@@ -54,7 +54,7 @@ describe("plan validation schemas", () => {
   it("parses tool invocation and events", () => {
     const invocation = parseToolInvocation({
       invocationId: "inv-1",
-      planId: "plan-1",
+      planId: "plan-550e8400-e29b-41d4-a716-446655440000",
       stepId: "s1",
       tool: "repo_indexer",
       capability: "repo.read",

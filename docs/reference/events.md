@@ -15,7 +15,7 @@ Events are emitted whenever the state of a plan step changes. They are delivered
 {
   "event": "plan.step",
   "traceId": "trace-c1c4c65f",
-  "planId": "plan-92a390d6",
+  "planId": "plan-550e8400-e29b-41d4-a716-446655440000",
   "occurredAt": "2025-11-02T00:11:22.123Z",
   "step": {
     "id": "s2",
@@ -66,7 +66,7 @@ Tool invocation telemetry is emitted internally for queueing and retry logic.
 ```json
 {
   "invocationId": "inv-001",
-  "planId": "plan-92a390d6",
+  "planId": "plan-550e8400-e29b-41d4-a716-446655440000",
   "stepId": "s2",
   "state": "retrying",
   "summary": "Temporary network failure",

@@ -403,6 +403,7 @@ export function createServer(appConfig?: AppConfig): Express {
               retentionDays: config.retention.planArtifactsDays,
             });
             span.setAttribute("plan.id", plan.id);
+            span.setAttribute("plan.id_length", plan.id.length);
             span.setAttribute("plan.steps", plan.steps.length);
             const planSubject = toPlanSubject(requestSubject);
             if (planSubject) {

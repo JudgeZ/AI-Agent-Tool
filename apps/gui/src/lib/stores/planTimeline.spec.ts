@@ -9,6 +9,11 @@ vi.mock('$lib/config', () => ({
   approvalPath: (planId: string, stepId: string) => `https://example.test/plans/${planId}/steps/${stepId}`
 }));
 
+const VALID_PLAN_ID = 'plan-550e8400-e29b-41d4-a716-446655440000';
+const ORDERING_PLAN_ID = 'plan-12345678-9abc-4def-8abc-1234567890ab';
+const ERROR_PLAN_ID = 'plan-abcdefab-cdef-4abc-8def-abcdefabcdef';
+const CLEANUP_PLAN_ID = 'plan-00112233-4455-4677-8899-aabbccddeeff';
+
 declare global {
   // eslint-disable-next-line @typescript-eslint/no-namespace
   namespace NodeJS {
@@ -37,10 +42,10 @@ afterEach(() => {
 
 describe('timeline.connect', () => {
   it('marks the store as connected when the stream opens and applies step updates', () => {
-    timeline.connect('plan-123');
+    timeline.connect(VALID_PLAN_ID);
     const source = MockEventSource.instances.at(-1);
     expect(source).toBeTruthy();
-    expect(source?.url).toContain('plan-123');
+    expect(source?.url).toContain(VALID_PLAN_ID);
 
     source?.triggerOpen();
     const afterOpen = get(timeline);
@@ -48,7 +53,7 @@ describe('timeline.connect', () => {
     expect(afterOpen.connectionError).toBeNull();
 
     const stepPayload = {
-      plan_id: 'plan-123',
+      plan_id: VALID_PLAN_ID,
       step: {
         id: 's1',
         capability: 'repo.read',
@@ -72,7 +77,7 @@ describe('timeline.connect', () => {
   });
 
   it('orders steps with numeric suffixes based on their numeric value', () => {
-    timeline.connect('plan-ordering');
+    timeline.connect(ORDERING_PLAN_ID);
     const source = MockEventSource.instances.at(-1);
     expect(source).toBeTruthy();
 
@@ -80,7 +85,7 @@ describe('timeline.connect', () => {
 
     const emitStep = (id: string) => {
       source?.emit('plan.step', {
-        plan_id: 'plan-ordering',
+        plan_id: ORDERING_PLAN_ID,
         step: {
           id,
           capability: 'repo.read',
@@ -98,7 +103,7 @@ describe('timeline.connect', () => {
   });
 
   it('captures stream errors and marks the connection as disconnected', () => {
-    timeline.connect('plan-err');
+    timeline.connect(ERROR_PLAN_ID);
     const source = MockEventSource.instances.at(-1);
     expect(source).toBeTruthy();
 
@@ -113,7 +118,7 @@ describe('timeline.connect', () => {
   });
 
   it('cleans up listeners and closes the stream on disconnect', () => {
-    timeline.connect('plan-cleanup');
+    timeline.connect(CLEANUP_PLAN_ID);
     const source = MockEventSource.instances.at(-1);
     expect(source).toBeTruthy();
     expect(source?.listenerCount('plan.step')).toBe(1);

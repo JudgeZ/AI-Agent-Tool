@@ -20,7 +20,7 @@ test("aidt plan requests plan from gateway", async () => {
   resetPlansDir();
   const goal = "Verify gateway invocation";
   const planResponse = {
-    id: "plan-test123",
+    id: "plan-550e8400-e29b-41d4-a716-446655440000",
     goal,
     steps: [
       {
@@ -78,7 +78,7 @@ test("aidt plan requests plan from gateway", async () => {
       env
     });
 
-    assert.match(stdout, /Plan created: plan-test123/);
+    assert.match(stdout, /Plan created: plan-550e8400-e29b-41d4-a716-446655440000/);
     assert.ok(requestLog, "gateway should receive a request");
     assert.equal(requestLog.body.goal, goal);
     assert.equal(requestLog.headers.authorization, "Bearer test-token");
@@ -91,7 +91,7 @@ test("aidt plan requests plan from gateway", async () => {
 
     const planMdPath = path.join(plansDir, planResponse.id, "plan.md");
     assert.ok(fs.existsSync(planMdPath), `expected plan.md at ${planMdPath}`);
-    assert.match(stdout, /SSE stream: \/plan\/plan-test123\/events/);
+    assert.match(stdout, /SSE stream: \/plan\/plan-550e8400-e29b-41d4-a716-446655440000\/events/);
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
