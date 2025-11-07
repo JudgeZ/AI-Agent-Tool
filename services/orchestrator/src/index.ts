@@ -24,6 +24,7 @@ import { routeChat } from "./providers/ProviderRegistry.js";
 import { ensureTracing, withSpan } from "./observability/tracing.js";
 import {
   initializePlanQueueRuntime,
+  getPlanSubject,
   resolvePlanStepApproval,
   submitPlanSteps,
   type ApprovalDecision,
@@ -414,18 +415,93 @@ export function createServer(appConfig?: AppConfig): Express {
     },
   );
 
-  app.get("/plan/:id/events", (req: Request, res: Response) => {
-    const planIdResult = PlanIdSchema.safeParse(req.params.id);
-    if (!planIdResult.success) {
-      const message =
-        planIdResult.error.issues[0]?.message ?? "plan id is invalid";
-      sendValidationError(res, [{ path: "id", message }]);
-      return;
-    }
-    const planId = planIdResult.data;
-    if (req.headers.accept?.includes("text/event-stream")) {
-      const requestSubject = resolveRequestSubject(req, config);
-      const identity = createRequestIdentity(req, config, requestSubject);
+  app.get(
+    "/plan/:id/events",
+    async (req: Request, res: Response, next: NextFunction) => {
+      const planIdResult = PlanIdSchema.safeParse(req.params.id);
+      if (!planIdResult.success) {
+        const message =
+          planIdResult.error.issues[0]?.message ?? "plan id is invalid";
+        sendValidationError(res, [{ path: "id", message }]);
+        return;
+      }
+      const planId = planIdResult.data;
+      const acceptsSse = req.headers.accept?.includes("text/event-stream");
+      const agentName = extractAgent(req);
+      const requestId = req.header("x-request-id") ?? undefined;
+      let authorization: {
+        requestSubject?: RequestSubjectContext;
+      } | undefined;
+      try {
+        authorization = await withSpan(
+          "http.get.plan.events",
+          async (span) => {
+            const requestSubject = resolveRequestSubject(req, config);
+            const decision = await policy.enforceHttpAction({
+              action: "http.get.plan.events",
+              requiredCapabilities: ["plan.read"],
+              agent: agentName,
+              traceId: span.context.traceId,
+              subject: toPolicySubject(requestSubject),
+            });
+            ensureAllowed("plan.read", decision, {
+              agent: agentName,
+              subject: requestSubject,
+              traceId: span.context.traceId,
+              requestId,
+              resource: "plan.events",
+              metadata: {
+                route: "/plan/:id/events",
+                method: req.method,
+                planId,
+              },
+            });
+            const storedSubject = await getPlanSubject(planId);
+            if (storedSubject) {
+              const matches =
+                requestSubject &&
+                storedSubject.sessionId === requestSubject.sessionId &&
+                storedSubject.userId === requestSubject.user.id;
+              if (!matches) {
+                logAuditEvent({
+                  action: "plan.read",
+                  outcome: "denied",
+                  traceId: span.context.traceId,
+                  requestId,
+                  agent: agentName,
+                  resource: "plan.events",
+                  subject: toAuditSubject(requestSubject),
+                  details: {
+                    planId,
+                    reason: "subject_mismatch",
+                    storedSessionId: storedSubject.sessionId,
+                    storedUserId: storedSubject.userId,
+                  },
+                });
+                throw new PolicyViolationError(
+                  "plan.read denied: subject does not match plan owner",
+                  [
+                    {
+                      reason: "subject_mismatch",
+                      capability: "plan.read",
+                    },
+                  ],
+                );
+              }
+            }
+            return { requestSubject };
+          },
+          { route: "/plan/:id/events", planId },
+        );
+      } catch (error) {
+        next(error);
+        return;
+      }
+
+      const requestSubject = authorization?.requestSubject;
+
+      if (acceptsSse) {
+        const identity = createRequestIdentity(req, config, requestSubject);
       const releaseHandle = sseQuotaManager.acquire({
         ip: identity.ip,
         subjectId: identity.subjectId,
@@ -518,7 +594,8 @@ export function createServer(appConfig?: AppConfig): Express {
       const events = getPlanHistory(planId);
       res.json({ events });
     }
-  });
+    },
+  );
 
   app.post(
     "/plan/:planId/steps/:stepId/approve",

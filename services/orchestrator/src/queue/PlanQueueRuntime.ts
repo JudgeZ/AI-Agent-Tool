@@ -1023,3 +1023,38 @@ function prunePlanSubject(planId: string): void {
   }
   planSubjects.delete(planId);
 }
+
+export async function getPlanSubject(
+  planId: string,
+): Promise<PlanSubject | undefined> {
+  const cached = planSubjects.get(planId);
+  if (cached) {
+    return {
+      ...cached,
+      roles: [...cached.roles],
+      scopes: [...cached.scopes],
+    };
+  }
+  const store = planStateStore;
+  if (!store) {
+    return undefined;
+  }
+  const pending = await store.listActiveSteps();
+  if (!pending) {
+    return undefined;
+  }
+  for (const entry of pending) {
+    if (entry.planId !== planId) {
+      continue;
+    }
+    if (!entry.subject) {
+      continue;
+    }
+    return {
+      ...entry.subject,
+      roles: [...entry.subject.roles],
+      scopes: [...entry.subject.scopes],
+    };
+  }
+  return undefined;
+}
