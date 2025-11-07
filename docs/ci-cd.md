@@ -1,6 +1,14 @@
 # CI/CD for OSS AI Agent Tool
 
-The repository ships with **four GitHub Actions workflows** that cover build/test automation, release packaging, and continuous security scanning. All workflows are located in `.github/workflows/` and support manual dispatches for ad-hoc runs. When running the stack locally or in Kubernetes, pair these workflows with the [Docker Quickstart](./docker-quickstart.md) and [Kubernetes Quickstart](./kubernetes-quickstart.md) guides to validate artifacts end-to-end.
+The repository ships with **five GitHub Actions workflows**:
+
+- `ci.yml` for pull request/`main` branch validation across Go, TypeScript, and Rust codebases.
+- `security.yml` for comprehensive static analysis, dependency, and secret scanning on PRs, pushes, and a weekly cron.
+- `kubesec.yml` for Kubernetes manifest hardening on pushes and pull requests targeting `main`, plus a weekly Wednesday cron run that publishes SARIF findings to the Security tab.
+- `release-images.yml` for container image builds, signing, and SBOM generation on `v*` tags or manual dispatch.
+- `release-charts.yml` for Helm chart packaging and publishing on `v*`/`chart-*` tags or manual dispatch.
+
+All workflows live in `.github/workflows/`. When running the stack locally or in Kubernetes, pair these workflows with the [Docker Quickstart](./docker-quickstart.md) and [Kubernetes Quickstart](./kubernetes-quickstart.md) guides to validate artifacts end-to-end.
 
 ## Continuous Integration (`ci.yml`)
 - **Triggers:** pull requests targeting `main`, pushes to `main`, or manual `Run workflow` dispatches.
@@ -17,11 +25,12 @@ The repository ships with **four GitHub Actions workflows** that cover build/tes
 
 ## Container Releases (`release-images.yml`)
 - **Triggers:** annotated/lightweight tags matching `v*` (e.g., `v0.3.0`) or manual dispatch.
-- **What runs:** for each service with a Dockerfile (`apps/gateway-api`, `services/orchestrator`, `services/indexer`, `services/memory-svc`), the workflow:
+- **What runs:** a build matrix covering `apps/gateway-api`, `services/orchestrator`, and `services/indexer`:
   1. Builds and pushes multi-arch images to `ghcr.io/<owner>/oss-ai-agent-tool/<service>`.
   2. Generates a CycloneDX JSON SBOM via `anchore/sbom-action`.
   3. Performs **keyless cosign signing** using GitHub OIDC (`id-token: write` permission — no secrets required).
   4. Uploads the SBOM to the GitHub Release and retains it as an artifact.
+  5. Skips any entry automatically when a Dockerfile is missing, logging the skip in the job summary.
 
 ### Repository/permission requirements
 - Settings → Actions → General → Workflow permissions → **Read and write permissions**.
@@ -70,8 +79,13 @@ helm pull oci://ghcr.io/<owner>/oss-ai-agent-tool/charts/oss-ai-agent-tool --ver
 - **Semgrep:** `semgrep scan --config auto`
 - **CodeQL:** follow [GitHub's CodeQL CLI docs](https://codeql.github.com/docs/codeql-cli/using-the-codeql-cli/) to initialize and analyze the database (`codeql database create` + `codeql database analyze`).
 
+## Kubernetes Manifest Hardening (`kubesec.yml`)
+- **Triggers:** pushes to `main`, pull requests targeting `main`, and a weekly cron (`31 14 * * 3`).
+- **What runs:** the ControlPlane Kubesec scanner against the configured manifest input, producing SARIF output that uploads to the repository's Security tab for triage without failing the pipeline (exit code forced to `0`).
+- **Adjustments:** update the `input` value in `.github/workflows/kubesec.yml` to point at the Kubernetes manifest or Helm-rendered YAML you want evaluated.
+
 ## Release notes automation (`release-drafter.yml`)
 `Release Drafter` groups merged pull requests by category and prepares draft notes tagged as `v<next patch>`. It runs automatically via the GitHub App once enabled in repository settings. Reference the [Security Threat Model](./SECURITY-THREAT-MODEL.md) and [Security Scanning](./security-scanning.md) docs when summarizing risk mitigations in release notes.
 
 ## Renovate
-`renovate.json` (already present) continues to manage dependency update PRs. Combine it with the CI & security workflows to ensure automated updates remain safe.
+`renovate.json` (already present) continues to manage dependency update PRs. Combine it with the CI, security, and Kubesec workflows to ensure automated updates remain safe.
