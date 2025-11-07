@@ -233,3 +233,60 @@ func TestLogAuditEmitsExpectedFields(t *testing.T) {
 		}
 	}
 }
+
+func TestLogAuditClientIPScenarios(t *testing.T) {
+	tests := []struct {
+		name      string
+		remote    string
+		forwarded string
+		proxies   []*net.IPNet
+		want      string
+	}{
+		{
+			name:   "direct remote address",
+			remote: "203.0.113.50:8443",
+			want:   "203.0.113.50",
+		},
+		{
+			name:      "trusted proxy forwards real client",
+			remote:    "192.0.2.10:443",
+			forwarded: "198.51.100.20, 192.0.2.10",
+			proxies:   mustTrustedProxies(t, "192.0.2.0/24"),
+			want:      "198.51.100.20",
+		},
+		{
+			name:      "spoofed header from untrusted source ignored",
+			remote:    "203.0.113.10:443",
+			forwarded: "198.51.100.30",
+			want:      "203.0.113.10",
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			handler := newRecordingHandler()
+			setAuditLoggerForTest(t, handler)
+
+			req := httptest.NewRequest(http.MethodGet, "https://example.com", nil)
+			req.RemoteAddr = tt.remote
+			if tt.forwarded != "" {
+				req.Header.Set("X-Forwarded-For", tt.forwarded)
+			}
+
+			attrs := auditRequestAttrs(req, tt.proxies)
+			logAudit(context.Background(), "test", "success", attrs...)
+
+			records := handler.Records()
+			if len(records) != 1 {
+				t.Fatalf("expected 1 record, got %d", len(records))
+			}
+
+			values := attrsToMap(records[0].Attrs)
+			got := values["client_ip"].String()
+			if got != tt.want {
+				t.Fatalf("client_ip = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}

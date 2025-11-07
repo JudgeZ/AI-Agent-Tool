@@ -142,13 +142,13 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	clientIP := clientIPFromRequest(r, h.trustedProxies)
+	clientAddr := clientIP(r, h.trustedProxies)
 	if h.limiter != nil {
-		if !h.limiter.Acquire(clientIP) {
+		if !h.limiter.Acquire(clientAddr) {
 			http.Error(w, "too many concurrent event streams", http.StatusTooManyRequests)
 			return
 		}
-		defer h.limiter.Release(clientIP)
+		defer h.limiter.Release(clientAddr)
 	}
 
 	upstreamURL := fmt.Sprintf("%s/plan/%s/events", h.orchestratorURL, url.PathEscape(planID))
@@ -247,28 +247,6 @@ func (fw *flushingWriter) Write(p []byte) (int, error) {
 		fw.flusher.Flush()
 	}
 	return n, err
-}
-
-func clientIPFromRequest(r *http.Request, trustedProxies []*net.IPNet) string {
-	remoteAddr := strings.TrimSpace(r.RemoteAddr)
-	host, _, err := net.SplitHostPort(remoteAddr)
-	if err != nil {
-		host = remoteAddr
-	}
-	remoteIP := net.ParseIP(host)
-	if remoteIP != nil && isTrustedProxy(remoteIP, trustedProxies) {
-		if forwarded := extractClientIPFromForwardedFor(r.Header.Get("X-Forwarded-For"), trustedProxies); forwarded != nil {
-			return forwarded.String()
-		}
-		if real := extractClientIP(strings.TrimSpace(r.Header.Get("X-Real-IP")), trustedProxies); real != nil {
-			return real.String()
-		}
-		return remoteIP.String()
-	}
-	if remoteIP != nil {
-		return remoteIP.String()
-	}
-	return host
 }
 
 func extractClientIPFromForwardedFor(header string, trustedProxies []*net.IPNet) net.IP {
