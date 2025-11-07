@@ -42,7 +42,7 @@ async function newAgent(name: string) {
   const normalized = normalizeAgentName(name);
   const repoRoot = process.cwd();
   const agentsRoot = path.resolve(repoRoot, "agents");
-  const dir = path.join(agentsRoot, normalized);
+  const dir = `${agentsRoot}${path.sep}${normalized}`;
   const relativeToAgents = path.relative(agentsRoot, dir);
   if (relativeToAgents.startsWith("..") || path.isAbsolute(relativeToAgents)) {
     throw new Error(`Refusing to write outside agents directory: ${normalized}`);
