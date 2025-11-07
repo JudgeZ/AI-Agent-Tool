@@ -62,7 +62,14 @@ async function newAgent(name: string) {
   if (fs.existsSync(file)) {
     throw new Error(`agent.md already exists at ${file}`);
   }
-  fs.writeFileSync(file, tpl, "utf-8");
+  try {
+    fs.writeFileSync(file, tpl, { encoding: "utf-8", flag: "wx" });
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      throw new Error(`agent.md already exists at ${file}`);
+    }
+    throw error;
+  }
   console.log("Created", file);
 }
 
