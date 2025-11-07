@@ -27,6 +27,13 @@ export type TlsConfig = {
   requestClientCert: boolean;
 };
 
+export type ToolAgentTlsConfig = {
+  insecure?: boolean;
+  certPath?: string;
+  keyPath?: string;
+  caPaths?: string[];
+};
+
 export type KafkaSaslMechanism = "plain" | "scram-sha-256" | "scram-sha-512" | "aws" | "oauthbearer";
 
 export type KafkaSaslConfig = {
@@ -128,6 +135,7 @@ export type AppConfig = {
     agentEndpoint: string;
     retryAttempts: number;
     defaultTimeoutMs: number;
+    tls?: ToolAgentTlsConfig;
   };
   server: {
     sseKeepAliveMs: number;
@@ -184,6 +192,13 @@ type PartialTlsConfig = {
   requestClientCert?: boolean;
 };
 
+type PartialToolAgentTlsConfig = {
+  insecure?: boolean;
+  certPath?: string;
+  keyPath?: string;
+  caPaths?: string[];
+};
+
 type PartialTracingConfig = {
   enabled?: boolean;
   serviceName?: string;
@@ -219,6 +234,13 @@ type PartialAuthConfig = {
   oidc?: PartialOidcAuthConfig;
 };
 
+type PartialToolingConfig = {
+  agentEndpoint?: string;
+  retryAttempts?: number;
+  defaultTimeoutMs?: number;
+  tls?: PartialToolAgentTlsConfig;
+};
+
 type PartialAppConfig = {
   runMode?: AppConfig["runMode"];
   messaging?: PartialMessagingConfig;
@@ -226,7 +248,7 @@ type PartialAppConfig = {
   auth?: PartialAuthConfig;
   retention?: PartialRetentionConfig;
   secrets?: Partial<AppConfig["secrets"]>;
-  tooling?: Partial<AppConfig["tooling"]>;
+  tooling?: PartialToolingConfig;
   server?: PartialServerConfig;
   observability?: PartialObservabilityConfig;
 };
@@ -580,6 +602,31 @@ function parseTlsConfig(value: unknown): PartialTlsConfig | undefined {
   const requestClientCert = asBoolean(record.requestClientCert);
   if (requestClientCert !== undefined) {
     partial.requestClientCert = requestClientCert;
+  }
+  return Object.keys(partial).length > 0 ? partial : undefined;
+}
+
+function parseToolAgentTlsConfig(value: unknown): PartialToolAgentTlsConfig | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const partial: PartialToolAgentTlsConfig = {};
+  const insecure = asBoolean(record.insecure ?? record.insecureSkipVerify ?? record.skipVerify);
+  if (insecure !== undefined) {
+    partial.insecure = insecure;
+  }
+  const certPath = asString(record.certPath ?? record.cert_path ?? record.cert);
+  if (certPath) {
+    partial.certPath = certPath;
+  }
+  const keyPath = asString(record.keyPath ?? record.key_path ?? record.key);
+  if (keyPath) {
+    partial.keyPath = keyPath;
+  }
+  const caPaths = parseStringArrayFlexible(record.caPaths ?? record.ca_paths ?? record.ca);
+  if (caPaths) {
+    partial.caPaths = caPaths;
   }
   return Object.keys(partial).length > 0 ? partial : undefined;
 }
@@ -1327,7 +1374,8 @@ export function loadConfig(): AppConfig {
             ? {
                 agentEndpoint: typeof tooling.agentEndpoint === "string" ? tooling.agentEndpoint : undefined,
                 retryAttempts: asNumber(tooling.retryAttempts),
-                defaultTimeoutMs: asNumber(tooling.defaultTimeoutMs)
+                defaultTimeoutMs: asNumber(tooling.defaultTimeoutMs),
+                tls: parseToolAgentTlsConfig(tooling.tls ?? tooling.agentTls ?? tooling.tlsConfig)
               }
             : undefined,
           server: server
@@ -1383,6 +1431,10 @@ export function loadConfig(): AppConfig {
   const envAgentEndpoint = process.env.TOOL_AGENT_ENDPOINT;
   const envAgentRetries = asNumber(process.env.TOOL_AGENT_RETRIES);
   const envAgentTimeout = asNumber(process.env.TOOL_AGENT_TIMEOUT_MS);
+  const envAgentTlsInsecure = asBoolean(process.env.TOOL_AGENT_TLS_INSECURE);
+  const envAgentTlsCertPath = asString(process.env.TOOL_AGENT_TLS_CERT_PATH);
+  const envAgentTlsKeyPath = asString(process.env.TOOL_AGENT_TLS_KEY_PATH);
+  const envAgentTlsCaPaths = parseStringList(process.env.TOOL_AGENT_TLS_CA_PATHS);
   const envSseKeepAlive = asNumber(process.env.SSE_KEEP_ALIVE_MS);
   const envSseMaxConnectionsPerIp = asNumber(process.env.SSE_MAX_CONNECTIONS_PER_IP);
   const envSseMaxConnectionsPerSubject = asNumber(process.env.SSE_MAX_CONNECTIONS_PER_SUBJECT);
@@ -1710,6 +1762,40 @@ export function loadConfig(): AppConfig {
     fileCfg.retention?.contentCapture?.enabled ??
     DEFAULT_CONFIG.retention.contentCapture.enabled;
 
+  const resolvedToolAgentTlsInsecure =
+    envAgentTlsInsecure ?? fileCfg.tooling?.tls?.insecure;
+  const resolvedToolAgentTlsCertPath =
+    envAgentTlsCertPath ?? fileCfg.tooling?.tls?.certPath;
+  const resolvedToolAgentTlsKeyPath =
+    envAgentTlsKeyPath ?? fileCfg.tooling?.tls?.keyPath;
+  const resolvedToolAgentTlsCaPaths =
+    envAgentTlsCaPaths ?? fileCfg.tooling?.tls?.caPaths;
+  const toolAgentTls: ToolAgentTlsConfig | undefined = (() => {
+    const hasCaPaths = resolvedToolAgentTlsCaPaths && resolvedToolAgentTlsCaPaths.length > 0;
+    if (
+      resolvedToolAgentTlsInsecure === undefined &&
+      !resolvedToolAgentTlsCertPath &&
+      !resolvedToolAgentTlsKeyPath &&
+      !hasCaPaths
+    ) {
+      return undefined;
+    }
+    const tlsConfig: ToolAgentTlsConfig = {};
+    if (resolvedToolAgentTlsInsecure !== undefined) {
+      tlsConfig.insecure = resolvedToolAgentTlsInsecure;
+    }
+    if (resolvedToolAgentTlsCertPath) {
+      tlsConfig.certPath = resolvedToolAgentTlsCertPath;
+    }
+    if (resolvedToolAgentTlsKeyPath) {
+      tlsConfig.keyPath = resolvedToolAgentTlsKeyPath;
+    }
+    if (hasCaPaths) {
+      tlsConfig.caPaths = resolvedToolAgentTlsCaPaths;
+    }
+    return tlsConfig;
+  })();
+
   const resolvedConfig: AppConfig = {
     runMode,
     messaging: {
@@ -1769,7 +1855,8 @@ export function loadConfig(): AppConfig {
     tooling: {
       agentEndpoint: envAgentEndpoint ?? fileCfg.tooling?.agentEndpoint ?? DEFAULT_CONFIG.tooling.agentEndpoint,
       retryAttempts: envAgentRetries ?? fileCfg.tooling?.retryAttempts ?? DEFAULT_CONFIG.tooling.retryAttempts,
-      defaultTimeoutMs: envAgentTimeout ?? fileCfg.tooling?.defaultTimeoutMs ?? DEFAULT_CONFIG.tooling.defaultTimeoutMs
+      defaultTimeoutMs: envAgentTimeout ?? fileCfg.tooling?.defaultTimeoutMs ?? DEFAULT_CONFIG.tooling.defaultTimeoutMs,
+      tls: toolAgentTls
     },
     server: {
       sseKeepAliveMs:

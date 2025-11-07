@@ -28,6 +28,12 @@ tooling:
   agentEndpoint: "127.0.0.1:50051" # gRPC tool runner endpoint
   retryAttempts: 3
   defaultTimeoutMs: 15000
+  tls:
+    insecure: true                 # optional; when false the client verifies TLS certificates
+    caPaths:
+      - /etc/tool-agent/ca.pem     # optional additional trust roots
+    certPath: /etc/tool-agent/client.pem
+    keyPath: /etc/tool-agent/client.key
 networkPolicy:
   enabled: true
   defaultDenyEgress: true
@@ -65,6 +71,10 @@ Relevant environment overrides:
 | `TOOL_AGENT_ENDPOINT` | Host:port for the tool agent gRPC server. |
 | `TOOL_AGENT_RETRIES` | Overrides retry attempts for tool execution. |
 | `TOOL_AGENT_TIMEOUT_MS` | Per-call timeout in milliseconds. |
+| `TOOL_AGENT_TLS_INSECURE` | When `true`, disables TLS for tool agent calls (defaults to insecure when unset). |
+| `TOOL_AGENT_TLS_CERT_PATH` | Filesystem path to the client certificate presented to the tool agent. |
+| `TOOL_AGENT_TLS_KEY_PATH` | Filesystem path to the private key paired with `TOOL_AGENT_TLS_CERT_PATH`. |
+| `TOOL_AGENT_TLS_CA_PATHS` | Comma-separated list of CA bundle files used to validate the tool agent certificate. |
 | `MESSAGING_TYPE` | Forces `rabbitmq` or `kafka` regardless of YAML setting (useful in CI matrices). |
 | `MESSAGE_BUS` | Legacy alias for `MESSAGING_TYPE`. Still supported, but logs a deprecation warning and will be removed in a future release. |
 | `PROVIDERS` | Comma-separated provider allow list (e.g. `openai,anthropic`). Set to an empty string to disable routing entirely. |
