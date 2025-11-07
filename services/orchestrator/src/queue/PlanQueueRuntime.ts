@@ -38,6 +38,7 @@ export type PlanStepCompletionPayload = {
   stepId: string;
   state: ToolEvent["state"];
   summary?: string;
+  output?: Record<string, unknown>;
   capability?: string;
   capabilityLabel?: string;
   labels?: string[];
@@ -633,14 +634,17 @@ async function setupCompletionConsumer(): Promise<void> {
             message.headers["Trace-Id"] ||
             "";
 
-          await planStateStore?.setState(
+          await persistPlanStepState(
             payload.planId,
             payload.stepId,
             payload.state,
             payload.summary,
-            undefined,
+            payload.output as Record<string, unknown> | undefined,
             attempt,
           );
+          const sanitizedOutput = contentCaptureEnabled
+            ? (payload.output as Record<string, unknown> | undefined)
+            : undefined;
           publishPlanStepEvent({
             event: "plan.step",
             traceId: traceId || message.id,
@@ -665,6 +669,7 @@ async function setupCompletionConsumer(): Promise<void> {
                 payload.approvalRequired ?? baseStep?.approvalRequired ?? false,
               attempt,
               summary: payload.summary,
+              output: sanitizedOutput,
               approvals: payload.approvals ?? persistedApprovals,
             },
           });
