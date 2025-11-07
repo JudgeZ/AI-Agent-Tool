@@ -15,18 +15,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-func TestClientIPFromRequestRejectsSpoofedForwardedForFromUntrustedSource(t *testing.T) {
+func TestClientIPRejectsSpoofedForwardedForFromUntrustedSource(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/events", nil)
 	req.RemoteAddr = "203.0.113.10:1234"
 	req.Header.Set("X-Forwarded-For", "198.51.100.9")
 
-	ip := clientIPFromRequest(req, nil)
+	ip := clientIP(req, nil)
 	if ip != "203.0.113.10" {
 		t.Fatalf("expected remote addr, got %q", ip)
 	}
 }
 
-func TestClientIPFromRequestAcceptsForwardedForFromTrustedProxy(t *testing.T) {
+func TestClientIPAcceptsForwardedForFromTrustedProxy(t *testing.T) {
 	_, trustedNet, err := net.ParseCIDR("10.0.0.0/8")
 	if err != nil {
 		t.Fatalf("failed to parse CIDR: %v", err)
@@ -35,13 +35,13 @@ func TestClientIPFromRequestAcceptsForwardedForFromTrustedProxy(t *testing.T) {
 	req.RemoteAddr = "10.1.2.3:4321"
 	req.Header.Set("X-Forwarded-For", "198.51.100.9, 10.1.2.3")
 
-	ip := clientIPFromRequest(req, []*net.IPNet{trustedNet})
+	ip := clientIP(req, []*net.IPNet{trustedNet})
 	if ip != "198.51.100.9" {
 		t.Fatalf("expected forwarded client ip, got %q", ip)
 	}
 }
 
-func TestClientIPFromRequestSkipsSpoofedForwardedForEntriesFromTrustedProxy(t *testing.T) {
+func TestClientIPSkipsSpoofedForwardedForEntriesFromTrustedProxy(t *testing.T) {
 	_, trustedNet, err := net.ParseCIDR("10.0.0.0/8")
 	if err != nil {
 		t.Fatalf("failed to parse CIDR: %v", err)
@@ -50,13 +50,13 @@ func TestClientIPFromRequestSkipsSpoofedForwardedForEntriesFromTrustedProxy(t *t
 	req.RemoteAddr = "10.1.2.3:4321"
 	req.Header.Set("X-Forwarded-For", "203.0.113.5, 198.51.100.9, 10.1.2.3")
 
-	ip := clientIPFromRequest(req, []*net.IPNet{trustedNet})
+	ip := clientIP(req, []*net.IPNet{trustedNet})
 	if ip != "198.51.100.9" {
 		t.Fatalf("expected to ignore spoofed entries and return %q, got %q", "198.51.100.9", ip)
 	}
 }
 
-func TestClientIPFromRequestFallsBackWhenForwardedForInvalid(t *testing.T) {
+func TestClientIPFallsBackWhenForwardedForInvalid(t *testing.T) {
 	_, trustedNet, err := net.ParseCIDR("10.0.0.0/8")
 	if err != nil {
 		t.Fatalf("failed to parse CIDR: %v", err)
@@ -65,13 +65,13 @@ func TestClientIPFromRequestFallsBackWhenForwardedForInvalid(t *testing.T) {
 	req.RemoteAddr = "10.1.2.3:4321"
 	req.Header.Set("X-Forwarded-For", "not-an-ip")
 
-	ip := clientIPFromRequest(req, []*net.IPNet{trustedNet})
+	ip := clientIP(req, []*net.IPNet{trustedNet})
 	if ip != "10.1.2.3" {
 		t.Fatalf("expected remote addr fallback, got %q", ip)
 	}
 }
 
-func TestClientIPFromRequestAcceptsRealIPHeaderFromTrustedProxy(t *testing.T) {
+func TestClientIPAcceptsRealIPHeaderFromTrustedProxy(t *testing.T) {
 	_, trustedNet, err := net.ParseCIDR("10.0.0.0/8")
 	if err != nil {
 		t.Fatalf("failed to parse CIDR: %v", err)
@@ -80,7 +80,7 @@ func TestClientIPFromRequestAcceptsRealIPHeaderFromTrustedProxy(t *testing.T) {
 	req.RemoteAddr = "10.1.2.3:4321"
 	req.Header.Set("X-Real-IP", "198.51.100.10")
 
-	ip := clientIPFromRequest(req, []*net.IPNet{trustedNet})
+	ip := clientIP(req, []*net.IPNet{trustedNet})
 	if ip != "198.51.100.10" {
 		t.Fatalf("expected real ip header, got %q", ip)
 	}
