@@ -809,6 +809,7 @@ export function createServer(appConfig?: AppConfig): Express {
 
       try {
         const planSubject = await getPlanSubject(planId);
+        let sessionReauthenticated = false;
         if (config.auth.oidc.enabled) {
           if (!planSubject || !requestSubject) {
             logAuditEvent({
@@ -829,21 +830,16 @@ export function createServer(appConfig?: AppConfig): Express {
           const userMatches =
             typeof planSubject.userId === "string" &&
             planSubject.userId === requestSubject.user.id;
-          const sessionMatches =
+          sessionReauthenticated =
             typeof planSubject.sessionId === "string" &&
-            typeof requestSubject.sessionId === "string" &&
-            planSubject.sessionId === requestSubject.sessionId;
-          let mismatchReason:
-            | "tenant_mismatch"
-            | "user_mismatch"
-            | "session_mismatch"
-            | undefined;
+            planSubject.sessionId.length > 0 &&
+            (!requestSubject.sessionId ||
+              planSubject.sessionId !== requestSubject.sessionId);
+          let mismatchReason: "tenant_mismatch" | "user_mismatch" | undefined;
           if (!tenantMatches) {
             mismatchReason = "tenant_mismatch";
           } else if (!userMatches) {
             mismatchReason = "user_mismatch";
-          } else if (!sessionMatches) {
-            mismatchReason = "session_mismatch";
           }
           if (mismatchReason) {
             logAuditEvent({
@@ -902,6 +898,7 @@ export function createServer(appConfig?: AppConfig): Express {
             planId,
             stepId,
             summary,
+            ...(sessionReauthenticated ? { sessionReauthenticated: true } : {}),
             ...(rationale ? { rationale } : {}),
           },
         });

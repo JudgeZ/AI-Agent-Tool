@@ -1418,7 +1418,7 @@ describe("orchestrator http api", () => {
       expect(getPlanSubjectMock).toHaveBeenCalledWith(planId);
     });
 
-    it("rejects approvals when the session id does not match even if the agent header is spoofed", async () => {
+    it("approves when the subject matches even if the session has rotated", async () => {
       const { createServer } = await import("./index.js");
       const config = createOidcEnabledConfig();
       const ownerSession = createSessionForUser(config, {
@@ -1475,17 +1475,23 @@ describe("orchestrator http api", () => {
         }
       });
 
-      const response = await request(app)
+      await request(app)
         .post(`/plan/${planId}/steps/${approvalStep.id}/approve`)
         .set("Authorization", `Bearer ${spoofedSession.id}`)
         .set("x-agent", "code_writer")
         .send({ decision: "approve" })
-        .expect(403);
+        .expect(204);
 
-      expect(response.body.error).toBe("approval subject mismatch");
       const { resolvePlanStepApproval } = await import("./queue/PlanQueueRuntime.js");
-      expect(resolvePlanStepApproval).not.toHaveBeenCalled();
-      expect(policyMock.enforceHttpAction).toHaveBeenCalledTimes(initialPolicyCalls);
+      expect(resolvePlanStepApproval).toHaveBeenCalledWith({
+        planId,
+        stepId: approvalStep.id,
+        decision: "approved",
+        summary: expect.stringContaining("Awaiting approval"),
+      });
+      expect(policyMock.enforceHttpAction).toHaveBeenCalledTimes(
+        initialPolicyCalls + 1,
+      );
       expect(getPlanSubjectMock).toHaveBeenCalledWith(planId);
     });
   });
