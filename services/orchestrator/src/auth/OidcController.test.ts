@@ -229,7 +229,7 @@ describe("OidcController", () => {
   });
 
   it("rejects callbacks when the id token is already expired", async () => {
-    const verifySpy = vi.spyOn(OidcClient, "verifyIdToken");
+    const verifySpy = vi.mocked(OidcClient.verifyIdToken);
     verifySpy.mockResolvedValueOnce({
       payload: {
         sub: "user-123",
