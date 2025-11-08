@@ -789,7 +789,51 @@ export function createServer(appConfig?: AppConfig): Express {
       const agentName = extractAgent(req);
       const requestId = req.header("x-request-id") ?? undefined;
 
+      if (!requestSubject) {
+        const statusCode = config.auth.oidc.enabled ? 401 : 403;
+        logAuditEvent({
+          action: "plan.step.approval",
+          outcome: "denied",
+          traceId: latest.traceId,
+          requestId,
+          agent: agentName,
+          resource: "plan.step",
+          details: { planId, stepId, reason: "missing_session" },
+        });
+        res
+          .status(statusCode)
+          .json({
+            error: statusCode === 401 ? "authentication required" : "forbidden",
+          });
+        return;
+      }
+
       try {
+        const planSubject = await getPlanSubject(planId);
+        const tenantMatches =
+          (planSubject?.tenantId ?? undefined) === (requestSubject.tenant ?? undefined);
+        const userMatches =
+          typeof planSubject?.userId === "string" &&
+          planSubject.userId === requestSubject.user.id;
+        const sessionMatches =
+          typeof planSubject?.sessionId === "string" &&
+          planSubject.sessionId === requestSubject.sessionId;
+
+        if (!planSubject || !tenantMatches || !userMatches || !sessionMatches) {
+          logAuditEvent({
+            action: "plan.step.approval",
+            outcome: "denied",
+            traceId: latest.traceId,
+            requestId,
+            agent: agentName,
+            resource: "plan.step",
+            subject: toAuditSubject(requestSubject),
+            details: { planId, stepId, reason: "subject_mismatch" },
+          });
+          res.status(403).json({ error: "approval subject mismatch" });
+          return;
+        }
+
         const authorizationContext: AuthorizationContext = {
           agent: agentName,
           subject: requestSubject,

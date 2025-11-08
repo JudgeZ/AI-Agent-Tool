@@ -11,6 +11,7 @@ import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { sessionStore } from "./auth/SessionStore.js";
+import { loadConfig } from "./config.js";
 
 import { clearPlanHistory, getPlanHistory, publishPlanStepEvent } from "./plan/events.js";
 
@@ -59,6 +60,46 @@ vi.mock("./queue/PlanQueueRuntime.js", () => {
     getPlanSubject: getPlanSubjectMock
   };
 });
+
+function createOidcEnabledConfig() {
+  const baseConfig = loadConfig();
+  return {
+    ...baseConfig,
+    auth: {
+      ...baseConfig.auth,
+      oidc: {
+        ...baseConfig.auth.oidc,
+        enabled: true
+      }
+    }
+  };
+}
+
+function createSessionForUser(
+  config: ReturnType<typeof createOidcEnabledConfig>,
+  options: {
+    userId: string;
+    tenantId?: string;
+    email?: string;
+    name?: string;
+    roles?: string[];
+    scopes?: string[];
+  }
+) {
+  return sessionStore.createSession(
+    {
+      subject: options.userId,
+      email: options.email,
+      name: options.name,
+      tenantId: options.tenantId,
+      roles: options.roles ?? [],
+      scopes: options.scopes ?? [],
+      claims: {},
+      tokens: {}
+    },
+    config.auth.oidc.session.ttlSeconds
+  );
+}
 
 describe("orchestrator http api", () => {
   beforeEach(() => {
@@ -975,9 +1016,30 @@ describe("orchestrator http api", () => {
   describe("step approvals", () => {
     it("publishes approval events when a pending step is approved", async () => {
       const { createServer } = await import("./index.js");
-      const app = createServer();
+      const config = createOidcEnabledConfig();
+      const approverSession = createSessionForUser(config, {
+        userId: "user-approval",
+        tenantId: "tenant-approval",
+        email: "approver@example.com",
+        name: "Plan Approver"
+      });
+      const planSubject = {
+        sessionId: approverSession.id,
+        tenantId: "tenant-approval",
+        userId: "user-approval",
+        email: "approver@example.com",
+        name: "Plan Approver",
+        roles: [],
+        scopes: []
+      };
+      getPlanSubjectMock.mockResolvedValue(planSubject);
+      const app = createServer(config);
 
-      const planResponse = await request(app).post("/plan").send({ goal: "Request approval" }).expect(201);
+      const planResponse = await request(app)
+        .post("/plan")
+        .set("Authorization", `Bearer ${approverSession.id}`)
+        .send({ goal: "Request approval" })
+        .expect(201);
       const planId: string = planResponse.body.plan.id;
       const approvalStep = planResponse.body.plan.steps.find((step: { approvalRequired: boolean }) => step.approvalRequired);
       if (!approvalStep) {
@@ -1004,6 +1066,7 @@ describe("orchestrator http api", () => {
 
       await request(app)
         .post(`/plan/${planId}/steps/${approvalStep.id}/approve`)
+        .set("Authorization", `Bearer ${approverSession.id}`)
         .send({ decision: "approve", rationale: "Looks good" })
         .expect(204);
 
@@ -1014,13 +1077,35 @@ describe("orchestrator http api", () => {
         decision: "approved",
         summary: expect.stringContaining("Looks good")
       });
+      expect(getPlanSubjectMock).toHaveBeenCalledWith(planId);
     });
 
     it("publishes rejection events when a pending step is rejected", async () => {
       const { createServer } = await import("./index.js");
-      const app = createServer();
+      const config = createOidcEnabledConfig();
+      const approverSession = createSessionForUser(config, {
+        userId: "user-reject",
+        tenantId: "tenant-reject",
+        email: "rejector@example.com",
+        name: "Plan Rejector"
+      });
+      const planSubject = {
+        sessionId: approverSession.id,
+        tenantId: "tenant-reject",
+        userId: "user-reject",
+        email: "rejector@example.com",
+        name: "Plan Rejector",
+        roles: [],
+        scopes: []
+      };
+      getPlanSubjectMock.mockResolvedValue(planSubject);
+      const app = createServer(config);
 
-      const planResponse = await request(app).post("/plan").send({ goal: "Reject approval" }).expect(201);
+      const planResponse = await request(app)
+        .post("/plan")
+        .set("Authorization", `Bearer ${approverSession.id}`)
+        .send({ goal: "Reject approval" })
+        .expect(201);
       const planId: string = planResponse.body.plan.id;
       const approvalStep = planResponse.body.plan.steps.find((step: { approvalRequired: boolean }) => step.approvalRequired);
       if (!approvalStep) {
@@ -1047,6 +1132,7 @@ describe("orchestrator http api", () => {
 
       await request(app)
         .post(`/plan/${planId}/steps/${approvalStep.id}/approve`)
+        .set("Authorization", `Bearer ${approverSession.id}`)
         .send({ decision: "reject", rationale: "Needs work" })
         .expect(204);
 
@@ -1057,13 +1143,35 @@ describe("orchestrator http api", () => {
         decision: "rejected",
         summary: expect.stringContaining("Needs work")
       });
+      expect(getPlanSubjectMock).toHaveBeenCalledWith(planId);
     });
 
     it("returns a conflict when the step is not awaiting approval", async () => {
       const { createServer } = await import("./index.js");
-      const app = createServer();
+      const config = createOidcEnabledConfig();
+      const approverSession = createSessionForUser(config, {
+        userId: "user-conflict",
+        tenantId: "tenant-conflict",
+        email: "conflict@example.com",
+        name: "Conflict User"
+      });
+      const planSubject = {
+        sessionId: approverSession.id,
+        tenantId: "tenant-conflict",
+        userId: "user-conflict",
+        email: "conflict@example.com",
+        name: "Conflict User",
+        roles: [],
+        scopes: []
+      };
+      getPlanSubjectMock.mockResolvedValue(planSubject);
+      const app = createServer(config);
 
-      const planResponse = await request(app).post("/plan").send({ goal: "Invalid state" }).expect(201);
+      const planResponse = await request(app)
+        .post("/plan")
+        .set("Authorization", `Bearer ${approverSession.id}`)
+        .send({ goal: "Invalid state" })
+        .expect(201);
       const planId: string = planResponse.body.plan.id;
       const approvalStep = planResponse.body.plan.steps.find((step: { approvalRequired: boolean }) => step.approvalRequired);
       if (!approvalStep) {
@@ -1090,21 +1198,248 @@ describe("orchestrator http api", () => {
 
       await request(app)
         .post(`/plan/${planId}/steps/${approvalStep.id}/approve`)
+        .set("Authorization", `Bearer ${approverSession.id}`)
         .send({ decision: "approve" })
         .expect(409);
     });
 
     it("returns not found when the step has no history", async () => {
       const { createServer } = await import("./index.js");
-      const app = createServer();
+      const config = createOidcEnabledConfig();
+      const approverSession = createSessionForUser(config, {
+        userId: "user-notfound",
+        tenantId: "tenant-notfound",
+        email: "missing@example.com",
+        name: "Missing Step"
+      });
+      const planSubject = {
+        sessionId: approverSession.id,
+        tenantId: "tenant-notfound",
+        userId: "user-notfound",
+        email: "missing@example.com",
+        name: "Missing Step",
+        roles: [],
+        scopes: []
+      };
+      getPlanSubjectMock.mockResolvedValue(planSubject);
+      const app = createServer(config);
 
-      const planResponse = await request(app).post("/plan").send({ goal: "Unknown step" }).expect(201);
+      const planResponse = await request(app)
+        .post("/plan")
+        .set("Authorization", `Bearer ${approverSession.id}`)
+        .send({ goal: "Unknown step" })
+        .expect(201);
       const planId: string = planResponse.body.plan.id;
 
       await request(app)
         .post(`/plan/${planId}/steps/does-not-exist/approve`)
+        .set("Authorization", `Bearer ${approverSession.id}`)
         .send({ decision: "approve" })
         .expect(404);
+    });
+
+    it("rejects approvals without an authenticated session", async () => {
+      const { createServer } = await import("./index.js");
+      const config = createOidcEnabledConfig();
+      const ownerSession = createSessionForUser(config, {
+        userId: "user-nosession",
+        tenantId: "tenant-nosession",
+        email: "owner@example.com",
+        name: "Plan Owner"
+      });
+      const planSubject = {
+        sessionId: ownerSession.id,
+        tenantId: "tenant-nosession",
+        userId: "user-nosession",
+        email: "owner@example.com",
+        name: "Plan Owner",
+        roles: [],
+        scopes: []
+      };
+      getPlanSubjectMock.mockResolvedValue(planSubject);
+      const app = createServer(config);
+
+      const planResponse = await request(app)
+        .post("/plan")
+        .set("Authorization", `Bearer ${ownerSession.id}`)
+        .send({ goal: "Require auth" })
+        .expect(201);
+      const planId: string = planResponse.body.plan.id;
+      const approvalStep = planResponse.body.plan.steps.find((step: { approvalRequired: boolean }) => step.approvalRequired);
+      if (!approvalStep) {
+        throw new Error("expected an approval-requiring step");
+      }
+      const initialPolicyCalls = policyMock.enforceHttpAction.mock.calls.length;
+
+      publishPlanStepEvent({
+        event: "plan.step",
+        traceId: "trace-nosession",
+        planId,
+        step: {
+          id: approvalStep.id,
+          action: approvalStep.action,
+          tool: approvalStep.tool,
+          state: "waiting_approval",
+          capability: approvalStep.capability,
+          capabilityLabel: approvalStep.capabilityLabel,
+          labels: approvalStep.labels,
+          timeoutSeconds: approvalStep.timeoutSeconds,
+          approvalRequired: true,
+          summary: "Awaiting approval"
+        }
+      });
+
+      const response = await request(app)
+        .post(`/plan/${planId}/steps/${approvalStep.id}/approve`)
+        .send({ decision: "approve" })
+        .expect(401);
+
+      expect(response.body.error).toBe("authentication required");
+      const { resolvePlanStepApproval } = await import("./queue/PlanQueueRuntime.js");
+      expect(resolvePlanStepApproval).not.toHaveBeenCalled();
+      expect(getPlanSubjectMock).not.toHaveBeenCalled();
+      expect(policyMock.enforceHttpAction).toHaveBeenCalledTimes(initialPolicyCalls);
+    });
+
+    it("rejects approvals from a different user", async () => {
+      const { createServer } = await import("./index.js");
+      const config = createOidcEnabledConfig();
+      const ownerSession = createSessionForUser(config, {
+        userId: "user-owner",
+        tenantId: "tenant-shared",
+        email: "owner@example.com",
+        name: "Plan Owner"
+      });
+      const attackerSession = createSessionForUser(config, {
+        userId: "user-attacker",
+        tenantId: "tenant-shared",
+        email: "attacker@example.com",
+        name: "Attacker"
+      });
+      const planSubject = {
+        sessionId: ownerSession.id,
+        tenantId: "tenant-shared",
+        userId: "user-owner",
+        email: "owner@example.com",
+        name: "Plan Owner",
+        roles: [],
+        scopes: []
+      };
+      getPlanSubjectMock.mockResolvedValue(planSubject);
+      const app = createServer(config);
+
+      const planResponse = await request(app)
+        .post("/plan")
+        .set("Authorization", `Bearer ${ownerSession.id}`)
+        .send({ goal: "Protect plan" })
+        .expect(201);
+      const planId: string = planResponse.body.plan.id;
+      const approvalStep = planResponse.body.plan.steps.find((step: { approvalRequired: boolean }) => step.approvalRequired);
+      if (!approvalStep) {
+        throw new Error("expected an approval-requiring step");
+      }
+      const initialPolicyCalls = policyMock.enforceHttpAction.mock.calls.length;
+
+      publishPlanStepEvent({
+        event: "plan.step",
+        traceId: "trace-attacker",
+        planId,
+        step: {
+          id: approvalStep.id,
+          action: approvalStep.action,
+          tool: approvalStep.tool,
+          state: "waiting_approval",
+          capability: approvalStep.capability,
+          capabilityLabel: approvalStep.capabilityLabel,
+          labels: approvalStep.labels,
+          timeoutSeconds: approvalStep.timeoutSeconds,
+          approvalRequired: true,
+          summary: "Awaiting approval"
+        }
+      });
+
+      const response = await request(app)
+        .post(`/plan/${planId}/steps/${approvalStep.id}/approve`)
+        .set("Authorization", `Bearer ${attackerSession.id}`)
+        .send({ decision: "approve" })
+        .expect(403);
+
+      expect(response.body.error).toBe("approval subject mismatch");
+      const { resolvePlanStepApproval } = await import("./queue/PlanQueueRuntime.js");
+      expect(resolvePlanStepApproval).not.toHaveBeenCalled();
+      expect(policyMock.enforceHttpAction).toHaveBeenCalledTimes(initialPolicyCalls);
+      expect(getPlanSubjectMock).toHaveBeenCalledWith(planId);
+    });
+
+    it("rejects approvals when the session id does not match even if the agent header is spoofed", async () => {
+      const { createServer } = await import("./index.js");
+      const config = createOidcEnabledConfig();
+      const ownerSession = createSessionForUser(config, {
+        userId: "user-owner-agent",
+        tenantId: "tenant-agent",
+        email: "owner-agent@example.com",
+        name: "Plan Owner Agent"
+      });
+      const spoofedSession = createSessionForUser(config, {
+        userId: "user-owner-agent",
+        tenantId: "tenant-agent",
+        email: "spoof@example.com",
+        name: "Spoofed Agent"
+      });
+      const planSubject = {
+        sessionId: ownerSession.id,
+        tenantId: "tenant-agent",
+        userId: "user-owner-agent",
+        email: "owner-agent@example.com",
+        name: "Plan Owner Agent",
+        roles: [],
+        scopes: []
+      };
+      getPlanSubjectMock.mockResolvedValue(planSubject);
+      const app = createServer(config);
+
+      const planResponse = await request(app)
+        .post("/plan")
+        .set("Authorization", `Bearer ${ownerSession.id}`)
+        .send({ goal: "Defend plan" })
+        .expect(201);
+      const planId: string = planResponse.body.plan.id;
+      const approvalStep = planResponse.body.plan.steps.find((step: { approvalRequired: boolean }) => step.approvalRequired);
+      if (!approvalStep) {
+        throw new Error("expected an approval-requiring step");
+      }
+      const initialPolicyCalls = policyMock.enforceHttpAction.mock.calls.length;
+
+      publishPlanStepEvent({
+        event: "plan.step",
+        traceId: "trace-spoof",
+        planId,
+        step: {
+          id: approvalStep.id,
+          action: approvalStep.action,
+          tool: approvalStep.tool,
+          state: "waiting_approval",
+          capability: approvalStep.capability,
+          capabilityLabel: approvalStep.capabilityLabel,
+          labels: approvalStep.labels,
+          timeoutSeconds: approvalStep.timeoutSeconds,
+          approvalRequired: true,
+          summary: "Awaiting approval"
+        }
+      });
+
+      const response = await request(app)
+        .post(`/plan/${planId}/steps/${approvalStep.id}/approve`)
+        .set("Authorization", `Bearer ${spoofedSession.id}`)
+        .set("x-agent", "code_writer")
+        .send({ decision: "approve" })
+        .expect(403);
+
+      expect(response.body.error).toBe("approval subject mismatch");
+      const { resolvePlanStepApproval } = await import("./queue/PlanQueueRuntime.js");
+      expect(resolvePlanStepApproval).not.toHaveBeenCalled();
+      expect(policyMock.enforceHttpAction).toHaveBeenCalledTimes(initialPolicyCalls);
+      expect(getPlanSubjectMock).toHaveBeenCalledWith(planId);
     });
   });
 
