@@ -11,75 +11,84 @@ import {
   logout as logoutHandler
 } from "./OidcController.js";
 import * as OidcClient from "./OidcClient.js";
+import * as Audit from "../observability/audit.js";
 
 const issuer = "https://accounts.example.com";
 const tokenEndpoint = "https://accounts.example.com/oauth/token";
 const jwksUri = "https://accounts.example.com/.well-known/jwks.json";
 const authorizationEndpoint = "https://accounts.example.com/oauth/authorize";
 
-vi.mock("../config.js", () => {
+function buildConfig() {
   return {
-    loadConfig: () => ({
-      runMode: "enterprise",
-      messaging: { type: "kafka", kafka: { brokers: [], clientId: "", consumerGroup: "", consumeFromBeginning: false, retryDelayMs: 1000, topics: { planSteps: "", planCompletions: "", planEvents: "", planState: "", deadLetterSuffix: ".dead" }, tls: { enabled: false, caPaths: [], certPath: undefined, keyPath: undefined, rejectUnauthorized: true }, sasl: undefined } },
-      providers: { defaultRoute: "balanced", enabled: [], rateLimit: { windowMs: 60000, maxRequests: 120 }, circuitBreaker: { failureThreshold: 5, resetTimeoutMs: 30000 } },
-      auth: {
-        oauth: { redirectBaseUrl: "http://127.0.0.1:8080" },
-        oidc: {
-          enabled: true,
-          issuer,
-          clientId: "client-id",
-          clientSecret: "client-secret",
-          redirectBaseUrl: "http://127.0.0.1:8080",
-          redirectUri: "http://127.0.0.1:8080/auth/oidc/callback",
-          scopes: ["openid", "profile", "email"],
-          tenantClaim: "tid",
-          audience: undefined,
-          logoutUrl: undefined,
-          roles: {
-            claim: "roles",
-            fallback: ["default-role"],
-            mappings: {},
-            tenantMappings: {}
-          },
-          session: {
-            cookieName: "oss_session",
-            ttlSeconds: 3600
-          }
-        }
-      },
-      secrets: { backend: "vault" },
-      tooling: {
-        agentEndpoint: "127.0.0.1:50051",
-        retryAttempts: 3,
-        defaultTimeoutMs: 10000
-      },
-      server: {
-        sseKeepAliveMs: 25000,
-        rateLimits: {
-          plan: { windowMs: 60000, maxRequests: 60 },
-          chat: { windowMs: 60000, maxRequests: 600 },
-          auth: { windowMs: 60000, maxRequests: 120 }
+    runMode: "enterprise" as const,
+    messaging: { type: "kafka", kafka: { brokers: [], clientId: "", consumerGroup: "", consumeFromBeginning: false, retryDelayMs: 1000, topics: { planSteps: "", planCompletions: "", planEvents: "", planState: "", deadLetterSuffix: ".dead" }, tls: { enabled: false, caPaths: [], certPath: undefined, keyPath: undefined, rejectUnauthorized: true }, sasl: undefined } },
+    providers: { defaultRoute: "balanced", enabled: [], rateLimit: { windowMs: 60000, maxRequests: 120 }, circuitBreaker: { failureThreshold: 5, resetTimeoutMs: 30000 } },
+    auth: {
+      oauth: { redirectBaseUrl: "http://127.0.0.1:8080" },
+      oidc: {
+        enabled: true,
+        issuer,
+        clientId: "client-id",
+        clientSecret: "client-secret",
+        redirectBaseUrl: "http://127.0.0.1:8080",
+        redirectUri: "http://127.0.0.1:8080/auth/oidc/callback",
+        scopes: ["openid", "profile", "email"],
+        tenantClaim: "tid",
+        audience: undefined,
+        logoutUrl: undefined,
+        roles: {
+          claim: "roles",
+          fallback: ["default-role"],
+          mappings: {},
+          tenantMappings: {}
         },
-        tls: {
-          enabled: false,
-          keyPath: undefined,
-          certPath: undefined,
-          caPaths: [],
-          requestClientCert: true
-        }
-      },
-      observability: {
-        tracing: {
-          enabled: false,
-          serviceName: "orchestrator",
-          environment: "test",
-          exporterEndpoint: "http://localhost:4318/v1/traces",
-          exporterHeaders: {},
-          sampleRatio: 1
+        session: {
+          cookieName: "oss_session",
+          ttlSeconds: 3600
         }
       }
-    })
+    },
+    secrets: { backend: "vault" },
+    tooling: {
+      agentEndpoint: "127.0.0.1:50051",
+      retryAttempts: 3,
+      defaultTimeoutMs: 10000
+    },
+    server: {
+      sseKeepAliveMs: 25000,
+      rateLimits: {
+        plan: { windowMs: 60000, maxRequests: 60 },
+        chat: { windowMs: 60000, maxRequests: 600 },
+        auth: { windowMs: 60000, maxRequests: 120 }
+      },
+      tls: {
+        enabled: false,
+        keyPath: undefined,
+        certPath: undefined,
+        caPaths: [],
+        requestClientCert: true
+      }
+    },
+    observability: {
+      tracing: {
+        enabled: false,
+        serviceName: "orchestrator",
+        environment: "test",
+        exporterEndpoint: "http://localhost:4318/v1/traces",
+        exporterHeaders: {},
+        sampleRatio: 1
+      }
+    }
+  };
+}
+
+type TestConfig = ReturnType<typeof buildConfig>;
+
+let testConfig: TestConfig = buildConfig();
+
+vi.mock("../config.js", () => {
+  return {
+    loadConfig: () => testConfig,
   };
 });
 
@@ -111,6 +120,7 @@ const originalFetch = globalThis.fetch;
 const fetchMock = vi.fn<typeof fetch>();
 
 beforeEach(() => {
+  testConfig = buildConfig();
   sessionStore.clear();
   fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = typeof input === "string" ? input : input.toString();
@@ -226,6 +236,58 @@ describe("OidcController", () => {
       .get("/auth/session")
       .set("Cookie", sessionCookie as string);
     expect(postLogout.status).toBe(401);
+  });
+
+  it("resolves tenant id from nested claim values and records it in audit logs", async () => {
+    testConfig.auth.oidc.tenantClaim = "realm.tenant";
+    const verifySpy = vi.mocked(OidcClient.verifyIdToken);
+    verifySpy.mockResolvedValueOnce({
+      payload: {
+        sub: "user-456",
+        email: "nested@example.com",
+        name: "Nested User",
+        realm: { tenant: "nested-tenant" },
+        roles: ["analyst"],
+        exp: Math.floor(Date.now() / 1000) + 3600
+      }
+    } as any);
+    const auditSpy = vi.spyOn(Audit, "logAuditEvent");
+
+    const app = createApp();
+    const response = await request(app)
+      .post("/auth/oidc/callback")
+      .send({
+        code: "auth-code",
+        code_verifier: "v".repeat(64),
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback"
+      });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(response.body).toMatchObject({ tenantId: "nested-tenant" });
+
+    const nestedCookies = response.headers["set-cookie"];
+    const nestedCookieList = Array.isArray(nestedCookies)
+      ? nestedCookies
+      : nestedCookies
+        ? [nestedCookies]
+        : [];
+    const sessionCookie = nestedCookieList.find((cookie) =>
+      cookie.startsWith("oss_session="),
+    );
+    expect(sessionCookie).toBeDefined();
+
+    const sessionCheck = await request(app)
+      .get("/auth/session")
+      .set("Cookie", sessionCookie as string);
+    expect(sessionCheck.status).toBe(200);
+    expect(sessionCheck.body.session).toMatchObject({ tenantId: "nested-tenant" });
+
+    const auditCall = auditSpy.mock.calls.find(
+      ([event]) => event.action === "auth.oidc.callback" && event.outcome === "success",
+    );
+    expect(auditCall).toBeDefined();
+    expect(auditCall?.[0].details?.tenantId).toBe("nested-tenant");
+    expect(auditCall?.[0].subject?.tenantId).toBe("nested-tenant");
   });
 
   it("rejects callbacks when the id token is already expired", async () => {
