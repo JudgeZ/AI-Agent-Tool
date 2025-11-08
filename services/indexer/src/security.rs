@@ -4,7 +4,6 @@ use std::path::{Component, Path, PathBuf};
 use regex::Regex;
 use thiserror::Error;
 
-const DEFAULT_ALLOWED_PREFIXES: [&str; 1] = ["/"];
 const DEFAULT_DLP_PATTERNS: [&str; 5] = [
     r"-----BEGIN (?:RSA|DSA|EC|PGP) PRIVATE KEY-----",
     r"AKIA[0-9A-Z]{16}",
@@ -92,12 +91,7 @@ impl SecurityConfig {
                     .collect::<Vec<_>>()
             })
             .filter(|entries| !entries.is_empty())
-            .unwrap_or_else(|| {
-                DEFAULT_ALLOWED_PREFIXES
-                    .iter()
-                    .map(|s| s.to_string())
-                    .collect()
-            });
+            .unwrap_or_else(Vec::new);
 
         let mut patterns: Vec<Regex> = DEFAULT_DLP_PATTERNS
             .iter()
@@ -192,6 +186,10 @@ impl SecurityConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::env;
+    use std::sync::Mutex;
+
+    static ENV_MUTEX: Mutex<()> = Mutex::new(());
 
     #[test]
     fn acl_allows_prefixes() {
@@ -222,6 +220,27 @@ mod tests {
             config.check_path("src/lib.rs"),
             Err(SecurityError::AclViolation(_))
         ));
+    }
+
+    #[test]
+    fn from_env_requires_explicit_allowlist() {
+        let _guard = ENV_MUTEX.lock().unwrap();
+        let original = env::var("INDEXER_ACL_ALLOW").ok();
+        env::remove_var("INDEXER_ACL_ALLOW");
+
+        let config = SecurityConfig::from_env();
+
+        assert!(!config.is_allowed("src/lib.rs"));
+        assert!(matches!(
+            config.check_path("src/lib.rs"),
+            Err(SecurityError::AclViolation(_))
+        ));
+
+        if let Some(value) = original {
+            env::set_var("INDEXER_ACL_ALLOW", value);
+        } else {
+            env::remove_var("INDEXER_ACL_ALLOW");
+        }
     }
 
     #[test]

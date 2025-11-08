@@ -141,7 +141,7 @@ The Rust indexer exposes two primary interfaces:
 
 Before content is embedded or indexed, the service enforces basic access control and data loss prevention policies:
 
-- `INDEXER_ACL_ALLOW` – comma-separated list of path prefixes permitted for ingestion (e.g. `src/,docs/public/`). Defaults to allowing all paths.
+- `INDEXER_ACL_ALLOW` – **required** comma-separated list of path prefixes permitted for ingestion (e.g. `src/,docs/public/`). When unset the service rejects all paths, so production deployments must provide an explicit allowlist.
 - `INDEXER_DLP_BLOCK_PATTERNS` – optional comma-separated list of additional regexes. These are appended to built-in checks for private keys, API tokens, and other secret markers. Matches are rejected with HTTP 422.
 
 Results from search/history endpoints automatically omit paths that violate the ACL, and history requests return HTTP 403 when the caller is not authorised for the path.
