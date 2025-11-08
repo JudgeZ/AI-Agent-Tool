@@ -81,6 +81,7 @@ const ENV_KEYS = [
   "RETENTION_PLAN_STATE_DAYS",
   "RETENTION_PLAN_ARTIFACT_DAYS",
   "CONTENT_CAPTURE_ENABLED",
+  "PLAN_STATE_BACKEND",
   "SSE_MAX_CONNECTIONS_PER_IP",
   "SSE_MAX_CONNECTIONS_PER_SUBJECT"
 ] as const;
@@ -289,6 +290,7 @@ observability:
         ttlSeconds: 14400
       }
     });
+    expect(config.planState.backend).toBe("postgres");
     expect(config.secrets.backend).toBe("vault");
     expect(config.server.sseKeepAliveMs).toBe(10000);
     expect(config.server.rateLimits.plan).toEqual({ windowMs: 120000, maxRequests: 20 });
@@ -385,6 +387,7 @@ runMode: enterprise
       mappings: {},
       tenantMappings: {}
     });
+    expect(config.planState.backend).toBe("postgres");
     expect(config.server.rateLimits.plan).toEqual({ windowMs: 60000, maxRequests: 60 });
     expect(config.server.rateLimits.chat).toEqual({ windowMs: 60000, maxRequests: 600 });
     expect(config.server.rateLimits.auth).toEqual({ windowMs: 60000, maxRequests: 120 });

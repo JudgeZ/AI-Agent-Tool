@@ -83,6 +83,12 @@ export type ContentCaptureConfig = {
   enabled: boolean;
 };
 
+export type PlanStateBackend = "file" | "postgres";
+
+export type PlanStateConfig = {
+  backend: PlanStateBackend;
+};
+
 export type RetentionConfig = {
   planStateDays: number;
   planArtifactsDays: number;
@@ -129,6 +135,7 @@ export type AppConfig = {
     oauth: { redirectBaseUrl: string };
     oidc: OidcAuthConfig;
   };
+  planState: PlanStateConfig;
   retention: RetentionConfig;
   secrets: { backend: "localfile" | "vault" };
   tooling: {
@@ -229,6 +236,10 @@ type PartialRetentionConfig = {
   contentCapture?: PartialContentCaptureConfig;
 };
 
+type PartialPlanStateConfig = {
+  backend?: PlanStateBackend;
+};
+
 type PartialAuthConfig = {
   oauth?: Partial<AppConfig["auth"]["oauth"]>;
   oidc?: PartialOidcAuthConfig;
@@ -246,6 +257,7 @@ type PartialAppConfig = {
   messaging?: PartialMessagingConfig;
   providers?: PartialProvidersConfig;
   auth?: PartialAuthConfig;
+  planState?: PartialPlanStateConfig;
   retention?: PartialRetentionConfig;
   secrets?: Partial<AppConfig["secrets"]>;
   tooling?: PartialToolingConfig;
@@ -330,6 +342,9 @@ const DEFAULT_CONFIG: AppConfig = {
         ttlSeconds: 60 * 60 * 8
       }
     }
+  },
+  planState: {
+    backend: "file"
   },
   retention: {
     planStateDays: 30,
@@ -491,6 +506,22 @@ function asDefaultRoute(value: unknown): AppConfig["providers"]["defaultRoute"] 
 
 function asSecretsBackend(value: unknown): AppConfig["secrets"]["backend"] | undefined {
   return value === "localfile" || value === "vault" ? value : undefined;
+}
+
+function asPlanStateBackend(value: unknown): PlanStateBackend | undefined {
+  if (value === "file" || value === "postgres") {
+    return value;
+  }
+  if (typeof value === "string") {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === "file" || normalized === "json" || normalized === "local") {
+      return "file";
+    }
+    if (normalized === "postgres" || normalized === "postgresql" || normalized === "shared") {
+      return "postgres";
+    }
+  }
+  return undefined;
 }
 
 function asNumber(value: unknown): number | undefined {
@@ -1316,6 +1347,10 @@ export function loadConfig(): AppConfig {
         const observability = asRecord(doc.observability);
         const tracing = parseTracingConfigRecord(observability?.tracing);
         const retention = parseRetentionConfigRecord(doc.retention);
+        const planStateRecord = asRecord(doc.planState ?? doc.plan_state);
+        const planStateBackendFromFile = planStateRecord
+          ? asPlanStateBackend(planStateRecord.backend)
+          : undefined;
 
         const providerRateLimit = providers ? parseRateLimitConfig(providers.rateLimit) : undefined;
         const providerCircuitBreaker = providers ? parseCircuitBreakerConfig(providers.circuitBreaker) : undefined;
@@ -1368,6 +1403,7 @@ export function loadConfig(): AppConfig {
               }
             : undefined,
           auth: hasAuthConfig ? authPartial : undefined,
+          planState: planStateBackendFromFile ? { backend: planStateBackendFromFile } : undefined,
           retention,
           secrets: { backend: asSecretsBackend(secrets?.backend) },
           tooling: tooling
@@ -1498,6 +1534,7 @@ export function loadConfig(): AppConfig {
   const envOidcSessionTtl = asNumber(process.env.OIDC_SESSION_TTL_SECONDS);
   const envPlanStateRetentionDays = asNumber(process.env.RETENTION_PLAN_STATE_DAYS);
   const envPlanArtifactRetentionDays = asNumber(process.env.RETENTION_PLAN_ARTIFACT_DAYS);
+  const envPlanStateBackend = asPlanStateBackend(process.env.PLAN_STATE_BACKEND);
   const envContentCaptureEnabled = asBoolean(process.env.CONTENT_CAPTURE_ENABLED);
   const envOidcRoleClaim = process.env.OIDC_ROLE_CLAIM?.trim();
   const envOidcFallbackRoles = parseRolesValue(process.env.OIDC_DEFAULT_ROLES);
@@ -1583,6 +1620,8 @@ export function loadConfig(): AppConfig {
   };
 
   const runMode = fileCfg.runMode ?? envRunMode ?? DEFAULT_CONFIG.runMode;
+  const defaultPlanStateBackend = runMode === "enterprise" ? "postgres" : DEFAULT_CONFIG.planState.backend;
+  const planStateBackend = envPlanStateBackend ?? fileCfg.planState?.backend ?? defaultPlanStateBackend;
 
   const secretsDefault = runMode === "enterprise" ? "vault" : DEFAULT_CONFIG.secrets.backend;
   const providersEnabledDefault = DEFAULT_CONFIG.providers.enabled;
@@ -1841,6 +1880,9 @@ export function loadConfig(): AppConfig {
           ttlSeconds: resolvedOidcSessionTtlSeconds
         }
       }
+    },
+    planState: {
+      backend: planStateBackend
     },
     retention: {
       planStateDays: retentionPlanStateDays,
