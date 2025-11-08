@@ -135,6 +135,8 @@ The Rust indexer exposes two primary interfaces:
 
   `max_depth`, `max_nodes`, and `include_snippet` are optional and default to safe limits. Unsupported languages return HTTP 400.
 
+- `POST /semantic/documents` – ingests file content into the semantic store. Payloads must include a repository-relative `path` and `content`. The service enforces a maximum payload size of 512 KiB by default and returns HTTP 413 when the limit is exceeded. Adjust the ceiling with `INDEXER_MAX_CONTENT_LENGTH=<bytes>` (e.g. `INDEXER_MAX_CONTENT_LENGTH=1048576` for 1 MiB) when operating on larger files.
+
 - LSP server (tower-lsp) – offers hover, go-to-definition, and reference lookups. It listens on `INDEXER_LSP_ADDR` (default `127.0.0.1:9257`). Override with `INDEXER_LSP_ADDR=0.0.0.0:9257` to expose the server on another interface.
 
 ### ACL and DLP controls
