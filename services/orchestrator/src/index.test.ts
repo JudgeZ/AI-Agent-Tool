@@ -569,6 +569,295 @@ describe("orchestrator http api", () => {
     }
   });
 
+  it("keeps SSE streams alive when write backpressure occurs", async () => {
+    const { createServer, createHttpServer } = await import("./index.js");
+    const { loadConfig } = await import("./config.js");
+
+    const baseConfig = loadConfig();
+    const config = {
+      ...baseConfig,
+      server: {
+        ...baseConfig.server,
+        sseKeepAliveMs: 50,
+      },
+    };
+
+    const app = createServer(config);
+    const planResponse = await request(app)
+      .post("/plan")
+      .send({ goal: "backpressure resilience" })
+      .expect(201);
+
+    const planId: string = planResponse.body.plan.id;
+    const firstStep = planResponse.body.plan.steps[0];
+    if (!firstStep) {
+      throw new Error("expected a plan step to exist");
+    }
+
+    const server = createHttpServer(app, config);
+    await new Promise<void>((resolve) => {
+      server.listen(0, resolve);
+    });
+
+    let serverClosed = false;
+    const address = server.address() as AddressInfo | null;
+    if (!address || typeof address.port !== "number") {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve();
+        });
+      });
+      serverClosed = true;
+      throw new Error("failed to determine server address");
+    }
+
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const openSse = (url: string) =>
+      new Promise<{ request: http.ClientRequest; response: http.IncomingMessage }>((resolve, reject) => {
+        const req = http.request(
+          url,
+          {
+            headers: {
+              Accept: "text/event-stream",
+            },
+          },
+          (res) => {
+            resolve({ request: req, response: res });
+          },
+        );
+        req.on("error", reject);
+        req.end();
+      });
+
+    const originalWrite = http.ServerResponse.prototype.write;
+    let backpressureApplied = false;
+    const writeSpy = vi
+      .spyOn(http.ServerResponse.prototype, "write")
+      .mockImplementation(function (this: http.ServerResponse, chunk: unknown, encoding?: unknown, cb?: unknown) {
+        if (
+          !backpressureApplied &&
+          typeof chunk === "string" &&
+          chunk.includes("backpressure-event-1")
+        ) {
+          backpressureApplied = true;
+          originalWrite.call(this, chunk as never, encoding as never, cb as never);
+          setTimeout(() => {
+            this.emit("drain");
+          }, 50);
+          return false;
+        }
+        return originalWrite.call(this, chunk as never, encoding as never, cb as never);
+      });
+
+    let connection: { request: http.ClientRequest; response: http.IncomingMessage } | undefined;
+    try {
+      connection = await openSse(`${baseUrl}/plan/${planId}/events`);
+      expect(connection.response.statusCode).toBe(200);
+      connection.response.setEncoding("utf8");
+
+      let closed = false;
+      connection.response.on("close", () => {
+        closed = true;
+      });
+
+      const received: string[] = [];
+      connection.response.on("data", (chunk) => {
+        received.push(chunk);
+      });
+
+      publishPlanStepEvent({
+        event: "plan.step",
+        traceId: "trace-backpressure-1",
+        planId,
+        step: {
+          id: firstStep.id,
+          action: firstStep.action,
+          tool: firstStep.tool,
+          state: "queued",
+          capability: firstStep.capability,
+          capabilityLabel: firstStep.capabilityLabel,
+          labels: firstStep.labels,
+          timeoutSeconds: firstStep.timeoutSeconds,
+          approvalRequired: firstStep.approvalRequired,
+          summary: "backpressure-event-1",
+        },
+      });
+
+      setTimeout(() => {
+        publishPlanStepEvent({
+          event: "plan.step",
+          traceId: "trace-backpressure-2",
+          planId,
+          step: {
+            id: firstStep.id,
+            action: firstStep.action,
+            tool: firstStep.tool,
+            state: "running",
+            capability: firstStep.capability,
+            capabilityLabel: firstStep.capabilityLabel,
+            labels: firstStep.labels,
+            timeoutSeconds: firstStep.timeoutSeconds,
+            approvalRequired: firstStep.approvalRequired,
+            summary: "backpressure-event-2",
+          },
+        });
+      }, 10);
+
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      expect(closed).toBe(false);
+      const payload = received.join("");
+      expect(payload).toContain("backpressure-event-1");
+      expect(payload).toContain("backpressure-event-2");
+    } finally {
+      writeSpy.mockRestore();
+      if (connection) {
+        connection.request.destroy();
+        connection.response.destroy();
+      }
+      if (!serverClosed) {
+        await new Promise<void>((resolve, reject) => {
+          server.close((err) => {
+            if (err) {
+              reject(err);
+              return;
+            }
+            serverClosed = true;
+            resolve();
+          });
+        });
+      }
+    }
+  });
+
+  it("queues keep-alive writes when backpressure occurs", async () => {
+    const { createServer, createHttpServer } = await import("./index.js");
+    const { loadConfig } = await import("./config.js");
+
+    const baseConfig = loadConfig();
+    const config = {
+      ...baseConfig,
+      server: {
+        ...baseConfig.server,
+        sseKeepAliveMs: 25,
+      },
+    };
+
+    const app = createServer(config);
+    const planResponse = await request(app)
+      .post("/plan")
+      .send({ goal: "keep alive backpressure" })
+      .expect(201);
+
+    const planId: string = planResponse.body.plan.id;
+
+    const server = createHttpServer(app, config);
+    await new Promise<void>((resolve) => {
+      server.listen(0, resolve);
+    });
+
+    let serverClosed = false;
+    const address = server.address() as AddressInfo | null;
+    if (!address || typeof address.port !== "number") {
+      await new Promise<void>((resolve, reject) => {
+        server.close((err) => {
+          if (err) {
+            reject(err);
+            return;
+          }
+          resolve();
+        });
+      });
+      serverClosed = true;
+      throw new Error("failed to determine server address");
+    }
+
+    const baseUrl = `http://127.0.0.1:${address.port}`;
+    const openSse = (url: string) =>
+      new Promise<{ request: http.ClientRequest; response: http.IncomingMessage }>((resolve, reject) => {
+        const req = http.request(
+          url,
+          {
+            headers: {
+              Accept: "text/event-stream",
+            },
+          },
+          (res) => {
+            resolve({ request: req, response: res });
+          },
+        );
+        req.on("error", reject);
+        req.end();
+      });
+
+    const originalWrite = http.ServerResponse.prototype.write;
+    let keepAliveBackpressured = false;
+    const writeSpy = vi
+      .spyOn(http.ServerResponse.prototype, "write")
+      .mockImplementation(function (this: http.ServerResponse, chunk: unknown, encoding?: unknown, cb?: unknown) {
+        if (
+          !keepAliveBackpressured &&
+          typeof chunk === "string" &&
+          chunk.trim() === ": keep-alive"
+        ) {
+          keepAliveBackpressured = true;
+          originalWrite.call(this, chunk as never, encoding as never, cb as never);
+          setTimeout(() => {
+            this.emit("drain");
+          }, 100);
+          return false;
+        }
+        return originalWrite.call(this, chunk as never, encoding as never, cb as never);
+      });
+
+    let connection: { request: http.ClientRequest; response: http.IncomingMessage } | undefined;
+    try {
+      connection = await openSse(`${baseUrl}/plan/${planId}/events`);
+      expect(connection.response.statusCode).toBe(200);
+      connection.response.setEncoding("utf8");
+
+      let closed = false;
+      connection.response.on("close", () => {
+        closed = true;
+      });
+
+      const received: string[] = [];
+      connection.response.on("data", (chunk) => {
+        received.push(chunk);
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 200));
+
+      expect(closed).toBe(false);
+      const payload = received.join("");
+      const keepAliveOccurrences = payload.split(": keep-alive").length - 1;
+      expect(keepAliveOccurrences).toBeGreaterThanOrEqual(2);
+      expect(keepAliveBackpressured).toBe(true);
+    } finally {
+      writeSpy.mockRestore();
+      if (connection) {
+        connection.request.destroy();
+        connection.response.destroy();
+      }
+      if (!serverClosed) {
+        await new Promise<void>((resolve, reject) => {
+          server.close((err) => {
+            if (err) {
+              reject(err);
+              return;
+            }
+            serverClosed = true;
+            resolve();
+          });
+        });
+      }
+    }
+  });
+
   it("denies plan event history when subject does not match plan owner", async () => {
     const { createServer } = await import("./index.js");
     const app = createServer();

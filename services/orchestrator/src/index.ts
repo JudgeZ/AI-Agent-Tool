@@ -600,15 +600,74 @@ export function createServer(appConfig?: AppConfig): Express {
 
       let replayingHistory = true;
       const buffered: PlanStepEvent[] = [];
+      const pendingChunks: string[] = [];
       let keepAlive: NodeJS.Timeout | undefined;
       let cleanedUp = false;
+      let waitingForDrain = false;
       let unsubscribe: () => void = () => {};
+
+      const handleDrain = () => {
+        waitingForDrain = false;
+        flushPendingChunks();
+      };
+
+      const awaitDrain = () => {
+        if (cleanedUp) {
+          return;
+        }
+        waitingForDrain = true;
+        res.once("drain", handleDrain);
+      };
+
+      const flushPendingChunks = () => {
+        if (cleanedUp || waitingForDrain) {
+          return;
+        }
+        while (pendingChunks.length > 0) {
+          const nextChunk = pendingChunks[0];
+          try {
+            const ok = res.write(nextChunk);
+            if (!ok) {
+              awaitDrain();
+              return;
+            }
+            pendingChunks.shift();
+          } catch {
+            cleanup();
+            return;
+          }
+        }
+      };
+
+      const sendChunk = (chunk: string): boolean => {
+        if (cleanedUp) {
+          return false;
+        }
+        if (waitingForDrain || pendingChunks.length > 0) {
+          pendingChunks.push(chunk);
+          flushPendingChunks();
+          return !cleanedUp;
+        }
+        try {
+          const ok = res.write(chunk);
+          if (!ok) {
+            awaitDrain();
+          }
+          return true;
+        } catch {
+          cleanup();
+          return false;
+        }
+      };
 
       const cleanup = () => {
         if (cleanedUp) {
           return;
         }
         cleanedUp = true;
+        waitingForDrain = false;
+        pendingChunks.length = 0;
+        res.removeListener("drain", handleDrain);
         if (keepAlive) {
           clearInterval(keepAlive);
           keepAlive = undefined;
@@ -625,20 +684,8 @@ export function createServer(appConfig?: AppConfig): Express {
       };
 
       const writeEvent = (event: PlanStepEvent): boolean => {
-        if (cleanedUp) {
-          return false;
-        }
-        try {
-          const ok = res.write(formatSse(event));
-          if (!ok) {
-            cleanup();
-            return false;
-          }
-          return true;
-        } catch {
-          cleanup();
-          return false;
-        }
+        const chunk = formatSse(event);
+        return sendChunk(chunk);
       };
 
       unsubscribe = subscribeToPlanSteps(planId, (event) => {
@@ -670,12 +717,9 @@ export function createServer(appConfig?: AppConfig): Express {
           cleanup();
           return;
         }
-        try {
-          const ok = res.write(": keep-alive\n\n");
-          if (!ok) {
-            cleanup();
-          }
-        } catch {
+        const keepAliveChunk = ": keep-alive\n\n";
+        const ok = sendChunk(keepAliveChunk);
+        if (!ok) {
           cleanup();
         }
       };
