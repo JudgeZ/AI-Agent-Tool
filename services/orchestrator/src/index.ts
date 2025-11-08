@@ -829,7 +829,19 @@ export function createServer(appConfig?: AppConfig): Express {
           const userMatches =
             typeof planSubject.userId === "string" &&
             planSubject.userId === requestSubject.user.id;
-          if (!tenantMatches || !userMatches) {
+          const sessionMatches =
+            typeof planSubject.sessionId === "string" &&
+            planSubject.sessionId.length > 0 &&
+            planSubject.sessionId === requestSubject.sessionId;
+          let mismatchReason: "tenant_mismatch" | "user_mismatch" | "session_mismatch" | undefined;
+          if (!tenantMatches) {
+            mismatchReason = "tenant_mismatch";
+          } else if (!userMatches) {
+            mismatchReason = "user_mismatch";
+          } else if (!sessionMatches) {
+            mismatchReason = "session_mismatch";
+          }
+          if (mismatchReason) {
             logAuditEvent({
               action: "plan.step.approval",
               outcome: "denied",
@@ -841,7 +853,7 @@ export function createServer(appConfig?: AppConfig): Express {
               details: {
                 planId,
                 stepId,
-                reason: "subject_mismatch",
+                reason: mismatchReason,
               },
             });
             res.status(403).json({ error: "approval subject mismatch" });
