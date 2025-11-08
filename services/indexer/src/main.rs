@@ -469,6 +469,34 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn add_document_requires_allowlist_configuration() {
+        let security = security::SecurityConfig::with_rules(Vec::<String>::new(), Vec::new());
+        let state = AppState::new(security);
+        let app = Router::new()
+            .route("/semantic/documents", axum_post(add_semantic_document))
+            .with_state(state);
+
+        let payload = serde_json::json!({
+            "path": "src/lib.rs",
+            "content": "fn main() {}",
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/semantic/documents")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    }
+
+    #[tokio::test]
     async fn add_document_blocks_dlp_patterns() {
         let security = security::SecurityConfig::with_rules(
             vec!["/".into()],
