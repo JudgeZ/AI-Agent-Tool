@@ -829,11 +829,21 @@ export function createServer(appConfig?: AppConfig): Express {
           const userMatches =
             typeof planSubject.userId === "string" &&
             planSubject.userId === requestSubject.user.id;
-          let mismatchReason: "tenant_mismatch" | "user_mismatch" | undefined;
+          const sessionMatches =
+            typeof planSubject.sessionId === "string" &&
+            typeof requestSubject.sessionId === "string" &&
+            planSubject.sessionId === requestSubject.sessionId;
+          let mismatchReason:
+            | "tenant_mismatch"
+            | "user_mismatch"
+            | "session_mismatch"
+            | undefined;
           if (!tenantMatches) {
             mismatchReason = "tenant_mismatch";
           } else if (!userMatches) {
             mismatchReason = "user_mismatch";
+          } else if (!sessionMatches) {
+            mismatchReason = "session_mismatch";
           }
           if (mismatchReason) {
             logAuditEvent({
