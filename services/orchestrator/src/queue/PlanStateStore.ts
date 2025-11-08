@@ -3,10 +3,12 @@ import path from "node:path";
 
 import { randomUUID } from "node:crypto";
 
+import type { Pool } from "pg";
+
 import type { PlanStep, PlanSubject } from "../plan/planner.js";
 import type { PlanStepState } from "../plan/validation.js";
 
-type PersistedStep = {
+export type PersistedStep = {
   id: string;
   planId: string;
   stepId: string;
@@ -28,12 +30,12 @@ type PersistedDocument = {
   steps: PersistedStep[];
 };
 
-type PlanStateStoreOptions = {
+type FilePlanStateStoreOptions = {
   filePath?: string;
   retentionMs?: number;
 };
 
-type RememberStepOptions = {
+export type RememberStepOptions = {
   initialState?: PlanStepState;
   idempotencyKey?: string;
   attempt?: number;
@@ -42,7 +44,7 @@ type RememberStepOptions = {
   subject?: PlanSubject;
 };
 
-const TERMINAL_STATES: ReadonlySet<PlanStepState> = new Set([
+export const TERMINAL_STATES: ReadonlySet<PlanStepState> = new Set([
   "completed",
   "failed",
   "rejected",
@@ -57,14 +59,44 @@ function defaultPath(): string {
   return path.join(process.cwd(), "data", "plan-state.json");
 }
 
-export class PlanStateStore {
+export interface PlanStatePersistence {
+  rememberStep(
+    planId: string,
+    step: PlanStep,
+    traceId: string,
+    options: {
+      initialState?: PlanStepState;
+      idempotencyKey: string;
+      attempt: number;
+      createdAt: string;
+      approvals?: Record<string, boolean>;
+      subject?: PlanSubject;
+    }
+  ): Promise<void>;
+  setState(
+    planId: string,
+    stepId: string,
+    state: PlanStepState,
+    summary?: string,
+    output?: Record<string, unknown>,
+    attempt?: number
+  ): Promise<void>;
+  recordApproval(planId: string, stepId: string, capability: string, granted: boolean): Promise<void>;
+  forgetStep(planId: string, stepId: string): Promise<void>;
+  listActiveSteps(): Promise<PersistedStep[]>;
+  getEntry(planId: string, stepId: string): Promise<PersistedStep | undefined>;
+  getStep(planId: string, stepId: string): Promise<{ step: PlanStep; traceId: string } | undefined>;
+  clear(): Promise<void>;
+}
+
+export class FilePlanStateStore implements PlanStatePersistence {
   private readonly filePath: string;
   private readonly retentionMs: number | null;
   private loaded = false;
   private readonly records = new Map<string, PersistedStep>();
   private persistChain: Promise<void> = Promise.resolve();
 
-  constructor(options?: PlanStateStoreOptions) {
+  constructor(options?: FilePlanStateStoreOptions) {
     this.filePath = options?.filePath ?? defaultPath();
     this.retentionMs = options?.retentionMs && options.retentionMs > 0 ? options.retentionMs : null;
   }
@@ -305,6 +337,314 @@ export class PlanStateStore {
   }
 }
 
-export function createPlanStateStore(options?: PlanStateStoreOptions): PlanStateStore {
-  return new PlanStateStore(options);
+type PostgresPlanStateStoreOptions = {
+  retentionMs?: number;
+};
+
+type PlanStateRow = {
+  plan_id: string;
+  step_id: string;
+  id: string;
+  trace_id: string;
+  step: PlanStep;
+  state: PlanStepState;
+  summary: string | null;
+  output: Record<string, unknown> | null;
+  updated_at: string | Date;
+  attempt: number;
+  idempotency_key: string;
+  created_at: string | Date;
+  approvals: Record<string, boolean> | null;
+  subject: PlanSubject | null;
+};
+
+function cloneSubject(subject: PlanSubject | undefined): PlanSubject | undefined {
+  if (!subject) {
+    return undefined;
+  }
+  return {
+    ...subject,
+    roles: [...subject.roles],
+    scopes: [...subject.scopes],
+  };
 }
+
+function cloneStep(step: PlanStep): PlanStep {
+  return {
+    ...step,
+    labels: [...step.labels],
+  };
+}
+
+export class PostgresPlanStateStore implements PlanStatePersistence {
+  private readonly retentionMs: number | null;
+  private readonly ready: Promise<void>;
+
+  constructor(private readonly pool: Pool, options?: PostgresPlanStateStoreOptions) {
+    this.retentionMs = options?.retentionMs && options.retentionMs > 0 ? options.retentionMs : null;
+    this.ready = this.initialize();
+  }
+
+  async rememberStep(
+    planId: string,
+    step: PlanStep,
+    traceId: string,
+    options: {
+      initialState?: PlanStepState;
+      idempotencyKey: string;
+      attempt: number;
+      createdAt: string;
+      approvals?: Record<string, boolean>;
+      subject?: PlanSubject;
+    }
+  ): Promise<void> {
+    await this.ready;
+    await this.purgeExpired();
+    const now = new Date();
+    const createdAt = this.parseTimestamp(options.createdAt) ?? now;
+    const subject = options.subject ? cloneSubject(options.subject) : null;
+    const storedStep = cloneStep(step);
+    await this.pool.query(
+      `INSERT INTO plan_state (
+        plan_id,
+        step_id,
+        id,
+        trace_id,
+        step,
+        state,
+        summary,
+        output,
+        updated_at,
+        attempt,
+        idempotency_key,
+        created_at,
+        approvals,
+        subject
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      ON CONFLICT (plan_id, step_id)
+      DO UPDATE SET
+        id = EXCLUDED.id,
+        trace_id = EXCLUDED.trace_id,
+        step = EXCLUDED.step,
+        state = EXCLUDED.state,
+        summary = EXCLUDED.summary,
+        output = EXCLUDED.output,
+        updated_at = EXCLUDED.updated_at,
+        attempt = EXCLUDED.attempt,
+        idempotency_key = EXCLUDED.idempotency_key,
+        created_at = EXCLUDED.created_at,
+        approvals = EXCLUDED.approvals,
+        subject = EXCLUDED.subject`,
+      [
+        planId,
+        step.id,
+        randomUUID(),
+        traceId,
+        storedStep,
+        options.initialState ?? "queued",
+        null,
+        null,
+        now,
+        options.attempt,
+        options.idempotencyKey,
+        createdAt,
+        options.approvals ?? {},
+        subject ?? null,
+      ],
+    );
+  }
+
+  async setState(
+    planId: string,
+    stepId: string,
+    state: PlanStepState,
+    summary?: string,
+    output?: Record<string, unknown>,
+    attempt?: number,
+  ): Promise<void> {
+    await this.ready;
+    await this.purgeExpired();
+    if (TERMINAL_STATES.has(state)) {
+      await this.pool.query(`DELETE FROM plan_state WHERE plan_id = $1 AND step_id = $2`, [planId, stepId]);
+      return;
+    }
+    const updatedAt = new Date();
+    await this.pool.query(
+      `UPDATE plan_state
+        SET state = $3,
+            summary = $4,
+            output = $5,
+            updated_at = $6,
+            attempt = COALESCE($7, attempt)
+        WHERE plan_id = $1 AND step_id = $2`,
+      [planId, stepId, state, summary ?? null, output ?? null, updatedAt, attempt ?? null],
+    );
+  }
+
+  async recordApproval(planId: string, stepId: string, capability: string, granted: boolean): Promise<void> {
+    await this.ready;
+    await this.purgeExpired();
+    const existing = await this.pool.query<{ approvals: Record<string, boolean> | null }>(
+      `SELECT approvals FROM plan_state WHERE plan_id = $1 AND step_id = $2`,
+      [planId, stepId],
+    );
+    if (existing.rowCount === 0) {
+      return;
+    }
+    const approvals = { ...(existing.rows[0]?.approvals ?? {}) };
+    if (granted) {
+      approvals[capability] = true;
+    } else {
+      delete approvals[capability];
+    }
+    await this.pool.query(
+      `UPDATE plan_state SET approvals = $3, updated_at = $4 WHERE plan_id = $1 AND step_id = $2`,
+      [planId, stepId, approvals, new Date()],
+    );
+  }
+
+  async forgetStep(planId: string, stepId: string): Promise<void> {
+    await this.ready;
+    await this.purgeExpired();
+    await this.pool.query(`DELETE FROM plan_state WHERE plan_id = $1 AND step_id = $2`, [planId, stepId]);
+  }
+
+  async listActiveSteps(): Promise<PersistedStep[]> {
+    await this.ready;
+    await this.purgeExpired();
+    const result = await this.pool.query<PlanStateRow>(
+      `SELECT plan_id, step_id, id, trace_id, step, state, summary, output, updated_at, attempt, idempotency_key, created_at, approvals, subject
+       FROM plan_state`,
+    );
+    return result.rows.map((row: PlanStateRow) => this.toPersistedStep(row));
+  }
+
+  async getEntry(planId: string, stepId: string): Promise<PersistedStep | undefined> {
+    await this.ready;
+    await this.purgeExpired();
+    const result = await this.pool.query<PlanStateRow>(
+      `SELECT plan_id, step_id, id, trace_id, step, state, summary, output, updated_at, attempt, idempotency_key, created_at, approvals, subject
+       FROM plan_state
+       WHERE plan_id = $1 AND step_id = $2`,
+      [planId, stepId],
+    );
+    const row = result.rows[0];
+    return row ? this.toPersistedStep(row) : undefined;
+  }
+
+  async getStep(planId: string, stepId: string): Promise<{ step: PlanStep; traceId: string } | undefined> {
+    await this.ready;
+    await this.purgeExpired();
+    const result = await this.pool.query<{ step: PlanStep; trace_id: string }>(
+      `SELECT step, trace_id FROM plan_state WHERE plan_id = $1 AND step_id = $2`,
+      [planId, stepId],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      return undefined;
+    }
+    return { step: cloneStep(row.step), traceId: row.trace_id };
+  }
+
+  async clear(): Promise<void> {
+    await this.ready;
+    await this.pool.query(`DELETE FROM plan_state`);
+  }
+
+  private async initialize(): Promise<void> {
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS plan_state (
+        plan_id TEXT NOT NULL,
+        step_id TEXT NOT NULL,
+        id UUID NOT NULL,
+        trace_id TEXT NOT NULL,
+        step JSONB NOT NULL,
+        state TEXT NOT NULL,
+        summary TEXT,
+        output JSONB,
+        updated_at TIMESTAMPTZ NOT NULL,
+        attempt INTEGER NOT NULL,
+        idempotency_key TEXT NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL,
+        approvals JSONB,
+        subject JSONB,
+        PRIMARY KEY (plan_id, step_id)
+      )
+    `);
+    await this.pool.query(`
+      CREATE INDEX IF NOT EXISTS plan_state_updated_at_idx ON plan_state(updated_at)
+    `);
+  }
+
+  private async purgeExpired(now = Date.now()): Promise<void> {
+    if (this.retentionMs === null) {
+      return;
+    }
+    const cutoff = new Date(now - this.retentionMs);
+    await this.pool.query(`DELETE FROM plan_state WHERE updated_at < $1`, [cutoff]);
+  }
+
+  private parseTimestamp(value: string | undefined): Date | undefined {
+    if (!value) {
+      return undefined;
+    }
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      return undefined;
+    }
+    return parsed;
+  }
+
+  private toIso(value: string | Date): string {
+    if (value instanceof Date) {
+      return value.toISOString();
+    }
+    const parsed = new Date(value);
+    if (Number.isNaN(parsed.getTime())) {
+      return new Date().toISOString();
+    }
+    return parsed.toISOString();
+  }
+
+  private toPersistedStep(row: PlanStateRow): PersistedStep {
+    return {
+      id: row.id,
+      planId: row.plan_id,
+      stepId: row.step_id,
+      traceId: row.trace_id,
+      step: cloneStep(row.step),
+      state: row.state,
+      summary: row.summary ?? undefined,
+      output: row.output ?? undefined,
+      updatedAt: this.toIso(row.updated_at),
+      attempt: row.attempt,
+      idempotencyKey: row.idempotency_key,
+      createdAt: this.toIso(row.created_at),
+      approvals: row.approvals ?? undefined,
+      subject: cloneSubject(row.subject ?? undefined),
+    };
+  }
+}
+
+export type PlanStateStoreBackend = "file" | "postgres";
+
+export type PlanStateStoreFactoryOptions = {
+  backend?: PlanStateStoreBackend;
+  filePath?: string;
+  retentionMs?: number;
+  pool?: Pool;
+};
+
+export function createPlanStateStore(options?: PlanStateStoreFactoryOptions): PlanStatePersistence {
+  const backend = options?.backend ?? "file";
+  if (backend === "postgres") {
+    const pool = options?.pool;
+    if (!pool) {
+      throw new Error("Postgres plan state backend requires a database pool");
+    }
+    return new PostgresPlanStateStore(pool, { retentionMs: options?.retentionMs });
+  }
+  return new FilePlanStateStore({ filePath: options?.filePath, retentionMs: options?.retentionMs });
+}
+
+export { FilePlanStateStore as PlanStateStore };

@@ -21,7 +21,11 @@ import {
 } from "../grpc/AgentClient.js";
 import type { PlanJob, ToolEvent } from "../plan/validation.js";
 import { getQueueAdapter } from "./QueueAdapter.js";
-import { createPlanStateStore, type PlanStateStore } from "./PlanStateStore.js";
+import {
+  createPlanStateStore,
+  type PlanStatePersistence,
+} from "./PlanStateStore.js";
+import { getPostgresPool } from "../database/Postgres.js";
 import { withSpan } from "../observability/tracing.js";
 import {
   getPolicyEnforcer,
@@ -63,9 +67,26 @@ const planStateRetentionMs =
     ? runtimeConfig.retention.planStateDays * DAY_MS
     : undefined;
 const contentCaptureEnabled = runtimeConfig.retention.contentCapture.enabled;
-const planStateStoreOptions = planStateRetentionMs
-  ? { retentionMs: planStateRetentionMs }
-  : undefined;
+
+function instantiatePlanStateStore(): PlanStatePersistence {
+  if (runtimeConfig.planState.backend === "postgres") {
+    const pool = getPostgresPool();
+    if (!pool) {
+      throw new Error(
+        "POSTGRES_URL must be configured when using the postgres plan state backend",
+      );
+    }
+    return createPlanStateStore({
+      backend: "postgres",
+      retentionMs: planStateRetentionMs,
+      pool,
+    });
+  }
+  return createPlanStateStore({
+    backend: "file",
+    retentionMs: planStateRetentionMs,
+  });
+}
 
 const stepRegistry = new Map<
   string,
@@ -111,9 +132,7 @@ function getRetainedPlanSubject(planId: string): PlanSubject | undefined {
   return clonePlanSubject(entry.subject);
 }
 const policyEnforcer = getPolicyEnforcer();
-let planStateStore: PlanStateStore | null = createPlanStateStore(
-  planStateStoreOptions,
-);
+let planStateStore: PlanStatePersistence | null = instantiatePlanStateStore();
 let initialized: Promise<void> | null = null;
 
 let stepConsumerSetupPromise: Promise<void> | null = null;
@@ -405,7 +424,7 @@ export function resetPlanQueueRuntime(): void {
   });
   retainedPlanSubjects.clear();
   resetToolAgentClient();
-  planStateStore = createPlanStateStore(planStateStoreOptions);
+  planStateStore = instantiatePlanStateStore();
   stepConsumerReady = false;
   stepConsumerSetupPromise = null;
   completionConsumerReady = false;

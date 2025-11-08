@@ -18,6 +18,8 @@ import type { PlanStepCompletionPayload } from "./PlanQueueRuntime.js";
 import type { PlanStepEvent } from "../plan/events.js";
 import { ToolClientError } from "../grpc/AgentClient.js";
 import type { PlanStep } from "../plan/planner.js";
+import { GenericContainer } from "testcontainers";
+import { resetPostgresPoolForTests } from "../database/Postgres.js";
 type EventsModule = typeof import("../plan/events.js");
 type PublishSpy = Mock<EventsModule["publishPlanStepEvent"]>;
 
@@ -238,12 +240,7 @@ describe("PlanQueueRuntime integration", () => {
   let eventsModule: EventsModule;
   let publishSpy!: PublishSpy;
 
-  beforeAll(async () => {
-    runtime = await import("./PlanQueueRuntime.js");
-    eventsModule = await import("../plan/events.js");
-  });
-
-  beforeEach(() => {
+  beforeEach(async () => {
     adapterRef.current = new MockQueueAdapter();
     executeToolMock.mockReset();
     policyMock.enforcePlanStep.mockReset();
@@ -251,6 +248,9 @@ describe("PlanQueueRuntime integration", () => {
     storeDir = mkdtempSync(path.join(os.tmpdir(), "plan-state-"));
     storePath = path.join(storeDir, "state.json");
     process.env.PLAN_STATE_PATH = storePath;
+    vi.resetModules();
+    runtime = await import("./PlanQueueRuntime.js");
+    eventsModule = await import("../plan/events.js");
     runtime.resetPlanQueueRuntime();
     publishSpy = vi.spyOn(eventsModule, "publishPlanStepEvent");
   });
@@ -736,6 +736,99 @@ describe("PlanQueueRuntime integration", () => {
     await vi.waitFor(() => expect(executeToolMock).toHaveBeenCalledTimes(1), { timeout: 1000 });
 
     expect(publishSpy.mock.calls.some(([event]) => event.step.id === "s-wait" && event.step.state === "completed")).toBe(true);
+  });
+
+  it("allows approving rehydrated steps with the shared postgres store", async () => {
+    const postgres = await new GenericContainer("postgres:15-alpine")
+      .withEnvironment({
+        POSTGRES_PASSWORD: "password",
+        POSTGRES_USER: "user",
+        POSTGRES_DB: "plans",
+      })
+      .withExposedPorts(5432)
+      .start();
+
+    const host = postgres.getHost();
+    const port = postgres.getMappedPort(5432);
+    const connectionString = `postgres://user:password@${host}:${port}/plans`;
+
+    publishSpy.mockRestore();
+    await resetPostgresPoolForTests();
+    vi.resetModules();
+    process.env.PLAN_STATE_BACKEND = "postgres";
+    process.env.POSTGRES_URL = connectionString;
+
+    try {
+      runtime = await import("./PlanQueueRuntime.js");
+      eventsModule = await import("../plan/events.js");
+      publishSpy = vi.spyOn(eventsModule, "publishPlanStepEvent");
+      runtime.resetPlanQueueRuntime();
+
+      const plan = {
+        id: "plan-shared",
+        goal: "approval hold",
+        steps: [
+          {
+            id: "s-shared",
+            action: "apply_edits",
+            capability: "repo.write",
+            capabilityLabel: "Apply repository changes",
+            labels: ["repo"],
+            tool: "code_writer",
+            timeoutSeconds: 300,
+            approvalRequired: true,
+            input: {},
+            metadata: {},
+          },
+        ],
+        successCriteria: ["ok"],
+      };
+
+      executeToolMock.mockReset();
+      executeToolMock.mockResolvedValueOnce([
+        { state: "completed", summary: "Approved run", planId: plan.id, stepId: "s-shared", invocationId: "inv-shared" },
+      ]);
+
+      await runtime.submitPlanSteps(plan, "trace-shared");
+
+      expect(
+        publishSpy.mock.calls.some(
+          ([event]) => event.planId === plan.id && event.step.id === "s-shared" && event.step.state === "waiting_approval",
+        ),
+      ).toBe(true);
+      expect(executeToolMock).not.toHaveBeenCalled();
+
+      runtime.resetPlanQueueRuntime();
+      publishSpy.mockClear();
+
+      await runtime.initializePlanQueueRuntime();
+
+      expect(
+        publishSpy.mock.calls.some(
+          ([event]) => event.planId === plan.id && event.step.id === "s-shared" && event.step.state === "waiting_approval",
+        ),
+      ).toBe(true);
+
+      await runtime.resolvePlanStepApproval({
+        planId: plan.id,
+        stepId: "s-shared",
+        decision: "approved",
+        summary: "Resume",
+      });
+
+      await vi.waitFor(() => expect(executeToolMock).toHaveBeenCalledTimes(1), { timeout: 2000 });
+
+      expect(
+        publishSpy.mock.calls.some(
+          ([event]) => event.planId === plan.id && event.step.id === "s-shared" && event.step.state === "completed",
+        ),
+      ).toBe(true);
+    } finally {
+      await resetPostgresPoolForTests();
+      await postgres.stop();
+      delete process.env.PLAN_STATE_BACKEND;
+      delete process.env.POSTGRES_URL;
+    }
   });
 
   it("rejects plan submission when the capability policy denies a step", async () => {
