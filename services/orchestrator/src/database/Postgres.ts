@@ -13,9 +13,9 @@ export function getPostgresPool(): Pool | null {
     return null;
   }
   pool = new Pool({ connectionString });
-  pool.on("error", error => {
+  pool.on("error", (error: Error) => {
     // eslint-disable-next-line no-console
-    console.error("postgres.pool.error", { message: (error as Error).message });
+    console.error("postgres.pool.error", { message: error.message });
   });
   return pool;
 }
@@ -26,9 +26,11 @@ export async function closePostgresPool(): Promise<void> {
   }
   const current = pool;
   pool = null;
-  await current.end().catch(error => {
+  await current.end().catch((error: unknown) => {
     // eslint-disable-next-line no-console
-    console.warn("postgres.pool.close_failed", { message: (error as Error).message });
+    console.warn("postgres.pool.close_failed", {
+      message: error instanceof Error ? error.message : "unknown",
+    });
   });
 }
 

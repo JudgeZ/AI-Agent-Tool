@@ -516,7 +516,7 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
       `SELECT plan_id, step_id, id, trace_id, step, state, summary, output, updated_at, attempt, idempotency_key, created_at, approvals, subject
        FROM plan_state`,
     );
-    return result.rows.map(row => this.toPersistedStep(row));
+    return result.rows.map((row: PlanStateRow) => this.toPersistedStep(row));
   }
 
   async getEntry(planId: string, stepId: string): Promise<PersistedStep | undefined> {
