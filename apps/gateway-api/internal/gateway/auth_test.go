@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -482,7 +483,7 @@ func TestSetAndReadStateCookie(t *testing.T) {
 	req.TLS = &tls.ConnectionState{}
 	rec := httptest.NewRecorder()
 
-	if err := setStateCookie(rec, req, data); err != nil {
+	if err := setStateCookie(rec, req, nil, data); err != nil {
 		t.Fatalf("failed to set state cookie: %v", err)
 	}
 	res := rec.Result()
@@ -507,10 +508,60 @@ func TestSetAndReadStateCookie(t *testing.T) {
 	}
 
 	delRec := httptest.NewRecorder()
-	deleteStateCookie(delRec, req, data.State)
+	deleteStateCookie(delRec, req, nil, data.State)
 	cleared := findCookie(delRec.Result().Cookies(), stateCookieName(data.State))
 	if cleared == nil || cleared.MaxAge != -1 {
 		t.Fatalf("expected deleteStateCookie to expire cookie, got %#v", cleared)
+	}
+}
+
+func TestIsRequestSecureRespectsTrustedProxies(t *testing.T) {
+	trusted, err := parseTrustedProxyCIDRs([]string{"10.0.0.0/8"})
+	if err != nil {
+		t.Fatalf("failed to parse trusted proxies: %v", err)
+	}
+
+	tests := []struct {
+		name        string
+		remoteAddr  string
+		protoHeader string
+		trusted     []*net.IPNet
+		want        bool
+	}{
+		{
+			name:        "direct client spoofing https",
+			remoteAddr:  "198.51.100.23:1234",
+			protoHeader: "https",
+			trusted:     nil,
+			want:        false,
+		},
+		{
+			name:        "trusted proxy forwarding https",
+			remoteAddr:  "10.0.0.5:443",
+			protoHeader: "https",
+			trusted:     trusted,
+			want:        true,
+		},
+		{
+			name:        "trusted proxy forwarding http",
+			remoteAddr:  "10.0.0.6:80",
+			protoHeader: "http",
+			trusted:     trusted,
+			want:        false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodGet, "http://example.com/auth/openrouter/authorize", nil)
+			req.RemoteAddr = tt.remoteAddr
+			if tt.protoHeader != "" {
+				req.Header.Set("X-Forwarded-Proto", tt.protoHeader)
+			}
+			if got := isRequestSecure(req, tt.trusted); got != tt.want {
+				t.Fatalf("isRequestSecure() = %v, want %v", got, tt.want)
+			}
+		})
 	}
 }
 

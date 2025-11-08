@@ -104,6 +104,9 @@ Relevant environment overrides:
 | `OAUTH_STATE_TTL` | Gateway OAuth state cookie TTL duration (e.g. `10m`, defaults to `10m`). |
 | `ORCHESTRATOR_CALLBACK_TIMEOUT` | Gateway timeout for posting OAuth codes to the orchestrator (duration string, defaults to `10s`). |
 | `OPENROUTER_CLIENT_ID` / `OPENROUTER_CLIENT_SECRET` | OpenRouter OAuth credentials when using OpenRouter provider with OAuth flow. |
+| `GATEWAY_TRUSTED_PROXY_CIDRS` | Comma-separated list of CIDR ranges or individual IPs that terminate TLS in front of the gateway. Only these sources can supply `X-Forwarded-Proto`/`Forwarded` headers to mark requests as HTTPS. |
+
+> **Forwarded scheme headers require trust.** When `GATEWAY_TRUSTED_PROXY_CIDRS` is unset the gateway ignores proxy scheme headers and only treats requests as secure when the incoming connection negotiated TLS directly. Configure this list with your load balancer or ingress IP ranges so OAuth state cookies remain secure when TLS is terminated upstream.
 
 ## Messaging backends
 
