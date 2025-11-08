@@ -489,7 +489,8 @@ func setStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []*ne
 		Expires:  data.ExpiresAt,
 		MaxAge:   int(stateTTL.Seconds()),
 		HttpOnly: true,
-		Secure:   isRequestSecure(r, trustedProxies), // nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure -- secure flag depends on TLS or trusted proxies
+		Secure:   isRequestSecure(r, trustedProxies),
+		// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure -- secure flag depends on TLS or trusted proxies
 		SameSite: http.SameSiteLaxMode,
 	}
 
@@ -532,7 +533,8 @@ func deleteStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []
 		Expires:  time.Unix(0, 0),
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   isRequestSecure(r, trustedProxies), // nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure -- secure flag depends on TLS or trusted proxies
+		Secure:   isRequestSecure(r, trustedProxies),
+		// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure -- secure flag depends on TLS or trusted proxies
 		SameSite: http.SameSiteLaxMode,
 	})
 }
