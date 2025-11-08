@@ -9,7 +9,7 @@ use serde_json::json;
 use std::net::SocketAddr;
 use thiserror::Error;
 use tokio::net::TcpListener;
-use tracing::{error, info};
+use tracing::{error, info, warn};
 
 mod ast;
 mod audit;
@@ -24,6 +24,7 @@ const MAX_QUERY_LENGTH: usize = 4096;
 const MAX_LANGUAGE_LENGTH: usize = 64;
 const MAX_COMMIT_ID_LENGTH: usize = 128;
 const MAX_TOP_K: usize = 100;
+const MAX_CONTENT_LENGTH: usize = 512 * 1024; // 512 KiB default payload budget
 
 #[derive(Debug, Serialize)]
 struct HealthResponse {
@@ -70,18 +71,65 @@ fn validation_error(message: &str) -> (StatusCode, Json<ErrorResponse>) {
 struct AppState {
     semantic: semantic::SemanticStore,
     security: security::SecurityConfig,
+    max_content_length: usize,
 }
 
 impl AppState {
     fn new(security: security::SecurityConfig) -> Self {
-        Self::with_semantic(security, semantic::SemanticStore::new())
+        Self::with_semantic_and_limit(
+            security,
+            semantic::SemanticStore::new(),
+            Self::resolve_max_content_length(),
+        )
     }
 
     fn with_semantic(
         security: security::SecurityConfig,
         semantic: semantic::SemanticStore,
     ) -> Self {
-        Self { semantic, security }
+        Self::with_semantic_and_limit(security, semantic, Self::resolve_max_content_length())
+    }
+
+    fn with_semantic_and_limit(
+        security: security::SecurityConfig,
+        semantic: semantic::SemanticStore,
+        max_content_length: usize,
+    ) -> Self {
+        Self {
+            semantic,
+            security,
+            max_content_length,
+        }
+    }
+
+    fn resolve_max_content_length() -> usize {
+        const ENV_KEY: &str = "INDEXER_MAX_CONTENT_LENGTH";
+        match std::env::var(ENV_KEY) {
+            Ok(value) => {
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    return MAX_CONTENT_LENGTH;
+                }
+                match trimmed.parse::<usize>() {
+                    Ok(parsed) if parsed > 0 => parsed,
+                    Ok(_) => {
+                        warn!(
+                            "{} is set to 0 — falling back to default MAX_CONTENT_LENGTH",
+                            ENV_KEY
+                        );
+                        MAX_CONTENT_LENGTH
+                    }
+                    Err(error) => {
+                        warn!(
+                            "failed to parse {}='{}': {} — using default",
+                            ENV_KEY, trimmed, error
+                        );
+                        MAX_CONTENT_LENGTH
+                    }
+                }
+            }
+            Err(_) => MAX_CONTENT_LENGTH,
+        }
     }
 }
 
@@ -153,6 +201,18 @@ async fn add_semantic_document(
 
     if request.content.trim().is_empty() {
         return Err(validation_error("content is required"));
+    }
+
+    if request.content.len() > state.max_content_length {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(ErrorResponse {
+                error: format!(
+                    "content exceeds maximum length of {} bytes",
+                    state.max_content_length
+                ),
+            }),
+        ));
     }
 
     if let Some(commit_id) = request.commit_id.as_mut() {
@@ -438,6 +498,72 @@ mod tests {
             .unwrap();
 
         assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+    }
+
+    #[tokio::test]
+    async fn add_document_accepts_content_at_limit() {
+        let security = security::SecurityConfig::with_rules(vec!["/".into()], Vec::new());
+        let max_content_length = 32usize;
+        let state = AppState::with_semantic_and_limit(
+            security,
+            semantic::SemanticStore::new(),
+            max_content_length,
+        );
+        let app = Router::new()
+            .route("/semantic/documents", axum_post(add_semantic_document))
+            .with_state(state);
+
+        let payload = serde_json::json!({
+            "path": "src/lib.rs",
+            "content": "a".repeat(max_content_length),
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/semantic/documents")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn add_document_rejects_content_above_limit() {
+        let security = security::SecurityConfig::with_rules(vec!["/".into()], Vec::new());
+        let max_content_length = 16usize;
+        let state = AppState::with_semantic_and_limit(
+            security,
+            semantic::SemanticStore::new(),
+            max_content_length,
+        );
+        let app = Router::new()
+            .route("/semantic/documents", axum_post(add_semantic_document))
+            .with_state(state);
+
+        let payload = serde_json::json!({
+            "path": "src/lib.rs",
+            "content": "a".repeat(max_content_length + 1),
+        });
+
+        let response = app
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/semantic/documents")
+                    .header("content-type", "application/json")
+                    .body(Body::from(payload.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
     }
 
     #[tokio::test]
