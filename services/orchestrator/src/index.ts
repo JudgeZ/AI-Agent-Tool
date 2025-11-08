@@ -600,7 +600,9 @@ export function createServer(appConfig?: AppConfig): Express {
 
       let replayingHistory = true;
       const buffered: PlanStepEvent[] = [];
-      const pendingChunks: string[] = [];
+      const MAX_PENDING_BYTES = 64 * 1024; // 64 KiB cap to avoid unbounded buffering per connection.
+      const pendingChunks: { data: string; size: number }[] = [];
+      let pendingBytes = 0;
       let keepAlive: NodeJS.Timeout | undefined;
       let cleanedUp = false;
       let waitingForDrain = false;
@@ -626,11 +628,12 @@ export function createServer(appConfig?: AppConfig): Express {
         while (pendingChunks.length > 0) {
           const nextChunk = pendingChunks[0];
           try {
-            const ok = res.write(nextChunk);
+            const ok = res.write(nextChunk.data);
             if (!ok) {
               awaitDrain();
               return;
             }
+            pendingBytes = Math.max(0, pendingBytes - nextChunk.size);
             pendingChunks.shift();
           } catch {
             cleanup();
@@ -640,11 +643,17 @@ export function createServer(appConfig?: AppConfig): Express {
       };
 
       const sendChunk = (chunk: string): boolean => {
+        const chunkSize = Buffer.byteLength(chunk, "utf8");
         if (cleanedUp) {
           return false;
         }
         if (waitingForDrain || pendingChunks.length > 0) {
-          pendingChunks.push(chunk);
+          pendingChunks.push({ data: chunk, size: chunkSize });
+          pendingBytes += chunkSize;
+          if (pendingBytes > MAX_PENDING_BYTES) {
+            cleanup();
+            return false;
+          }
           flushPendingChunks();
           return !cleanedUp;
         }
@@ -667,6 +676,7 @@ export function createServer(appConfig?: AppConfig): Express {
         cleanedUp = true;
         waitingForDrain = false;
         pendingChunks.length = 0;
+        pendingBytes = 0;
         res.removeListener("drain", handleDrain);
         if (keepAlive) {
           clearInterval(keepAlive);
@@ -715,6 +725,9 @@ export function createServer(appConfig?: AppConfig): Express {
       const sendKeepAlive = () => {
         if (cleanedUp) {
           cleanup();
+          return;
+        }
+        if (waitingForDrain || pendingChunks.length > 0) {
           return;
         }
         const keepAliveChunk = ": keep-alive\n\n";
