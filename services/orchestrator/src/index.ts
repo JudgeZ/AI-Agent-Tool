@@ -789,7 +789,78 @@ export function createServer(appConfig?: AppConfig): Express {
       const agentName = extractAgent(req);
       const requestId = req.header("x-request-id") ?? undefined;
 
+      if (config.auth.oidc.enabled && !requestSubject) {
+        logAuditEvent({
+          action: "plan.step.approval",
+          outcome: "denied",
+          traceId: latest.traceId,
+          requestId,
+          agent: agentName,
+          resource: "plan.step",
+          details: { planId, stepId, reason: "missing_session" },
+        });
+        res
+          .status(401)
+          .json({
+            error: "authentication required",
+          });
+        return;
+      }
+
       try {
+        const planSubject = await getPlanSubject(planId);
+        let sessionReauthenticated = false;
+        if (config.auth.oidc.enabled) {
+          if (!planSubject || !requestSubject) {
+            logAuditEvent({
+              action: "plan.step.approval",
+              outcome: "denied",
+              traceId: latest.traceId,
+              requestId,
+              agent: agentName,
+              resource: "plan.step",
+              details: { planId, stepId, reason: "missing_plan_subject" },
+            });
+            res.status(403).json({ error: "approval subject mismatch" });
+            return;
+          }
+
+          const tenantMatches =
+            (planSubject.tenantId ?? undefined) === (requestSubject.tenant ?? undefined);
+          const userMatches =
+            typeof planSubject.userId === "string" &&
+            planSubject.userId === requestSubject.user.id;
+          sessionReauthenticated =
+            typeof planSubject.sessionId === "string" &&
+            planSubject.sessionId.length > 0 &&
+            (!requestSubject.sessionId ||
+              planSubject.sessionId !== requestSubject.sessionId);
+          let mismatchReason: "tenant_mismatch" | "user_mismatch" | undefined;
+          if (!tenantMatches) {
+            mismatchReason = "tenant_mismatch";
+          } else if (!userMatches) {
+            mismatchReason = "user_mismatch";
+          }
+          if (mismatchReason) {
+            logAuditEvent({
+              action: "plan.step.approval",
+              outcome: "denied",
+              traceId: latest.traceId,
+              requestId,
+              agent: agentName,
+              resource: "plan.step",
+              subject: toAuditSubject(requestSubject),
+              details: {
+                planId,
+                stepId,
+                reason: mismatchReason,
+              },
+            });
+            res.status(403).json({ error: "approval subject mismatch" });
+            return;
+          }
+        }
+
         const authorizationContext: AuthorizationContext = {
           agent: agentName,
           subject: requestSubject,
@@ -827,6 +898,7 @@ export function createServer(appConfig?: AppConfig): Express {
             planId,
             stepId,
             summary,
+            ...(sessionReauthenticated ? { sessionReauthenticated: true } : {}),
             ...(rationale ? { rationale } : {}),
           },
         });
