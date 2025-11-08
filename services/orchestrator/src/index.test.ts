@@ -1080,6 +1080,53 @@ describe("orchestrator http api", () => {
       expect(getPlanSubjectMock).toHaveBeenCalledWith(planId);
     });
 
+    it("allows approvals when OIDC is disabled", async () => {
+      const { createServer } = await import("./index.js");
+      const app = createServer();
+
+      const planResponse = await request(app)
+        .post("/plan")
+        .send({ goal: "Approve without oidc" })
+        .expect(201);
+      const planId: string = planResponse.body.plan.id;
+      const approvalStep = planResponse.body.plan.steps.find((step: { approvalRequired: boolean }) => step.approvalRequired);
+      if (!approvalStep) {
+        throw new Error("expected an approval-requiring step");
+      }
+
+      publishPlanStepEvent({
+        event: "plan.step",
+        traceId: "trace-no-oidc",
+        planId,
+        step: {
+          id: approvalStep.id,
+          action: approvalStep.action,
+          tool: approvalStep.tool,
+          state: "waiting_approval",
+          capability: approvalStep.capability,
+          capabilityLabel: approvalStep.capabilityLabel,
+          labels: approvalStep.labels,
+          timeoutSeconds: approvalStep.timeoutSeconds,
+          approvalRequired: true,
+          summary: "Awaiting approval"
+        }
+      });
+
+      await request(app)
+        .post(`/plan/${planId}/steps/${approvalStep.id}/approve`)
+        .send({ decision: "approve" })
+        .expect(204);
+
+      const { resolvePlanStepApproval } = await import("./queue/PlanQueueRuntime.js");
+      expect(resolvePlanStepApproval).toHaveBeenCalledWith({
+        planId,
+        stepId: approvalStep.id,
+        decision: "approved",
+        summary: "Awaiting approval"
+      });
+      expect(getPlanSubjectMock).toHaveBeenCalledWith(planId);
+    });
+
     it("publishes rejection events when a pending step is rejected", async () => {
       const { createServer } = await import("./index.js");
       const config = createOidcEnabledConfig();
