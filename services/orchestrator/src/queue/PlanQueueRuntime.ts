@@ -229,6 +229,18 @@ function clearApprovals(planId: string, stepId: string): void {
   approvalCache.delete(approvalKey(planId, stepId));
 }
 
+export function hasPendingPlanStep(planId: string, stepId: string): boolean {
+  return stepRegistry.has(`${planId}:${stepId}`);
+}
+
+export function hasApprovalCacheEntry(planId: string, stepId: string): boolean {
+  return approvalCache.has(approvalKey(planId, stepId));
+}
+
+export function hasActivePlanSubject(planId: string): boolean {
+  return planSubjects.has(planId);
+}
+
 export async function persistPlanStepState(
   planId: string,
   stepId: string,
@@ -527,6 +539,14 @@ export async function submitPlanSteps(
         summary,
         attempt: job.attempt,
       });
+      stepRegistry.delete(key);
+      clearApprovals(plan.id, step.id);
+      prunePlanSubject(plan.id);
+      console.warn(
+        "plan.step.enqueue_failed_cleanup",
+        { planId: plan.id, stepId: step.id },
+        error,
+      );
       throw error;
     }
     await emitPlanEvent(plan.id, step, traceId, {

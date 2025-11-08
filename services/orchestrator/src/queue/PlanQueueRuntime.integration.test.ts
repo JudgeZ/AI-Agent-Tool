@@ -325,6 +325,61 @@ describe("PlanQueueRuntime integration", () => {
     expect(finalCalls.some(([event]) => event.step.state === "completed")).toBe(true);
   });
 
+  it("clears caches and prunes plan subject when enqueue fails", async () => {
+    const plan = {
+      id: "plan-cleanup",
+      goal: "demo",
+      steps: [
+        {
+          id: "s-cleanup",
+          action: "apply_edits",
+          capability: "repo.write",
+          capabilityLabel: "Apply repository changes",
+          labels: ["repo"],
+          tool: "code_writer",
+          timeoutSeconds: 300,
+          approvalRequired: false,
+          input: {},
+          metadata: {},
+        },
+      ],
+      successCriteria: ["ok"],
+    };
+
+    const subject = {
+      sessionId: "session-1",
+      tenantId: "tenant-1",
+      userId: "user-1",
+      email: "user@example.com",
+      name: "User One",
+      roles: ["member"],
+      scopes: ["repo.write"],
+    };
+
+    const enqueueError = new Error("queue unavailable");
+    const enqueueSpy = vi
+      .spyOn(adapterRef.current, "enqueue")
+      .mockRejectedValueOnce(enqueueError);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await expect(
+      runtime.submitPlanSteps(plan, "trace-cleanup", subject),
+    ).rejects.toThrow("queue unavailable");
+
+    expect(enqueueSpy).toHaveBeenCalledTimes(1);
+    expect(runtime.hasPendingPlanStep(plan.id, "s-cleanup")).toBe(false);
+    expect(runtime.hasApprovalCacheEntry(plan.id, "s-cleanup")).toBe(false);
+    expect(runtime.hasActivePlanSubject(plan.id)).toBe(false);
+    expect(warnSpy).toHaveBeenCalledWith(
+      "plan.step.enqueue_failed_cleanup",
+      { planId: plan.id, stepId: "s-cleanup" },
+      enqueueError,
+    );
+
+    enqueueSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
   it("emits completion events with persisted metadata when registry is empty", async () => {
     const step = {
       id: "s-persisted",
