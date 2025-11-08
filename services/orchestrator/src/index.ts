@@ -608,20 +608,15 @@ export function createServer(appConfig?: AppConfig): Express {
       let waitingForDrain = false;
       let unsubscribe: () => void = () => {};
 
-      const handleDrain = () => {
-        waitingForDrain = false;
-        flushPendingChunks();
-      };
-
-      const awaitDrain = () => {
-        if (cleanedUp) {
+      const scheduleDrainListener = () => {
+        if (cleanedUp || waitingForDrain) {
           return;
         }
         waitingForDrain = true;
         res.once("drain", handleDrain);
       };
 
-      const flushPendingChunks = () => {
+      const flushPendingChunks = (): void => {
         if (cleanedUp || waitingForDrain) {
           return;
         }
@@ -629,12 +624,12 @@ export function createServer(appConfig?: AppConfig): Express {
           const nextChunk = pendingChunks[0];
           try {
             const ok = res.write(nextChunk.data);
+            pendingChunks.shift();
+            pendingBytes = Math.max(0, pendingBytes - nextChunk.size);
             if (!ok) {
-              awaitDrain();
+              scheduleDrainListener();
               return;
             }
-            pendingBytes = Math.max(0, pendingBytes - nextChunk.size);
-            pendingChunks.shift();
           } catch {
             cleanup();
             return;
@@ -642,31 +637,24 @@ export function createServer(appConfig?: AppConfig): Express {
         }
       };
 
-      const sendChunk = (chunk: string): boolean => {
-        const chunkSize = Buffer.byteLength(chunk, "utf8");
+      function handleDrain(): void {
+        waitingForDrain = false;
+        flushPendingChunks();
+      }
+
+      const enqueueChunk = (chunk: string): boolean => {
         if (cleanedUp) {
           return false;
         }
-        if (waitingForDrain || pendingChunks.length > 0) {
-          pendingChunks.push({ data: chunk, size: chunkSize });
-          pendingBytes += chunkSize;
-          if (pendingBytes > MAX_PENDING_BYTES) {
-            cleanup();
-            return false;
-          }
-          flushPendingChunks();
-          return !cleanedUp;
-        }
-        try {
-          const ok = res.write(chunk);
-          if (!ok) {
-            awaitDrain();
-          }
-          return true;
-        } catch {
+        const chunkSize = Buffer.byteLength(chunk, "utf8");
+        pendingChunks.push({ data: chunk, size: chunkSize });
+        pendingBytes += chunkSize;
+        if (pendingBytes > MAX_PENDING_BYTES) {
           cleanup();
           return false;
         }
+        flushPendingChunks();
+        return !cleanedUp;
       };
 
       const cleanup = () => {
@@ -695,7 +683,7 @@ export function createServer(appConfig?: AppConfig): Express {
 
       const writeEvent = (event: PlanStepEvent): boolean => {
         const chunk = formatSse(event);
-        return sendChunk(chunk);
+        return enqueueChunk(chunk);
       };
 
       unsubscribe = subscribeToPlanSteps(planId, (event) => {
@@ -724,17 +712,13 @@ export function createServer(appConfig?: AppConfig): Express {
       const keepAliveInterval = config.server.sseKeepAliveMs;
       const sendKeepAlive = () => {
         if (cleanedUp) {
-          cleanup();
           return;
         }
         if (waitingForDrain || pendingChunks.length > 0) {
           return;
         }
         const keepAliveChunk = ": keep-alive\n\n";
-        const ok = sendChunk(keepAliveChunk);
-        if (!ok) {
-          cleanup();
-        }
+        enqueueChunk(keepAliveChunk);
       };
       keepAlive = setInterval(sendKeepAlive, keepAliveInterval);
 

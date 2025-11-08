@@ -635,6 +635,10 @@ describe("orchestrator http api", () => {
 
     const originalWrite = http.ServerResponse.prototype.write;
     let backpressureApplied = false;
+    let drainEmitter: (() => void) | undefined;
+    let drained = false;
+    let event2WritesBeforeDrain = 0;
+    let event2WritesAfterDrain = 0;
     const writeSpy = vi
       .spyOn(http.ServerResponse.prototype, "write")
       .mockImplementation(function (this: http.ServerResponse, chunk: unknown, encoding?: unknown, cb?: unknown) {
@@ -645,10 +649,18 @@ describe("orchestrator http api", () => {
         ) {
           backpressureApplied = true;
           originalWrite.call(this, chunk as never, encoding as never, cb as never);
-          setTimeout(() => {
+          drainEmitter = () => {
+            drained = true;
             this.emit("drain");
-          }, 50);
+          };
           return false;
+        }
+        if (typeof chunk === "string" && chunk.includes("backpressure-event-2")) {
+          if (drained) {
+            event2WritesAfterDrain += 1;
+          } else {
+            event2WritesBeforeDrain += 1;
+          }
         }
         return originalWrite.call(this, chunk as never, encoding as never, cb as never);
       });
@@ -707,12 +719,20 @@ describe("orchestrator http api", () => {
         });
       }, 10);
 
-      await new Promise((resolve) => setTimeout(resolve, 200));
+      await new Promise((resolve) => setTimeout(resolve, 75));
+
+      expect(drainEmitter).toBeDefined();
+      expect(event2WritesBeforeDrain).toBe(0);
+
+      drainEmitter?.();
+
+      await new Promise((resolve) => setTimeout(resolve, 150));
 
       expect(closed).toBe(false);
       const payload = received.join("");
       expect(payload).toContain("backpressure-event-1");
       expect(payload).toContain("backpressure-event-2");
+      expect(event2WritesAfterDrain).toBeGreaterThan(0);
     } finally {
       writeSpy.mockRestore();
       if (connection) {
