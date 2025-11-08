@@ -138,7 +138,7 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*
 		State:        state,
 	}
 
-	if err := setStateCookie(w, r, data); err != nil {
+	if err := setStateCookie(w, r, trustedProxies, data); err != nil {
 		attrs := append(baseAttrs, slog.String("redirect_uri", redirectURI), slog.String("error", "state persistence failed"))
 		logAudit(r.Context(), "oauth.authorize", "failure", attrs...)
 		http.Error(w, "failed to persist state", http.StatusInternalServerError)
@@ -192,7 +192,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 		return
 	}
 
-	deleteStateCookie(w, r, state)
+	deleteStateCookie(w, r, trustedProxies, state)
 
 	payload := map[string]string{
 		"code":          code,
@@ -271,7 +271,7 @@ func redirectError(w http.ResponseWriter, r *http.Request, trustedProxies []*net
 		http.Error(w, errParam, http.StatusBadRequest)
 		return
 	}
-	deleteStateCookie(w, r, state)
+	deleteStateCookie(w, r, trustedProxies, state)
 	attrs := append(auditRequestAttrs(r, trustedProxies), slog.String("state", state), slog.String("redirect_uri", data.RedirectURI), slog.String("error", errParam))
 	logAudit(r.Context(), "oauth.callback", "failure", attrs...)
 	redirectWithStatus(w, r, data.RedirectURI, data.State, "error", errParam)
@@ -476,7 +476,7 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-func setStateCookie(w http.ResponseWriter, r *http.Request, data stateData) error {
+func setStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, data stateData) error {
 	encoded, err := json.Marshal(data)
 	if err != nil {
 		return err
@@ -489,7 +489,8 @@ func setStateCookie(w http.ResponseWriter, r *http.Request, data stateData) erro
 		Expires:  data.ExpiresAt,
 		MaxAge:   int(stateTTL.Seconds()),
 		HttpOnly: true,
-		Secure:   isRequestSecure(r),
+		Secure:   isRequestSecure(r, trustedProxies),
+		// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure -- secure flag depends on TLS or trusted proxies
 		SameSite: http.SameSiteLaxMode,
 	}
 
@@ -524,7 +525,7 @@ func readStateCookie(r *http.Request, state string) (stateData, error) {
 	return data, nil
 }
 
-func deleteStateCookie(w http.ResponseWriter, r *http.Request, state string) {
+func deleteStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, state string) {
 	http.SetCookie(w, &http.Cookie{
 		Name:     stateCookieName(state),
 		Value:    "",
@@ -532,7 +533,8 @@ func deleteStateCookie(w http.ResponseWriter, r *http.Request, state string) {
 		Expires:  time.Unix(0, 0),
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   isRequestSecure(r),
+		Secure:   isRequestSecure(r, trustedProxies),
+		// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure -- secure flag depends on TLS or trusted proxies
 		SameSite: http.SameSiteLaxMode,
 	})
 }
@@ -541,15 +543,62 @@ func stateCookieName(state string) string {
 	return fmt.Sprintf("oauth_state_%s", state)
 }
 
-func isRequestSecure(r *http.Request) bool {
+func isRequestSecure(r *http.Request, trustedProxies []*net.IPNet) bool {
 	if r.TLS != nil {
 		return true
 	}
-	proto := r.Header.Get("X-Forwarded-Proto")
-	if proto != "" {
-		return strings.EqualFold(proto, "https")
+	proto, ok := forwardedProto(r)
+	if !ok {
+		return false
 	}
-	return false
+	remoteIP := requestRemoteIP(r)
+	if !isTrustedProxy(remoteIP, trustedProxies) {
+		return false
+	}
+	return strings.EqualFold(proto, "https")
+}
+
+func requestRemoteIP(r *http.Request) net.IP {
+	remoteAddr := strings.TrimSpace(r.RemoteAddr)
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err != nil {
+		host = remoteAddr
+	}
+	if host == "" {
+		return nil
+	}
+	return net.ParseIP(host)
+}
+
+func forwardedProto(r *http.Request) (string, bool) {
+	headers := []string{"X-Forwarded-Proto", "X-Forwarded-Protocol", "X-Url-Scheme"}
+	for _, header := range headers {
+		if value := strings.TrimSpace(r.Header.Get(header)); value != "" {
+			return value, true
+		}
+	}
+	if ssl := strings.TrimSpace(r.Header.Get("X-Forwarded-Ssl")); ssl != "" {
+		if strings.EqualFold(ssl, "on") || ssl == "1" || strings.EqualFold(ssl, "enabled") {
+			return "https", true
+		}
+		return "http", true
+	}
+	for _, forwarded := range r.Header.Values("Forwarded") {
+		directives := strings.Split(forwarded, ";")
+		for _, directive := range directives {
+			kv := strings.SplitN(strings.TrimSpace(directive), "=", 2)
+			if len(kv) != 2 {
+				continue
+			}
+			if strings.EqualFold(kv[0], "proto") {
+				value := strings.Trim(strings.TrimSpace(kv[1]), "\"")
+				if value != "" {
+					return value, true
+				}
+			}
+		}
+	}
+	return "", false
 }
 
 func RegisterAuthRoutes(mux *http.ServeMux, cfg AuthRouteConfig) {
