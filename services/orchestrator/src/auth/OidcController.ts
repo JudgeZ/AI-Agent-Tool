@@ -158,6 +158,18 @@ function extractRoles(
   return normalizeRoles(result);
 }
 
+function extractTenantId(
+  payload: Record<string, unknown>,
+  tenantClaim?: string,
+): string | undefined {
+  const claimValue = resolveClaimValue(payload, tenantClaim);
+  if (claimValue === undefined) {
+    return undefined;
+  }
+  const normalized = extractRolesFromClaimValue(claimValue);
+  return normalized.length > 0 ? normalized[0] : undefined;
+}
+
 export async function getOidcConfiguration(req: Request, res: Response) {
   const config = loadConfig();
   const oidc = config.auth.oidc;
@@ -362,14 +374,10 @@ export async function handleOidcCallback(req: Request, res: Response) {
       return;
     }
 
-    const tenantId =
-      (typeof oidc.tenantClaim === "string" && oidc.tenantClaim.length > 0
-        ? payload[oidc.tenantClaim]
-        : undefined) || undefined;
-    const tenant =
-      typeof tenantId === "string" && tenantId.length > 0
-        ? tenantId
-        : undefined;
+    const tenant = extractTenantId(
+      payload as Record<string, unknown>,
+      typeof oidc.tenantClaim === "string" ? oidc.tenantClaim : undefined,
+    );
     const email = typeof payload.email === "string" ? payload.email : undefined;
     const name = typeof payload.name === "string" ? payload.name : undefined;
     const roles = extractRoles(payload as Record<string, unknown>, oidc.roles);
