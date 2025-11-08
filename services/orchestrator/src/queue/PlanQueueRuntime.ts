@@ -707,14 +707,34 @@ export async function resolvePlanStepApproval(options: {
   };
   metadata.job = refreshedJob;
 
-  await adapter.enqueue<PlanStepTaskPayload>(
-    PLAN_STEPS_QUEUE,
-    { ...refreshedJob },
-    {
-      idempotencyKey: key,
-      headers: { "trace-id": traceId },
-    },
-  );
+  try {
+    await adapter.enqueue<PlanStepTaskPayload>(
+      PLAN_STEPS_QUEUE,
+      { ...refreshedJob },
+      {
+        idempotencyKey: key,
+        headers: { "trace-id": traceId },
+      },
+    );
+  } catch (error) {
+    const failureSummary =
+      error instanceof Error ? error.message : "Failed to enqueue plan step";
+    await emitPlanEvent(planId, step, traceId, {
+      state: "failed",
+      summary: failureSummary,
+      attempt: refreshedJob.attempt,
+    });
+    stepRegistry.delete(key);
+    clearApprovals(planId, stepId);
+    await planStateStore?.forgetStep(planId, stepId);
+    prunePlanSubject(planId);
+    console.warn(
+      "plan.step.enqueue_failed_cleanup",
+      { planId, stepId },
+      error,
+    );
+    throw error;
+  }
 
   await emitPlanEvent(planId, step, traceId, {
     state: "queued",

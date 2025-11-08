@@ -566,6 +566,72 @@ describe("PlanQueueRuntime integration", () => {
     expect(publishSpy.mock.calls.some(([event]) => event.step.state === "completed")).toBe(true);
   });
 
+  it("emits failure events when enqueueing an approved step fails", async () => {
+    const plan = {
+      id: "plan-approval-fail",
+      goal: "approval demo",
+      steps: [
+        {
+          id: "s1",
+          action: "apply_edits",
+          capability: "repo.write",
+          capabilityLabel: "Apply repository changes",
+          labels: ["repo"],
+          tool: "code_writer",
+          timeoutSeconds: 300,
+          approvalRequired: true,
+          input: {},
+          metadata: {},
+        },
+      ],
+      successCriteria: ["ok"],
+    };
+
+    await runtime.submitPlanSteps(plan, "trace-approval-fail");
+
+    const enqueueError = new Error("queue unavailable");
+    const enqueueSpy = vi
+      .spyOn(adapterRef.current, "enqueue")
+      .mockRejectedValueOnce(enqueueError);
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+
+    await expect(
+      runtime.resolvePlanStepApproval({
+        planId: plan.id,
+        stepId: "s1",
+        decision: "approved",
+        summary: "Looks good",
+      }),
+    ).rejects.toThrow("queue unavailable");
+
+    const states = publishSpy.mock.calls
+      .filter(([event]) => event.planId === plan.id && event.step.id === "s1")
+      .map(([event]) => event.step.state);
+    expect(states).toContain("waiting_approval");
+    expect(states).toContain("approved");
+    expect(states).toContain("failed");
+    expect(states).not.toContain("queued");
+
+    expect(runtime.hasPendingPlanStep(plan.id, "s1")).toBe(false);
+    expect(runtime.hasApprovalCacheEntry(plan.id, "s1")).toBe(false);
+
+    const { PlanStateStore } = await import("./PlanStateStore.js");
+    const persisted = new PlanStateStore({ filePath: storePath });
+    await vi.waitFor(async () => {
+      const remaining = await persisted.listActiveSteps();
+      expect(remaining).toHaveLength(0);
+    });
+
+    expect(warnSpy).toHaveBeenCalledWith(
+      "plan.step.enqueue_failed_cleanup",
+      { planId: plan.id, stepId: "s1" },
+      enqueueError,
+    );
+
+    enqueueSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
   it("marks approval-gated steps as rejected when policy enforcement throws", async () => {
     const plan = {
       id: "plan-approval-violation",
