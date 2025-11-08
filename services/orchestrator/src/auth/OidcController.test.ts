@@ -227,4 +227,32 @@ describe("OidcController", () => {
       .set("Cookie", sessionCookie as string);
     expect(postLogout.status).toBe(401);
   });
+
+  it("rejects callbacks when the id token is already expired", async () => {
+    const verifySpy = vi.mocked(OidcClient.verifyIdToken);
+    verifySpy.mockResolvedValueOnce({
+      payload: {
+        sub: "user-123",
+        email: "user@example.com",
+        name: "Test User",
+        tid: "tenant-1",
+        roles: ["admin"],
+        exp: Math.floor((Date.now() - 30_000) / 1000)
+      }
+    } as any);
+
+    const app = createApp();
+    const response = await request(app)
+      .post("/auth/oidc/callback")
+      .send({
+        code: "auth-code",
+        code_verifier: "v".repeat(64),
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback"
+      });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(502);
+    expect(response.body).toEqual({ error: "token expiry too soon" });
+    const cookies = response.headers["set-cookie"];
+    expect(cookies).toBeUndefined();
+  });
 });

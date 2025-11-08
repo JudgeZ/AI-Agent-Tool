@@ -9,6 +9,8 @@ import {
 import { sessionStore } from "./SessionStore.js";
 import { logAuditEvent, type AuditSubject } from "../observability/audit.js";
 
+const MINIMUM_SESSION_EXPIRY_BUFFER_MS = 5_000;
+
 function parseTokensScope(
   scope: string | undefined,
   configScopes: string[],
@@ -340,6 +342,26 @@ export async function handleOidcCallback(req: Request, res: Response) {
       idTokenExpiry,
     );
 
+    const minimumAllowedExpiry = now + MINIMUM_SESSION_EXPIRY_BUFFER_MS;
+    if (!Number.isFinite(targetExpiry) || targetExpiry <= minimumAllowedExpiry) {
+      logAuditEvent({
+        action: "auth.oidc.callback",
+        outcome: "failure",
+        requestId: req.header("x-request-id") ?? undefined,
+        traceId: req.header("x-trace-id") ?? undefined,
+        resource: "auth.session",
+        details: {
+          reason: "token expiry too soon",
+          expiresAt: Number.isFinite(targetExpiry)
+            ? new Date(targetExpiry).toISOString()
+            : null,
+          minimumAllowedExpiry: new Date(minimumAllowedExpiry).toISOString(),
+        },
+      });
+      res.status(502).json({ error: "token expiry too soon" });
+      return;
+    }
+
     const tenantId =
       (typeof oidc.tenantClaim === "string" && oidc.tenantClaim.length > 0
         ? payload[oidc.tenantClaim]
@@ -381,7 +403,7 @@ export async function handleOidcCallback(req: Request, res: Response) {
     const cookieName = oidc.session.cookieName;
     const expiresInSeconds = Math.max(
       1,
-      Math.floor((Date.parse(session.expiresAt) - Date.now()) / 1000),
+      Math.floor((targetExpiry - now) / 1000),
     );
     const secureCookies = determineSecureCookieFlag(config.server.tls.enabled);
     res.cookie(
