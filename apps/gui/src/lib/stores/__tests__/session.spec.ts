@@ -10,7 +10,9 @@ const authorizeUrlMock = vi.fn((redirectUri: string) =>
 vi.mock('$lib/config', () => ({
   sessionPath: '/auth/session',
   logoutPath: '/auth/logout',
-  oidcAuthorizeUrl: authorizeUrlMock
+  oidcAuthorizeUrl: authorizeUrlMock,
+  orchestratorOrigin: 'https://orchestrator.example.test',
+  gatewayOrigin: 'https://gateway.example.test'
 }));
 
 declare global {
@@ -51,15 +53,15 @@ describe('session store', () => {
       addEventListener,
       removeEventListener: vi.fn(),
       open: vi.fn(),
-      dispatchMessage: (data: unknown) => {
+      dispatchMessage: (data: unknown, origin = 'https://app.example.test') => {
         const messageListeners = listeners.get('message');
         if (!messageListeners) return;
-        const event = new MessageEvent('message', { data });
+        const event = new MessageEvent('message', { data, origin });
         for (const listener of messageListeners) {
           listener(event);
         }
       }
-    } as unknown as Window & { dispatchMessage: (data: unknown) => void };
+    } as unknown as Window & { dispatchMessage: (data: unknown, origin?: string) => void };
 
     vi.stubGlobal('window', fakeWindow);
     vi.stubGlobal('fetch', fetchMock);
@@ -125,12 +127,46 @@ describe('session store', () => {
       })
     } as Response);
 
-    (window as typeof window & { dispatchMessage: (data: unknown) => void }).dispatchMessage({
-      type: 'oidc:complete',
-      status: 'success'
-    });
+    (window as typeof window & { dispatchMessage: (data: unknown, origin?: string) => void }).dispatchMessage(
+      {
+        type: 'oidc:complete',
+        status: 'success'
+      },
+      'https://app.example.test'
+    );
     await flushAsync();
     expect(fetchMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('ignores oidc completion messages from untrusted origins', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      json: async () => ({
+        session: {
+          id: 'abc',
+          subject: 'user',
+          roles: [],
+          scopes: [],
+          issuedAt: 'now',
+          expiresAt: 'later'
+        }
+      })
+    } as Response);
+
+    initializeSession();
+    await flushAsync();
+    fetchMock.mockClear();
+
+    (window as typeof window & { dispatchMessage: (data: unknown, origin?: string) => void }).dispatchMessage(
+      {
+        type: 'oidc:complete',
+        status: 'success'
+      },
+      'https://malicious.example.test'
+    );
+    await flushAsync();
+
+    expect(fetchMock).not.toHaveBeenCalled();
   });
 
   it('updates state with session info when fetchSession succeeds', async () => {

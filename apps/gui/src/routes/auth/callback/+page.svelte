@@ -1,6 +1,16 @@
 <script lang="ts">
   import { onMount } from 'svelte';
   import { goto } from '$app/navigation';
+  import { gatewayOrigin, orchestratorOrigin } from '$lib/config';
+
+  const toOrigin = (value: string | null | undefined): string | undefined => {
+    if (!value) return undefined;
+    try {
+      return new URL(value).origin;
+    } catch {
+      return undefined;
+    }
+  };
 
   let status = 'pending';
   let errorMessage: string | null = null;
@@ -17,8 +27,17 @@
       status: queryStatus,
       error: queryError
     };
+    const candidateOrigins = [window.location.origin, orchestratorOrigin, gatewayOrigin].filter(
+      (origin): origin is string => Boolean(origin)
+    );
+    const referrerOrigin = toOrigin(document.referrer);
+    const targetOrigin =
+      (referrerOrigin && candidateOrigins.includes(referrerOrigin) && referrerOrigin) || candidateOrigins[0];
+
     try {
-      window.opener?.postMessage(payload, '*');
+      if (targetOrigin) {
+        window.opener?.postMessage(payload, targetOrigin);
+      }
     } catch {
       // ignore postMessage failures
     }
