@@ -48,7 +48,7 @@ async function newAgent(name: string) {
     throw new Error(`Refusing to write outside agents directory: ${normalized}`);
   }
 
-  const file = path.resolve(agentsRoot, normalized, "agent.md");
+  const file = path.normalize(`${dir}${path.sep}agent.md`);
   const relativeFile = path.relative(agentsRoot, file);
   if (relativeFile.startsWith("..") || path.isAbsolute(relativeFile)) {
     throw new Error(`Refusing to write outside agents directory: ${normalized}`);
