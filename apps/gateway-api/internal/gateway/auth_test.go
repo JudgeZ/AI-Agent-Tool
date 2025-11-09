@@ -288,13 +288,16 @@ func TestCallbackHandlerRedirectsOnOrchestratorError(t *testing.T) {
 	var observedDeadline time.Time
 	var callCount int
 
+	handler := newRecordingHandler()
+	setAuditLoggerForTest(t, handler)
+
 	SetOrchestratorClientFactory(func() (*http.Client, error) {
 		return &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 			callCount++
 			if deadline, ok := req.Context().Deadline(); ok {
 				observedDeadline = deadline
 			}
-			body := io.NopCloser(strings.NewReader(`{"error":"upstream failure"}`))
+			body := io.NopCloser(strings.NewReader(`{"error":"upstream failure","code":"invalid_grant"}`))
 			return &http.Response{
 				StatusCode: http.StatusBadRequest,
 				Body:       body,
@@ -356,11 +359,24 @@ func TestCallbackHandlerRedirectsOnOrchestratorError(t *testing.T) {
 	if got := q.Get("status"); got != "error" {
 		t.Fatalf("expected status=error, got %s", got)
 	}
-	if got := q.Get("error"); got != "upstream failure" {
-		t.Fatalf("expected error message from orchestrator, got %s", got)
+	if got := q.Get("error"); got != "authentication failed" {
+		t.Fatalf("expected sanitized error message, got %s", got)
 	}
 	if got := q.Get("state"); got != data.State {
 		t.Fatalf("expected state to round-trip, got %s", got)
+	}
+
+	records := handler.Records()
+	if len(records) != 1 {
+		t.Fatalf("expected exactly one audit log entry, got %d", len(records))
+	}
+
+	attrs := attrsToMap(records[0].Attrs)
+	if got := attrs["error"].String(); got != "upstream failure" {
+		t.Fatalf("expected detailed error to be logged, got %s", got)
+	}
+	if got := attrs["error_code"].String(); got != "invalid_grant" {
+		t.Fatalf("expected error_code to be logged, got %s", got)
 	}
 }
 
