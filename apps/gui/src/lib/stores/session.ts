@@ -1,7 +1,9 @@
 import { writable } from 'svelte/store';
 import {
+  gatewayOrigin,
   logoutPath,
   oidcAuthorizeUrl,
+  orchestratorOrigin,
   sessionPath
 } from '$lib/config';
 
@@ -39,7 +41,15 @@ function installMessageListener(): void {
   if (typeof window === 'undefined' || messageHandler) {
     return;
   }
+  const allowedOrigins = new Set<string>(
+    [window.location.origin, orchestratorOrigin, gatewayOrigin].filter(
+      (origin): origin is string => Boolean(origin)
+    )
+  );
   messageHandler = (event: MessageEvent) => {
+    if (!event.origin || !allowedOrigins.has(event.origin)) {
+      return;
+    }
     if (!event?.data || typeof event.data !== 'object') {
       return;
     }

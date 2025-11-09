@@ -4,6 +4,14 @@ export const orchestratorBaseUrl = (() => {
   return 'http://127.0.0.1:4000';
 })();
 
+const deriveOrigin = (value: string): string | undefined => {
+  try {
+    return new URL(value).origin;
+  } catch {
+    return undefined;
+  }
+};
+
 export const gatewayBaseUrl = (() => {
   const fromEnv = import.meta.env.VITE_GATEWAY_URL as string | undefined;
   if (fromEnv) return fromEnv.replace(/\/$/, '');
@@ -12,6 +20,9 @@ export const gatewayBaseUrl = (() => {
   }
   return orchestratorBaseUrl;
 })();
+
+export const orchestratorOrigin = deriveOrigin(orchestratorBaseUrl);
+export const gatewayOrigin = deriveOrigin(gatewayBaseUrl);
 
 export const ssePath = (planId: string) => `${orchestratorBaseUrl}/plan/${encodeURIComponent(planId)}/events`;
 export const approvalPath = (planId: string, stepId: string) =>
