@@ -25,9 +25,25 @@ export type PersistedStep = {
   subject?: PlanSubject;
 };
 
+export type PlanStepMetadata = {
+  step: PlanStep;
+  createdAt: string;
+  attempt: number;
+  subject?: PlanSubject;
+};
+
+export type PersistedPlanMetadata = {
+  planId: string;
+  traceId: string;
+  steps: PlanStepMetadata[];
+  nextStepIndex: number;
+  lastCompletedIndex: number;
+};
+
 type PersistedDocument = {
   version: number;
   steps: PersistedStep[];
+  plans?: PersistedPlanMetadata[];
 };
 
 type FilePlanStateStoreOptions = {
@@ -86,6 +102,10 @@ export interface PlanStatePersistence {
   listActiveSteps(): Promise<PersistedStep[]>;
   getEntry(planId: string, stepId: string): Promise<PersistedStep | undefined>;
   getStep(planId: string, stepId: string): Promise<{ step: PlanStep; traceId: string } | undefined>;
+  rememberPlanMetadata(planId: string, metadata: PersistedPlanMetadata): Promise<void>;
+  getPlanMetadata(planId: string): Promise<PersistedPlanMetadata | undefined>;
+  listPlanMetadata(): Promise<PersistedPlanMetadata[]>;
+  forgetPlanMetadata(planId: string): Promise<void>;
   clear(): Promise<void>;
 }
 
@@ -94,6 +114,7 @@ export class FilePlanStateStore implements PlanStatePersistence {
   private readonly retentionMs: number | null;
   private loaded = false;
   private readonly records = new Map<string, PersistedStep>();
+  private readonly planRecords = new Map<string, PersistedPlanMetadata & { updatedAt: string }>();
   private persistChain: Promise<void> = Promise.resolve();
 
   constructor(options?: FilePlanStateStoreOptions) {
@@ -255,9 +276,99 @@ export class FilePlanStateStore implements PlanStatePersistence {
     return { step: record.step, traceId: record.traceId };
   }
 
+  async rememberPlanMetadata(planId: string, metadata: PersistedPlanMetadata): Promise<void> {
+    await this.ensureLoaded();
+    this.purgeExpired();
+    const entry: PersistedPlanMetadata & { updatedAt: string } = {
+      ...metadata,
+      steps: metadata.steps.map(stepEntry => ({
+        step: { ...stepEntry.step, labels: [...stepEntry.step.labels] },
+        createdAt: stepEntry.createdAt,
+        attempt: stepEntry.attempt,
+        subject: stepEntry.subject
+          ? {
+              ...stepEntry.subject,
+              roles: [...stepEntry.subject.roles],
+              scopes: [...stepEntry.subject.scopes]
+            }
+          : undefined
+      })),
+      updatedAt: new Date().toISOString()
+    };
+    this.planRecords.set(planId, entry);
+    await this.enqueuePersist();
+  }
+
+  async getPlanMetadata(planId: string): Promise<PersistedPlanMetadata | undefined> {
+    await this.ensureLoaded();
+    const purged = this.purgeExpired();
+    const entry = this.planRecords.get(planId);
+    if (purged) {
+      await this.enqueuePersist();
+    }
+    if (!entry) {
+      return undefined;
+    }
+    return {
+      planId: entry.planId,
+      traceId: entry.traceId,
+      nextStepIndex: entry.nextStepIndex,
+      lastCompletedIndex: entry.lastCompletedIndex,
+      steps: entry.steps.map(stepEntry => ({
+        step: { ...stepEntry.step, labels: [...stepEntry.step.labels] },
+        createdAt: stepEntry.createdAt,
+        attempt: stepEntry.attempt,
+        subject: stepEntry.subject
+          ? {
+              ...stepEntry.subject,
+              roles: [...stepEntry.subject.roles],
+              scopes: [...stepEntry.subject.scopes]
+            }
+          : undefined
+      }))
+    };
+  }
+
+  async listPlanMetadata(): Promise<PersistedPlanMetadata[]> {
+    await this.ensureLoaded();
+    const purged = this.purgeExpired();
+    const plans = Array.from(this.planRecords.values()).map(entry => ({
+      planId: entry.planId,
+      traceId: entry.traceId,
+      nextStepIndex: entry.nextStepIndex,
+      lastCompletedIndex: entry.lastCompletedIndex,
+      steps: entry.steps.map(stepEntry => ({
+        step: { ...stepEntry.step, labels: [...stepEntry.step.labels] },
+        createdAt: stepEntry.createdAt,
+        attempt: stepEntry.attempt,
+        subject: stepEntry.subject
+          ? {
+              ...stepEntry.subject,
+              roles: [...stepEntry.subject.roles],
+              scopes: [...stepEntry.subject.scopes]
+            }
+          : undefined
+      }))
+    }));
+    if (purged) {
+      await this.enqueuePersist();
+    }
+    return plans;
+  }
+
+  async forgetPlanMetadata(planId: string): Promise<void> {
+    await this.ensureLoaded();
+    const purged = this.purgeExpired();
+    const removed = this.planRecords.delete(planId);
+    if (purged || removed) {
+      await this.enqueuePersist();
+    }
+  }
+
   async clear(): Promise<void> {
     await this.ensureLoaded();
     this.records.clear();
+    this.planRecords.clear();
     await this.enqueuePersist();
   }
 
@@ -285,6 +396,22 @@ export class FilePlanStateStore implements PlanStatePersistence {
           this.records.set(this.toKey(entry.planId, entry.stepId), entry);
         }
       }
+      if (Array.isArray(document.plans)) {
+        for (const plan of document.plans) {
+          if (plan && typeof plan.planId === "string") {
+            this.planRecords.set(plan.planId, {
+              ...plan,
+              steps: plan.steps.map(stepEntry => ({
+                step: stepEntry.step,
+                createdAt: stepEntry.createdAt,
+                attempt: stepEntry.attempt,
+                subject: stepEntry.subject
+              })),
+              updatedAt: new Date().toISOString()
+            });
+          }
+        }
+      }
     } catch (error) {
       if ((error as NodeJS.ErrnoException)?.code === "ENOENT") {
         return;
@@ -306,7 +433,19 @@ export class FilePlanStateStore implements PlanStatePersistence {
     await fs.mkdir(dir, { recursive: true });
     const payload: PersistedDocument = {
       version: 1,
-      steps: Array.from(this.records.values())
+      steps: Array.from(this.records.values()),
+      plans: Array.from(this.planRecords.values()).map(entry => ({
+        planId: entry.planId,
+        traceId: entry.traceId,
+        nextStepIndex: entry.nextStepIndex,
+        lastCompletedIndex: entry.lastCompletedIndex,
+        steps: entry.steps.map(stepEntry => ({
+          step: stepEntry.step,
+          createdAt: stepEntry.createdAt,
+          attempt: stepEntry.attempt,
+          subject: stepEntry.subject
+        }))
+      }))
     };
     const tempPath = path.join(dir, `${path.basename(this.filePath)}.${randomUUID()}.tmp`);
     const data = JSON.stringify(payload, null, 2);
@@ -333,6 +472,13 @@ export class FilePlanStateStore implements PlanStatePersistence {
         removed = true;
       }
     }
+    for (const [planId, metadata] of this.planRecords.entries()) {
+      const reference = Date.parse(metadata.updatedAt ?? "");
+      if (Number.isFinite(reference) && reference < cutoff) {
+        this.planRecords.delete(planId);
+        removed = true;
+      }
+    }
     return removed;
   }
 }
@@ -356,6 +502,15 @@ type PlanStateRow = {
   created_at: string | Date;
   approvals: Record<string, boolean> | null;
   subject: PlanSubject | null;
+};
+
+type PlanMetadataRow = {
+  plan_id: string;
+  trace_id: string;
+  steps: PlanStepMetadata[];
+  next_step_index: number;
+  last_completed_index: number;
+  updated_at: string | Date;
 };
 
 function cloneSubject(subject: PlanSubject | undefined): PlanSubject | undefined {
@@ -546,9 +701,70 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
     return { step: cloneStep(row.step), traceId: row.trace_id };
   }
 
+  async rememberPlanMetadata(planId: string, metadata: PersistedPlanMetadata): Promise<void> {
+    await this.ready;
+    await this.purgeExpired();
+    const now = new Date();
+    await this.pool.query(
+      `INSERT INTO plan_state_metadata (plan_id, trace_id, steps, next_step_index, last_completed_index, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (plan_id)
+       DO UPDATE SET trace_id = EXCLUDED.trace_id,
+                     steps = EXCLUDED.steps,
+                     next_step_index = EXCLUDED.next_step_index,
+                     last_completed_index = EXCLUDED.last_completed_index,
+                     updated_at = EXCLUDED.updated_at`,
+      [
+        planId,
+        metadata.traceId,
+        metadata.steps.map((entry) => ({
+          step: cloneStep(entry.step),
+          createdAt: entry.createdAt,
+          attempt: entry.attempt,
+          subject: cloneSubject(entry.subject),
+        })),
+        metadata.nextStepIndex,
+        metadata.lastCompletedIndex,
+        now,
+      ],
+    );
+  }
+
+  async getPlanMetadata(planId: string): Promise<PersistedPlanMetadata | undefined> {
+    await this.ready;
+    await this.purgeExpired();
+    const result = await this.pool.query<PlanMetadataRow>(
+      `SELECT plan_id, trace_id, steps, next_step_index, last_completed_index, updated_at
+       FROM plan_state_metadata
+       WHERE plan_id = $1`,
+      [planId],
+    );
+    const row = result.rows[0];
+    if (!row) {
+      return undefined;
+    }
+    return this.toPersistedPlanMetadata(row);
+  }
+
+  async listPlanMetadata(): Promise<PersistedPlanMetadata[]> {
+    await this.ready;
+    await this.purgeExpired();
+    const result = await this.pool.query<PlanMetadataRow>(
+      `SELECT plan_id, trace_id, steps, next_step_index, last_completed_index, updated_at FROM plan_state_metadata`,
+    );
+    return result.rows.map((row) => this.toPersistedPlanMetadata(row));
+  }
+
+  async forgetPlanMetadata(planId: string): Promise<void> {
+    await this.ready;
+    await this.purgeExpired();
+    await this.pool.query(`DELETE FROM plan_state_metadata WHERE plan_id = $1`, [planId]);
+  }
+
   async clear(): Promise<void> {
     await this.ready;
     await this.pool.query(`DELETE FROM plan_state`);
+    await this.pool.query(`DELETE FROM plan_state_metadata`);
   }
 
   private async initialize(): Promise<void> {
@@ -574,6 +790,19 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
     await this.pool.query(`
       CREATE INDEX IF NOT EXISTS plan_state_updated_at_idx ON plan_state(updated_at)
     `);
+    await this.pool.query(`
+      CREATE TABLE IF NOT EXISTS plan_state_metadata (
+        plan_id TEXT PRIMARY KEY,
+        trace_id TEXT NOT NULL,
+        steps JSONB NOT NULL,
+        next_step_index INTEGER NOT NULL,
+        last_completed_index INTEGER NOT NULL,
+        updated_at TIMESTAMPTZ NOT NULL
+      )
+    `);
+    await this.pool.query(`
+      CREATE INDEX IF NOT EXISTS plan_state_metadata_updated_at_idx ON plan_state_metadata(updated_at)
+    `);
   }
 
   private async purgeExpired(now = Date.now()): Promise<void> {
@@ -582,6 +811,7 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
     }
     const cutoff = new Date(now - this.retentionMs);
     await this.pool.query(`DELETE FROM plan_state WHERE updated_at < $1`, [cutoff]);
+    await this.pool.query(`DELETE FROM plan_state_metadata WHERE updated_at < $1`, [cutoff]);
   }
 
   private parseTimestamp(value: string | undefined): Date | undefined {
@@ -622,6 +852,21 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
       createdAt: this.toIso(row.created_at),
       approvals: row.approvals ?? undefined,
       subject: cloneSubject(row.subject ?? undefined),
+    };
+  }
+
+  private toPersistedPlanMetadata(row: PlanMetadataRow): PersistedPlanMetadata {
+    return {
+      planId: row.plan_id,
+      traceId: row.trace_id,
+      nextStepIndex: row.next_step_index,
+      lastCompletedIndex: row.last_completed_index,
+      steps: row.steps.map((entry) => ({
+        step: cloneStep(entry.step),
+        createdAt: entry.createdAt,
+        attempt: entry.attempt,
+        subject: cloneSubject(entry.subject),
+      })),
     };
   }
 }
