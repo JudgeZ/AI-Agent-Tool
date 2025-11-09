@@ -862,6 +862,116 @@ async function setupCompletionConsumer(): Promise<void> {
           const persistedEntry = metadata
             ? undefined
             : await planStateStore?.getEntry(payload.planId, payload.stepId);
+          const subjectContext =
+            metadata?.job.subject ??
+            persistedEntry?.subject ??
+            planSubjects.get(payload.planId);
+          const expectedTraceId = metadata?.traceId ?? persistedEntry?.traceId ?? "";
+          const receivedTraceId =
+            payload.traceId ||
+            message.headers["trace-id"] ||
+            message.headers["traceId"] ||
+            message.headers["Trace-Id"] ||
+            "";
+          const expectedIdempotencyKey = metadata
+            ? key
+            : persistedEntry?.idempotencyKey ?? "";
+          const receivedIdempotencyKey =
+            message.headers["x-idempotency-key"] ||
+            message.headers["idempotency-key"] ||
+            message.headers["Idempotency-Key"] ||
+            "";
+
+          if (!metadata && !persistedEntry) {
+            console.warn("plan.completion.unknown_step", {
+              planId: payload.planId,
+              stepId: payload.stepId,
+              messageId: message.id,
+            });
+            logAuditEvent({
+              action: "plan.step.completion",
+              outcome: "denied",
+              traceId: receivedTraceId || message.id,
+              resource: "plan.step",
+              subject: planSubjectToAuditSubject(subjectContext),
+              details: {
+                planId: payload.planId,
+                stepId: payload.stepId,
+                messageId: message.id,
+                reason: "unknown_step",
+              },
+            });
+            await message.deadLetter({ reason: "unknown_step" });
+            return;
+          }
+
+          const expectedTracePresent = expectedTraceId.length > 0;
+          const expectedIdempotencyPresent =
+            expectedIdempotencyKey.length > 0;
+          const receivedTracePresent = receivedTraceId.length > 0;
+          const receivedIdempotencyPresent =
+            receivedIdempotencyKey.length > 0;
+
+          let enforceMetadata = false;
+          let metadataMatches = true;
+
+          if (expectedTracePresent && expectedIdempotencyPresent) {
+            enforceMetadata = true;
+            metadataMatches =
+              receivedTracePresent &&
+              receivedIdempotencyPresent &&
+              expectedTraceId === receivedTraceId &&
+              expectedIdempotencyKey === receivedIdempotencyKey;
+          } else {
+            if (expectedTracePresent) {
+              enforceMetadata = true;
+              metadataMatches =
+                metadataMatches &&
+                receivedTracePresent &&
+                expectedTraceId === receivedTraceId;
+            }
+            if (expectedIdempotencyPresent) {
+              enforceMetadata = true;
+              metadataMatches =
+                metadataMatches &&
+                receivedIdempotencyPresent &&
+                expectedIdempotencyKey === receivedIdempotencyKey;
+            }
+          }
+
+          if (enforceMetadata && !metadataMatches) {
+            console.warn("plan.completion.metadata_mismatch", {
+              planId: payload.planId,
+              stepId: payload.stepId,
+              messageId: message.id,
+              expectedTraceId,
+              receivedTraceId,
+              expectedIdempotencyKey,
+              receivedIdempotencyKey,
+            });
+            logAuditEvent({
+              action: "plan.step.completion",
+              outcome: "denied",
+              traceId: expectedTraceId || receivedTraceId || message.id,
+              resource: "plan.step",
+              subject: planSubjectToAuditSubject(subjectContext),
+              details: {
+                planId: payload.planId,
+                stepId: payload.stepId,
+                messageId: message.id,
+                reason: "metadata_mismatch",
+                expectedTraceId: expectedTraceId || undefined,
+                receivedTraceId: receivedTraceId || undefined,
+                expectedIdempotencyKey:
+                  expectedIdempotencyKey || undefined,
+                receivedIdempotencyKey:
+                  receivedIdempotencyKey || undefined,
+              },
+            });
+            await message.deadLetter({ reason: "metadata_mismatch" });
+            return;
+          }
+
           const baseStep = metadata?.step ?? persistedEntry?.step;
           const persistedApprovals = metadata
             ? undefined
@@ -875,13 +985,7 @@ async function setupCompletionConsumer(): Promise<void> {
             persistedEntry?.attempt ??
             0;
           const traceId =
-            payload.traceId ||
-            metadata?.traceId ||
-            persistedEntry?.traceId ||
-            message.headers["trace-id"] ||
-            message.headers["traceId"] ||
-            message.headers["Trace-Id"] ||
-            "";
+            expectedTraceId || receivedTraceId || message.id;
 
           await persistPlanStepState(
             payload.planId,

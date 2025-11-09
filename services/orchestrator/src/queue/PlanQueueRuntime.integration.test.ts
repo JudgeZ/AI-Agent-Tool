@@ -398,9 +398,11 @@ describe("PlanQueueRuntime integration", () => {
 
     const { PlanStateStore } = await import("./PlanStateStore.js");
     const store = new PlanStateStore({ filePath: storePath });
+    const idempotencyKey = `${planId}:${step.id}`;
+
     await store.rememberStep(planId, step, persistedTraceId, {
       initialState: "waiting_approval",
-      idempotencyKey: `${planId}:${step.id}`,
+      idempotencyKey,
       attempt: 1,
       createdAt: new Date().toISOString(),
       approvals: { [step.capability]: true }
@@ -422,6 +424,12 @@ describe("PlanQueueRuntime integration", () => {
         stepId: step.id,
         state: "completed",
         summary: "Completed via store"
+      },
+      {
+        headers: {
+          "trace-id": persistedTraceId,
+          "x-idempotency-key": idempotencyKey,
+        },
       }
     );
 
@@ -441,6 +449,131 @@ describe("PlanQueueRuntime integration", () => {
     expect(completion?.step.attempt).toBe(1);
   });
 
+  it("dead-letters completions when trace and idempotency metadata do not both match", async () => {
+    const step: PlanStep = {
+      id: "s-guarded",
+      action: "apply_edits",
+      capability: "repo.write",
+      capabilityLabel: "Apply repository changes",
+      labels: ["repo"],
+      tool: "code_writer",
+      timeoutSeconds: 120,
+      approvalRequired: false,
+      input: {},
+      metadata: {},
+    };
+    const planId = "plan-guarded";
+    const traceId = "trace-guarded";
+    const idempotencyKey = `${planId}:${step.id}`;
+
+    const { PlanStateStore } = await import("./PlanStateStore.js");
+    const store = new PlanStateStore({ filePath: storePath });
+    await store.rememberStep(planId, step, traceId, {
+      initialState: "running",
+      idempotencyKey,
+      attempt: 1,
+      createdAt: new Date().toISOString(),
+    });
+
+    await runtime.initializePlanQueueRuntime();
+
+    publishSpy.mockClear();
+    const warnSpy = vi
+      .spyOn(console, "warn")
+      .mockImplementation(() => undefined);
+
+    const payload: PlanStepCompletionPayload = {
+      planId,
+      stepId: step.id,
+      state: "completed",
+      summary: "guarded completion",
+    };
+
+    try {
+      await adapterRef.current.enqueue<PlanStepCompletionPayload>(
+        runtime.PLAN_COMPLETIONS_QUEUE,
+        payload,
+        {
+          headers: {
+            "x-idempotency-key": idempotencyKey,
+          },
+        },
+      );
+
+      await adapterRef.current.waitUntilEmpty(runtime.PLAN_COMPLETIONS_QUEUE);
+
+      expect(publishSpy).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        "plan.completion.metadata_mismatch",
+        expect.objectContaining({
+          planId,
+          stepId: step.id,
+          expectedTraceId: traceId,
+          receivedTraceId: "",
+          expectedIdempotencyKey: idempotencyKey,
+          receivedIdempotencyKey: idempotencyKey,
+        }),
+      );
+
+      warnSpy.mockClear();
+      publishSpy.mockClear();
+
+      await adapterRef.current.enqueue<PlanStepCompletionPayload>(
+        runtime.PLAN_COMPLETIONS_QUEUE,
+        payload,
+        {
+          headers: {
+            "trace-id": "trace-forged",
+            "x-idempotency-key": idempotencyKey,
+          },
+        },
+      );
+
+      await adapterRef.current.waitUntilEmpty(runtime.PLAN_COMPLETIONS_QUEUE);
+
+      expect(publishSpy).not.toHaveBeenCalled();
+      expect(warnSpy).toHaveBeenCalledWith(
+        "plan.completion.metadata_mismatch",
+        expect.objectContaining({
+          planId,
+          stepId: step.id,
+          expectedTraceId: traceId,
+          receivedTraceId: "trace-forged",
+          expectedIdempotencyKey: idempotencyKey,
+          receivedIdempotencyKey: idempotencyKey,
+        }),
+      );
+
+      warnSpy.mockClear();
+      publishSpy.mockClear();
+
+      await adapterRef.current.enqueue<PlanStepCompletionPayload>(
+        runtime.PLAN_COMPLETIONS_QUEUE,
+        payload,
+        {
+          headers: {
+            "trace-id": traceId,
+            "x-idempotency-key": idempotencyKey,
+          },
+        },
+      );
+
+      await adapterRef.current.waitUntilEmpty(runtime.PLAN_COMPLETIONS_QUEUE);
+
+      const events = publishSpy.mock.calls as Array<[PlanStepEvent]>;
+      expect(
+        events.some(
+          ([event]) =>
+            event.planId === planId &&
+            event.step.id === step.id &&
+            event.step.state === "completed",
+        ),
+      ).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("clears approvals and persisted state when a rejected completion is processed", async () => {
     const step: PlanStep = {
       id: "s-rejected",
@@ -456,12 +589,13 @@ describe("PlanQueueRuntime integration", () => {
     };
     const planId = "plan-rejected";
     const traceId = "trace-rejected";
+    const idempotencyKey = `${planId}:${step.id}`;
 
     const { PlanStateStore } = await import("./PlanStateStore.js");
     const store = new PlanStateStore({ filePath: storePath });
     await store.rememberStep(planId, step, traceId, {
       initialState: "running",
-      idempotencyKey: `${planId}:${step.id}`,
+      idempotencyKey,
       attempt: 1,
       createdAt: new Date().toISOString(),
       approvals: { [step.capability]: true }
@@ -480,6 +614,12 @@ describe("PlanQueueRuntime integration", () => {
         state: "rejected",
         summary: "Rejected during execution",
         approvals: { [step.capability]: true }
+      },
+      {
+        headers: {
+          "trace-id": traceId,
+          "x-idempotency-key": idempotencyKey,
+        },
       }
     );
 

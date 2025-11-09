@@ -5,8 +5,13 @@ import path from "node:path";
 import { GenericContainer } from "testcontainers";
 import { afterAll, describe, expect, it, vi } from "vitest";
 
-import { submitPlanSteps, resetPlanQueueRuntime } from "./PlanQueueRuntime.js";
-import { resetQueueAdapter } from "./QueueAdapter.js";
+import {
+  submitPlanSteps,
+  resetPlanQueueRuntime,
+  initializePlanQueueRuntime,
+  PLAN_COMPLETIONS_QUEUE
+} from "./PlanQueueRuntime.js";
+import { getQueueAdapter, resetQueueAdapter } from "./QueueAdapter.js";
 import type { Plan } from "../plan/planner.js";
 import * as events from "../plan/events.js";
 
@@ -138,6 +143,88 @@ describe("PlanQueueRuntime (RabbitMQ integration)", () => {
         stepId: plan.steps[0]!.id,
         tool: plan.steps[0]!.tool
       });
+    } finally {
+      process.env.RABBITMQ_URL = previousUrl;
+      process.env.RABBITMQ_PREFETCH = previousPrefetch;
+      if (tempDir) {
+        await fs.rm(tempDir, { recursive: true, force: true });
+      }
+      if (container) {
+        await container.stop();
+      }
+    }
+  });
+
+  it("dead-letters forged completion messages", async () => {
+    executeTool.mockReset();
+    publishSpy.mockClear();
+
+    let container: Awaited<ReturnType<GenericContainer["start"]>> | undefined;
+    try {
+      container = await new GenericContainer("rabbitmq:3.13-management")
+        .withExposedPorts(5672)
+        .start();
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("Could not find a working container runtime")) {
+        console.warn(
+          "Skipping RabbitMQ integration test because no container runtime is available",
+        );
+        return;
+      }
+      throw error;
+    }
+
+    const mappedPort = container.getMappedPort(5672);
+    const host = container.getHost();
+    const previousUrl = process.env.RABBITMQ_URL;
+    const previousPrefetch = process.env.RABBITMQ_PREFETCH;
+    let tempDir: string | undefined;
+
+    try {
+      process.env.RABBITMQ_URL = `amqp://guest:guest@${host}:${mappedPort}`;
+      process.env.RABBITMQ_PREFETCH = "1";
+
+      tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "plan-state-rmq-"));
+      process.env.PLAN_STATE_PATH = path.join(tempDir, "state.json");
+
+      resetPlanQueueRuntime();
+      resetQueueAdapter();
+
+      await initializePlanQueueRuntime();
+      const adapter = await getQueueAdapter();
+
+      const forgedPlanId = `forged-plan-${Date.now()}`;
+      await adapter.enqueue(
+        PLAN_COMPLETIONS_QUEUE,
+        {
+          planId: forgedPlanId,
+          stepId: "ghost-step",
+          state: "completed",
+          summary: "forged completion",
+        },
+        {
+          headers: {
+            "trace-id": "trace-forged",
+            "x-idempotency-key": `${forgedPlanId}:ghost-step`,
+          },
+        },
+      );
+
+      await vi.waitFor(
+        async () => {
+          expect(
+            await adapter.getQueueDepth(PLAN_COMPLETIONS_QUEUE),
+          ).toBe(0);
+        },
+        { timeout: 10000 },
+      );
+
+      const forgedEvents = publishSpy.mock.calls.filter(
+        ([event]) =>
+          event.planId === forgedPlanId && event.step.id === "ghost-step",
+      );
+      expect(forgedEvents).toHaveLength(0);
     } finally {
       process.env.RABBITMQ_URL = previousUrl;
       process.env.RABBITMQ_PREFETCH = previousPrefetch;
