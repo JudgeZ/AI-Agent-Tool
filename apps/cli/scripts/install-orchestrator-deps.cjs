@@ -16,19 +16,13 @@ if (!existsSync(orchestratorDir)) {
   process.exit(0);
 }
 
-const pnpmLock = existsSync(path.join(orchestratorDir, 'pnpm-lock.yaml'));
-const yarnLock = existsSync(path.join(orchestratorDir, 'yarn.lock'));
 const npmLock = existsSync(path.join(orchestratorDir, 'package-lock.json'));
 
 try {
-  if (pnpmLock) {
-    run('pnpm install --frozen-lockfile');
-  } else if (yarnLock) {
-    run('yarn install --frozen-lockfile');
-  } else if (npmLock) {
+  if (npmLock) {
     run('npm ci');
   } else {
-    console.warn('No lockfile detected for orchestrator dependencies; skipping install.');
+    console.warn('No npm lockfile detected for orchestrator dependencies; skipping install.');
   }
 } catch (error) {
   if (error?.code === 'ENOENT') {
