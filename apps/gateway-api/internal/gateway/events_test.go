@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -251,13 +252,13 @@ func TestEventsHandlerErrorsWhenResponseWriterLacksFlusher(t *testing.T) {
 	}
 }
 
-func TestEventsHandlerReturnsBadGatewayOnStreamInterruption(t *testing.T) {
+func TestEventsHandlerEmitsErrorEventOnStreamInterruption(t *testing.T) {
+	upstreamBody := &countingReadCloser{ReadCloser: &failingReadCloser{}}
 	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-		body := &failingReadCloser{}
 		return &http.Response{
 			StatusCode: http.StatusOK,
 			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
-			Body:       body,
+			Body:       upstreamBody,
 		}, nil
 	})}
 	handler := NewEventsHandler(client, "http://orchestrator", time.Second, nil, nil)
@@ -268,11 +269,18 @@ func TestEventsHandlerReturnsBadGatewayOnStreamInterruption(t *testing.T) {
 
 	handler.ServeHTTP(rec, req)
 
-	if rec.Code != http.StatusBadGateway {
-		t.Fatalf("expected 502 after stream interruption, got %d", rec.Code)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200 after stream interruption, got %d", rec.Code)
 	}
-	if body := rec.Body.String(); !strings.Contains(body, "stream interrupted") {
-		t.Fatalf("expected stream interrupted message, got %q", body)
+	body := rec.Body.String()
+	if !strings.Contains(body, "event: error") {
+		t.Fatalf("expected SSE error event, got %q", body)
+	}
+	if !strings.Contains(body, "unexpected EOF") {
+		t.Fatalf("expected upstream error to be propagated, got %q", body)
+	}
+	if upstreamBody.CloseCount() != 1 {
+		t.Fatalf("expected upstream body to be closed once, got %d", upstreamBody.CloseCount())
 	}
 }
 
@@ -313,6 +321,37 @@ func TestEventsHandlerForwardsCookieHeaders(t *testing.T) {
 		}
 	default:
 		t.Fatal("expected orchestrator to receive cookie header")
+	}
+}
+
+func TestEventsHandlerClosesConnectionWhenErrorEventCannotBeDelivered(t *testing.T) {
+	upstreamBody := &countingReadCloser{ReadCloser: &failingReadCloser{}}
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"text/event-stream"}},
+			Body:       upstreamBody,
+		}, nil
+	})}
+	handler := NewEventsHandler(client, "http://orchestrator", time.Second, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil)
+	req.Header.Set("Accept", "text/event-stream")
+
+	writer := newErroringSSEWriter()
+	handler.ServeHTTP(writer, req)
+
+	if writer.status != http.StatusOK {
+		t.Fatalf("expected status to remain 200, got %d", writer.status)
+	}
+	if writer.writeAttempts != 1 {
+		t.Fatalf("expected a single write attempt for error event, got %d", writer.writeAttempts)
+	}
+	if upstreamBody.CloseCount() != 1 {
+		t.Fatalf("expected upstream body to be closed once, got %d", upstreamBody.CloseCount())
+	}
+	if ct := writer.Header().Get("Content-Type"); ct != "text/event-stream" {
+		t.Fatalf("expected content type to remain text/event-stream, got %q", ct)
 	}
 }
 
@@ -463,6 +502,52 @@ func TestRegisterEventRoutesPanicsOnInvalidTrustedProxyCIDR(t *testing.T) {
 	require.Panics(t, func() {
 		RegisterEventRoutes(mux, EventRouteConfig{TrustedProxyCIDRs: []string{"not-a-cidr"}})
 	})
+}
+
+type erroringSSEWriter struct {
+	header        http.Header
+	status        int
+	writeAttempts int
+}
+
+func newErroringSSEWriter() *erroringSSEWriter {
+	return &erroringSSEWriter{header: make(http.Header), status: http.StatusOK}
+}
+
+func (w *erroringSSEWriter) Header() http.Header {
+	return w.header
+}
+
+func (w *erroringSSEWriter) Write(p []byte) (int, error) {
+	w.writeAttempts++
+	return 0, io.ErrClosedPipe
+}
+
+func (w *erroringSSEWriter) WriteHeader(statusCode int) {
+	w.status = statusCode
+}
+
+func (w *erroringSSEWriter) Flush() {}
+
+type countingReadCloser struct {
+	io.ReadCloser
+	closes atomic.Int32
+}
+
+func (c *countingReadCloser) Read(p []byte) (int, error) {
+	return c.ReadCloser.Read(p)
+}
+
+func (c *countingReadCloser) Close() error {
+	c.closes.Add(1)
+	if c.ReadCloser != nil {
+		return c.ReadCloser.Close()
+	}
+	return nil
+}
+
+func (c *countingReadCloser) CloseCount() int {
+	return int(c.closes.Load())
 }
 
 type hangingRecorder struct {
