@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/url"
@@ -180,12 +181,17 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	gatewayAddr := localIP(r)
 	appendForwardingHeaders(req.Header, r.Header, clientAddr, gatewayAddr)
 
+	logger := slog.Default()
+
 	resp, err := h.client.Do(req)
 	if err != nil {
 		http.Error(w, "failed to contact orchestrator", http.StatusBadGateway)
 		return
 	}
-	defer resp.Body.Close()
+
+	var closeOnce sync.Once
+	closeBody := func() { closeOnce.Do(func() { resp.Body.Close() }) }
+	defer closeBody()
 
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
@@ -229,23 +235,54 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	for {
 		select {
 		case <-ctx.Done():
-			resp.Body.Close()
+			closeBody()
 			<-errCh
 			return
 		case err := <-errCh:
+			closeBody()
 			if err != nil && !errors.Is(err, context.Canceled) && !errors.Is(err, io.EOF) {
-				// Best-effort error propagation by terminating the stream.
-				http.Error(w, "stream interrupted", http.StatusBadGateway)
+				if ctx.Err() == nil {
+					logger.ErrorContext(ctx, "gateway.events.upstream_error",
+						slog.String("plan_id", planID),
+						slog.String("error", err.Error()),
+					)
+					if writeErr := emitSSEErrorEvent(writer, err); writeErr != nil && !errors.Is(writeErr, context.Canceled) && !errors.Is(writeErr, io.EOF) {
+						logger.WarnContext(ctx, "gateway.events.error_event_failed",
+							slog.String("plan_id", planID),
+							slog.String("error", writeErr.Error()),
+						)
+					}
+				}
 			}
 			return
 		case <-ticker.C:
 			if _, err := writer.Write([]byte(heartbeatPayload)); err != nil {
-				resp.Body.Close()
+				closeBody()
 				<-errCh
 				return
 			}
 		}
 	}
+}
+
+func emitSSEErrorEvent(w io.Writer, upstreamErr error) error {
+	if upstreamErr == nil {
+		return nil
+	}
+	message := sanitizeSSEData(upstreamErr.Error())
+	payload := fmt.Sprintf("event: error\ndata: %s\n\n", message)
+	_, err := w.Write([]byte(payload))
+	return err
+}
+
+func sanitizeSSEData(data string) string {
+	sanitized := strings.ReplaceAll(data, "\r", " ")
+	sanitized = strings.ReplaceAll(sanitized, "\n", " ")
+	sanitized = strings.TrimSpace(sanitized)
+	if sanitized == "" {
+		sanitized = "stream interrupted"
+	}
+	return sanitized
 }
 
 type flushingWriter struct {
