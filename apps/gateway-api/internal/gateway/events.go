@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"log/slog"
 	"net"
@@ -201,7 +202,10 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		w.Header().Set("Content-Type", "text/plain")
 		w.WriteHeader(resp.StatusCode)
-		w.Write(body)
+		if len(body) > 0 {
+			escaped := template.HTMLEscapeString(string(body))
+			io.WriteString(w, escaped)
+		}
 		return
 	}
 

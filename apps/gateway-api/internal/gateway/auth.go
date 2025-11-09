@@ -153,6 +153,13 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*
 		return
 	}
 
+	if err := validateAuthorizeRedirect(authURL, cfg.AuthorizeURL); err != nil {
+		attrs := append(baseAttrs, slog.String("redirect_uri", redirectURI), slog.String("error", "authorize url validation failed"))
+		logAudit(r.Context(), "oauth.authorize", "failure", attrs...)
+		http.Error(w, "failed to build authorize url", http.StatusInternalServerError)
+		return
+	}
+
 	successAttrs := append(baseAttrs, slog.String("redirect_uri", redirectURI))
 	logAudit(r.Context(), "oauth.authorize", "success", successAttrs...)
 
@@ -508,6 +515,10 @@ func getEnv(key, defaultValue string) string {
 }
 
 func setStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, data stateData) error {
+	if !isRequestSecure(r, trustedProxies) {
+		return errors.New("refusing to issue state cookie over insecure request")
+	}
+
 	encoded, err := json.Marshal(data)
 	if err != nil {
 		return err
@@ -520,8 +531,7 @@ func setStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []*ne
 		Expires:  data.ExpiresAt,
 		MaxAge:   int(stateTTL.Seconds()),
 		HttpOnly: true,
-		Secure:   isRequestSecure(r, trustedProxies),
-		// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure -- secure flag depends on TLS or trusted proxies
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 	}
 
@@ -557,6 +567,10 @@ func readStateCookie(r *http.Request, state string) (stateData, error) {
 }
 
 func deleteStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, state string) {
+	if !isRequestSecure(r, trustedProxies) {
+		return
+	}
+
 	http.SetCookie(w, &http.Cookie{
 		Name:     stateCookieName(state),
 		Value:    "",
@@ -564,10 +578,54 @@ func deleteStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []
 		Expires:  time.Unix(0, 0),
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   isRequestSecure(r, trustedProxies),
-		// nosemgrep: go.lang.security.audit.net.cookie-missing-secure.cookie-missing-secure -- secure flag depends on TLS or trusted proxies
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
 	})
+}
+
+func validateAuthorizeRedirect(builtURL, configuredAuthorizeURL string) error {
+	built, err := url.Parse(builtURL)
+	if err != nil {
+		return err
+	}
+
+	reference, err := url.Parse(configuredAuthorizeURL)
+	if err != nil {
+		return err
+	}
+
+	if !strings.EqualFold(built.Scheme, reference.Scheme) {
+		return fmt.Errorf("authorize url scheme mismatch: %s", built.Scheme)
+	}
+	if !strings.EqualFold(built.Hostname(), reference.Hostname()) {
+		return fmt.Errorf("authorize url host mismatch: %s", built.Hostname())
+	}
+
+	refPort := reference.Port()
+	builtPort := built.Port()
+	if refPort == "" {
+		refPort = defaultPortForScheme(reference.Scheme)
+	}
+	if builtPort == "" {
+		builtPort = defaultPortForScheme(built.Scheme)
+	}
+
+	if refPort != builtPort {
+		return fmt.Errorf("authorize url port mismatch: %s", builtPort)
+	}
+
+	return nil
+}
+
+func defaultPortForScheme(scheme string) string {
+	switch strings.ToLower(scheme) {
+	case "https":
+		return "443"
+	case "http":
+		return "80"
+	default:
+		return ""
+	}
 }
 
 func stateCookieName(state string) string {

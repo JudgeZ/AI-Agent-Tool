@@ -48,8 +48,13 @@ async function newAgent(name: string) {
     throw new Error(`Refusing to write outside agents directory: ${normalized}`);
   }
 
-  const file = path.join(dir, "agent.md");
-  const templatePath = path.join(repoRoot, "docs", "agents", "templates", "agent.md");
+  const file = path.resolve(agentsRoot, normalized, "agent.md");
+  const relativeFile = path.relative(agentsRoot, file);
+  if (relativeFile.startsWith("..") || path.isAbsolute(relativeFile)) {
+    throw new Error(`Refusing to write outside agents directory: ${normalized}`);
+  }
+
+  const templatePath = path.resolve(repoRoot, "docs", "agents", "templates", "agent.md");
   if (!fs.existsSync(templatePath)) {
     console.error("Template not found:", templatePath);
     process.exit(1);
