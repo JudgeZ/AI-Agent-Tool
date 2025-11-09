@@ -61,12 +61,20 @@ function buildConfig() {
         chat: { windowMs: 60000, maxRequests: 600 },
         auth: { windowMs: 60000, maxRequests: 120 }
       },
+      sseQuotas: {
+        perIp: 4,
+        perSubject: 2,
+      },
       tls: {
         enabled: false,
         keyPath: undefined,
         certPath: undefined,
         caPaths: [],
         requestClientCert: true
+      },
+      trustedProxyCidrs: [],
+      cors: {
+        allowedOrigins: [],
       }
     },
     observability: {

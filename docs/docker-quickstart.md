@@ -63,6 +63,18 @@ server:
 
 Alternatively, set the environment variable `SERVER_TRUSTED_PROXY_CIDRS=10.0.0.0/8,192.168.100.0/24`. Only proxies listed here can supply `x-forwarded-for` addresses; forged headers from other sources are ignored.
 
+Expose the orchestrator to trusted web front ends by enumerating their origins. Development defaults allow `http://localhost:5173` and `http://127.0.0.1:5173`, so the SvelteKit UI works out of the box. In production, explicitly list every UI origin:
+
+```yaml
+server:
+  cors:
+    allowedOrigins:
+      - https://ui.example.com
+      - https://ops.internal.example
+```
+
+The same list can be provided via `SERVER_CORS_ALLOWED_ORIGINS=https://ui.example.com,https://ops.internal.example`. Browsers receive `Access-Control-Allow-Origin` and `Access-Control-Allow-Credentials` headers only when the request's origin matches this allowlist, keeping authentication cookies scoped to approved clients.
+
 ## 2. Start the stack
 
 ```bash

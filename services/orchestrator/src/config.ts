@@ -14,6 +14,10 @@ export type SseQuotaConfig = {
   perSubject: number;
 };
 
+export type CorsConfig = {
+  allowedOrigins: string[];
+};
+
 export type CircuitBreakerConfig = {
   failureThreshold: number;
   resetTimeoutMs: number;
@@ -154,6 +158,7 @@ export type AppConfig = {
     sseQuotas: SseQuotaConfig;
     tls: TlsConfig;
     trustedProxyCidrs: string[];
+    cors: CorsConfig;
   };
   observability: ObservabilityConfig;
 };
@@ -184,6 +189,10 @@ type PartialRateLimitConfig = {
 type PartialSseQuotaConfig = {
   perIp?: number;
   perSubject?: number;
+};
+
+type PartialCorsConfig = {
+  allowedOrigins?: string[];
 };
 
 type PartialCircuitBreakerConfig = {
@@ -273,6 +282,13 @@ const DEFAULT_TRACING_CONFIG: TracingConfig = {
   exporterHeaders: {},
   sampleRatio: 1
 };
+
+const DEFAULT_DEV_ALLOWED_ORIGINS = [
+  "http://127.0.0.1:5173",
+  "http://localhost:5173",
+  "http://127.0.0.1:1420",
+  "http://localhost:1420",
+] as const;
 
 const DEFAULT_CONFIG: AppConfig = {
   runMode: "consumer",
@@ -386,7 +402,10 @@ const DEFAULT_CONFIG: AppConfig = {
       caPaths: [],
       requestClientCert: true
     },
-    trustedProxyCidrs: []
+    trustedProxyCidrs: [],
+    cors: {
+      allowedOrigins: [...DEFAULT_DEV_ALLOWED_ORIGINS],
+    },
   },
   observability: {
     tracing: { ...DEFAULT_TRACING_CONFIG }
@@ -449,6 +468,7 @@ type PartialServerConfig = {
   tls?: PartialTlsConfig;
   sseQuotas?: PartialSseQuotaConfig;
   trustedProxyCidrs?: string[];
+  cors?: PartialCorsConfig;
 };
 
 type PartialOidcSessionConfig = {
@@ -579,6 +599,20 @@ function parseSseQuotaConfig(value: unknown): PartialSseQuotaConfig | undefined 
     result.perSubject = perSubject;
   }
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseCorsConfigRecord(value: unknown): PartialCorsConfig | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const allowedOrigins = parseStringArrayFlexible(
+    record.allowedOrigins ?? record.allowed_origins ?? record.origins,
+  );
+  if (allowedOrigins && allowedOrigins.length > 0) {
+    return { allowedOrigins };
+  }
+  return undefined;
 }
 
 function parseCircuitBreakerConfig(value: unknown): PartialCircuitBreakerConfig | undefined {
@@ -783,6 +817,42 @@ function parseStringArrayFlexible(value: unknown): string[] | undefined {
     return parseStringList(value);
   }
   return undefined;
+}
+
+function normalizeOriginString(origin: string): string | undefined {
+  const trimmed = origin.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  if (trimmed === "*") {
+    return "*";
+  }
+  try {
+    const parsed = new URL(trimmed);
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      return undefined;
+    }
+    return `${parsed.protocol}//${parsed.host}`;
+  } catch {
+    return undefined;
+  }
+}
+
+function normalizeOriginList(origins: readonly string[] | undefined): string[] {
+  if (!origins || origins.length === 0) {
+    return [];
+  }
+  const result: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of origins) {
+    const normalized = normalizeOriginString(entry);
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
 }
 function parseKafkaMechanism(value: unknown): KafkaSaslMechanism | undefined {
   if (typeof value !== "string") {
@@ -1366,6 +1436,9 @@ export function loadConfig(): AppConfig {
                 server.trusted_proxies,
             )
           : undefined;
+        const serverCors = server
+          ? parseCorsConfigRecord(server.cors ?? server.corsConfig ?? server.cors_config)
+          : undefined;
         const kafkaMessaging = messagingRecord ? parseKafkaMessagingRecord(messagingRecord.kafka) : undefined;
         const fileOidc = parseOidcConfigRecord(oidc);
 
@@ -1426,7 +1499,8 @@ export function loadConfig(): AppConfig {
                   : undefined,
                 tls: parseTlsConfig(server.tls),
                 sseQuotas: serverSseQuotas,
-                trustedProxyCidrs: serverTrustedProxies
+                trustedProxyCidrs: serverTrustedProxies,
+                cors: serverCors,
               }
             : undefined,
           observability: tracing ? { tracing } : undefined
@@ -1476,6 +1550,9 @@ export function loadConfig(): AppConfig {
   const envSseMaxConnectionsPerSubject = asNumber(process.env.SSE_MAX_CONNECTIONS_PER_SUBJECT);
   const envTrustedProxyCidrs = parseStringList(
     process.env.SERVER_TRUSTED_PROXY_CIDRS ?? process.env.TRUSTED_PROXY_CIDRS,
+  );
+  const envServerCorsAllowedOrigins = parseStringList(
+    process.env.SERVER_CORS_ALLOWED_ORIGINS ?? process.env.CORS_ALLOWED_ORIGINS,
   );
   const envTracingEnabled = asBoolean(process.env.TRACING_ENABLED ?? process.env.OTEL_TRACES_EXPORTER_ENABLED);
   const envTracingServiceName = process.env.TRACING_SERVICE_NAME ?? process.env.OTEL_SERVICE_NAME;
@@ -1691,6 +1768,12 @@ export function loadConfig(): AppConfig {
         .map(entry => entry.trim())
         .filter(entry => entry.length > 0)
     : [];
+
+  const fileCorsAllowedOrigins = fileCfg.server?.cors?.allowedOrigins;
+  const corsAllowedOriginsSource =
+    envServerCorsAllowedOrigins ?? fileCorsAllowedOrigins ??
+    (runMode === "enterprise" ? [] : DEFAULT_CONFIG.server.cors.allowedOrigins);
+  const normalizedCorsAllowedOrigins = normalizeOriginList(corsAllowedOriginsSource);
 
   const fileTls = fileCfg.server?.tls;
   const tlsEnabled = envServerTlsEnabled ?? fileTls?.enabled ?? DEFAULT_CONFIG.server.tls.enabled;
@@ -1916,7 +1999,10 @@ export function loadConfig(): AppConfig {
         caPaths: tlsCaPaths ?? [],
         requestClientCert: tlsRequestClientCert
       },
-      trustedProxyCidrs: [...normalizedTrustedProxyCidrs]
+      trustedProxyCidrs: [...normalizedTrustedProxyCidrs],
+      cors: {
+        allowedOrigins: [...normalizedCorsAllowedOrigins],
+      },
     },
     observability: {
       tracing: {

@@ -83,7 +83,8 @@ const ENV_KEYS = [
   "CONTENT_CAPTURE_ENABLED",
   "PLAN_STATE_BACKEND",
   "SSE_MAX_CONNECTIONS_PER_IP",
-  "SSE_MAX_CONNECTIONS_PER_SUBJECT"
+  "SSE_MAX_CONNECTIONS_PER_SUBJECT",
+  "SERVER_CORS_ALLOWED_ORIGINS",
 ] as const;
 
 const originalEnv: Partial<Record<(typeof ENV_KEYS)[number], string>> = {};
@@ -211,6 +212,10 @@ server:
   sseQuotas:
     perIp: 3
     perSubject: 1
+  cors:
+    allowedOrigins:
+      - https://ui.example.com
+      - https://ui.example.com///path
   tls:
     enabled: true
     keyPath: "/etc/orchestrator/tls/server.key"
@@ -297,6 +302,7 @@ observability:
     expect(config.server.rateLimits.chat).toEqual({ windowMs: 30000, maxRequests: 200 });
     expect(config.server.rateLimits.auth).toEqual({ windowMs: 45000, maxRequests: 50 });
     expect(config.server.sseQuotas).toEqual({ perIp: 3, perSubject: 1 });
+    expect(config.server.cors.allowedOrigins).toEqual(["https://ui.example.com"]);
     expect(config.server.tls).toEqual({
       enabled: true,
       keyPath: "/etc/orchestrator/tls/server.key",
@@ -362,6 +368,7 @@ runMode: enterprise
     process.env.OIDC_SESSION_TTL_SECONDS = "1800";
     process.env.SSE_MAX_CONNECTIONS_PER_IP = "7";
     process.env.SSE_MAX_CONNECTIONS_PER_SUBJECT = "4";
+    process.env.SERVER_CORS_ALLOWED_ORIGINS = "https://env-ui.example.com,https://env-alt.example.com/path";
 
     const config = loadConfig();
 
@@ -392,6 +399,10 @@ runMode: enterprise
     expect(config.server.rateLimits.chat).toEqual({ windowMs: 60000, maxRequests: 600 });
     expect(config.server.rateLimits.auth).toEqual({ windowMs: 60000, maxRequests: 120 });
     expect(config.server.sseQuotas).toEqual({ perIp: 7, perSubject: 4 });
+    expect(config.server.cors.allowedOrigins).toEqual([
+      "https://env-ui.example.com",
+      "https://env-alt.example.com",
+    ]);
     expect(config.retention).toEqual({
       planStateDays: 30,
       planArtifactsDays: 30,
