@@ -1258,6 +1258,22 @@ async function setupStepConsumer(): Promise<void> {
                 }
                 const nextAttempt = job.attempt + 1;
                 job.attempt = nextAttempt;
+                const entry = stepRegistry.get(key);
+                if (entry) {
+                  entry.inFlight = false;
+                  entry.job = job;
+                  entry.traceId = traceId;
+                } else {
+                  stepRegistry.set(key, { step, traceId, job, inFlight: false });
+                }
+                await planStateStore?.setState(
+                  planId,
+                  step.id,
+                  "queued",
+                  undefined,
+                  undefined,
+                  nextAttempt,
+                );
                 await emitPlanEvent(planId, step, traceId, {
                   state: "queued",
                   summary: `Retry enqueued (attempt ${nextAttempt}/${MAX_RETRIES})`,
