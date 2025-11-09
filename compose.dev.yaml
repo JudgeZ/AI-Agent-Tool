@@ -79,6 +79,7 @@ services:
     image: postgres:15-alpine
     security_opt:
       - no-new-privileges:true
+    read_only: true
     environment:
       POSTGRES_USER: ossaat
       POSTGRES_PASSWORD: ossaat
@@ -87,11 +88,15 @@ services:
       - "5432:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
 
   rabbitmq:
     image: rabbitmq:3.13-management
     security_opt:
       - no-new-privileges:true
+    read_only: true
     environment:
       RABBITMQ_DEFAULT_USER: guest
       RABBITMQ_DEFAULT_PASS: guest
@@ -100,11 +105,14 @@ services:
       - "15672:15672"
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+    tmpfs:
+      - /tmp
 
   kafka:
     image: bitnami/kafka:3.7.0
     security_opt:
       - no-new-privileges:true
+    read_only: true
     environment:
       KAFKA_ENABLE_KRAFT: "yes"
       KAFKA_CFG_NODE_ID: "1"
@@ -120,20 +128,26 @@ services:
       - "9092:9092"
     volumes:
       - kafka-data:/bitnami/kafka
+    tmpfs:
+      - /tmp
 
   jaeger:
     image: jaegertracing/all-in-one:1.57
     security_opt:
       - no-new-privileges:true
+    read_only: true
     ports:
       - "16686:16686"
       - "4317:4317"
       - "4318:4318"
+    tmpfs:
+      - /tmp
 
   langfuse:
     image: langfuse/langfuse:2.14.1
     security_opt:
       - no-new-privileges:true
+    read_only: true
     environment:
       DATABASE_URL: postgres://ossaat:ossaat@postgres:5432/ossaat
       NEXTAUTH_SECRET: dev-secret
@@ -147,6 +161,8 @@ services:
         condition: service_started
     volumes:
       - langfuse-data:/app/.langfuse
+    tmpfs:
+      - /tmp
 
 volumes:
   postgres-data:

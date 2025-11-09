@@ -111,6 +111,7 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    read_only: true
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-ossaat}
       POSTGRES_DB: ${POSTGRES_DB:-ossaat}
@@ -122,6 +123,9 @@ services:
       retries: 5
     volumes:
       - postgres-data:/var/lib/postgresql/data
+    tmpfs:
+      - /tmp
+      - /var/run/postgresql
     restart: unless-stopped
     networks:
       - data
@@ -134,11 +138,14 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    read_only: true
     environment:
       RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?set RABBITMQ_USER}
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?set RABBITMQ_PASSWORD}
     volumes:
       - rabbitmq-data:/var/lib/rabbitmq
+    tmpfs:
+      - /tmp
     restart: unless-stopped
     networks:
       - data
@@ -149,6 +156,7 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    read_only: true
     environment:
       KAFKA_ENABLE_KRAFT: "yes"
       KAFKA_CFG_NODE_ID: "1"
@@ -162,6 +170,8 @@ services:
       ALLOW_PLAINTEXT_LISTENER: "yes"
     volumes:
       - kafka-data:/bitnami/kafka
+    tmpfs:
+      - /tmp
     restart: unless-stopped
     networks:
       - data
@@ -170,10 +180,13 @@ services:
     image: jaegertracing/all-in-one:1.57
     security_opt:
       - no-new-privileges:true
+    read_only: true
     environment:
       COLLECTOR_OTLP_ENABLED: "true"
     ports:
       - "16686:16686"
+    tmpfs:
+      - /tmp
     restart: unless-stopped
     networks:
       - backend
@@ -184,6 +197,7 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+    read_only: true
     environment:
       DATABASE_URL: ${LANGFUSE_DATABASE_URL:?set LANGFUSE_DATABASE_URL}
       NEXTAUTH_SECRET: ${LANGFUSE_NEXTAUTH_SECRET:?set LANGFUSE_NEXTAUTH_SECRET}
@@ -197,6 +211,8 @@ services:
       - "3000:3000"
     volumes:
       - langfuse-data:/app/.langfuse
+    tmpfs:
+      - /tmp
     restart: unless-stopped
     networks:
       - backend

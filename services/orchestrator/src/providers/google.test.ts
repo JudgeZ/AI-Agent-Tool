@@ -35,10 +35,10 @@ describe("GoogleProvider", () => {
   it("prefers stored OAuth access tokens when available", async () => {
     const secrets = new MockSecretsStore({
       "oauth:google:tokens": JSON.stringify({
-        access_token: "ya29.token",
+        access_token: "test-token",
         expires_at: fixedNow + 3600_000
       }),
-      "oauth:google:access_token": "ya29.token"
+      "oauth:google:access_token": "test-token"
     });
 
     const fetchMock = vi.fn().mockResolvedValue({
@@ -55,7 +55,7 @@ describe("GoogleProvider", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [, init] = fetchMock.mock.calls[0];
-    expect(init?.headers).toMatchObject({ Authorization: "Bearer ya29.token" });
+    expect(init?.headers).toMatchObject({ Authorization: "Bearer test-token" });
     expect(response.output).toBe("hello");
     expect(response.usage).toEqual({ promptTokens: 1, completionTokens: 2, totalTokens: 3 });
   });

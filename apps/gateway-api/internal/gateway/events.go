@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"html/template"
 	"io"
 	"log/slog"
 	"net"
@@ -33,6 +34,8 @@ var forwardedSSEHeaders = []string{
 }
 
 var planIDPattern = regexp.MustCompile(`(?i)^plan-(?:[0-9a-f]{8}|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$`)
+
+var upstreamErrorTemplate = template.Must(template.New("upstream-error").Parse("{{.}}"))
 
 type connectionLimiter struct {
 	mu     sync.Mutex
@@ -199,9 +202,13 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, http.StatusText(resp.StatusCode), resp.StatusCode)
 			return
 		}
-		w.Header().Set("Content-Type", "text/plain")
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(resp.StatusCode)
-		w.Write(body)
+		if len(body) > 0 {
+			if err := upstreamErrorTemplate.Execute(w, string(body)); err != nil {
+				logger.WarnContext(ctx, "gateway.events.error_template_render", slog.String("plan_id", planID), slog.String("error", err.Error()))
+			}
+		}
 		return
 	}
 
