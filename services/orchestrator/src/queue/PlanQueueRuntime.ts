@@ -281,9 +281,9 @@ export async function getPersistedPlanStep(
     output: entry.output ? { ...entry.output } : undefined,
     step: {
       ...entry.step,
-      labels: [...entry.step.labels],
-      metadata: { ...entry.step.metadata },
-      input: { ...entry.step.input },
+      labels: entry.step.labels ? [...entry.step.labels] : [],
+      metadata: { ...(entry.step.metadata ?? {}) },
+      input: { ...(entry.step.input ?? {}) },
     },
     subject: entry.subject ? clonePlanSubject(entry.subject) : undefined,
   };
