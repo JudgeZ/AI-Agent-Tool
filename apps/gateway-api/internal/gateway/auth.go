@@ -526,11 +526,6 @@ func setStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []*ne
 		return err
 	}
 
-	secureFlag := true
-	if allowInsecure && !secureRequest {
-		secureFlag = false
-	}
-
 	cookie := &http.Cookie{
 		Name:     stateCookieName(data.State),
 		Value:    base64.RawURLEncoding.EncodeToString(encoded),
@@ -538,8 +533,12 @@ func setStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []*ne
 		Expires:  data.ExpiresAt,
 		MaxAge:   int(stateTTL.Seconds()),
 		HttpOnly: true,
-		Secure:   secureFlag,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
+	}
+
+	if allowInsecure && !secureRequest {
+		cookie.Secure = false
 	}
 
 	http.SetCookie(w, cookie)
@@ -579,21 +578,22 @@ func deleteStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []
 		return
 	}
 
-	secureFlag := true
-	if allowInsecure && !secureRequest {
-		secureFlag = false
-	}
-
-	http.SetCookie(w, &http.Cookie{
+	cookie := &http.Cookie{
 		Name:     stateCookieName(state),
 		Value:    "",
 		Path:     "/auth/",
 		Expires:  time.Unix(0, 0),
 		MaxAge:   -1,
 		HttpOnly: true,
-		Secure:   secureFlag,
+		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
-	})
+	}
+
+	if allowInsecure && !secureRequest {
+		cookie.Secure = false
+	}
+
+	http.SetCookie(w, cookie)
 }
 
 func validateAuthorizeRedirect(built *url.URL, configuredAuthorizeURL string) error {
