@@ -988,6 +988,48 @@ describe("orchestrator http api", () => {
     expect(response.body.error).toContain("subject does not match plan owner");
   });
 
+  it("denies plan event history when subject does not match plan owner", async () => {
+    const { createServer } = await import("./index.js");
+    const config = createOidcEnabledConfig();
+
+    const app = createServer(config);
+    const planId = SIXTH_PLAN_ID;
+
+    const ownerSubject = {
+      sessionId: "session-owner",
+      tenantId: "tenant-1",
+      userId: "user-owner",
+      email: "owner@example.com",
+      name: "Owner Subject",
+      roles: ["reader"],
+      scopes: ["plan.read"],
+    } as const;
+
+    getPlanSubjectMock.mockResolvedValueOnce({ ...ownerSubject });
+
+    const session = sessionStore.createSession(
+      {
+        subject: "user-other",
+        email: "other@example.com",
+        name: "Other Subject",
+        tenantId: ownerSubject.tenantId,
+        roles: ["reader"],
+        scopes: ["plan.read"],
+        claims: {},
+        tokens: {},
+      },
+      config.auth.oidc.session.ttlSeconds,
+    );
+
+    const response = await request(app)
+      .get(`/plan/${planId}/events`)
+      .set("Accept", "application/json")
+      .set("Cookie", `${config.auth.oidc.session.cookieName}=${session.id}`)
+      .expect(403);
+
+    expect(response.body.error).toContain("subject does not match plan owner");
+  });
+
   it("denies SSE plan events when subject does not match plan owner", async () => {
     const { createServer, createHttpServer } = await import("./index.js");
     const { loadConfig } = await import("./config.js");

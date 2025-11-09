@@ -793,6 +793,45 @@ export function createServer(appConfig?: AppConfig): Express {
               throw error;
             }
             ensureAllowed("plan.read", decision, authorizationContext);
+            const storedSubject = await getPlanSubject(planId);
+            if (storedSubject) {
+              const tenantMatches =
+                storedSubject.tenantId === undefined ||
+                (requestSubject?.tenant !== undefined &&
+                  storedSubject.tenantId === requestSubject.tenant);
+              const matches =
+                !!requestSubject &&
+                storedSubject.userId === requestSubject.user.id &&
+                tenantMatches;
+              if (!matches) {
+                logAuditEvent({
+                  action: "plan.read",
+                  outcome: "denied",
+                  traceId: span.context.traceId,
+                  requestId,
+                  agent: agentName,
+                  resource: "plan.events",
+                  subject: toAuditSubject(requestSubject),
+                  details: {
+                    planId,
+                    reason: "subject_mismatch",
+                    storedSessionId: storedSubject.sessionId,
+                    storedUserId: storedSubject.userId,
+                    storedTenantId: storedSubject.tenantId,
+                    requestTenantId: requestSubject?.tenant,
+                  },
+                });
+                throw new PolicyViolationError(
+                  "plan.read denied: subject does not match plan owner",
+                  [
+                    {
+                      reason: "subject_mismatch",
+                      capability: "plan.read",
+                    },
+                  ],
+                );
+              }
+            }
           },
           { route: "/plan/:id/events", planId, responseType: "json" },
         );
