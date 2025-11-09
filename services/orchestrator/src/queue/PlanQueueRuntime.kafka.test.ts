@@ -9,10 +9,10 @@ import type { MockInstance } from "vitest";
 import {
   submitPlanSteps,
   resetPlanQueueRuntime,
-  PLAN_STEPS_QUEUE,
+  initializePlanQueueRuntime,
   PLAN_COMPLETIONS_QUEUE
 } from "./PlanQueueRuntime.js";
-import { resetQueueAdapter } from "./QueueAdapter.js";
+import { getQueueAdapter, resetQueueAdapter } from "./QueueAdapter.js";
 import type { Plan } from "../plan/planner.js";
 import * as events from "../plan/events.js";
 import type { PlanStepEvent } from "../plan/events.js";
@@ -174,6 +174,57 @@ describe("PlanQueueRuntime (Kafka integration)", () => {
       );
     },
     60000
+  );
+
+  it(
+    "dead-letters forged completion messages",
+    async () => {
+      if (skipSuite) {
+        expect(true).toBe(true);
+        return;
+      }
+
+      publishSpy?.mockClear();
+
+      await initializePlanQueueRuntime();
+      const adapter = await getQueueAdapter();
+
+      const forgedPlanId = `forged-plan-${Date.now()}`;
+      const forgedPayload = {
+        planId: forgedPlanId,
+        stepId: "ghost-step",
+        state: "completed" as const,
+        summary: "forged completion",
+      };
+
+      await adapter.enqueue(PLAN_COMPLETIONS_QUEUE, forgedPayload, {
+        headers: {
+          "trace-id": "trace-forged",
+          "x-idempotency-key": `${forgedPlanId}:ghost-step`,
+        },
+      });
+
+      await vi.waitFor(
+        async () => {
+          expect(
+            await adapter.getQueueDepth(PLAN_COMPLETIONS_QUEUE),
+          ).toBe(0);
+        },
+        { timeout: 20000 },
+      );
+
+      const localSpy = publishSpy;
+      expect(localSpy).toBeDefined();
+      const forgedEvents =
+        localSpy
+          ?.mock.calls.filter(
+            ([event]) =>
+              event.planId === forgedPlanId && event.step.id === forgedPayload.stepId,
+          ) ?? [];
+
+      expect(forgedEvents).toHaveLength(0);
+    },
+    60000,
   );
 });
 
