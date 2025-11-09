@@ -239,10 +239,13 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
-		errorMessage := extractErrorMessage(body)
-		attrs := append(baseAttrs, slog.String("redirect_uri", data.RedirectURI), slog.Int("status_code", resp.StatusCode), slog.String("error", errorMessage))
+		safeError, detailedError, errorCode := sanitizeOrchestratorError(body)
+		attrs := append(baseAttrs, slog.String("redirect_uri", data.RedirectURI), slog.Int("status_code", resp.StatusCode), slog.String("error", detailedError))
+		if errorCode != "" {
+			attrs = append(attrs, slog.String("error_code", errorCode))
+		}
 		logAudit(r.Context(), "oauth.callback", "failure", attrs...)
-		redirectWithStatus(w, r, data.RedirectURI, data.State, "error", errorMessage)
+		redirectWithStatus(w, r, data.RedirectURI, data.State, "error", safeError)
 		return
 	}
 
@@ -295,14 +298,42 @@ func redirectWithStatus(w http.ResponseWriter, r *http.Request, redirectURI, sta
 	http.Redirect(w, r, target.String(), http.StatusFound)
 }
 
-func extractErrorMessage(body []byte) string {
-	var parsed map[string]any
-	if err := json.Unmarshal(body, &parsed); err == nil {
-		if msg, ok := parsed["error"].(string); ok {
-			return msg
+var orchestratorErrorMessages = map[string]string{
+	"access_denied":           "authentication failed",
+	"invalid_client":          "authentication failed",
+	"invalid_grant":           "authentication failed",
+	"invalid_request":         "authentication failed",
+	"invalid_scope":           "authentication failed",
+	"temporarily_unavailable": "authentication temporarily unavailable",
+	"server_error":            "authentication temporarily unavailable",
+}
+
+type orchestratorError struct {
+	Error string `json:"error"`
+	Code  string `json:"code"`
+}
+
+func sanitizeOrchestratorError(body []byte) (safe string, detailed string, code string) {
+	safe = "authentication failed"
+	detailed = strings.TrimSpace(string(body))
+	if detailed == "" {
+		detailed = "authentication failed"
+	}
+
+	var payload orchestratorError
+	if err := json.Unmarshal(body, &payload); err == nil {
+		if payload.Error != "" {
+			detailed = payload.Error
+		}
+		if payload.Code != "" {
+			code = payload.Code
+			if msg, ok := orchestratorErrorMessages[payload.Code]; ok {
+				safe = msg
+			}
 		}
 	}
-	return string(body)
+
+	return safe, detailed, code
 }
 
 func generateStateAndPKCE() (string, string, string, error) {
