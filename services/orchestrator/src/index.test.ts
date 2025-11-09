@@ -1251,6 +1251,10 @@ describe("orchestrator http api", () => {
       .expect(200);
 
     expect(response.body.events).toEqual(expect.any(Array));
+    expect(response.headers["cache-control"]).toBe(
+      "no-cache, no-store, must-revalidate",
+    );
+    expect(response.headers.pragma).toBe("no-cache");
   });
 
   it("allows SSE plan events when subject matches plan owner", async () => {

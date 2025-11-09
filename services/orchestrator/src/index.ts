@@ -840,6 +840,8 @@ export function createServer(appConfig?: AppConfig): Express {
         return;
       }
       const events = getPlanHistory(planId);
+      res.set("Cache-Control", "no-cache, no-store, must-revalidate");
+      res.set("Pragma", "no-cache");
       res.json({ events });
     }
     },
