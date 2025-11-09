@@ -8,7 +8,7 @@ import express, {
   type Request,
   type Response,
 } from "express";
-import cors from "cors";
+import cors, { type CorsOptions } from "cors";
 import morgan from "morgan";
 import rateLimit from "express-rate-limit";
 
@@ -300,7 +300,39 @@ export function createServer(appConfig?: AppConfig): Express {
   const policy = getPolicyEnforcer();
   const sseQuotaManager = new SseQuotaManager(config.server.sseQuotas);
 
-  app.use(cors());
+  const corsAllowedOrigins = config.server.cors.allowedOrigins;
+  const allowAllOrigins = corsAllowedOrigins.includes("*");
+  const normalizedAllowedOrigins = new Set(
+    corsAllowedOrigins.filter(origin => origin !== "*"),
+  );
+  const corsOptions: CorsOptions = {
+    origin: (requestOrigin, callback) => {
+      if (!requestOrigin) {
+        callback(null, true);
+        return;
+      }
+      if (allowAllOrigins || normalizedAllowedOrigins.has(requestOrigin)) {
+        callback(null, true);
+        return;
+      }
+      callback(null, false);
+    },
+    credentials: true,
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: [
+      "Authorization",
+      "Content-Type",
+      "Accept",
+      "Cache-Control",
+      "Last-Event-ID",
+      "X-Requested-With",
+    ],
+    exposedHeaders: ["Cache-Control"],
+    optionsSuccessStatus: 204,
+  };
+
+  app.use(cors(corsOptions));
+  app.options("*", cors(corsOptions));
   app.use(express.json({ limit: "1mb" }));
   app.use(morgan("dev"));
 

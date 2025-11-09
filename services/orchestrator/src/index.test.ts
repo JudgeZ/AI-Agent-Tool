@@ -1834,6 +1834,56 @@ describe("orchestrator http api", () => {
       ]),
     );
   });
+
+  it("allows session reads with credentials when the origin is permitted", async () => {
+    const { createServer } = await import("./index.js");
+    const config = createOidcEnabledConfig();
+    const corsEnabledConfig = {
+      ...config,
+      server: {
+        ...config.server,
+        cors: { allowedOrigins: ["https://ui.example.com"] },
+      },
+    };
+    const app = createServer(corsEnabledConfig);
+    const session = createSessionForUser(corsEnabledConfig, { userId: "user-789" });
+    const cookieName = corsEnabledConfig.auth.oidc.session.cookieName;
+
+    const response = await request(app)
+      .get("/auth/session")
+      .set("Origin", "https://ui.example.com")
+      .set("Cookie", `${cookieName}=${session.id}`)
+      .expect(200);
+
+    expect(response.headers["access-control-allow-origin"]).toBe("https://ui.example.com");
+    expect(response.headers["access-control-allow-credentials"]).toBe("true");
+    expect(response.body.session.id).toBe(session.id);
+  });
+
+  it("omits CORS headers for untrusted origins to block cookie access", async () => {
+    const { createServer } = await import("./index.js");
+    const config = createOidcEnabledConfig();
+    const corsEnabledConfig = {
+      ...config,
+      server: {
+        ...config.server,
+        cors: { allowedOrigins: ["https://ui.example.com"] },
+      },
+    };
+    const app = createServer(corsEnabledConfig);
+    const session = createSessionForUser(corsEnabledConfig, { userId: "user-987" });
+    const cookieName = corsEnabledConfig.auth.oidc.session.cookieName;
+
+    const response = await request(app)
+      .get("/auth/session")
+      .set("Origin", "https://evil.example.com")
+      .set("Cookie", `${cookieName}=${session.id}`)
+      .expect(200);
+
+    expect(response.headers["access-control-allow-origin"]).toBeUndefined();
+    expect(response.headers["access-control-allow-credentials"]).toBeUndefined();
+    expect(response.body.session.id).toBe(session.id);
+  });
 });
 
 describe("createHttpServer", () => {
