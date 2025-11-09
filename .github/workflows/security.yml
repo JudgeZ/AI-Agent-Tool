@@ -26,13 +26,13 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Scan for secrets with Gitleaks
         uses: gitleaks/gitleaks-action@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITLEAKS_OAIT }}
-        with:
-          args: --source . --redact --verbose
 
   trivy-fs:
     name: Trivy filesystem scan
