@@ -628,6 +628,7 @@ export function createServer(appConfig?: AppConfig): Express {
 
       res.setHeader("Content-Type", "text/event-stream");
       res.setHeader("Cache-Control", "no-cache, no-transform");
+      res.setHeader("X-Accel-Buffering", "no");
       res.setHeader("Connection", "keep-alive");
       res.flushHeaders?.();
 

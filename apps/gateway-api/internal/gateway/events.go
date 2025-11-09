@@ -208,6 +208,11 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.Header().Set("Connection", "keep-alive")
+	if accel := resp.Header.Get("X-Accel-Buffering"); accel != "" {
+		w.Header().Set("X-Accel-Buffering", accel)
+	} else {
+		w.Header().Set("X-Accel-Buffering", "no")
+	}
 	flusher.Flush()
 
 	writer := &flushingWriter{w: w, flusher: flusher}
