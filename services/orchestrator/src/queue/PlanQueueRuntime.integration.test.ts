@@ -555,15 +555,214 @@ describe("PlanQueueRuntime integration", () => {
       summary: "Looks good"
     });
 
-    const states = publishSpy.mock.calls
-      .filter(([event]) => event.step.id === "s1")
-      .map(([event]) => event.step.state);
-    expect(states).toContain("approved");
-    expect(states).toContain("queued");
+    await vi.waitFor(() => {
+      const states = publishSpy.mock.calls
+        .filter(([event]) => event.step.id === "s1")
+        .map(([event]) => event.step.state);
+      expect(states).toContain("approved");
+    }, { timeout: 1000 });
 
     await vi.waitFor(() => expect(executeToolMock).toHaveBeenCalledTimes(1), { timeout: 1000 });
 
-    expect(publishSpy.mock.calls.some(([event]) => event.step.state === "completed")).toBe(true);
+    await vi.waitFor(
+      () =>
+        expect(
+          publishSpy.mock.calls.some(([event]) => event.step.state === "completed"),
+        ).toBe(true),
+      { timeout: 1000 },
+    );
+  });
+
+  it("executes multi-step plans sequentially across approval gates", async () => {
+    const plan = {
+      id: "plan-ordered",
+      goal: "sequential approvals",
+      steps: [
+        {
+          id: "s1",
+          action: "index_repo",
+          capability: "repo.read",
+          capabilityLabel: "Read repository",
+          labels: ["repo"],
+          tool: "repo_indexer",
+          timeoutSeconds: 120,
+          approvalRequired: false,
+          input: {},
+          metadata: {},
+        },
+        {
+          id: "s2",
+          action: "apply_edits",
+          capability: "repo.write",
+          capabilityLabel: "Apply repository changes",
+          labels: ["repo"],
+          tool: "code_writer",
+          timeoutSeconds: 300,
+          approvalRequired: true,
+          input: {},
+          metadata: {},
+        },
+        {
+          id: "s3",
+          action: "run_tests",
+          capability: "test.run",
+          capabilityLabel: "Execute tests",
+          labels: ["tests"],
+          tool: "test_runner",
+          timeoutSeconds: 600,
+          approvalRequired: false,
+          input: {},
+          metadata: {},
+        },
+      ],
+      successCriteria: ["done"],
+    };
+
+    const executed: string[] = [];
+    executeToolMock.mockImplementation(async (invocation: any) => {
+      executed.push(invocation.stepId);
+      return [
+        {
+          state: "completed",
+          summary: `Completed ${invocation.stepId}`,
+          planId: plan.id,
+          stepId: invocation.stepId,
+          invocationId: `inv-${invocation.stepId}`,
+        },
+      ];
+    });
+
+    await runtime.submitPlanSteps(plan, "trace-ordered");
+
+    await vi.waitFor(() => expect(executeToolMock).toHaveBeenCalledTimes(1), { timeout: 1000 });
+    expect(executed).toEqual(["s1"]);
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(executeToolMock).toHaveBeenCalledTimes(1);
+
+
+    await runtime.resolvePlanStepApproval({
+      planId: plan.id,
+      stepId: "s2",
+      decision: "approved",
+      summary: "Proceed",
+    });
+
+    await vi.waitFor(() => {
+      expect(executed.length).toBeGreaterThanOrEqual(2);
+    });
+    expect(executed.slice(0, 2)).toEqual(["s1", "s2"]);
+
+    await vi.waitFor(() => {
+      expect(executed.length).toBeGreaterThanOrEqual(3);
+    });
+    expect(executed).toEqual(["s1", "s2", "s3"]);
+
+    await adapterRef.current.waitUntilEmpty(runtime.PLAN_STEPS_QUEUE);
+
+    const { PlanStateStore } = await import("./PlanStateStore.js");
+    const persisted = new PlanStateStore({ filePath: storePath });
+    const remainingMetadata = await persisted.listPlanMetadata();
+    expect(remainingMetadata).toHaveLength(0);
+  });
+
+  it("preserves sequential ordering with approvals across restarts", async () => {
+    const plan = {
+      id: "plan-ordered-restart",
+      goal: "restart approvals",
+      steps: [
+        {
+          id: "s1",
+          action: "index_repo",
+          capability: "repo.read",
+          capabilityLabel: "Read repository",
+          labels: ["repo"],
+          tool: "repo_indexer",
+          timeoutSeconds: 120,
+          approvalRequired: false,
+          input: {},
+          metadata: {},
+        },
+        {
+          id: "s2",
+          action: "apply_edits",
+          capability: "repo.write",
+          capabilityLabel: "Apply repository changes",
+          labels: ["repo"],
+          tool: "code_writer",
+          timeoutSeconds: 300,
+          approvalRequired: true,
+          input: {},
+          metadata: {},
+        },
+        {
+          id: "s3",
+          action: "run_tests",
+          capability: "test.run",
+          capabilityLabel: "Execute tests",
+          labels: ["tests"],
+          tool: "test_runner",
+          timeoutSeconds: 600,
+          approvalRequired: false,
+          input: {},
+          metadata: {},
+        },
+      ],
+      successCriteria: ["done"],
+    };
+
+    const executed: string[] = [];
+    executeToolMock.mockImplementation(async (invocation: any) => {
+      executed.push(invocation.stepId);
+      return [
+        {
+          state: "completed",
+          summary: `Completed ${invocation.stepId}`,
+          planId: plan.id,
+          stepId: invocation.stepId,
+          invocationId: `inv-${invocation.stepId}`,
+        },
+      ];
+    });
+
+    await runtime.submitPlanSteps(plan, "trace-ordered-restart");
+
+    await vi.waitFor(() => expect(executeToolMock).toHaveBeenCalledTimes(1), { timeout: 1000 });
+    expect(executed).toEqual(["s1"]);
+
+
+    adapterRef.current.simulateDisconnect();
+    runtime.resetPlanQueueRuntime();
+    publishSpy.mockClear();
+    await runtime.initializePlanQueueRuntime();
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    expect(executeToolMock).toHaveBeenCalledTimes(1);
+
+
+    await runtime.resolvePlanStepApproval({
+      planId: plan.id,
+      stepId: "s2",
+      decision: "approved",
+      summary: "Resume",
+    });
+
+    await vi.waitFor(() => {
+      expect(executed.length).toBeGreaterThanOrEqual(2);
+    });
+    expect(executed.slice(0, 2)).toEqual(["s1", "s2"]);
+
+    await vi.waitFor(() => {
+      expect(executed.length).toBeGreaterThanOrEqual(3);
+    });
+    expect(executed).toEqual(["s1", "s2", "s3"]);
+
+    await adapterRef.current.waitUntilEmpty(runtime.PLAN_STEPS_QUEUE);
+
+    const { PlanStateStore } = await import("./PlanStateStore.js");
+    const persisted = new PlanStateStore({ filePath: storePath });
+    const remainingMetadata = await persisted.listPlanMetadata();
+    expect(remainingMetadata).toHaveLength(0);
   });
 
   it("emits failure events when enqueueing an approved step fails", async () => {

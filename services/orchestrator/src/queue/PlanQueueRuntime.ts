@@ -21,6 +21,7 @@ import {
 } from "../grpc/AgentClient.js";
 import type { PlanJob, ToolEvent } from "../plan/validation.js";
 import { getQueueAdapter } from "./QueueAdapter.js";
+import type { QueueAdapter } from "./QueueAdapter.js";
 import {
   createPlanStateStore,
   type PlanStatePersistence,
@@ -90,7 +91,7 @@ function instantiatePlanStateStore(): PlanStatePersistence {
 
 const stepRegistry = new Map<
   string,
-  { step: PlanStep; traceId: string; job: PlanJob }
+  { step: PlanStep; traceId: string; job: PlanJob; inFlight: boolean }
 >();
 const approvalCache = new Map<string, Record<string, boolean>>();
 const planSubjects = new Map<string, PlanSubject>();
@@ -98,6 +99,7 @@ const retainedPlanSubjects = new Map<
   string,
   { subject: PlanSubject; timeout?: NodeJS.Timeout }
 >();
+const planMetadataLocks = new Map<string, Promise<void>>();
 
 function clonePlanSubject(subject: PlanSubject): PlanSubject {
   return {
@@ -279,6 +281,254 @@ export async function persistPlanStepState(
   );
 }
 
+async function authorizePlanStep(
+  planId: string,
+  step: PlanStep,
+  traceId: string,
+  approvals: Record<string, boolean>,
+  subject?: PlanSubject,
+): Promise<PolicyDecision> {
+  try {
+    const decision = await policyEnforcer.enforcePlanStep(step, {
+      planId,
+      traceId,
+      approvals,
+      subject: toPolicySubject(subject),
+    });
+    const blockingReasons = decision.deny.filter(
+      (reason) => reason.reason !== "approval_required",
+    );
+    if (
+      !decision.allow &&
+      (blockingReasons.length > 0 || !step.approvalRequired)
+    ) {
+      logAuditEvent({
+        action: "plan.step.authorize",
+        outcome: "denied",
+        traceId,
+        agent: step.tool,
+        resource: "plan.step",
+        subject: planSubjectToAuditSubject(subject),
+        details: {
+          planId,
+          stepId: step.id,
+          capability: step.capability,
+          deny: decision.deny,
+        },
+      });
+      throw new PolicyViolationError(
+        `Plan step ${step.id} for capability ${step.capability} is not permitted`,
+        decision.deny,
+      );
+    }
+    return decision;
+  } catch (error) {
+    if (error instanceof PolicyViolationError) {
+      logAuditEvent({
+        action: "plan.step.authorize",
+        outcome: "denied",
+        traceId,
+        agent: step.tool,
+        resource: "plan.step",
+        subject: planSubjectToAuditSubject(subject),
+        details: {
+          planId,
+          stepId: step.id,
+          capability: step.capability,
+          deny: error.details,
+          error: error.message,
+        },
+      });
+    }
+    throw error;
+  }
+}
+
+async function withPlanMetadataLock(
+  planId: string,
+  task: () => Promise<void>,
+): Promise<void> {
+  const previous = planMetadataLocks.get(planId) ?? Promise.resolve();
+  let nextHandle: Promise<void>;
+  const execute = async () => {
+    await previous.catch(() => undefined);
+    try {
+      await task();
+    } finally {
+      if (planMetadataLocks.get(planId) === nextHandle) {
+        planMetadataLocks.delete(planId);
+      }
+    }
+  };
+  nextHandle = execute();
+  planMetadataLocks.set(planId, nextHandle.catch(() => undefined));
+  await nextHandle;
+}
+
+async function releaseNextPlanSteps(planId: string): Promise<void> {
+  await withPlanMetadataLock(planId, async () => {
+    const metadata = await planStateStore?.getPlanMetadata(planId);
+    if (!metadata) {
+      return;
+    }
+    let adapter: QueueAdapter | undefined;
+    const ensureAdapter = async (): Promise<QueueAdapter> => {
+      if (!adapter) {
+        adapter = await getQueueAdapter();
+      }
+      return adapter;
+    };
+
+    const canReleaseNextStep = () =>
+      metadata.nextStepIndex < metadata.steps.length &&
+      metadata.nextStepIndex <= metadata.lastCompletedIndex + 1;
+
+    while (canReleaseNextStep()) {
+      const stepEntry = metadata.steps[metadata.nextStepIndex];
+      const key = `${planId}:${stepEntry.step.id}`;
+      const existing = await planStateStore?.getEntry(planId, stepEntry.step.id);
+      if (existing) {
+        if (
+          existing.state === "queued" ||
+          existing.state === "running" ||
+          existing.state === "retrying"
+        ) {
+          break;
+        }
+      }
+
+      const subjectContext =
+        stepEntry.subject ?? existing?.subject ?? planSubjects.get(planId);
+      const job: PlanJob = {
+        planId,
+        step: stepEntry.step,
+        attempt: existing?.attempt ?? stepEntry.attempt ?? 0,
+        createdAt: existing?.createdAt ?? stepEntry.createdAt,
+        traceId: metadata.traceId,
+        subject: subjectContext ? clonePlanSubject(subjectContext) : undefined,
+      };
+
+      stepEntry.attempt = job.attempt;
+      stepEntry.createdAt = job.createdAt;
+      stepEntry.subject = job.subject ? clonePlanSubject(job.subject) : undefined;
+
+      const approvals = await ensureApprovals(planId, stepEntry.step.id);
+      await authorizePlanStep(
+        planId,
+        stepEntry.step,
+        metadata.traceId,
+        approvals,
+        job.subject,
+      );
+
+      stepRegistry.set(key, {
+        step: stepEntry.step,
+        traceId: metadata.traceId,
+        job,
+        inFlight: false,
+      });
+
+      const requiresApproval =
+        stepEntry.step.approvalRequired &&
+        !approvals[stepEntry.step.capability];
+
+      if (requiresApproval) {
+        if (!existing) {
+          await planStateStore?.rememberStep(
+            planId,
+            stepEntry.step,
+            metadata.traceId,
+            {
+              initialState: "waiting_approval",
+              idempotencyKey: key,
+              attempt: job.attempt,
+              createdAt: job.createdAt,
+              approvals,
+              subject: job.subject,
+            },
+          );
+          await emitPlanEvent(planId, stepEntry.step, metadata.traceId, {
+            state: "waiting_approval",
+            summary: "Awaiting approval",
+            attempt: job.attempt,
+          });
+        }
+        break;
+      }
+
+      cacheApprovals(planId, stepEntry.step.id, approvals);
+
+      const queueAdapter = await ensureAdapter();
+      if (!existing) {
+        await planStateStore?.rememberStep(
+          planId,
+          stepEntry.step,
+          metadata.traceId,
+          {
+            initialState: "queued",
+            idempotencyKey: key,
+            attempt: job.attempt,
+            createdAt: job.createdAt,
+            approvals,
+            subject: job.subject,
+          },
+        );
+      }
+
+      try {
+        await queueAdapter.enqueue<PlanStepTaskPayload>(
+          PLAN_STEPS_QUEUE,
+          { ...job },
+          {
+            idempotencyKey: key,
+            headers: { "trace-id": metadata.traceId },
+          },
+        );
+      } catch (error) {
+        const summary =
+          error instanceof Error ? error.message : "Failed to enqueue plan step";
+        await emitPlanEvent(planId, stepEntry.step, metadata.traceId, {
+          state: "failed",
+          summary,
+          attempt: job.attempt,
+        });
+        stepRegistry.delete(key);
+        clearApprovals(planId, stepEntry.step.id);
+        prunePlanSubject(planId);
+        console.warn(
+          "plan.step.enqueue_failed_cleanup",
+          { planId, stepId: stepEntry.step.id },
+          error,
+        );
+        throw error;
+      }
+
+      await emitPlanEvent(planId, stepEntry.step, metadata.traceId, {
+        state: "queued",
+        summary: "Queued for execution",
+        attempt: job.attempt,
+      });
+
+      metadata.nextStepIndex += 1;
+    }
+
+    if (metadata.nextStepIndex >= metadata.steps.length) {
+      if (metadata.lastCompletedIndex >= metadata.steps.length - 1) {
+        await planStateStore?.forgetPlanMetadata(planId);
+      } else {
+        await planStateStore?.rememberPlanMetadata(planId, metadata);
+      }
+    } else {
+      await planStateStore?.rememberPlanMetadata(planId, metadata);
+    }
+
+    if (adapter) {
+      const depth = await adapter.getQueueDepth(PLAN_STEPS_QUEUE);
+      queueDepthGauge.labels(PLAN_STEPS_QUEUE).set(depth);
+    }
+  });
+}
+
 async function emitPlanEvent(
   planId: string,
   step: PlanStep,
@@ -417,6 +667,7 @@ export function resetPlanQueueRuntime(): void {
   stepRegistry.clear();
   approvalCache.clear();
   planSubjects.clear();
+  planMetadataLocks.clear();
   retainedPlanSubjects.forEach(({ timeout }) => {
     if (timeout) {
       clearTimeout(timeout);
@@ -437,7 +688,6 @@ export async function submitPlanSteps(
   subject?: PlanSubject,
 ): Promise<void> {
   await initializePlanQueueRuntime();
-  const adapter = await getQueueAdapter();
 
   if (subject) {
     planSubjects.set(plan.id, clonePlanSubject(subject));
@@ -447,137 +697,25 @@ export async function submitPlanSteps(
     clearRetainedPlanSubject(plan.id);
   }
 
-  const submissions = plan.steps.map(async (step) => {
-    const key = `${plan.id}:${step.id}`;
-    const activeSubject = subject ?? planSubjects.get(plan.id);
-    const job: PlanJob = {
+  const activeSubject = subject ?? planSubjects.get(plan.id);
+  const metadataSteps = plan.steps.map((step) => ({
+    step,
+    createdAt: new Date().toISOString(),
+    attempt: 0,
+    subject: activeSubject ? clonePlanSubject(activeSubject) : undefined,
+  }));
+
+  await withPlanMetadataLock(plan.id, async () => {
+    await planStateStore?.rememberPlanMetadata(plan.id, {
       planId: plan.id,
-      step,
-      attempt: 0,
-      createdAt: new Date().toISOString(),
       traceId,
-      subject: activeSubject
-        ? {
-            ...activeSubject,
-            roles: [...activeSubject.roles],
-            scopes: [...activeSubject.scopes],
-          }
-        : undefined,
-    };
-    const approvals = await ensureApprovals(plan.id, step.id);
-    let decision: PolicyDecision;
-    try {
-      decision = await policyEnforcer.enforcePlanStep(step, {
-        planId: plan.id,
-        traceId,
-        approvals,
-        subject: toPolicySubject(activeSubject),
-      });
-    } catch (error) {
-      if (error instanceof PolicyViolationError) {
-        logAuditEvent({
-          action: "plan.step.authorize",
-          outcome: "denied",
-          traceId,
-          agent: step.tool,
-          resource: "plan.step",
-          subject: planSubjectToAuditSubject(activeSubject),
-          details: {
-            planId: plan.id,
-            stepId: step.id,
-            capability: step.capability,
-            deny: error.details,
-            error: error.message,
-          },
-        });
-      }
-      throw error;
-    }
-    const blockingReasons = decision.deny.filter(
-      (reason) => reason.reason !== "approval_required",
-    );
-    if (
-      !decision.allow &&
-      (blockingReasons.length > 0 || !step.approvalRequired)
-    ) {
-      logAuditEvent({
-        action: "plan.step.authorize",
-        outcome: "denied",
-        traceId,
-        agent: step.tool,
-        resource: "plan.step",
-        subject: planSubjectToAuditSubject(activeSubject),
-        details: {
-          planId: plan.id,
-          stepId: step.id,
-          capability: step.capability,
-          deny: decision.deny,
-        },
-      });
-      throw new PolicyViolationError(
-        `Plan step ${step.id} for capability ${step.capability} is not permitted`,
-        decision.deny,
-      );
-    }
-
-    stepRegistry.set(key, { step, traceId, job });
-    const initialState = step.approvalRequired ? "waiting_approval" : "queued";
-    await planStateStore?.rememberStep(plan.id, step, traceId, {
-      initialState,
-      idempotencyKey: key,
-      attempt: job.attempt,
-      createdAt: job.createdAt,
-      approvals,
-      subject: activeSubject,
-    });
-    if (step.approvalRequired) {
-      await emitPlanEvent(plan.id, step, traceId, {
-        state: "waiting_approval",
-        summary: "Awaiting approval",
-        attempt: job.attempt,
-      });
-      return;
-    }
-
-    cacheApprovals(plan.id, step.id, approvals);
-
-    try {
-      await adapter.enqueue<PlanStepTaskPayload>(
-        PLAN_STEPS_QUEUE,
-        { ...job },
-        {
-          idempotencyKey: key,
-          headers: { "trace-id": traceId },
-        },
-      );
-    } catch (error) {
-      const summary =
-        error instanceof Error ? error.message : "Failed to enqueue plan step";
-      await emitPlanEvent(plan.id, step, traceId, {
-        state: "failed",
-        summary,
-        attempt: job.attempt,
-      });
-      stepRegistry.delete(key);
-      clearApprovals(plan.id, step.id);
-      prunePlanSubject(plan.id);
-      console.warn(
-        "plan.step.enqueue_failed_cleanup",
-        { planId: plan.id, stepId: step.id },
-        error,
-      );
-      throw error;
-    }
-    await emitPlanEvent(plan.id, step, traceId, {
-      state: "queued",
-      summary: "Queued for execution",
-      attempt: job.attempt,
+      steps: metadataSteps,
+      nextStepIndex: 0,
+      lastCompletedIndex: -1,
     });
   });
 
-  await Promise.all(submissions);
-  const depth = await adapter.getQueueDepth(PLAN_STEPS_QUEUE);
-  queueDepthGauge.labels(PLAN_STEPS_QUEUE).set(depth);
+  await releaseNextPlanSteps(plan.id);
 }
 
 export type ApprovalDecision = "approved" | "rejected";
@@ -603,7 +741,12 @@ export async function resolvePlanStepApproval(options: {
         createdAt: persisted.createdAt,
         traceId: persisted.traceId,
       };
-      metadata = { step: persisted.step, traceId: persisted.traceId, job };
+      metadata = {
+        step: persisted.step,
+        traceId: persisted.traceId,
+        job,
+        inFlight: false,
+      };
       stepRegistry.set(key, metadata);
     }
   }
@@ -633,33 +776,11 @@ export async function resolvePlanStepApproval(options: {
   const approvals = await ensureApprovals(planId, stepId);
   const updatedApprovals = { ...approvals, [step.capability]: true };
   const subjectContext = metadata.job.subject ?? planSubjects.get(planId);
-  let policyDecision: PolicyDecision;
   try {
-    policyDecision = await policyEnforcer.enforcePlanStep(step, {
-      planId,
-      traceId,
-      approvals: updatedApprovals,
-      subject: toPolicySubject(subjectContext),
-    });
+    await authorizePlanStep(planId, step, traceId, updatedApprovals, subjectContext);
   } catch (error) {
     if (error instanceof PolicyViolationError) {
       const details = Array.isArray(error.details) ? error.details : [];
-      logAuditEvent({
-        action: "plan.step.authorize",
-        outcome: "denied",
-        traceId,
-        agent: step.tool,
-        resource: "plan.step",
-        subject: planSubjectToAuditSubject(subjectContext),
-        details: {
-          planId,
-          stepId: step.id,
-          capability: step.capability,
-          deny: details,
-          error: error.message,
-        },
-      });
-
       const summary =
         details.length > 0
           ? details
@@ -670,7 +791,6 @@ export async function resolvePlanStepApproval(options: {
               )
               .join("; ")
           : error.message;
-
       await emitPlanEvent(planId, step, traceId, {
         state: "rejected",
         summary,
@@ -684,85 +804,19 @@ export async function resolvePlanStepApproval(options: {
     throw error;
   }
 
-  if (!policyDecision.allow) {
-    const rejectionSummary = policyDecision.deny.length
-      ? `Approval denied by policy: ${policyDecision.deny
-          .map((entry) =>
-            entry.capability
-              ? `${entry.reason}:${entry.capability}`
-              : entry.reason,
-          )
-          .join("; ")}`
-      : "Approval denied by policy";
-    await emitPlanEvent(planId, step, traceId, {
-      state: "rejected",
-      summary: rejectionSummary,
-      attempt: job.attempt,
-    });
-    stepRegistry.delete(key);
-    clearApprovals(planId, stepId);
-    await planStateStore?.forgetStep(planId, stepId);
-    prunePlanSubject(planId);
-
-    throw new PolicyViolationError(
-      `Approval denied by policy for plan ${planId} step ${stepId}`,
-      policyDecision.deny,
-    );
-  }
-
   cacheApprovals(planId, stepId, updatedApprovals);
   await planStateStore?.recordApproval(planId, stepId, step.capability, true);
-
-  const adapter = await getQueueAdapter();
 
   await emitPlanEvent(planId, step, traceId, {
     state: "approved",
     summary: decisionSummary,
     attempt: job.attempt,
   });
-  const refreshedJob: PlanJob = {
-    ...job,
-    createdAt: new Date().toISOString(),
-  };
+  const refreshedJob: PlanJob = { ...job, createdAt: new Date().toISOString() };
   metadata.job = refreshedJob;
+  stepRegistry.set(key, { step, traceId, job: refreshedJob, inFlight: false });
 
-  try {
-    await adapter.enqueue<PlanStepTaskPayload>(
-      PLAN_STEPS_QUEUE,
-      { ...refreshedJob },
-      {
-        idempotencyKey: key,
-        headers: { "trace-id": traceId },
-      },
-    );
-  } catch (error) {
-    const failureSummary =
-      error instanceof Error ? error.message : "Failed to enqueue plan step";
-    await emitPlanEvent(planId, step, traceId, {
-      state: "failed",
-      summary: failureSummary,
-      attempt: refreshedJob.attempt,
-    });
-    stepRegistry.delete(key);
-    clearApprovals(planId, stepId);
-    await planStateStore?.forgetStep(planId, stepId);
-    prunePlanSubject(planId);
-    console.warn(
-      "plan.step.enqueue_failed_cleanup",
-      { planId, stepId },
-      error,
-    );
-    throw error;
-  }
-
-  await emitPlanEvent(planId, step, traceId, {
-    state: "queued",
-    summary: decisionSummary,
-    attempt: refreshedJob.attempt,
-  });
-
-  const depth = await adapter.getQueueDepth(PLAN_STEPS_QUEUE);
-  queueDepthGauge.labels(PLAN_STEPS_QUEUE).set(depth);
+  await releaseNextPlanSteps(planId);
 }
 
 async function setupCompletionConsumer(): Promise<void> {
@@ -843,10 +897,40 @@ async function setupCompletionConsumer(): Promise<void> {
           });
 
           if (TERMINAL_STATES.has(payload.state)) {
+            if (payload.state === "completed") {
+              await withPlanMetadataLock(payload.planId, async () => {
+                const metadata = await planStateStore?.getPlanMetadata(
+                  payload.planId,
+                );
+                if (!metadata) {
+                  return;
+                }
+                const index = metadata.steps.findIndex(
+                  (entry) => entry.step.id === payload.stepId,
+                );
+                if (index === -1) {
+                  return;
+                }
+                metadata.lastCompletedIndex = Math.max(
+                  metadata.lastCompletedIndex,
+                  index,
+                );
+                if (metadata.nextStepIndex <= index) {
+                  metadata.nextStepIndex = index + 1;
+                }
+                await planStateStore?.rememberPlanMetadata(
+                  payload.planId,
+                  metadata,
+                );
+              });
+            }
             stepRegistry.delete(key);
             clearApprovals(payload.planId, payload.stepId);
             await planStateStore?.forgetStep(payload.planId, payload.stepId);
             prunePlanSubject(payload.planId);
+            if (payload.state === "completed") {
+              await releaseNextPlanSteps(payload.planId);
+            }
           }
 
           await message.ack();
@@ -900,14 +984,72 @@ async function setupStepConsumer(): Promise<void> {
             span.setAttribute("trace.id", traceId);
 
             const entry = stepRegistry.get(key);
+            const existingAttempt = entry?.job.attempt ?? -1;
             if (entry) {
-              entry.traceId = traceId;
-              entry.job = job;
+              if (!entry.inFlight || existingAttempt < job.attempt) {
+                entry.traceId = traceId;
+                entry.job = job;
+                entry.inFlight = true;
+              } else {
+                await message.ack();
+                return;
+              }
             } else {
-              stepRegistry.set(key, { step, traceId, job });
+              stepRegistry.set(key, { step, traceId, job, inFlight: true });
+            }
+
+            const startedAt = performance.now();
+            type QueueResult =
+              | "completed"
+              | "failed"
+              | "dead_lettered"
+              | "retry"
+              | "rejected";
+
+            const recordResult = (result: QueueResult) => {
+              const durationSeconds = (performance.now() - startedAt) / 1000;
+              queueProcessingHistogram
+                .labels(PLAN_STEPS_QUEUE)
+                .observe(durationSeconds);
+              queueResultCounter.labels(PLAN_STEPS_QUEUE, result).inc();
+              span.setAttribute("queue.result", result);
+              span.setAttribute("queue.duration_ms", durationSeconds * 1000);
+            };
+
+            const metadataSnapshot = await planStateStore?.getPlanMetadata(planId);
+            if (metadataSnapshot) {
+              const stepIndex = metadataSnapshot.steps.findIndex(
+                (candidate) => candidate.step.id === step.id,
+              );
+              if (
+                stepIndex !== -1 &&
+                metadataSnapshot.lastCompletedIndex >= stepIndex
+              ) {
+                await message.ack();
+                recordResult("completed");
+                return;
+              }
             }
 
             const persisted = await planStateStore?.getEntry(planId, step.id);
+            if (persisted) {
+              if (
+                entry?.inFlight &&
+                persisted.state === "running" &&
+                persisted.attempt >= job.attempt
+              ) {
+                await message.ack();
+                return;
+              }
+              await planStateStore?.setState(
+                planId,
+                step.id,
+                "running",
+                undefined,
+                undefined,
+                job.attempt,
+              );
+            }
             const subjectContext = job.subject ?? planSubjects.get(planId);
             if (job.subject) {
               planSubjects.set(planId, clonePlanSubject(job.subject));
@@ -928,24 +1070,6 @@ async function setupStepConsumer(): Promise<void> {
               summary: "Dispatching tool agent",
               attempt: job.attempt,
             });
-
-            const startedAt = performance.now();
-            type QueueResult =
-              | "completed"
-              | "failed"
-              | "dead_lettered"
-              | "retry"
-              | "rejected";
-
-            const recordResult = (result: QueueResult) => {
-              const durationSeconds = (performance.now() - startedAt) / 1000;
-              queueProcessingHistogram
-                .labels(PLAN_STEPS_QUEUE)
-                .observe(durationSeconds);
-              queueResultCounter.labels(PLAN_STEPS_QUEUE, result).inc();
-              span.setAttribute("queue.result", result);
-              span.setAttribute("queue.duration_ms", durationSeconds * 1000);
-            };
 
             const approvals = await ensureApprovals(planId, step.id);
             let policyDecision: PolicyDecision;
@@ -1076,6 +1200,37 @@ async function setupStepConsumer(): Promise<void> {
               recordResult(
                 terminalState === "rejected" ? "rejected" : terminalState,
               );
+              if (terminalState === "completed") {
+                await withPlanMetadataLock(planId, async () => {
+                  const metadata = await planStateStore?.getPlanMetadata(planId);
+                  if (!metadata) {
+                    return;
+                  }
+                  const index = metadata.steps.findIndex(
+                    (entry) => entry.step.id === step.id,
+                  );
+                  if (index === -1) {
+                    return;
+                  }
+                  metadata.lastCompletedIndex = Math.max(
+                    metadata.lastCompletedIndex,
+                    index,
+                  );
+                  if (metadata.nextStepIndex <= index) {
+                    metadata.nextStepIndex = index + 1;
+                  }
+                  await planStateStore?.rememberPlanMetadata(planId, metadata);
+                });
+                try {
+                  await releaseNextPlanSteps(planId);
+                } catch (error) {
+                  console.error("plan.step.release_failed", {
+                    planId,
+                    stepId: step.id,
+                    error,
+                  });
+                }
+              }
             } catch (error) {
               const toolError =
                 error instanceof ToolClientError
@@ -1104,6 +1259,22 @@ async function setupStepConsumer(): Promise<void> {
                 }
                 const nextAttempt = job.attempt + 1;
                 job.attempt = nextAttempt;
+                const entry = stepRegistry.get(key);
+                if (entry) {
+                  entry.inFlight = false;
+                  entry.job = job;
+                  entry.traceId = traceId;
+                } else {
+                  stepRegistry.set(key, { step, traceId, job, inFlight: false });
+                }
+                await planStateStore?.setState(
+                  planId,
+                  step.id,
+                  "queued",
+                  undefined,
+                  undefined,
+                  nextAttempt,
+                );
                 await emitPlanEvent(planId, step, traceId, {
                   state: "queued",
                   summary: `Retry enqueued (attempt ${nextAttempt}/${MAX_RETRIES})`,
@@ -1174,11 +1345,26 @@ async function rehydratePendingSteps(): Promise<void> {
       createdAt: entry.createdAt,
       traceId: entry.traceId,
     };
-    stepRegistry.set(key, { step: entry.step, traceId: entry.traceId, job });
+    stepRegistry.set(key, {
+      step: entry.step,
+      traceId: entry.traceId,
+      job,
+      inFlight: false,
+    });
     cacheApprovals(entry.planId, entry.stepId, entry.approvals ?? {});
     if (entry.subject) {
       planSubjects.set(entry.planId, clonePlanSubject(entry.subject));
       clearRetainedPlanSubject(entry.planId);
+    }
+    if (entry.state === "running") {
+      await planStateStore?.setState(
+        entry.planId,
+        entry.stepId,
+        "queued",
+        entry.summary,
+        entry.output,
+        entry.attempt,
+      );
     }
     publishPlanStepEvent({
       event: "plan.step",
@@ -1201,6 +1387,13 @@ async function rehydratePendingSteps(): Promise<void> {
         approvals: entry.approvals,
       },
     });
+  }
+
+  const plans = await planStateStore?.listPlanMetadata();
+  if (plans) {
+    for (const metadata of plans) {
+      await releaseNextPlanSteps(metadata.planId);
+    }
   }
 }
 
