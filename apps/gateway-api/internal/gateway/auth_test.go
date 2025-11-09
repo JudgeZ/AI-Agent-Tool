@@ -64,9 +64,10 @@ func TestAuthorizeHandlerGeneratesPKCEChallenge(t *testing.T) {
 	allowedRedirectOrigins = loadAllowedRedirectOrigins()
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/authorize?redirect_uri=https://app.example.com/complete", nil)
+	req.TLS = &tls.ConnectionState{}
 	rec := httptest.NewRecorder()
 
-	authorizeHandler(rec, req, nil)
+	authorizeHandler(rec, req, nil, false)
 
 	res := rec.Result()
 	if res.StatusCode != http.StatusFound {
@@ -132,7 +133,7 @@ func TestAuthorizeHandlerRejectsInvalidRedirect(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/authorize?redirect_uri=https://evil.example.com", nil)
 	rec := httptest.NewRecorder()
 
-	authorizeHandler(rec, req, nil)
+	authorizeHandler(rec, req, nil, false)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected invalid redirect_uri to return 400, got %d", rec.Code)
@@ -156,9 +157,10 @@ func TestAuthorizeHandlerAllowsExpectedRedirects(t *testing.T) {
 	for _, redirectURI := range redirectURIs {
 		t.Run(redirectURI, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/authorize?redirect_uri="+url.QueryEscape(redirectURI), nil)
+			req.TLS = &tls.ConnectionState{}
 			rec := httptest.NewRecorder()
 
-			authorizeHandler(rec, req, nil)
+			authorizeHandler(rec, req, nil, false)
 
 			if rec.Code != http.StatusFound {
 				t.Fatalf("expected authorize handler to redirect for %s, got %d", redirectURI, rec.Code)
@@ -185,6 +187,7 @@ func TestCallbackHandlerRejectsExpiredState(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/callback?code=abc&state=state-token", nil)
+	req.TLS = &tls.ConnectionState{}
 	req.AddCookie(&http.Cookie{
 		Name:  stateCookieName(data.State),
 		Value: base64.RawURLEncoding.EncodeToString(encoded),
@@ -192,7 +195,7 @@ func TestCallbackHandlerRejectsExpiredState(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 
-	callbackHandler(rec, req, nil)
+	callbackHandler(rec, req, nil, false)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for expired state, got %d", rec.Code)
@@ -212,6 +215,7 @@ func TestAuthRoutesRateLimiterBlocksExcessiveRequests(t *testing.T) {
 	makeRequest := func() *httptest.ResponseRecorder {
 		rec := httptest.NewRecorder()
 		req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/authorize?redirect_uri=http://127.0.0.1/callback", nil)
+		req.TLS = &tls.ConnectionState{}
 		req.RemoteAddr = "192.0.2.10:12345"
 		mux.ServeHTTP(rec, req)
 		return rec
@@ -248,6 +252,7 @@ func TestCallbackHandlerRejectsStateMismatch(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/callback?code=abc&state=different-state", nil)
+	req.TLS = &tls.ConnectionState{}
 	req.AddCookie(&http.Cookie{
 		Name:  stateCookieName(data.State),
 		Value: base64.RawURLEncoding.EncodeToString(encoded),
@@ -255,7 +260,7 @@ func TestCallbackHandlerRejectsStateMismatch(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 
-	callbackHandler(rec, req, nil)
+	callbackHandler(rec, req, nil, false)
 
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for state mismatch, got %d", rec.Code)
@@ -290,6 +295,7 @@ func TestCallbackHandlerHandlesOrchestratorContactFailure(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/callback?code=abc&state=state-token", nil)
+	req.TLS = &tls.ConnectionState{}
 	req.AddCookie(&http.Cookie{
 		Name:  stateCookieName(data.State),
 		Value: base64.RawURLEncoding.EncodeToString(encoded),
@@ -297,7 +303,7 @@ func TestCallbackHandlerHandlesOrchestratorContactFailure(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 
-	callbackHandler(rec, req, nil)
+	callbackHandler(rec, req, nil, false)
 
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("expected 502 when orchestrator contact fails, got %d", rec.Code)
@@ -352,6 +358,7 @@ func TestCallbackHandlerRedirectsOnOrchestratorError(t *testing.T) {
 
 	start := time.Now()
 	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/callback?code=abc&state=state-token", nil)
+	req.TLS = &tls.ConnectionState{}
 	req.AddCookie(&http.Cookie{
 		Name:  stateCookieName(data.State),
 		Value: base64.RawURLEncoding.EncodeToString(encoded),
@@ -359,7 +366,7 @@ func TestCallbackHandlerRedirectsOnOrchestratorError(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 
-	callbackHandler(rec, req, nil)
+	callbackHandler(rec, req, nil, false)
 
 	if callCount != 1 {
 		t.Fatalf("expected single orchestrator call, got %d", callCount)
@@ -446,6 +453,7 @@ func TestCallbackHandlerSuccessPropagatesCookies(t *testing.T) {
 	}
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/callback?code=abc&state=state-token", nil)
+	req.TLS = &tls.ConnectionState{}
 	req.AddCookie(&http.Cookie{
 		Name:  stateCookieName(data.State),
 		Value: base64.RawURLEncoding.EncodeToString(encoded),
@@ -453,10 +461,14 @@ func TestCallbackHandlerSuccessPropagatesCookies(t *testing.T) {
 	})
 	rec := httptest.NewRecorder()
 
-	callbackHandler(rec, req, nil)
+	callbackHandler(rec, req, nil, false)
 
 	if got := atomic.LoadInt32(&requestCount); got != 1 {
 		t.Fatalf("expected orchestrator to be called once, got %d", got)
+	}
+
+	if secure := isRequestSecure(req, nil); !secure {
+		t.Fatalf("expected request to be secure")
 	}
 
 	res := rec.Result()
@@ -530,7 +542,7 @@ func TestSetAndReadStateCookie(t *testing.T) {
 	req.TLS = &tls.ConnectionState{}
 	rec := httptest.NewRecorder()
 
-	if err := setStateCookie(rec, req, nil, data); err != nil {
+	if err := setStateCookie(rec, req, nil, false, data); err != nil {
 		t.Fatalf("failed to set state cookie: %v", err)
 	}
 	res := rec.Result()
@@ -555,10 +567,49 @@ func TestSetAndReadStateCookie(t *testing.T) {
 	}
 
 	delRec := httptest.NewRecorder()
-	deleteStateCookie(delRec, req, nil, data.State)
+	deleteStateCookie(delRec, req, nil, false, data.State)
 	cleared := findCookie(delRec.Result().Cookies(), stateCookieName(data.State))
 	if cleared == nil || cleared.MaxAge != -1 {
 		t.Fatalf("expected deleteStateCookie to expire cookie, got %#v", cleared)
+	}
+}
+
+func TestSetStateCookieRejectsInsecureRequestsByDefault(t *testing.T) {
+	data := stateData{
+		Provider:     "openrouter",
+		RedirectURI:  "https://app.example.com/complete",
+		CodeVerifier: "code-verifier",
+		ExpiresAt:    time.Now().Add(2 * time.Minute),
+		State:        "token",
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/auth/openrouter/authorize", nil)
+	rec := httptest.NewRecorder()
+
+	if err := setStateCookie(rec, req, nil, false, data); err == nil {
+		t.Fatal("expected insecure request to be rejected")
+	}
+}
+
+func TestSetStateCookieAllowsInsecureWhenConfigured(t *testing.T) {
+	data := stateData{
+		Provider:     "openrouter",
+		RedirectURI:  "https://app.example.com/complete",
+		CodeVerifier: "code-verifier",
+		ExpiresAt:    time.Now().Add(2 * time.Minute),
+		State:        "token",
+	}
+	req := httptest.NewRequest(http.MethodGet, "http://example.com/auth/openrouter/authorize", nil)
+	rec := httptest.NewRecorder()
+
+	if err := setStateCookie(rec, req, nil, true, data); err != nil {
+		t.Fatalf("expected insecure request to be allowed when configured: %v", err)
+	}
+	cookie := findCookie(rec.Result().Cookies(), stateCookieName(data.State))
+	if cookie == nil {
+		t.Fatal("expected cookie to be set")
+	}
+	if cookie.Secure {
+		t.Fatal("expected secure flag to be disabled for insecure request")
 	}
 }
 

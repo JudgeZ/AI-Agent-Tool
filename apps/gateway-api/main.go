@@ -18,7 +18,10 @@ func main() {
 	mux := http.NewServeMux()
 	startTime := time.Now()
 	trustedProxyCIDRs := trustedProxyCIDRsFromEnv()
-	gateway.RegisterAuthRoutes(mux, gateway.AuthRouteConfig{TrustedProxyCIDRs: trustedProxyCIDRs})
+	gateway.RegisterAuthRoutes(mux, gateway.AuthRouteConfig{
+		TrustedProxyCIDRs:        trustedProxyCIDRs,
+		AllowInsecureStateCookie: allowInsecureStateCookieFromEnv(),
+	})
 	gateway.RegisterHealthRoutes(mux, startTime)
 	gateway.RegisterEventRoutes(mux, gateway.EventRouteConfig{TrustedProxyCIDRs: trustedProxyCIDRs})
 
@@ -73,4 +76,17 @@ func trustedProxyCIDRsFromEnv() []string {
 		return nil
 	}
 	return cidrs
+}
+
+func allowInsecureStateCookieFromEnv() bool {
+	value := strings.TrimSpace(os.Getenv("OAUTH_ALLOW_INSECURE_STATE_COOKIE"))
+	if value == "" {
+		return false
+	}
+	switch strings.ToLower(value) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
