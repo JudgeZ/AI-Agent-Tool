@@ -21,6 +21,7 @@ import {
 } from "../grpc/AgentClient.js";
 import type { PlanJob, ToolEvent } from "../plan/validation.js";
 import { getQueueAdapter } from "./QueueAdapter.js";
+import type { QueueAdapter } from "./QueueAdapter.js";
 import {
   createPlanStateStore,
   type PlanStatePersistence,
@@ -370,8 +371,8 @@ async function releaseNextPlanSteps(planId: string): Promise<void> {
     if (!metadata) {
       return;
     }
-    let adapter: Awaited<ReturnType<typeof getQueueAdapter>> | null = null;
-    const ensureAdapter = async () => {
+    let adapter: QueueAdapter | undefined;
+    const ensureAdapter = async (): Promise<QueueAdapter> => {
       if (!adapter) {
         adapter = await getQueueAdapter();
       }
@@ -997,6 +998,24 @@ async function setupStepConsumer(): Promise<void> {
               stepRegistry.set(key, { step, traceId, job, inFlight: true });
             }
 
+            const startedAt = performance.now();
+            type QueueResult =
+              | "completed"
+              | "failed"
+              | "dead_lettered"
+              | "retry"
+              | "rejected";
+
+            const recordResult = (result: QueueResult) => {
+              const durationSeconds = (performance.now() - startedAt) / 1000;
+              queueProcessingHistogram
+                .labels(PLAN_STEPS_QUEUE)
+                .observe(durationSeconds);
+              queueResultCounter.labels(PLAN_STEPS_QUEUE, result).inc();
+              span.setAttribute("queue.result", result);
+              span.setAttribute("queue.duration_ms", durationSeconds * 1000);
+            };
+
             const metadataSnapshot = await planStateStore?.getPlanMetadata(planId);
             if (metadataSnapshot) {
               const stepIndex = metadataSnapshot.steps.findIndex(
@@ -1051,24 +1070,6 @@ async function setupStepConsumer(): Promise<void> {
               summary: "Dispatching tool agent",
               attempt: job.attempt,
             });
-
-            const startedAt = performance.now();
-            type QueueResult =
-              | "completed"
-              | "failed"
-              | "dead_lettered"
-              | "retry"
-              | "rejected";
-
-            const recordResult = (result: QueueResult) => {
-              const durationSeconds = (performance.now() - startedAt) / 1000;
-              queueProcessingHistogram
-                .labels(PLAN_STEPS_QUEUE)
-                .observe(durationSeconds);
-              queueResultCounter.labels(PLAN_STEPS_QUEUE, result).inc();
-              span.setAttribute("queue.result", result);
-              span.setAttribute("queue.duration_ms", durationSeconds * 1000);
-            };
 
             const approvals = await ensureApprovals(planId, step.id);
             let policyDecision: PolicyDecision;
