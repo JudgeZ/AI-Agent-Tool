@@ -199,6 +199,37 @@ func TestCallbackHandlerRejectsExpiredState(t *testing.T) {
 	}
 }
 
+func TestAuthRoutesRateLimiterBlocksExcessiveRequests(t *testing.T) {
+	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
+	t.Setenv("GATEWAY_AUTH_RATE_LIMIT_WINDOW", "1m")
+	t.Setenv("GATEWAY_AUTH_RATE_LIMIT_MAX", "2")
+	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+
+	mux := http.NewServeMux()
+	RegisterAuthRoutes(mux, AuthRouteConfig{})
+
+	makeRequest := func() *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/authorize?redirect_uri=http://127.0.0.1/callback", nil)
+		req.RemoteAddr = "192.0.2.10:12345"
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+
+	for i := 0; i < 2; i++ {
+		rec := makeRequest()
+		if rec.Code != http.StatusFound {
+			t.Fatalf("expected request %d to be allowed, got status %d", i+1, rec.Code)
+		}
+	}
+
+	rec := makeRequest()
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected rate limiter to block with 429, got %d", rec.Code)
+	}
+}
+
 func TestCallbackHandlerRejectsStateMismatch(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
