@@ -25,6 +25,7 @@ import { ensureTracing, withSpan } from "./observability/tracing.js";
 import {
   initializePlanQueueRuntime,
   getPlanSubject,
+  getPersistedPlanStep,
   resolvePlanStepApproval,
   submitPlanSteps,
   type ApprovalDecision,
@@ -838,49 +839,78 @@ export function createServer(appConfig?: AppConfig): Express {
       const rationale = approval.rationale;
       const auditOutcome: AuditOutcome = decision;
 
-      const latest = getLatestPlanStepEvent(planId, stepId);
-      if (!latest) {
-        res.status(404).json({ error: "Step not found" });
-        return;
-      }
-
-      if (latest.step.state !== "waiting_approval") {
-        res.status(409).json({ error: "Step is not awaiting approval" });
-        return;
-      }
-
-      const decoratedDecision = rationale
-        ? `${decision}: ${rationale}`
-        : decision;
-      const summary = rationale
-        ? `${latest.step.summary ?? ""}${
-            latest.step.summary ? " " : ""
-          }(${decoratedDecision})`
-        : latest.step.summary;
-
-      const requestSubject = resolveRequestSubject(req, config);
-      const agentName = extractAgent(req);
-      const requestId = req.header("x-request-id") ?? undefined;
-
-      if (config.auth.oidc.enabled && !requestSubject) {
-        logAuditEvent({
-          action: "plan.step.approval",
-          outcome: "denied",
-          traceId: latest.traceId,
-          requestId,
-          agent: agentName,
-          resource: "plan.step",
-          details: { planId, stepId, reason: "missing_session" },
-        });
-        res
-          .status(401)
-          .json({
-            error: "authentication required",
-          });
-        return;
-      }
-
       try {
+        let latest: PlanStepEvent | undefined = getLatestPlanStepEvent(
+          planId,
+          stepId,
+        );
+        if (!latest) {
+          const persisted = await getPersistedPlanStep(planId, stepId);
+          if (persisted) {
+            latest = {
+              event: "plan.step",
+              planId: persisted.planId,
+              traceId: persisted.traceId,
+              occurredAt: persisted.updatedAt,
+              step: {
+                id: persisted.stepId,
+                action: persisted.step.action,
+                tool: persisted.step.tool,
+                state: persisted.state,
+                capability: persisted.step.capability,
+                capabilityLabel: persisted.step.capabilityLabel,
+                labels: persisted.step.labels,
+                timeoutSeconds: persisted.step.timeoutSeconds,
+                approvalRequired: persisted.step.approvalRequired,
+                attempt: persisted.attempt,
+                summary: persisted.summary,
+                output: persisted.output,
+                approvals: persisted.approvals,
+              },
+            } satisfies PlanStepEvent;
+          }
+        }
+        if (!latest) {
+          res.status(404).json({ error: "Step not found" });
+          return;
+        }
+
+        if (latest.step.state !== "waiting_approval") {
+          res.status(409).json({ error: "Step is not awaiting approval" });
+          return;
+        }
+
+        const decoratedDecision = rationale
+          ? `${decision}: ${rationale}`
+          : decision;
+        const summary = rationale
+          ? `${latest.step.summary ?? ""}${
+              latest.step.summary ? " " : ""
+            }(${decoratedDecision})`
+          : latest.step.summary;
+
+        const requestSubject = resolveRequestSubject(req, config);
+        const agentName = extractAgent(req);
+        const requestId = req.header("x-request-id") ?? undefined;
+
+        if (config.auth.oidc.enabled && !requestSubject) {
+          logAuditEvent({
+            action: "plan.step.approval",
+            outcome: "denied",
+            traceId: latest.traceId,
+            requestId,
+            agent: agentName,
+            resource: "plan.step",
+            details: { planId, stepId, reason: "missing_session" },
+          });
+          res
+            .status(401)
+            .json({
+              error: "authentication required",
+            });
+          return;
+        }
+
         const planSubject = await getPlanSubject(planId);
         let sessionReauthenticated = false;
         if (config.auth.oidc.enabled) {
