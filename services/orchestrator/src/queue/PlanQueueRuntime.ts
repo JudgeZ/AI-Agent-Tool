@@ -905,20 +905,41 @@ async function setupCompletionConsumer(): Promise<void> {
             return;
           }
 
-          const traceComparable =
-            expectedTraceId.length > 0 && receivedTraceId.length > 0;
-          const idempotencyComparable =
-            expectedIdempotencyKey.length > 0 &&
+          const expectedTracePresent = expectedTraceId.length > 0;
+          const expectedIdempotencyPresent =
+            expectedIdempotencyKey.length > 0;
+          const receivedTracePresent = receivedTraceId.length > 0;
+          const receivedIdempotencyPresent =
             receivedIdempotencyKey.length > 0;
-          let metadataMatches = false;
-          if (traceComparable) {
-            metadataMatches = metadataMatches || expectedTraceId === receivedTraceId;
-          }
-          if (idempotencyComparable) {
+
+          let enforceMetadata = false;
+          let metadataMatches = true;
+
+          if (expectedTracePresent && expectedIdempotencyPresent) {
+            enforceMetadata = true;
             metadataMatches =
-              metadataMatches || expectedIdempotencyKey === receivedIdempotencyKey;
+              receivedTracePresent &&
+              receivedIdempotencyPresent &&
+              expectedTraceId === receivedTraceId &&
+              expectedIdempotencyKey === receivedIdempotencyKey;
+          } else {
+            if (expectedTracePresent) {
+              enforceMetadata = true;
+              metadataMatches =
+                metadataMatches &&
+                receivedTracePresent &&
+                expectedTraceId === receivedTraceId;
+            }
+            if (expectedIdempotencyPresent) {
+              enforceMetadata = true;
+              metadataMatches =
+                metadataMatches &&
+                receivedIdempotencyPresent &&
+                expectedIdempotencyKey === receivedIdempotencyKey;
+            }
           }
-          if ((traceComparable || idempotencyComparable) && !metadataMatches) {
+
+          if (enforceMetadata && !metadataMatches) {
             console.warn("plan.completion.metadata_mismatch", {
               planId: payload.planId,
               stepId: payload.stepId,
