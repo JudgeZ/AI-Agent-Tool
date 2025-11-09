@@ -60,7 +60,8 @@ type stateData struct {
 
 // AuthRouteConfig captures configuration for the OAuth routes.
 type AuthRouteConfig struct {
-	TrustedProxyCIDRs []string
+	TrustedProxyCIDRs        []string
+	AllowInsecureStateCookie bool
 }
 
 func getProviderConfig(provider string) (oauthProvider, error) {
@@ -98,7 +99,7 @@ func getProviderConfig(provider string) (oauthProvider, error) {
 	}
 }
 
-func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet) {
+func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, allowInsecureStateCookie bool) {
 	provider := strings.TrimPrefix(r.URL.Path, "/auth/")
 	provider = strings.TrimSuffix(provider, "/authorize")
 	baseAttrs := append(auditRequestAttrs(r, trustedProxies), slog.String("provider", provider))
@@ -138,7 +139,7 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*
 		State:        state,
 	}
 
-	if err := setStateCookie(w, r, trustedProxies, data); err != nil {
+	if err := setStateCookie(w, r, trustedProxies, allowInsecureStateCookie, data); err != nil {
 		attrs := append(baseAttrs, slog.String("redirect_uri", redirectURI), slog.String("error", "state persistence failed"))
 		logAudit(r.Context(), "oauth.authorize", "failure", attrs...)
 		http.Error(w, "failed to persist state", http.StatusInternalServerError)
@@ -163,10 +164,10 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*
 	successAttrs := append(baseAttrs, slog.String("redirect_uri", redirectURI))
 	logAudit(r.Context(), "oauth.authorize", "success", successAttrs...)
 
-	http.Redirect(w, r, authURL, http.StatusFound)
+	sendRedirect(w, authURL)
 }
 
-func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet) {
+func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, allowInsecureStateCookie bool) {
 	provider := strings.TrimPrefix(r.URL.Path, "/auth/")
 	provider = strings.TrimSuffix(provider, "/callback")
 	baseAttrs := append(auditRequestAttrs(r, trustedProxies), slog.String("provider", provider))
@@ -179,7 +180,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 	}
 
 	if errParam := r.URL.Query().Get("error"); errParam != "" {
-		redirectError(w, r, trustedProxies, errParam)
+		redirectError(w, r, trustedProxies, allowInsecureStateCookie, errParam)
 		return
 	}
 
@@ -199,7 +200,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 		return
 	}
 
-	deleteStateCookie(w, r, trustedProxies, state)
+	deleteStateCookie(w, r, trustedProxies, allowInsecureStateCookie, state)
 
 	payload := map[string]string{
 		"code":          code,
@@ -266,7 +267,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 	redirectWithStatus(w, r, data.RedirectURI, data.State, "success", "")
 }
 
-func redirectError(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, errParam string) {
+func redirectError(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, allowInsecureStateCookie bool, errParam string) {
 	state := r.URL.Query().Get("state")
 	if state == "" {
 		attrs := append(auditRequestAttrs(r, trustedProxies), slog.String("error", errParam))
@@ -281,7 +282,7 @@ func redirectError(w http.ResponseWriter, r *http.Request, trustedProxies []*net
 		http.Error(w, errParam, http.StatusBadRequest)
 		return
 	}
-	deleteStateCookie(w, r, trustedProxies, state)
+	deleteStateCookie(w, r, trustedProxies, allowInsecureStateCookie, state)
 	attrs := append(auditRequestAttrs(r, trustedProxies), slog.String("state", state), slog.String("redirect_uri", data.RedirectURI), slog.String("error", errParam))
 	logAudit(r.Context(), "oauth.callback", "failure", attrs...)
 	redirectWithStatus(w, r, data.RedirectURI, data.State, "error", errParam)
@@ -302,7 +303,7 @@ func redirectWithStatus(w http.ResponseWriter, r *http.Request, redirectURI, sta
 		q.Set("error", message)
 	}
 	target.RawQuery = q.Encode()
-	http.Redirect(w, r, target.String(), http.StatusFound)
+	sendRedirect(w, target)
 }
 
 var orchestratorErrorMessages = map[string]string{
@@ -369,10 +370,10 @@ func pkceChallenge(verifier string) string {
 	return base64.RawURLEncoding.EncodeToString(sum[:])
 }
 
-func buildAuthorizeURL(cfg oauthProvider, state, codeChallenge string) (string, error) {
+func buildAuthorizeURL(cfg oauthProvider, state, codeChallenge string) (*url.URL, error) {
 	u, err := url.Parse(cfg.AuthorizeURL)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
 	q := u.Query()
 	q.Set("response_type", "code")
@@ -385,7 +386,7 @@ func buildAuthorizeURL(cfg oauthProvider, state, codeChallenge string) (string, 
 		q.Set("scope", strings.Join(cfg.Scopes, " "))
 	}
 	u.RawQuery = q.Encode()
-	return u.String(), nil
+	return u, nil
 }
 
 func validateClientRedirect(redirectURI string) error {
@@ -514,8 +515,9 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
-func setStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, data stateData) error {
-	if !isRequestSecure(r, trustedProxies) {
+func setStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, allowInsecure bool, data stateData) error {
+	secureRequest := isRequestSecure(r, trustedProxies)
+	if !secureRequest && !allowInsecure {
 		return errors.New("refusing to issue state cookie over insecure request")
 	}
 
@@ -533,6 +535,10 @@ func setStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []*ne
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
+	}
+
+	if allowInsecure && !secureRequest {
+		cookie.Secure = false
 	}
 
 	http.SetCookie(w, cookie)
@@ -566,12 +572,13 @@ func readStateCookie(r *http.Request, state string) (stateData, error) {
 	return data, nil
 }
 
-func deleteStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, state string) {
-	if !isRequestSecure(r, trustedProxies) {
+func deleteStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, allowInsecure bool, state string) {
+	secureRequest := isRequestSecure(r, trustedProxies)
+	if !secureRequest && !allowInsecure {
 		return
 	}
 
-	http.SetCookie(w, &http.Cookie{
+	cookie := &http.Cookie{
 		Name:     stateCookieName(state),
 		Value:    "",
 		Path:     "/auth/",
@@ -580,15 +587,16 @@ func deleteStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []
 		HttpOnly: true,
 		Secure:   true,
 		SameSite: http.SameSiteLaxMode,
-	})
-}
-
-func validateAuthorizeRedirect(builtURL, configuredAuthorizeURL string) error {
-	built, err := url.Parse(builtURL)
-	if err != nil {
-		return err
 	}
 
+	if allowInsecure && !secureRequest {
+		cookie.Secure = false
+	}
+
+	http.SetCookie(w, cookie)
+}
+
+func validateAuthorizeRedirect(built *url.URL, configuredAuthorizeURL string) error {
 	reference, err := url.Parse(configuredAuthorizeURL)
 	if err != nil {
 		return err
@@ -626,6 +634,15 @@ func defaultPortForScheme(scheme string) string {
 	default:
 		return ""
 	}
+}
+
+func sendRedirect(w http.ResponseWriter, target *url.URL) {
+	if target == nil {
+		http.Error(w, "failed to resolve redirect", http.StatusInternalServerError)
+		return
+	}
+	w.Header().Set("Location", target.String())
+	w.WriteHeader(http.StatusFound)
 }
 
 func stateCookieName(state string) string {
@@ -697,8 +714,12 @@ func RegisterAuthRoutes(mux *http.ServeMux, cfg AuthRouteConfig) {
 	}
 
 	limiter := newAuthRateLimiter()
-	authorize := withAuthRateLimit(authorizeHandler, limiter, trustedProxies)
-	callback := withAuthRateLimit(callbackHandler, limiter, trustedProxies)
+	authorize := withAuthRateLimit(func(w http.ResponseWriter, r *http.Request) {
+		authorizeHandler(w, r, trustedProxies, cfg.AllowInsecureStateCookie)
+	}, limiter, trustedProxies)
+	callback := withAuthRateLimit(func(w http.ResponseWriter, r *http.Request) {
+		callbackHandler(w, r, trustedProxies, cfg.AllowInsecureStateCookie)
+	}, limiter, trustedProxies)
 
 	mux.HandleFunc("/auth/", func(w http.ResponseWriter, r *http.Request) {
 		switch {
@@ -781,11 +802,9 @@ func newAuthRateLimiter() *ipRateLimiter {
 	}
 }
 
-func withAuthRateLimit(handler func(http.ResponseWriter, *http.Request, []*net.IPNet), limiter *ipRateLimiter, trustedProxies []*net.IPNet) http.HandlerFunc {
+func withAuthRateLimit(handler http.HandlerFunc, limiter *ipRateLimiter, trustedProxies []*net.IPNet) http.HandlerFunc {
 	if limiter == nil {
-		return func(w http.ResponseWriter, r *http.Request) {
-			handler(w, r, trustedProxies)
-		}
+		return handler
 	}
 	return func(w http.ResponseWriter, r *http.Request) {
 		ip := clientIP(r, trustedProxies)
@@ -796,7 +815,7 @@ func withAuthRateLimit(handler func(http.ResponseWriter, *http.Request, []*net.I
 			http.Error(w, "too many requests", http.StatusTooManyRequests)
 			return
 		}
-		handler(w, r, trustedProxies)
+		handler(w, r)
 	}
 }
 

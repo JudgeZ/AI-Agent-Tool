@@ -10,6 +10,7 @@ services:
       INDEXER_URL: http://indexer:7070
       PORT: "8080"
       GATEWAY_SSE_MAX_CONNECTIONS_PER_IP: "4"
+      OAUTH_ALLOW_INSECURE_STATE_COOKIE: "true"
     ports:
       - "8080:8080"
     depends_on:
