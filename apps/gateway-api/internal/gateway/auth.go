@@ -638,6 +638,10 @@ func RegisterAuthRoutes(mux *http.ServeMux, cfg AuthRouteConfig) {
 		panic(fmt.Sprintf("invalid trusted proxy configuration: %v", err))
 	}
 
+	limiter := newAuthRateLimiter()
+	authorize := withAuthRateLimit(authorizeHandler, limiter, trustedProxies)
+	callback := withAuthRateLimit(callbackHandler, limiter, trustedProxies)
+
 	mux.HandleFunc("/auth/", func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/authorize"):
@@ -645,13 +649,13 @@ func RegisterAuthRoutes(mux *http.ServeMux, cfg AuthRouteConfig) {
 				methodNotAllowed(w, http.MethodGet)
 				return
 			}
-			authorizeHandler(w, r, trustedProxies)
+			authorize(w, r)
 		case strings.HasSuffix(r.URL.Path, "/callback"):
 			if r.Method != http.MethodGet {
 				methodNotAllowed(w, http.MethodGet)
 				return
 			}
-			callbackHandler(w, r, trustedProxies)
+			callback(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -694,6 +698,69 @@ func parseScopeList(raw string) []string {
 	}
 	sort.Strings(result)
 	return result
+}
+
+type ipRateLimiter struct {
+	window time.Duration
+	max    int
+	mu     sync.Mutex
+	hits   map[string][]time.Time
+}
+
+func newAuthRateLimiter() *ipRateLimiter {
+	window := getDurationEnv("GATEWAY_AUTH_RATE_LIMIT_WINDOW", time.Minute)
+	max := getIntEnv("GATEWAY_AUTH_RATE_LIMIT_MAX", 10)
+	if max <= 0 {
+		return nil
+	}
+	if window <= 0 {
+		window = time.Minute
+	}
+	return &ipRateLimiter{
+		window: window,
+		max:    max,
+		hits:   make(map[string][]time.Time),
+	}
+}
+
+func withAuthRateLimit(handler func(http.ResponseWriter, *http.Request, []*net.IPNet), limiter *ipRateLimiter, trustedProxies []*net.IPNet) http.HandlerFunc {
+	if limiter == nil {
+		return func(w http.ResponseWriter, r *http.Request) {
+			handler(w, r, trustedProxies)
+		}
+	}
+	return func(w http.ResponseWriter, r *http.Request) {
+		ip := clientIP(r, trustedProxies)
+		if ip == "" {
+			ip = "unknown"
+		}
+		if !limiter.Allow(ip) {
+			http.Error(w, "too many requests", http.StatusTooManyRequests)
+			return
+		}
+		handler(w, r, trustedProxies)
+	}
+}
+
+func (l *ipRateLimiter) Allow(id string) bool {
+	now := time.Now()
+	cutoff := now.Add(-l.window)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	entries := l.hits[id]
+	keep := entries[:0]
+	for _, ts := range entries {
+		if ts.After(cutoff) {
+			keep = append(keep, ts)
+		}
+	}
+	if len(keep) >= l.max {
+		l.hits[id] = keep
+		return false
+	}
+	keep = append(keep, now)
+	l.hits[id] = keep
+	return true
 }
 
 func loadOidcMetadata(issuer string) (oidcDiscovery, error) {
