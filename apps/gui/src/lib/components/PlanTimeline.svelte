@@ -10,7 +10,10 @@
   const connection = derived(timelineState, ($state) => ({
     connected: $state.connected,
     error: $state.connectionError,
-    planId: $state.planId
+    planId: $state.planId,
+    retrying: $state.retrying,
+    retryAttempt: $state.retryAttempt,
+    maxRetryAttempts: $state.maxRetryAttempts
   }));
 
   const formatTime = (iso: string) => new Date(iso).toLocaleTimeString();
@@ -67,7 +70,13 @@
 <section class="status">
   {#if $connection.planId}
     <span class:connected={$connection.connected} class="status__pill">
-      {$connection.connected ? 'Connected' : 'Connecting…'}
+      {#if $connection.connected}
+        Connected
+      {:else if $connection.retrying}
+        Reconnecting…{#if $connection.retryAttempt > 0} (attempt {$connection.retryAttempt} of {$connection.maxRetryAttempts}){/if}
+      {:else}
+        Connecting…
+      {/if}
     </span>
     <span class="status__plan">Plan: {$connection.planId}</span>
   {:else}

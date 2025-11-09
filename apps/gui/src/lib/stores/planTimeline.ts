@@ -50,7 +50,14 @@ export interface TimelineState {
   approvalSubmitting: boolean;
   connectionError: string | null;
   approvalError: string | null;
+  retrying: boolean;
+  retryAttempt: number;
+  maxRetryAttempts: number;
 }
+
+const MAX_RETRY_ATTEMPTS = 5;
+const RETRY_BASE_DELAY_MS = 1_000;
+const RETRY_MAX_DELAY_MS = 30_000;
 
 const initialState: TimelineState = {
   planId: null,
@@ -59,7 +66,10 @@ const initialState: TimelineState = {
   awaitingApproval: null,
   approvalSubmitting: false,
   connectionError: null,
-  approvalError: null
+  approvalError: null,
+  retrying: false,
+  retryAttempt: 0,
+  maxRetryAttempts: MAX_RETRY_ATTEMPTS
 };
 
 interface StepEventPayload {
@@ -156,6 +166,35 @@ function resolveTimestamp(payload: StepEventPayload): string {
 
 let eventSource: EventSource | null = null;
 let stepEventListener: ((event: MessageEvent<string>) => void) | null = null;
+let retryTimeout: ReturnType<typeof setTimeout> | null = null;
+let activePlanId: string | null = null;
+let currentRetryAttempt = 0;
+
+function clearRetryTimer() {
+  if (retryTimeout !== null) {
+    clearTimeout(retryTimeout);
+    retryTimeout = null;
+  }
+}
+
+function closeEventSource() {
+  if (eventSource) {
+    if (stepEventListener) {
+      eventSource.removeEventListener('plan.step', stepEventListener);
+    }
+    eventSource.onopen = null;
+    eventSource.onerror = null;
+    eventSource.close();
+    eventSource = null;
+  }
+  stepEventListener = null;
+}
+
+function getRetryDelay(attempt: number) {
+  const exponent = Math.max(attempt - 1, 0);
+  const delay = RETRY_BASE_DELAY_MS * 2 ** exponent;
+  return Math.min(delay, RETRY_MAX_DELAY_MS);
+}
 
 function toHistoryEntry(payload: StepEventPayload): StepHistoryEntry {
   return {
@@ -315,29 +354,100 @@ const timelineStore = writable<TimelineState>(initialState);
 const { subscribe, set, update } = timelineStore;
 
 function disconnect() {
-  if (eventSource) {
-    if (stepEventListener) {
-      eventSource.removeEventListener('plan.step', stepEventListener);
-      stepEventListener = null;
-    }
-    eventSource.onopen = null;
-    eventSource.onerror = null;
-    eventSource.close();
-    eventSource = null;
-  }
-  update((state) => ({ ...state, connected: false }));
+  clearRetryTimer();
+  activePlanId = null;
+  currentRetryAttempt = 0;
+  closeEventSource();
+  update((state) => ({ ...state, connected: false, retrying: false, retryAttempt: 0 }));
 }
 
-function connect(planId: string) {
+interface ConnectOptions {
+  isRetry?: boolean;
+}
+
+function scheduleReconnect(lastErrorMessage: string | null) {
+  const message = lastErrorMessage ?? 'Connection lost';
+  if (!activePlanId) {
+    update((state) => ({ ...state, connected: false, retrying: false }));
+    return;
+  }
+
+  const nextAttempt = currentRetryAttempt + 1;
+
+  if (nextAttempt > MAX_RETRY_ATTEMPTS) {
+    clearRetryTimer();
+    const attempts = Math.max(currentRetryAttempt, MAX_RETRY_ATTEMPTS);
+    update((state) => ({
+      ...state,
+      connected: false,
+      retrying: false,
+      retryAttempt: attempts,
+      connectionError: `Retry limit reached after ${MAX_RETRY_ATTEMPTS} attempts. Last error: ${message}`
+    }));
+    currentRetryAttempt = attempts;
+    activePlanId = null;
+    return;
+  }
+
+  currentRetryAttempt = nextAttempt;
+  const attemptNumber = currentRetryAttempt;
+  const delay = getRetryDelay(attemptNumber);
+
+  update((state) => ({
+    ...state,
+    connected: false,
+    retrying: true,
+    retryAttempt: attemptNumber,
+    connectionError: message
+  }));
+
+  clearRetryTimer();
+  retryTimeout = globalThis.setTimeout(() => {
+    retryTimeout = null;
+    if (!activePlanId) {
+      return;
+    }
+    connect(activePlanId, { isRetry: true });
+  }, delay);
+}
+
+function connect(planId: string, options: ConnectOptions = {}) {
   if (typeof window === 'undefined') return;
-  disconnect();
+  const { isRetry = false } = options;
+
+  clearRetryTimer();
+  closeEventSource();
+
+  if (!isRetry) {
+    activePlanId = planId;
+    currentRetryAttempt = 0;
+    set({ ...initialState, planId });
+  } else {
+    activePlanId = planId;
+    update((state) => ({
+      ...state,
+      planId: state.planId ?? planId,
+      retrying: true,
+      retryAttempt: currentRetryAttempt,
+      maxRetryAttempts: MAX_RETRY_ATTEMPTS
+    }));
+  }
+
   const url = ssePath(planId);
-  set({ ...initialState, planId });
   const source = new EventSource(url, { withCredentials: true });
   eventSource = source;
 
   source.onopen = () => {
-    update((state) => ({ ...state, connected: true, connectionError: null }));
+    clearRetryTimer();
+    currentRetryAttempt = 0;
+    update((state) => ({
+      ...state,
+      connected: true,
+      retrying: false,
+      retryAttempt: 0,
+      connectionError: null,
+      maxRetryAttempts: MAX_RETRY_ATTEMPTS
+    }));
   };
 
   source.onerror = (event) => {
@@ -356,6 +466,8 @@ function connect(planId: string) {
       connected: false,
       connectionError: message ?? 'Connection lost'
     }));
+    closeEventSource();
+    scheduleReconnect(message);
   };
 
   const fallbackPlanId = planId;

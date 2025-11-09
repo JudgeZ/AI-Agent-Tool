@@ -115,6 +115,8 @@ describe('timeline.connect', () => {
     const afterError = get(timeline);
     expect(afterError.connected).toBe(false);
     expect(afterError.connectionError).toContain('stream failed');
+    expect(afterError.retrying).toBe(true);
+    expect(afterError.retryAttempt).toBe(1);
   });
 
   it('cleans up listeners and closes the stream on disconnect', () => {
@@ -128,5 +130,72 @@ describe('timeline.connect', () => {
     expect(source?.closed).toBe(true);
     expect(source?.listenerCount('plan.step')).toBe(0);
     expect(get(timeline).connected).toBe(false);
+  });
+
+  it('retries with exponential backoff after a connection error', () => {
+    vi.useFakeTimers();
+    try {
+      timeline.connect(ERROR_PLAN_ID);
+      const initialSource = MockEventSource.instances.at(-1);
+      expect(initialSource).toBeTruthy();
+
+      initialSource?.triggerError('temporary failure');
+
+      const afterFirstError = get(timeline);
+      expect(afterFirstError.retrying).toBe(true);
+      expect(afterFirstError.retryAttempt).toBe(1);
+
+      expect(MockEventSource.instances).toHaveLength(1);
+
+      vi.advanceTimersByTime(1_000);
+
+      expect(MockEventSource.instances).toHaveLength(2);
+      const retrySource = MockEventSource.instances.at(-1);
+      expect(retrySource).not.toBe(initialSource);
+
+      retrySource?.triggerOpen();
+
+      const afterReconnect = get(timeline);
+      expect(afterReconnect.connected).toBe(true);
+      expect(afterReconnect.retrying).toBe(false);
+      expect(afterReconnect.retryAttempt).toBe(0);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stops retrying after the maximum attempt count and surfaces a descriptive error', () => {
+    vi.useFakeTimers();
+    try {
+      timeline.connect(ERROR_PLAN_ID);
+      const maxRetries = get(timeline).maxRetryAttempts;
+
+      for (let attempt = 1; attempt <= maxRetries + 1; attempt += 1) {
+        const source = MockEventSource.instances.at(-1);
+        expect(source).toBeTruthy();
+
+        source?.triggerError(`failure ${attempt}`);
+
+        const state = get(timeline);
+        const expectedAttempt = Math.min(attempt, state.maxRetryAttempts);
+        expect(state.retryAttempt).toBe(expectedAttempt);
+
+        if (attempt <= state.maxRetryAttempts) {
+          expect(state.retrying).toBe(true);
+          const expectedDelay = Math.min(1_000 * 2 ** (attempt - 1), 30_000);
+          vi.advanceTimersByTime(expectedDelay);
+          expect(MockEventSource.instances.length).toBe(attempt + 1);
+        } else {
+          expect(state.retrying).toBe(false);
+          expect(state.retryAttempt).toBe(state.maxRetryAttempts);
+          expect(state.connectionError).toContain('Retry limit reached');
+          const instanceCount = MockEventSource.instances.length;
+          vi.advanceTimersByTime(60_000);
+          expect(MockEventSource.instances.length).toBe(instanceCount);
+        }
+      }
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

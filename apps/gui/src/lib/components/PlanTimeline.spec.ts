@@ -89,7 +89,7 @@ describe('PlanTimeline component', () => {
     source?.triggerError('stream failed');
 
     await screen.findByText('stream failed');
-    await screen.findByText('Connecting…');
+    await screen.findByText(/Reconnecting…\s*\(attempt 1 of 5\)/);
   });
 
   it('cleans up listeners when disconnecting', async () => {
