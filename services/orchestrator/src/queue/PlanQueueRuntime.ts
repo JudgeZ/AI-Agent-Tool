@@ -25,6 +25,7 @@ import type { QueueAdapter } from "./QueueAdapter.js";
 import {
   createPlanStateStore,
   type PlanStatePersistence,
+  type PersistedStep,
 } from "./PlanStateStore.js";
 import { getPostgresPool } from "../database/Postgres.js";
 import { withSpan } from "../observability/tracing.js";
@@ -260,6 +261,32 @@ export function hasApprovalCacheEntry(planId: string, stepId: string): boolean {
 
 export function hasActivePlanSubject(planId: string): boolean {
   return planSubjects.has(planId);
+}
+
+export async function getPersistedPlanStep(
+  planId: string,
+  stepId: string,
+): Promise<PersistedStep | undefined> {
+  const store = planStateStore;
+  if (!store) {
+    return undefined;
+  }
+  const entry = await store.getEntry(planId, stepId);
+  if (!entry) {
+    return undefined;
+  }
+  return {
+    ...entry,
+    approvals: entry.approvals ? { ...entry.approvals } : undefined,
+    output: entry.output ? { ...entry.output } : undefined,
+    step: {
+      ...entry.step,
+      labels: [...entry.step.labels],
+      metadata: { ...entry.step.metadata },
+      input: { ...entry.step.input },
+    },
+    subject: entry.subject ? clonePlanSubject(entry.subject) : undefined,
+  };
 }
 
 export async function persistPlanStepState(

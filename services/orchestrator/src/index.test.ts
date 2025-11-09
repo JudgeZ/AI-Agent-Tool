@@ -14,6 +14,7 @@ import { sessionStore } from "./auth/SessionStore.js";
 import { loadConfig } from "./config.js";
 
 import { clearPlanHistory, getPlanHistory, publishPlanStepEvent } from "./plan/events.js";
+import type { PersistedStep } from "./queue/PlanStateStore.js";
 
 vi.mock("./providers/ProviderRegistry.js", () => {
   return {
@@ -26,6 +27,7 @@ const policyMock = {
 };
 
 const getPlanSubjectMock = vi.fn().mockResolvedValue(undefined);
+const getPersistedPlanStepMock = vi.fn().mockResolvedValue(undefined);
 
 const TEST_PLAN_ID = "plan-550e8400-e29b-41d4-a716-446655440000";
 const ALT_PLAN_ID = "plan-12345678-9abc-4def-8abc-1234567890ab";
@@ -57,7 +59,8 @@ vi.mock("./queue/PlanQueueRuntime.js", () => {
     initializePlanQueueRuntime: vi.fn().mockResolvedValue(undefined),
     submitPlanSteps: vi.fn().mockResolvedValue(undefined),
     resolvePlanStepApproval: vi.fn().mockResolvedValue(undefined),
-    getPlanSubject: getPlanSubjectMock
+    getPlanSubject: getPlanSubjectMock,
+    getPersistedPlanStep: getPersistedPlanStepMock
   };
 });
 
@@ -115,6 +118,8 @@ describe("orchestrator http api", () => {
     policyMock.enforceHttpAction.mockResolvedValue({ allow: true, deny: [] });
     getPlanSubjectMock.mockReset();
     getPlanSubjectMock.mockResolvedValue(undefined);
+    getPersistedPlanStepMock.mockReset();
+    getPersistedPlanStepMock.mockResolvedValue(undefined);
     sessionStore.clear();
   });
 
@@ -1434,6 +1439,118 @@ describe("orchestrator http api", () => {
         summary: "Awaiting approval"
       });
       expect(getPlanSubjectMock).toHaveBeenCalledWith(planId);
+    });
+
+    it("approves persisted steps when event history is unavailable", async () => {
+      const { createServer } = await import("./index.js");
+      const app = createServer();
+
+      const planResponse = await request(app)
+        .post("/plan")
+        .send({ goal: "Approve after restart" })
+        .expect(201);
+      const planId: string = planResponse.body.plan.id;
+      const approvalStep = planResponse.body.plan.steps.find((step: { approvalRequired: boolean }) => step.approvalRequired);
+      if (!approvalStep) {
+        throw new Error("expected an approval-requiring step");
+      }
+
+      clearPlanHistory();
+
+      const stepDefinition = {
+        id: approvalStep.id,
+        action: approvalStep.action,
+        tool: approvalStep.tool,
+        capability: approvalStep.capability,
+        capabilityLabel: approvalStep.capabilityLabel,
+        labels: approvalStep.labels ?? [],
+        timeoutSeconds: approvalStep.timeoutSeconds ?? 0,
+        approvalRequired: approvalStep.approvalRequired ?? false,
+        input: approvalStep.input ?? {},
+        metadata: approvalStep.metadata ?? {}
+      };
+      const persistedStep: PersistedStep = {
+        id: "persisted-entry",
+        planId,
+        stepId: approvalStep.id,
+        traceId: "trace-persisted",
+        step: stepDefinition,
+        state: "waiting_approval",
+        summary: "Restored summary",
+        updatedAt: new Date().toISOString(),
+        attempt: 0,
+        idempotencyKey: "persisted-entry",
+        createdAt: new Date().toISOString(),
+        approvals: {}
+      };
+      getPersistedPlanStepMock.mockResolvedValueOnce(persistedStep);
+
+      await request(app)
+        .post(`/plan/${planId}/steps/${approvalStep.id}/approve`)
+        .send({ decision: "approve" })
+        .expect(204);
+
+      expect(getPersistedPlanStepMock).toHaveBeenCalledWith(planId, approvalStep.id);
+      const { resolvePlanStepApproval } = await import("./queue/PlanQueueRuntime.js");
+      expect(resolvePlanStepApproval).toHaveBeenCalledWith({
+        planId,
+        stepId: approvalStep.id,
+        decision: "approved",
+        summary: "Restored summary"
+      });
+    });
+
+    it("rejects persisted steps that are not awaiting approval", async () => {
+      const { createServer } = await import("./index.js");
+      const app = createServer();
+
+      const planResponse = await request(app)
+        .post("/plan")
+        .send({ goal: "Reject after restart" })
+        .expect(201);
+      const planId: string = planResponse.body.plan.id;
+      const approvalStep = planResponse.body.plan.steps.find((step: { approvalRequired: boolean }) => step.approvalRequired);
+      if (!approvalStep) {
+        throw new Error("expected an approval-requiring step");
+      }
+
+      clearPlanHistory();
+
+      const stepDefinition = {
+        id: approvalStep.id,
+        action: approvalStep.action,
+        tool: approvalStep.tool,
+        capability: approvalStep.capability,
+        capabilityLabel: approvalStep.capabilityLabel,
+        labels: approvalStep.labels ?? [],
+        timeoutSeconds: approvalStep.timeoutSeconds ?? 0,
+        approvalRequired: approvalStep.approvalRequired ?? false,
+        input: approvalStep.input ?? {},
+        metadata: approvalStep.metadata ?? {}
+      };
+      const persistedStep: PersistedStep = {
+        id: "persisted-entry-running",
+        planId,
+        stepId: approvalStep.id,
+        traceId: "trace-running",
+        step: stepDefinition,
+        state: "running",
+        updatedAt: new Date().toISOString(),
+        attempt: 0,
+        idempotencyKey: "persisted-entry-running",
+        createdAt: new Date().toISOString(),
+        approvals: {}
+      };
+      getPersistedPlanStepMock.mockResolvedValueOnce(persistedStep);
+
+      await request(app)
+        .post(`/plan/${planId}/steps/${approvalStep.id}/approve`)
+        .send({ decision: "approve" })
+        .expect(409);
+
+      expect(getPersistedPlanStepMock).toHaveBeenCalledWith(planId, approvalStep.id);
+      const { resolvePlanStepApproval } = await import("./queue/PlanQueueRuntime.js");
+      expect(resolvePlanStepApproval).not.toHaveBeenCalled();
     });
 
     it("publishes rejection events when a pending step is rejected", async () => {
