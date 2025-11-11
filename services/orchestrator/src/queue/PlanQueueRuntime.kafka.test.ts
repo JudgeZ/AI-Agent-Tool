@@ -16,6 +16,7 @@ import { getQueueAdapter, resetQueueAdapter } from "./QueueAdapter.js";
 import type { Plan } from "../plan/planner.js";
 import * as events from "../plan/events.js";
 import type { PlanStepEvent } from "../plan/events.js";
+import { appLogger } from "../observability/logger.js";
 
 const executeTool = vi.fn();
 
@@ -40,8 +41,14 @@ describe("PlanQueueRuntime (Kafka integration)", () => {
       container = await new KafkaContainer("confluentinc/cp-kafka:7.6.1").start();
     } catch (error) {
       skipSuite = true;
-      console.warn("Skipping Kafka integration test because no container runtime is available");
-      console.warn(String(error));
+      appLogger.warn(
+        { event: "test.skip", reason: "missing_container_runtime", test: "PlanQueueRuntime.kafka" },
+        "Skipping Kafka integration test because no container runtime is available",
+      );
+      appLogger.warn(
+        { event: "test.skip.detail", test: "PlanQueueRuntime.kafka" },
+        String(error),
+      );
     }
   }, 60000);
 
@@ -149,7 +156,7 @@ describe("PlanQueueRuntime (Kafka integration)", () => {
         }
       ]);
 
-      await submitPlanSteps(plan, "trace-kafka");
+      await submitPlanSteps(plan, "trace-kafka", undefined);
 
       await vi.waitFor(() => expect(executeTool).toHaveBeenCalledTimes(1), {
         timeout: 20000

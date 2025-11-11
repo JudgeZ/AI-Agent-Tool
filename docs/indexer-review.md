@@ -31,7 +31,7 @@ The Indexer is a Rust service responsible for symbolic and semantic indexing. It
 
 -   **Path Traversal**: **PASS**. `security.rs` includes a `normalize_path` function that correctly handles path normalization and prevents directory traversal attacks (e.g., `../`).
 -   **ACLs**: **PASS**. The `SecurityConfig` allows specifying a list of allowed path prefixes (`INDEXER_ACL_ALLOW`), preventing the indexer from accessing unauthorized files.
--   **DLP (Data Loss Prevention)**: **PASS**. The service can be configured with regex patterns (`INDEXER_DLP_BLOCK_PATTERNS`) to scan content for secrets or sensitive data before indexing, which is an important security measure.
+-   **DLP (Data Loss Prevention)**: **PASS**. The service ships with mandatory patterns that catch private keys, cloud/API tokens, bearer JWTs, credit cards, and SSNs; operators can append more via `INDEXER_DLP_BLOCK_PATTERNS`.
 
 ## Recommendations (Prioritized)
 
@@ -45,7 +45,7 @@ The Indexer is a Rust service responsible for symbolic and semantic indexing. It
     - Option C: HTTP call to external embedding service (Ollama, OpenAI)
     Recommend Option A for balance of speed/quality/portability.
 
-3.  **DLP Pattern Validation**: Add regex syntax validation on startup. Invalid patterns currently fail silently during indexing, creating security blind spots.
+3.  **DLP Pattern Validation**: ✅ Built-in DLP patterns compile at startup and the process exits in enterprise mode when custom expressions are invalid.
 
 4.  **ACL Performance**: Current ACL checking (linear scan of allowed prefixes) becomes O(n) bottleneck with many paths. Implement trie-based prefix matching for O(log n) performance.
 
@@ -61,7 +61,7 @@ The Indexer is a Rust service responsible for symbolic and semantic indexing. It
 
 9.  **Error Recovery**: LSP server doesn't handle tree-sitter parse failures gracefully. Should return partial results instead of empty response.
 
-10. **Health Checks**: Add `/healthz` and `/readyz` endpoints. Currently no way to verify service health from orchestrator or k8s probes.
+10. **Health Checks**: `/healthz` (liveness) and `/readyz` (readiness) now surface ACL/DLP dependency status so Kubernetes probes and the gateway can detect misconfiguration.
 
 ### Medium (P2) - Enhancement
 
@@ -100,9 +100,9 @@ Current performance (estimated, needs profiling):
 ## Security Hardening Checklist
 
 - [ ] Add input size limits (max file size, max query length)
-- [ ] Implement request authentication (bearer tokens)
+- [x] Implement request authentication (bearer tokens)
 - [ ] Add audit logging for ACL violations
-- [ ] Verify DLP patterns at startup (regex compilation)
+- [x] Verify DLP patterns at startup (regex compilation)
 - [ ] Add path traversal attack tests
 - [ ] Fuzz test LSP protocol handlers
 - [ ] Add Content-Security-Policy headers

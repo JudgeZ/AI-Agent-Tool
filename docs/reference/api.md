@@ -163,14 +163,30 @@ Content-Type: application/json
 }
 ```
 
-Policy denials return `403` with `{ "error": "plan.create denied by capability policy" }`.
+### Error format
+
+All endpoints standardise their error payloads to the following shape:
+
+```json
+{
+  "code": "invalid_request",
+  "message": "Request validation failed",
+  "details": [
+    { "path": "language", "message": "language is required" }
+  ],
+  "requestId": "req-42f0",
+  "traceId": "3fda6b84c4d8cf0b3c4d7a1f9e8b1234"
+}
+```
+
+Policy denials, for example, return `403` with `code=policy_violation` and a descriptive message. The `requestId`/`traceId` values mirror the `X-Request-Id` and tracing headers for easier correlation with logs and telemetry.
 
 ## OAuth Helpers
 
 The orchestrator exposes thin wrappers to complete OAuth 2.1 + PKCE flows for provider integrations.
 
 - `GET /auth/:provider/authorize` – initiates OAuth by redirecting to the upstream provider. Returns `302` to the provider login page.
-- `POST /auth/:provider/callback` – exchanges the authorization code. Body must include `code`, `code_verifier`, and `redirect_uri`. On success the orchestrator persists tokens and returns `{ "status": "ok" }`; errors surface as JSON `4xx/5xx` responses.
+- `POST /auth/:provider/callback` – exchanges the authorization code. Body must include `code`, `code_verifier`, and `redirect_uri`. On success the orchestrator persists tokens and returns `{ "status": "ok" }`; errors follow the schema above with provider-specific codes/messages.
 
 ## Security Notes
 

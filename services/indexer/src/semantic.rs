@@ -80,9 +80,11 @@ struct DocumentRecord {
 
 #[derive(Debug, Deserialize)]
 pub struct AddDocumentRequest {
+    #[serde(deserialize_with = "crate::validation::document_path")]
     pub path: String,
+    #[serde(deserialize_with = "crate::validation::content")]
     pub content: String,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::validation::optional_commit_id")]
     pub commit_id: Option<String>,
     #[serde(default)]
     pub timestamp: Option<DateTime<Utc>>,
@@ -96,12 +98,13 @@ pub struct AddDocumentResponse {
 
 #[derive(Debug, Deserialize)]
 pub struct SearchRequest {
+    #[serde(deserialize_with = "crate::validation::search_query")]
     pub query: String,
     #[serde(default = "default_top_k")]
     pub top_k: usize,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::validation::optional_path_prefix")]
     pub path_prefix: Option<String>,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "crate::validation::optional_commit_id")]
     pub commit_id: Option<String>,
 }
 

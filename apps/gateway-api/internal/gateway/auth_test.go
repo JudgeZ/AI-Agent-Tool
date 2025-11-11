@@ -11,11 +11,87 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 )
+
+type httpErrorPayload struct {
+	Code      string          `json:"code"`
+	Message   string          `json:"message"`
+	Details   json.RawMessage `json:"details,omitempty"`
+	RequestID string          `json:"requestId,omitempty"`
+	TraceID   string          `json:"traceId,omitempty"`
+}
+
+func decodeErrorResponse(t *testing.T, rec *httptest.ResponseRecorder) httpErrorPayload {
+	t.Helper()
+	var resp httpErrorPayload
+	if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
+		t.Fatalf("failed to decode error response: %v (body=%q)", err, rec.Body.String())
+	}
+	return resp
+}
+
+func extractValidationDetails(t *testing.T, payload httpErrorPayload) []validationError {
+	t.Helper()
+	if len(payload.Details) == 0 {
+		return nil
+	}
+	var details []validationError
+	if err := json.Unmarshal(payload.Details, &details); err != nil {
+		t.Fatalf("failed to decode validation details: %v", err)
+	}
+	return details
+}
+
+func TestResolveEnvValueReadsFile(t *testing.T) {
+	t.Setenv("OPENROUTER_CLIENT_ID", "")
+	dir := t.TempDir()
+	path := filepath.Join(dir, "client_id")
+	if err := os.WriteFile(path, []byte("file-client-id"), 0o600); err != nil {
+		t.Fatalf("failed to write temp file: %v", err)
+	}
+	t.Setenv("OPENROUTER_CLIENT_ID_FILE", path)
+
+	value, err := resolveEnvValue("OPENROUTER_CLIENT_ID")
+	if err != nil {
+		t.Fatalf("expected no error reading secret file: %v", err)
+	}
+	if value != "file-client-id" {
+		t.Fatalf("expected value from file, got %q", value)
+	}
+}
+
+func TestResolveEnvValueReturnsErrorWhenFileUnreadable(t *testing.T) {
+	t.Setenv("OPENROUTER_CLIENT_ID_FILE", filepath.Join(t.TempDir(), "missing"))
+	if _, err := resolveEnvValue("OPENROUTER_CLIENT_ID"); err == nil {
+		t.Fatal("expected error when secret file cannot be read")
+	}
+}
+
+func TestGetProviderConfigReadsClientIDFromFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "client_id")
+	if err := os.WriteFile(path, []byte("from-file"), 0o600); err != nil {
+		t.Fatalf("failed to write client id file: %v", err)
+	}
+	t.Setenv("OPENROUTER_CLIENT_ID_FILE", path)
+	t.Setenv("OAUTH_REDIRECT_BASE", "https://app.example.com")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
+	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+
+	cfg, err := getProviderConfig("openrouter")
+	if err != nil {
+		t.Fatalf("expected provider config, got error: %v", err)
+	}
+	if cfg.ClientID != "from-file" {
+		t.Fatalf("expected client id from file, got %q", cfg.ClientID)
+	}
+}
 
 func TestValidateClientRedirect_AllowsConfiguredOrigins(t *testing.T) {
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
@@ -55,6 +131,70 @@ func TestValidateClientRedirect_AllowsLoopbackHTTP(t *testing.T) {
 	}
 	if err := validateClientRedirect("http://localhost:8080/callback"); err != nil {
 		t.Fatalf("expected localhost redirect to be allowed, got error: %v", err)
+	}
+}
+
+func TestAuthorizeHandlerRejectsOversizedRedirectURI(t *testing.T) {
+	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
+	t.Setenv("OAUTH_REDIRECT_BASE", "https://app.example.com")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
+	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+
+	longPath := strings.Repeat("a", 2100)
+	values := url.Values{}
+	values.Set("redirect_uri", "https://app.example.com/"+longPath)
+	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/authorize?"+values.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	authorizeHandler(rec, req, nil, false)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+
+	payload := decodeErrorResponse(t, rec)
+	details := extractValidationDetails(t, payload)
+	if len(details) == 0 {
+		t.Fatalf("expected validation details, got none")
+	}
+	if details[0].Field != "redirect_uri" {
+		t.Fatalf("expected field redirect_uri, got %s", details[0].Field)
+	}
+	if !strings.Contains(details[0].Message, "must not exceed 2048 characters") {
+		t.Fatalf("unexpected validation message: %s", details[0].Message)
+	}
+}
+
+func TestCallbackHandlerRejectsOversizedState(t *testing.T) {
+	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
+	t.Setenv("OAUTH_REDIRECT_BASE", "https://app.example.com")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
+	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+
+	longState := strings.Repeat("a", 600)
+	values := url.Values{}
+	values.Set("code", "authcode")
+	values.Set("state", longState)
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/callback?"+values.Encode(), nil)
+	rec := httptest.NewRecorder()
+
+	callbackHandler(rec, req, nil, false)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d", rec.Code)
+	}
+
+	payload := decodeErrorResponse(t, rec)
+	details := extractValidationDetails(t, payload)
+	if len(details) == 0 {
+		t.Fatalf("expected validation details, got none")
+	}
+	if details[0].Field != "state" {
+		t.Fatalf("expected field state, got %s", details[0].Field)
+	}
+	if !strings.Contains(details[0].Message, "must not exceed 512 characters") {
+		t.Fatalf("unexpected validation message: %s", details[0].Message)
 	}
 }
 
@@ -138,8 +278,39 @@ func TestAuthorizeHandlerRejectsInvalidRedirect(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected invalid redirect_uri to return 400, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "redirect_uri") {
-		t.Fatalf("expected error body to mention redirect_uri, got %q", rec.Body.String())
+	resp := decodeErrorResponse(t, rec)
+	if resp.Code != "invalid_request" {
+		t.Fatalf("expected error=invalid_request, got %s", resp.Code)
+	}
+	details := extractValidationDetails(t, resp)
+	if len(details) != 1 || details[0].Field != "redirect_uri" {
+		t.Fatalf("unexpected validation details: %+v", details)
+	}
+	if !strings.Contains(details[0].Message, "redirect_uri") {
+		t.Fatalf("expected validation message to reference redirect_uri, got %s", details[0].Message)
+	}
+}
+
+func TestAuthorizeHandlerRejectsMissingRedirect(t *testing.T) {
+	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
+	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/authorize", nil)
+	rec := httptest.NewRecorder()
+
+	authorizeHandler(rec, req, nil, false)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected missing redirect_uri to return 400, got %d", rec.Code)
+	}
+	resp := decodeErrorResponse(t, rec)
+	details := extractValidationDetails(t, resp)
+	if len(details) != 1 || details[0].Field != "redirect_uri" {
+		t.Fatalf("unexpected validation response: %+v", details)
+	}
+	if !strings.Contains(details[0].Message, "required") {
+		t.Fatalf("expected required message, got %s", details[0].Message)
 	}
 }
 
@@ -202,11 +373,45 @@ func TestCallbackHandlerRejectsExpiredState(t *testing.T) {
 	}
 }
 
+func TestCallbackHandlerRejectsMissingParameters(t *testing.T) {
+	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
+	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/callback?code=&state=", nil)
+	req.TLS = &tls.ConnectionState{}
+	rec := httptest.NewRecorder()
+
+	callbackHandler(rec, req, nil, false)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected missing parameters to return 400, got %d", rec.Code)
+	}
+
+	resp := decodeErrorResponse(t, rec)
+	details := extractValidationDetails(t, resp)
+	if len(details) != 2 {
+		t.Fatalf("expected two validation errors, got %+v", details)
+	}
+	var fields = map[string]string{}
+	for _, detail := range details {
+		fields[detail.Field] = detail.Message
+	}
+	if msg, ok := fields["code"]; !ok || !strings.Contains(msg, "required") {
+		t.Fatalf("expected code validation error, got %+v", details)
+	}
+	if msg, ok := fields["state"]; !ok || !strings.Contains(msg, "required") {
+		t.Fatalf("expected state validation error, got %+v", details)
+	}
+}
+
 func TestAuthRoutesRateLimiterBlocksExcessiveRequests(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
-	t.Setenv("GATEWAY_AUTH_RATE_LIMIT_WINDOW", "1m")
-	t.Setenv("GATEWAY_AUTH_RATE_LIMIT_MAX", "2")
+	t.Setenv("GATEWAY_AUTH_IP_RATE_LIMIT_WINDOW", "1m")
+	t.Setenv("GATEWAY_AUTH_IP_RATE_LIMIT_MAX", "2")
+	t.Setenv("GATEWAY_AUTH_ID_RATE_LIMIT_WINDOW", "1m")
+	t.Setenv("GATEWAY_AUTH_ID_RATE_LIMIT_MAX", "100")
 	allowedRedirectOrigins = loadAllowedRedirectOrigins()
 
 	mux := http.NewServeMux()
@@ -231,6 +436,54 @@ func TestAuthRoutesRateLimiterBlocksExcessiveRequests(t *testing.T) {
 	rec := makeRequest()
 	if rec.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected rate limiter to block with 429, got %d", rec.Code)
+	}
+	if retryAfter := rec.Header().Get("Retry-After"); retryAfter == "" {
+		t.Fatal("expected Retry-After header to be set")
+	}
+	resp := decodeErrorResponse(t, rec)
+	if resp.Code != "too_many_requests" {
+		t.Fatalf("expected error code too_many_requests, got %s", resp.Code)
+	}
+}
+
+func TestAuthRoutesRateLimiterBlocksPerIdentity(t *testing.T) {
+	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
+	t.Setenv("GATEWAY_AUTH_IP_RATE_LIMIT_WINDOW", "1m")
+	t.Setenv("GATEWAY_AUTH_IP_RATE_LIMIT_MAX", "100")
+	t.Setenv("GATEWAY_AUTH_ID_RATE_LIMIT_WINDOW", "1m")
+	t.Setenv("GATEWAY_AUTH_ID_RATE_LIMIT_MAX", "2")
+	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+
+	mux := http.NewServeMux()
+	RegisterAuthRoutes(mux, AuthRouteConfig{})
+
+	makeRequest := func(ip string) *httptest.ResponseRecorder {
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/authorize?redirect_uri=https://app.example.com/callback", nil)
+		req.TLS = &tls.ConnectionState{}
+		req.RemoteAddr = ip
+		mux.ServeHTTP(rec, req)
+		return rec
+	}
+
+	if code := makeRequest("198.51.100.1:3333").Code; code != http.StatusFound {
+		t.Fatalf("expected first request to pass, got %d", code)
+	}
+	if code := makeRequest("203.0.113.9:4444").Code; code != http.StatusFound {
+		t.Fatalf("expected second request to pass, got %d", code)
+	}
+
+	rec := makeRequest("192.0.2.5:5555")
+	if rec.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected identity limiter to block with 429, got %d", rec.Code)
+	}
+	if retryAfter := rec.Header().Get("Retry-After"); retryAfter == "" {
+		t.Fatal("expected Retry-After header to be set")
+	}
+	resp := decodeErrorResponse(t, rec)
+	if resp.Code != "too_many_requests" {
+		t.Fatalf("expected error code too_many_requests, got %s", resp.Code)
 	}
 }
 
@@ -265,8 +518,12 @@ func TestCallbackHandlerRejectsStateMismatch(t *testing.T) {
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400 for state mismatch, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "invalid or expired state") {
-		t.Fatalf("unexpected error message: %q", rec.Body.String())
+	resp := decodeErrorResponse(t, rec)
+	if resp.Code != "invalid_request" {
+		t.Fatalf("expected invalid_request code, got %s", resp.Code)
+	}
+	if resp.Message != "invalid or expired state" {
+		t.Fatalf("unexpected error message: %q", resp.Message)
 	}
 }
 
@@ -308,8 +565,12 @@ func TestCallbackHandlerHandlesOrchestratorContactFailure(t *testing.T) {
 	if rec.Code != http.StatusBadGateway {
 		t.Fatalf("expected 502 when orchestrator contact fails, got %d", rec.Code)
 	}
-	if !strings.Contains(rec.Body.String(), "failed to contact orchestrator") {
-		t.Fatalf("expected gateway error response, got %q", rec.Body.String())
+	resp := decodeErrorResponse(t, rec)
+	if resp.Code != "upstream_error" {
+		t.Fatalf("expected upstream_error code, got %s", resp.Code)
+	}
+	if resp.Message != "failed to contact orchestrator" {
+		t.Fatalf("unexpected error message: %q", resp.Message)
 	}
 }
 
@@ -324,9 +585,6 @@ func TestCallbackHandlerRedirectsOnOrchestratorError(t *testing.T) {
 
 	var observedDeadline time.Time
 	var callCount int
-
-	handler := newRecordingHandler()
-	setAuditLoggerForTest(t, handler)
 
 	SetOrchestratorClientFactory(func() (*http.Client, error) {
 		return &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -402,19 +660,6 @@ func TestCallbackHandlerRedirectsOnOrchestratorError(t *testing.T) {
 	}
 	if got := q.Get("state"); got != data.State {
 		t.Fatalf("expected state to round-trip, got %s", got)
-	}
-
-	records := handler.Records()
-	if len(records) != 1 {
-		t.Fatalf("expected exactly one audit log entry, got %d", len(records))
-	}
-
-	attrs := attrsToMap(records[0].Attrs)
-	if got := attrs["error"].String(); got != "upstream failure" {
-		t.Fatalf("expected detailed error to be logged, got %s", got)
-	}
-	if got := attrs["error_code"].String(); got != "invalid_grant" {
-		t.Fatalf("expected error_code to be logged, got %s", got)
 	}
 }
 

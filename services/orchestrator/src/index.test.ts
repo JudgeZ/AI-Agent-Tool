@@ -4,6 +4,7 @@ import https from "node:https";
 import type { AddressInfo } from "node:net";
 import os from "node:os";
 import path from "node:path";
+import type { Express } from "express";
 
 import express from "express";
 
@@ -16,9 +17,31 @@ import { loadConfig } from "./config.js";
 import { clearPlanHistory, getPlanHistory, publishPlanStepEvent } from "./plan/events.js";
 import type { PersistedStep } from "./queue/PlanStateStore.js";
 
-vi.mock("./providers/ProviderRegistry.js", () => {
+vi.mock("./providers/ProviderRegistry.js", async () => {
+  const { VersionedSecretsManager } = await import("./auth/VersionedSecretsManager.js");
+  const storage = new Map<string, string>();
+  const secretsStore = {
+    async get(key: string): Promise<string | undefined> {
+      return storage.get(key);
+    },
+    async set(key: string, value: string): Promise<void> {
+      storage.set(key, value);
+    },
+    async delete(key: string): Promise<void> {
+      storage.delete(key);
+    },
+    __reset(): void {
+      storage.clear();
+    },
+  };
+  const manager = new VersionedSecretsManager(secretsStore);
   return {
-    routeChat: vi.fn().mockResolvedValue({ output: "hello", usage: { promptTokens: 5, completionTokens: 3 } })
+    routeChat: vi.fn().mockResolvedValue({
+      output: "hello",
+      usage: { promptTokens: 5, completionTokens: 3 },
+    }),
+    getSecretsStore: () => secretsStore,
+    getVersionedSecretsManager: () => manager,
   };
 });
 
@@ -35,6 +58,7 @@ const THIRD_PLAN_ID = "plan-abcdefab-cdef-4abc-8def-abcdefabcdef";
 const FOURTH_PLAN_ID = "plan-00112233-4455-4677-8899-aabbccddeeff";
 const FIFTH_PLAN_ID = "plan-8899aabb-ccdd-4eef-8a0b-112233445566";
 const SIXTH_PLAN_ID = "plan-ffeeddcc-bbaa-4a99-8c77-665544332211";
+const TEST_SECRET_KEY = "oauth:openrouter:refresh_token";
 
 vi.mock("./policy/PolicyEnforcer.js", () => {
   class MockPolicyViolationError extends Error {
@@ -78,6 +102,20 @@ function createOidcEnabledConfig() {
   };
 }
 
+async function resetSecretFixtures(): Promise<void> {
+  const { getVersionedSecretsManager, getSecretsStore } = await import("./providers/ProviderRegistry.js");
+  const manager = getVersionedSecretsManager();
+  try {
+    await manager.clear(TEST_SECRET_KEY);
+  } catch {
+    // ignore missing secret state
+  }
+  const store = getSecretsStore() as { __reset?: () => void };
+  if (typeof store.__reset === "function") {
+    store.__reset();
+  }
+}
+
 function createSessionForUser(
   config: ReturnType<typeof createOidcEnabledConfig>,
   options: {
@@ -112,7 +150,13 @@ describe("orchestrator http api", () => {
 
   afterEach(() => {
     clearPlanHistory();
-    fs.rmSync(path.join(process.cwd(), ".plans"), { recursive: true, force: true });
+    try {
+      fs.rmSync(path.join(process.cwd(), ".plans"), { recursive: true, force: true });
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== "EPERM") {
+        throw error;
+      }
+    }
     vi.clearAllMocks();
     policyMock.enforceHttpAction.mockReset();
     policyMock.enforceHttpAction.mockResolvedValue({ allow: true, deny: [] });
@@ -134,7 +178,11 @@ describe("orchestrator http api", () => {
     expect(planResponse.body.traceId).toBeTruthy();
 
     const { submitPlanSteps } = await import("./queue/PlanQueueRuntime.js");
-    expect(submitPlanSteps).toHaveBeenCalledWith(expect.objectContaining({ id: planResponse.body.plan.id }), expect.any(String));
+    expect(submitPlanSteps).toHaveBeenCalledWith(
+      expect.objectContaining({ id: planResponse.body.plan.id }),
+      expect.any(String),
+      expect.any(String),
+    );
 
     const planId: string = planResponse.body.plan.id;
 
@@ -176,7 +224,10 @@ describe("orchestrator http api", () => {
 
     const response = await request(app).post("/plan").send({ goal: "   " }).expect(400);
 
-    expect(response.body.error).toBe("invalid request");
+    expect(response.body).toMatchObject({
+      code: "invalid_request",
+      message: "Request validation failed",
+    });
     expect(response.body.details).toEqual(
       expect.arrayContaining([expect.objectContaining({ path: "goal" })]),
     );
@@ -262,7 +313,11 @@ describe("orchestrator http api", () => {
         secondConnection.response.on("end", () => resolve(data));
         secondConnection.response.on("error", reject);
       });
-      expect(body).toContain("too many concurrent event streams");
+      const payload = JSON.parse(body);
+      expect(payload).toMatchObject({
+        code: "too_many_requests",
+        message: "too many concurrent event streams",
+      });
       secondConnection.request.destroy();
       secondConnection.request.destroy();
     } finally {
@@ -903,7 +958,7 @@ describe("orchestrator http api", () => {
       .set("Accept", "application/json")
       .expect(403);
 
-    expect(response.body.error).toContain("subject does not match plan owner");
+    expect(response.body.message).toContain("subject does not match plan owner");
     expect(policyMock.enforceHttpAction).toHaveBeenCalledWith(
       expect.objectContaining({ action: "http.get.plan.events" }),
     );
@@ -927,13 +982,13 @@ describe("orchestrator http api", () => {
       .set("Accept", "application/json")
       .expect(403);
 
-    expect(response.body.error).toContain("plan.read denied");
+    expect(response.body.message).toContain("plan.read denied");
     expect(policyMock.enforceHttpAction).toHaveBeenCalledWith(
       expect.objectContaining({ action: "http.get.plan.events.history" }),
     );
   });
 
-  it("denies plan event history when tenant does not match plan owner", async () => {
+  it("denies plan event history when subject does not match plan owner", async () => {
     const { createServer } = await import("./index.js");
     const { loadConfig } = await import("./config.js");
 
@@ -985,7 +1040,7 @@ describe("orchestrator http api", () => {
       .expect(403);
 
     expect(response.status).toBe(403);
-    expect(response.body.error).toContain("subject does not match plan owner");
+    expect(response.body.message).toContain("subject does not match plan owner");
   });
 
   it("denies plan event history when subject does not match plan owner", async () => {
@@ -1027,7 +1082,7 @@ describe("orchestrator http api", () => {
       .set("Cookie", `${config.auth.oidc.session.cookieName}=${session.id}`)
       .expect(403);
 
-    expect(response.body.error).toContain("subject does not match plan owner");
+    expect(response.body.message).toContain("subject does not match plan owner");
   });
 
   it("denies SSE plan events when subject does not match plan owner", async () => {
@@ -1371,6 +1426,22 @@ describe("orchestrator http api", () => {
     const metricsResponse = await request(app).get("/metrics").expect(200);
     expect(metricsResponse.headers["content-type"]).toContain("text/plain");
     expect(metricsResponse.text).toContain("orchestrator_queue_depth");
+  });
+
+  it("reports readiness status with dependency details", async () => {
+    const { createServer } = await import("./index.js");
+    const app = createServer();
+
+    const response = await request(app).get("/readyz").expect(200);
+
+    expect(response.body).toMatchObject({
+      status: "ok",
+      details: expect.objectContaining({
+        queue: expect.objectContaining({ status: expect.any(String) }),
+      }),
+    });
+    expect(typeof response.body.uptimeSeconds).toBe("number");
+    expect(typeof response.body.timestamp).toBe("string");
   });
 
   describe("step approvals", () => {
@@ -1813,7 +1884,10 @@ describe("orchestrator http api", () => {
         .send({ decision: "approve" })
         .expect(401);
 
-      expect(response.body.error).toBe("authentication required");
+      expect(response.body).toMatchObject({
+        code: "unauthorized",
+        message: "authentication required",
+      });
       const { resolvePlanStepApproval } = await import("./queue/PlanQueueRuntime.js");
       expect(resolvePlanStepApproval).not.toHaveBeenCalled();
       expect(getPlanSubjectMock).not.toHaveBeenCalled();
@@ -1883,7 +1957,10 @@ describe("orchestrator http api", () => {
         .send({ decision: "approve" })
         .expect(403);
 
-      expect(response.body.error).toBe("approval subject mismatch");
+      expect(response.body).toMatchObject({
+        code: "forbidden",
+        message: "approval subject mismatch",
+      });
       const { resolvePlanStepApproval } = await import("./queue/PlanQueueRuntime.js");
       expect(resolvePlanStepApproval).not.toHaveBeenCalled();
       expect(policyMock.enforceHttpAction).toHaveBeenCalledTimes(initialPolicyCalls);
@@ -1989,13 +2066,104 @@ describe("orchestrator http api", () => {
     const app = createServer();
 
     const invalidResponse = await request(app).post("/chat").send({}).expect(400);
-    expect(invalidResponse.body.error).toBe("invalid request");
+    expect(invalidResponse.body).toMatchObject({
+      code: "invalid_request",
+      message: "Request validation failed",
+    });
     expect(Array.isArray(invalidResponse.body.details)).toBe(true);
     expect(invalidResponse.body.details).toEqual(
       expect.arrayContaining([
         expect.objectContaining({ path: "messages" }),
       ]),
     );
+  });
+
+  describe("secret management routes", () => {
+    beforeEach(async () => {
+      await resetSecretFixtures();
+    });
+
+    it("rotates secrets and lists versions", async () => {
+      const { createServer } = await import("./index.js");
+      const app = createServer();
+
+      const rotateResponse = await request(app)
+        .post(`/secrets/${TEST_SECRET_KEY}/rotate`)
+        .send({
+          value: "refresh-token-001",
+          retain: 3,
+          labels: { provider: "openrouter", environment: "test" },
+        })
+        .expect(200);
+
+      expect(rotateResponse.body.version).toMatchObject({
+        id: expect.any(String),
+        isCurrent: true,
+        labels: expect.objectContaining({ provider: "openrouter" }),
+      });
+
+      const versionsResponse = await request(app)
+        .get(`/secrets/${TEST_SECRET_KEY}/versions`)
+        .expect(200);
+
+      expect(Array.isArray(versionsResponse.body.versions)).toBe(true);
+      expect(versionsResponse.body.versions[0]).toMatchObject({
+        id: rotateResponse.body.version.id,
+        isCurrent: true,
+      });
+    });
+
+    it("promotes a previous secret version", async () => {
+      const { createServer } = await import("./index.js");
+      const app = createServer();
+      const { getVersionedSecretsManager } = await import("./providers/ProviderRegistry.js");
+      const manager = getVersionedSecretsManager();
+
+      const firstRotate = await request(app)
+        .post(`/secrets/${TEST_SECRET_KEY}/rotate`)
+        .send({ value: "first-secret" })
+        .expect(200);
+
+      await request(app)
+        .post(`/secrets/${TEST_SECRET_KEY}/rotate`)
+        .send({ value: "second-secret" })
+        .expect(200);
+
+      const promoteResponse = await request(app)
+        .post(`/secrets/${TEST_SECRET_KEY}/promote`)
+        .send({ versionId: firstRotate.body.version.id })
+        .expect(200);
+
+      expect(promoteResponse.body.version.id).toBe(firstRotate.body.version.id);
+      const current = await manager.getCurrentValue(TEST_SECRET_KEY);
+      expect(current?.value).toBe("first-secret");
+      expect(current?.version).toBe(firstRotate.body.version.id);
+    });
+
+    it("rejects secret access when policy denies", async () => {
+      const { createServer } = await import("./index.js");
+      const app = createServer();
+
+      policyMock.enforceHttpAction.mockResolvedValueOnce({
+        allow: false,
+        deny: [{ capability: "secrets.manage", reason: "forbidden" }],
+      });
+
+      await request(app)
+        .get(`/secrets/${TEST_SECRET_KEY}/versions`)
+        .expect(403);
+    });
+
+    it("requires authentication when OIDC is enabled", async () => {
+      const { createServer } = await import("./index.js");
+      const config = createOidcEnabledConfig();
+      const app = createServer(config);
+
+      await request(app)
+        .post(`/secrets/${TEST_SECRET_KEY}/rotate`)
+        .send({ value: "secret-value" })
+        .expect(401);
+    });
   });
 
   it("allows session reads with credentials when the origin is permitted", async () => {

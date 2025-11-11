@@ -79,7 +79,8 @@ function scheduleCleanup(planId: string): void {
 export function publishPlanStepEvent(event: PlanStepEvent): void {
   const enrichedEvent: PlanStepEvent = {
     ...event,
-    occurredAt: event.occurredAt ?? new Date().toISOString()
+    occurredAt: event.occurredAt ?? new Date().toISOString(),
+    requestId: event.requestId ?? undefined
   };
   const parsed = parsePlanStepEvent(enrichedEvent);
   const planId = parsed.planId;

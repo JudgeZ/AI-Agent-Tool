@@ -20,7 +20,7 @@ The following capabilities, files, and workflows already exist in the repo and s
   - Config loader (`src/config.ts`) including **consumer|enterprise** mode and **RabbitMQ|Kafka** selection
   - gRPC proto placeholder (`src/grpc/agent.proto`)
 - `services/indexer/` — **Rust** skeleton for symbolic indexing (tree‑sitter/LSP to be added).
-- `services/memory-svc/` — **TypeScript** bootstrap (for cache/state glue).
+- _(Deferred)_ Memory/cache glue to be revisited once orchestrator scale requires a dedicated service.
 - `apps/cli/` — **TypeScript** CLI (`ossaat`) with:
   - `ossaat new-agent <name>` — scaffolds `agents/<name>/agent.md` from template
   - `ossaat plan "<goal>"` — creates `.plans/<id>` artifacts
@@ -50,7 +50,7 @@ The following capabilities, files, and workflows already exist in the repo and s
 | **Provider registry** (`src/providers/*`) | **TypeScript** | Consistent with orchestrator; leverage provider SDKs. |
 | **Secrets & OAuth** (`src/auth/*`) | **TypeScript** + **Go** (gateway OAuth endpoints) | Orchestrator stores tokens; gateway handles OAuth flows & redirects. |
 | **Indexer** (`services/indexer`) | **Rust** (tree‑sitter/LSP crates) | Performance for AST/graph; lower memory; safe concurrency. |
-| **Memory/Cache svc** (`services/memory-svc`) | **TypeScript** | Redis/Postgres glue in same runtime as orchestrator for now. |
+| **Memory/Cache glue** | **TBD** | Currently handled inside the orchestrator. A dedicated service will be re-evaluated post-MVP. |
 | **GUI** (`apps/gui`) | **Tauri (Rust)** shell + **SvelteKit (TypeScript)** | Desktop packaging + modern reactive UI; SSE native. |
 | **CLI** (`apps/cli`) | **TypeScript** (esbuild) | Cross‑platform scripting, reusing orchestrator utils. |
 | **Policies** (`infra/policies/*.rego`) | **Rego (OPA)** | Declarative, auditable capability enforcement. |

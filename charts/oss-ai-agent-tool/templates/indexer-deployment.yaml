@@ -1,6 +1,57 @@
+{{- define "oss-ai-agent-tool.indexerServiceAccountName" -}}
+{{- if .Values.indexer.serviceAccount.create -}}
+{{- default (printf "%s-indexer" (include "oss-ai-agent-tool.fullname" .)) .Values.indexer.serviceAccount.name -}}
+{{- else -}}
+{{- default "default" .Values.indexer.serviceAccount.name -}}
+{{- end -}}
+{{- end -}}
 {{- if .Values.indexer.enabled }}
 {{- $root := . -}}
+{{- $fullname := include "oss-ai-agent-tool.fullname" $root -}}
 {{- $defaultIndexerEnv := dict "RUST_LOG" ($root.Values.indexer.logLevel | default "info") -}}
+{{- $_ := set $defaultIndexerEnv "INDEXER_MAX_REQUEST_BODY_BYTES" (printf "%v" ($root.Values.indexer.requestLimitBytes | default 1048576)) -}}
+{{- $_ := set $defaultIndexerEnv "RUN_MODE" ($root.Values.runMode | default "consumer") -}}
+{{- $indexerValueFromEnv := dict -}}
+{{- $indexerTracing := $root.Values.indexer.tracing | default dict -}}
+{{- $defaultIndexerEndpoint := $indexerTracing.endpoint | default (printf "http://%s-jaeger:4317" $fullname) -}}
+{{- $_ := set $defaultIndexerEnv "OTEL_EXPORTER_OTLP_ENDPOINT" $defaultIndexerEndpoint -}}
+{{- $_ := set $defaultIndexerEnv "INDEXER_TRACING_ENABLED" (ternary "true" "false" ($indexerTracing.enabled | default true)) -}}
+{{- if $indexerTracing.sampleRatio }}
+  {{- $_ := set $defaultIndexerEnv "INDEXER_TRACING_SAMPLE_RATIO" (printf "%v" $indexerTracing.sampleRatio) -}}
+{{- end -}}
+{{- if $indexerTracing.environment }}
+  {{- $_ := set $defaultIndexerEnv "INDEXER_TRACING_ENVIRONMENT" (printf "%v" $indexerTracing.environment) -}}
+{{- end -}}
+{{- if $indexerTracing.headers }}
+  {{- $indexerHeaderList := list -}}
+  {{- range $key, $value := $indexerTracing.headers }}
+    {{- $indexerHeaderList = append $indexerHeaderList (printf "%s=%s" $key $value) -}}
+  {{- end -}}
+  {{- if gt (len $indexerHeaderList) 0 -}}
+    {{- $_ := set $defaultIndexerEnv "OTEL_EXPORTER_OTLP_HEADERS" (join "," $indexerHeaderList) -}}
+  {{- end -}}
+{{- end -}}
+{{- $_ := set $defaultIndexerEnv "OTEL_SERVICE_NAME" ($indexerTracing.serviceName | default "oss-indexer") -}}
+{{- $authConfig := $root.Values.indexer.auth | default dict -}}
+{{- if $authConfig.disabled | default false }}
+  {{- $_ := set $defaultIndexerEnv "INDEXER_AUTH_DISABLED" "1" -}}
+{{- else }}
+  {{- $jwtConfig := $authConfig.jwt | default dict -}}
+  {{- $jwtSecretName := $jwtConfig.secretSecretName | default "" -}}
+  {{- $jwtSecretKey := $jwtConfig.secretSecretKey | default "secret" -}}
+  {{- $jwtSecretValue := $jwtConfig.secret | default "" -}}
+  {{- if $jwtSecretName }}
+    {{- $_ := set $indexerValueFromEnv "INDEXER_JWT_HS256_SECRET" (dict "secretName" $jwtSecretName "secretKey" $jwtSecretKey) -}}
+  {{- else if $jwtSecretValue }}
+    {{- $_ := set $defaultIndexerEnv "INDEXER_JWT_HS256_SECRET" $jwtSecretValue -}}
+  {{- else }}
+    {{- fail "indexer.auth.jwt.secretSecretName or indexer.auth.jwt.secret must be provided when indexer authentication is enabled" -}}
+  {{- end }}
+  {{- $issuer := $jwtConfig.issuer | default (printf "http://%s-orchestrator:4000" $fullname) -}}
+  {{- $audience := $jwtConfig.audience | default "oss-ai-indexer" -}}
+  {{- $_ := set $defaultIndexerEnv "INDEXER_JWT_ISSUER" $issuer -}}
+  {{- $_ := set $defaultIndexerEnv "INDEXER_JWT_AUDIENCE" $audience -}}
+{{- end }}
 {{- $indexerEnv := merge $defaultIndexerEnv ($root.Values.indexer.env | default dict) -}}
 apiVersion: apps/v1
 kind: Deployment
@@ -20,7 +71,8 @@ spec:
         {{- include "oss-ai-agent-tool.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: indexer
     spec:
-      {{- with .Values.podSecurityContext }}
+      serviceAccountName: {{ include "oss-ai-agent-tool.indexerServiceAccountName" . }}
+      {{- with .Values.indexer.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -36,11 +88,18 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
           {{- end }}
+          {{- range $key, $ref := $indexerValueFromEnv }}
+            - name: {{ $key }}
+              valueFrom:
+                secretKeyRef:
+                  name: {{ $ref.secretName | quote }}
+                  key: {{ ($ref.secretKey | default "secret") | quote }}
+          {{- end }}
           {{- with .Values.indexer.envFrom }}
           envFrom:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.containerSecurityContext }}
+          {{- with .Values.indexer.containerSecurityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
@@ -60,4 +119,16 @@ spec:
               port: http
             initialDelaySeconds: 2
             periodSeconds: 10
+      {{- with .Values.indexer.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.indexer.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.indexer.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
 {{- end }}

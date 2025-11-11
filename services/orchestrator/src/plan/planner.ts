@@ -5,6 +5,7 @@ import crypto from "crypto";
 
 import { publishPlanStepEvent } from "./events.js";
 import { startSpan } from "../observability/tracing.js";
+import { appLogger, normalizeError } from "../observability/logger.js";
 import { parsePlan, PlanStepSchema, type Plan, type PlanStep } from "./validation.js";
 
 export type { Plan, PlanStep, PlanSubject } from "./validation.js";
@@ -219,7 +220,10 @@ async function runScheduledCleanup(): Promise<void> {
   cleanupState.pending = cleanupPlanArtifacts(cleanupState.baseDir, cleanupState.retentionDays)
     .catch(error => {
       if (process.env.NODE_ENV !== "test") {
-        console.error("Failed to clean plan artifacts", error);
+        appLogger.error(
+          { err: normalizeError(error), event: "plan.cleanup_failed" },
+          "Failed to clean plan artifacts",
+        );
       }
     })
     .finally(() => {

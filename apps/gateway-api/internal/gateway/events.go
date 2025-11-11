@@ -142,18 +142,20 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	planID := r.URL.Query().Get("plan_id")
 	planID = strings.TrimSpace(planID)
 	if planID == "" {
-		http.Error(w, "plan_id is required", http.StatusBadRequest)
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "plan_id is required", nil)
 		return
 	}
 	if !planIDPattern.MatchString(planID) {
-		http.Error(w, "plan_id is invalid", http.StatusBadRequest)
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "plan_id is invalid", nil)
 		return
 	}
 
 	clientAddr := clientIP(r, h.trustedProxies)
 	if h.limiter != nil {
 		if !h.limiter.Acquire(clientAddr) {
-			http.Error(w, "too many concurrent event streams", http.StatusTooManyRequests)
+			writeErrorResponse(w, r, http.StatusTooManyRequests, "too_many_requests", "too many concurrent event streams", map[string]any{
+				"clientIp": clientAddr,
+			})
 			return
 		}
 		defer h.limiter.Release(clientAddr)
@@ -165,7 +167,7 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstreamURL, nil)
 	if err != nil {
-		http.Error(w, "failed to create upstream request", http.StatusInternalServerError)
+		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "failed to create upstream request", nil)
 		return
 	}
 
@@ -193,7 +195,7 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.client.Do(req)
 	if err != nil {
-		http.Error(w, "failed to contact orchestrator", http.StatusBadGateway)
+		writeErrorResponse(w, r, http.StatusBadGateway, "upstream_error", "failed to contact orchestrator", nil)
 		return
 	}
 
@@ -204,7 +206,7 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		if len(body) == 0 {
-			http.Error(w, http.StatusText(resp.StatusCode), resp.StatusCode)
+			writeErrorResponse(w, r, resp.StatusCode, "upstream_error", http.StatusText(resp.StatusCode), nil)
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -219,7 +221,7 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		http.Error(w, "streaming unsupported", http.StatusInternalServerError)
+		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "streaming unsupported", nil)
 		return
 	}
 

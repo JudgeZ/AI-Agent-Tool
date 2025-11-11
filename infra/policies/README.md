@@ -19,6 +19,17 @@ This directory contains the capability enforcement policies used by the orchestr
 
    The script outputs `dist/capabilities.tar.gz`, which includes `policy.wasm` and associated data files. This bundle is consumed by the orchestrator at runtime.
 
+## Testing the Policy
+
+Run the Rego test suite to validate policy behaviour:
+
+```bash
+# Requires opa CLI and Node.js
+make opa-build opa-test
+```
+
+This compiles the bundle and executes all unit tests in `infra/policies/*.rego`.
+
 ## Policy Input Contract
 
 The policy expects input with the following shape:

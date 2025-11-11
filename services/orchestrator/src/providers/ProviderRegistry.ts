@@ -1,5 +1,9 @@
 import { loadConfig } from "../config.js";
 import { LocalFileStore, VaultStore, type SecretsStore } from "../auth/SecretsStore.js";
+import { VersionedSecretsManager } from "../auth/VersionedSecretsManager.js";
+import { appLogger } from "../observability/logger.js";
+import { createRateLimitStore, type RateLimitStore } from "../rateLimit/store.js";
+import type { RateLimitBackendConfig } from "../config/schema.js";
 import type { ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
 import { AzureOpenAIProvider } from "./azureOpenAI.js";
 import { AnthropicProvider } from "./anthropic.js";
@@ -13,17 +17,27 @@ import { ProviderError } from "./utils.js";
 import { CircuitBreaker, RateLimiter, type CircuitBreakerOptions, type RateLimiterOptions } from "./resilience.js";
 
 let secretsStore: SecretsStore | undefined;
+let versionedSecretsManager: VersionedSecretsManager | undefined;
 let cachedRegistry: Record<string, ModelProvider> | undefined;
 const overrides = new Map<string, ModelProvider>();
 let rateLimiter: RateLimiter | undefined;
 let rateLimiterOptions: RateLimiterOptions | undefined;
+let rateLimitStore: RateLimitStore | undefined;
+let rateLimitBackendOptions: RateLimitBackendConfig | undefined;
 let circuitBreaker: CircuitBreaker | undefined;
 let circuitBreakerOptions: CircuitBreakerOptions | undefined;
 
 function cloneRateLimiterOptions(options: RateLimiterOptions): RateLimiterOptions {
   return {
     windowMs: options.windowMs,
-    maxRequests: options.maxRequests
+    maxRequests: options.maxRequests,
+  };
+}
+
+function cloneRateLimitBackendConfig(options: RateLimitBackendConfig): RateLimitBackendConfig {
+  return {
+    provider: options.provider,
+    redisUrl: options.redisUrl,
   };
 }
 
@@ -34,17 +48,39 @@ function cloneCircuitBreakerOptions(options: CircuitBreakerOptions): CircuitBrea
   };
 }
 
-function getRateLimiter(options: RateLimiterOptions): RateLimiter {
+function getRateLimiter(options: RateLimiterOptions, backend: RateLimitBackendConfig): RateLimiter {
   const normalized = cloneRateLimiterOptions(options);
+  const store = getRateLimitStore(backend);
   if (!rateLimiter || !rateLimiterOptions || hasRateLimiterChanged(rateLimiterOptions, normalized)) {
-    rateLimiter = new RateLimiter(normalized);
+    rateLimiter = new RateLimiter(normalized, store);
     rateLimiterOptions = normalized;
   }
   return rateLimiter;
 }
 
+function getRateLimitStore(backend: RateLimitBackendConfig): RateLimitStore {
+  const normalizedBackend = cloneRateLimitBackendConfig(backend);
+  if (!rateLimitStore || !rateLimitBackendOptions || hasRateLimitBackendChanged(rateLimitBackendOptions, normalizedBackend)) {
+    if (rateLimitStore && typeof rateLimitStore.disconnect === "function") {
+      void rateLimitStore.disconnect().catch(() => {
+        /* best effort */
+      });
+    }
+    rateLimitStore = createRateLimitStore(normalizedBackend, {
+      prefix: "orchestrator:provider-ratelimit",
+      logger: appLogger.child({ component: "provider-rate-limiter" }),
+    });
+    rateLimitBackendOptions = normalizedBackend;
+  }
+  return rateLimitStore;
+}
+
 function hasRateLimiterChanged(prev: RateLimiterOptions, next: RateLimiterOptions): boolean {
   return prev.windowMs !== next.windowMs || prev.maxRequests !== next.maxRequests;
+}
+
+function hasRateLimitBackendChanged(prev: RateLimitBackendConfig, next: RateLimitBackendConfig): boolean {
+  return prev.provider !== next.provider || prev.redisUrl !== next.redisUrl;
 }
 
 function getCircuitBreaker(options: CircuitBreakerOptions): CircuitBreaker {
@@ -66,6 +102,13 @@ export function getSecretsStore(): SecretsStore {
     secretsStore = cfg.secrets.backend === "vault" ? new VaultStore() : new LocalFileStore();
   }
   return secretsStore;
+}
+
+export function getVersionedSecretsManager(): VersionedSecretsManager {
+  if (!versionedSecretsManager) {
+    versionedSecretsManager = new VersionedSecretsManager(getSecretsStore());
+  }
+  return versionedSecretsManager;
 }
 
 function buildRegistry(): Record<string, ModelProvider> {
@@ -107,8 +150,13 @@ export function clearProviderOverrides(): void {
 export function __resetProviderResilienceForTests(): void {
   rateLimiter?.reset();
   circuitBreaker?.reset();
+  if (rateLimitStore && typeof rateLimitStore.disconnect === "function") {
+    void rateLimitStore.disconnect().catch(() => undefined);
+  }
   rateLimiter = undefined;
   rateLimiterOptions = undefined;
+  rateLimitStore = undefined;
+  rateLimitBackendOptions = undefined;
   circuitBreaker = undefined;
   circuitBreakerOptions = undefined;
 }
@@ -126,7 +174,7 @@ export async function routeChat(req: ChatRequest): Promise<ChatResponse> {
 
   const warnings: string[] = [];
   const errors: ProviderError[] = [];
-  const limiter = getRateLimiter(cfg.providers.rateLimit);
+  const limiter = getRateLimiter(cfg.providers.rateLimit, cfg.server.rateLimits.backend);
   const breaker = getCircuitBreaker(cfg.providers.circuitBreaker);
 
   for (const providerName of enabled) {

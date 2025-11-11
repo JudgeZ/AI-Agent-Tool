@@ -14,6 +14,7 @@ import {
 import { getQueueAdapter, resetQueueAdapter } from "./QueueAdapter.js";
 import type { Plan } from "../plan/planner.js";
 import * as events from "../plan/events.js";
+import { appLogger } from "../observability/logger.js";
 
 const executeTool = vi.fn();
 
@@ -76,7 +77,10 @@ describe("PlanQueueRuntime (RabbitMQ integration)", () => {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("Could not find a working container runtime")) {
-        console.warn("Skipping RabbitMQ integration test because no container runtime is available");
+        appLogger.warn(
+          { event: "test.skip", reason: "missing_container_runtime", test: "PlanQueueRuntime.rabbitmq" },
+          "Skipping RabbitMQ integration test because no container runtime is available",
+        );
         return;
       }
       throw error;
@@ -129,7 +133,7 @@ describe("PlanQueueRuntime (RabbitMQ integration)", () => {
         }
       ]);
 
-      await submitPlanSteps(plan, "trace-rabbitmq");
+      await submitPlanSteps(plan, "trace-rabbitmq", undefined);
 
       await waitForCondition(() => executeTool.mock.calls.length > 0);
       await waitForCondition(() =>
@@ -167,7 +171,8 @@ describe("PlanQueueRuntime (RabbitMQ integration)", () => {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("Could not find a working container runtime")) {
-        console.warn(
+        appLogger.warn(
+          { event: "test.skip", reason: "missing_container_runtime", test: "PlanQueueRuntime.rabbitmq" },
           "Skipping RabbitMQ integration test because no container runtime is available",
         );
         return;

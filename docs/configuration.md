@@ -4,6 +4,8 @@ Primary sources:
 - **Environment variables** (12-factor).
 - **YAML file** `config/app.yaml` (mounted via Helm ConfigMap or `.env` override in Docker Compose).
 
+> **Quick start:** copy [`env.example`](../env.example) to `.env` and adjust the values for your environment. The example contains sane defaults for the local Compose stack and documents every variable enumerated below.
+
 ```yaml
 runMode: consumer                # or enterprise
 messaging:
@@ -34,6 +36,14 @@ tooling:
       - /etc/tool-agent/ca.pem     # optional additional trust roots
     certPath: /etc/tool-agent/client.pem
     keyPath: /etc/tool-agent/client.key
+network:
+  egress:
+    mode: enforce                  # enforce | report-only | disabled
+    allow:
+      - localhost
+      - 127.0.0.1
+      - "::1"
+      - "*.svc.cluster.local"
 networkPolicy:
   enabled: true
   defaultDenyEgress: true
@@ -105,6 +115,73 @@ Relevant environment overrides:
 | `ORCHESTRATOR_CALLBACK_TIMEOUT` | Gateway timeout for posting OAuth codes to the orchestrator (duration string, defaults to `10s`). |
 | `OPENROUTER_CLIENT_ID` / `OPENROUTER_CLIENT_SECRET` | OpenRouter OAuth credentials when using OpenRouter provider with OAuth flow. |
 | `GATEWAY_TRUSTED_PROXY_CIDRS` | Comma-separated list of CIDR ranges or individual IPs that terminate TLS in front of the gateway. Only these sources can supply `X-Forwarded-Proto`/`Forwarded` headers to mark requests as HTTPS. |
+| `GATEWAY_MAX_REQUEST_BODY_BYTES` | Maximum request payload size accepted by the gateway (defaults to `1048576`). Requests above the limit are rejected with HTTP 413. |
+| `POLICY_CACHE_ENABLED` | Set to `true` to enable caching for capability policy decisions. Defaults to `false`. |
+| `POLICY_CACHE_PROVIDER` | `memory` or `redis`. Redis is recommended for multi-instance deployments; memory cache is per-process. |
+| `POLICY_CACHE_TTL_SECONDS` | TTL for cached decisions (defaults to `60`). Increase for more aggressive caching, decrease when policies change frequently. |
+| `POLICY_CACHE_REDIS_URL` | Required when `POLICY_CACHE_PROVIDER=redis`. Standard Redis connection URL. |
+| `POLICY_CACHE_REDIS_KEY_PREFIX` | Optional key prefix for Redis entries (defaults to `policy:decision`). Useful when sharing a Redis instance. |
+| `POLICY_CACHE_MAX_ENTRIES` | Maximum in-memory cache entries (per process). Applies to both `memory` cache and the memory fallback used when Redis is unavailable. |
+| `NETWORK_EGRESS_MODE` | `enforce`, `report-only`, or `disabled`. Determines how the orchestrator handles outbound HTTP(S) requests. |
+| `NETWORK_EGRESS_ALLOW` | Comma-separated allow list of destinations (e.g. `api.internal.local,https://vault.example.com:8200`). Supports wildcards such as `*.svc.cluster.local`. |
+| `EGRESS_MODE` / `EGRESS_ALLOW` / `ORCHESTRATOR_EGRESS_ALLOW` | Backwards-compatible aliases for the variables above. Prefer `NETWORK_EGRESS_*`. |
+| `SERVER_REQUEST_LIMIT_JSON_BYTES` | Maximum JSON body size (bytes) accepted by the orchestrator. Defaults to `1048576`. |
+| `SERVER_REQUEST_LIMIT_URLENCODED_BYTES` | Maximum URL-encoded body size (bytes) accepted by the orchestrator. Defaults to `1048576`. |
+| `POSTGRES_MAX_CONNECTIONS` | Maximum pooled Postgres connections per orchestrator instance (defaults to `20`). Tune based on database capacity. |
+| `POSTGRES_MIN_CONNECTIONS` | Minimum idle connections kept warm in the pool (defaults to `2`). Set to `0` to disable pre-warmed connections. |
+| `POSTGRES_IDLE_TIMEOUT_MS` | How long (ms) idle Postgres connections are kept before being pruned (defaults to `30000`). |
+| `POSTGRES_CONNECTION_TIMEOUT_MS` | Timeout (ms) for obtaining a connection from the pool (defaults to `5000`). |
+| `POSTGRES_MAX_CONNECTION_LIFETIME_MS` | Maximum lifetime (ms) for a pooled connection before it's recycled (defaults to `1800000`, i.e. 30 minutes). |
+| `POSTGRES_STATEMENT_TIMEOUT_MS` | Server-side statement timeout applied to each session (defaults to `5000`). Set to `0` to disable. |
+| `POSTGRES_QUERY_TIMEOUT_MS` | Client-side query timeout enforced by the Node.js driver (defaults to `5000`). Set to `0` to disable. |
+| `INDEXER_MAX_REQUEST_BODY_BYTES` | Maximum HTTP request body size (bytes) accepted by the indexer service. Defaults to `1048576`. |
+| `INDEXER_AUTH_DISABLED` | Set to `1` to bypass JWT authentication (intended only for local development). When unset or `0`, the indexer requires a valid bearer token. |
+| `INDEXER_JWT_HS256_SECRET` / `INDEXER_JWT_HS256_SECRET_FILE` | HMAC-SHA256 signing secret or a path to a file containing the secret. One of these is required unless `INDEXER_AUTH_DISABLED=1`. |
+| `INDEXER_JWT_ISSUER` | Expected JWT `iss` claim. Defaults to the orchestrator internal URL when omitted. |
+| `INDEXER_JWT_AUDIENCE` | Expected JWT `aud` claim. Defaults to `oss-ai-indexer`. |
+| `SERVER_TLS_ENABLED` | Enable TLS for the orchestrator HTTP server. When `true`, `SERVER_TLS_CERT_PATH` and `SERVER_TLS_KEY_PATH` must also be set (or mounted via Helm secrets). |
+| `SERVER_TLS_CERT_PATH` / `SERVER_TLS_KEY_PATH` | PEM-encoded certificate and private key paths for the orchestrator TLS listener. |
+| `SERVER_TLS_CA_PATHS` | Optional comma-separated list of CA bundle paths used to validate client certificates. |
+| `SERVER_TLS_REQUEST_CLIENT_CERT` | Set to `true` to enforce mutual TLS (client cert required). |
+| `ORCHESTRATOR_TLS_ENABLED` | Enable TLS for the gateway → orchestrator client. Requires the client cert/key variables below. |
+| `ORCHESTRATOR_CLIENT_CERT` / `ORCHESTRATOR_CLIENT_KEY` | PEM paths for the gateway client certificate and key delivered to the orchestrator. |
+| `ORCHESTRATOR_CA_CERT` | Optional CA bundle path used by the gateway to validate the orchestrator certificate. |
+| `ORCHESTRATOR_TLS_SERVER_NAME` | Overrides the server name (SNI) used by the gateway when connecting to the orchestrator over TLS. |
+| `mtls.*` (Helm values) | `mtls.enabled=true` provisions orchestrator and gateway certificates via cert-manager. Configure `mtls.certManager.issuerRef` and optional SAN overrides. |
+
+Egress enforcement defaults to `enforce` with loopback addresses, `*.svc`, `*.svc.cluster.local`, and `*.example.com` already whitelisted so local dev, Kubernetes service discovery, and test fixtures continue working. Extend `network.egress.allow` (or `NETWORK_EGRESS_ALLOW`) with any additional destinations such as Vault, OIDC providers, or outbound model APIs.
+
+For any variable documented above you can also supply a corresponding `*_FILE` variant (for example `OIDC_CLIENT_SECRET_FILE` or `VAULT_TOKEN_FILE`). When present, the orchestrator reads the secret value from the referenced file path—ideal for Docker or Kubernetes secret mounts. File-based values take precedence over the plain environment variable.
+
+When `OAUTH_ALLOW_INSECURE_STATE_COOKIE=true` is present, the gateway treats the configuration as a development-only override. Startup fails if the variable is set while `NODE_ENV=production` or `RUN_MODE=enterprise`.
+
+Likewise, setting `COOKIE_SECURE=false` now causes the orchestrator to refuse startup when `NODE_ENV=production` or `RUN_MODE=enterprise`. In non-production consumer deployments the value is permitted but a warning is logged so operators can spot insecure cookie settings.
+
+### Enabling mutual TLS in Kubernetes
+
+1. Set `mtls.enabled=true` in `values.yaml` (or via `--set mtls.enabled=true`). Provide a cert-manager issuer with `mtls.certManager.issuerRef`.
+2. Helm will generate `Certificate` resources and mount the resulting secrets into the orchestrator and gateway pods.
+3. Optionally disable automation and supply your own secrets by setting `orchestrator.tls.secretName` and/or `gatewayApi.tls.secretName`, plus the corresponding `mountPath`/file names.
+4. For non-Helm deployments, set the runtime environment variables above (`SERVER_TLS_*` on the orchestrator, `ORCHESTRATOR_*` on the gateway) and mount the certificate/key files at the configured paths.
+
+### Policy decision cache
+
+The orchestrator evaluates capability policies on every HTTP and plan step request. In high-throughput environments those decisions are often identical across requests (same agent, tenant, and capability). Enabling the decision cache reduces policy WASM invocations and lowers latency:
+
+```yaml
+policy:
+  cache:
+    enabled: true
+    provider: redis           # or memory for single-node deployments
+    ttlSeconds: 60            # cache hit window
+    redisUrl: redis://redis.policy.svc.cluster.local:6379/2
+    redisKeyPrefix: policy:decision
+    maxEntries: 20000         # per-instance memory fallback capacity
+```
+
+- **Memory mode** stores decisions in-process and is the default for consumer deployments. Each orchestrator instance keeps its own cache.
+- **Redis mode** shares decisions across replicas. When Redis is unreachable the cache automatically falls back to the in-process store and logs warnings instead of failing requests.
+- TTL applies to both allow and deny decisions. Set a shorter TTL when policies change frequently or when approvals depend on rapidly changing context.
 
 > **Forwarded scheme headers require trust.** When `GATEWAY_TRUSTED_PROXY_CIDRS` is unset the gateway ignores proxy scheme headers and only treats requests as secure when the incoming connection negotiated TLS directly. Configure this list with your load balancer or ingress IP ranges so OAuth state cookies remain secure when TLS is terminated upstream.
 
@@ -144,52 +221,94 @@ The Rust indexer exposes two primary interfaces:
 Before content is embedded or indexed, the service enforces basic access control and data loss prevention policies:
 
 - `INDEXER_ACL_ALLOW` – **required** comma-separated list of path prefixes permitted for ingestion (e.g. `src/,docs/public/`). When unset the service rejects all paths, so production deployments must provide an explicit allowlist.
-- `INDEXER_DLP_BLOCK_PATTERNS` – optional comma-separated list of additional regexes. These are appended to built-in checks for private keys, API tokens, and other secret markers. Matches are rejected with HTTP 422.
+- `INDEXER_DLP_BLOCK_PATTERNS` – optional comma-separated list of additional regexes. These are appended to built-in checks for private keys, cloud credentials, API tokens, bearer JWTs, credit card numbers, and US Social Security numbers. Matches are rejected with HTTP 422. Invalid patterns trigger startup failure in enterprise mode; in consumer mode they are skipped with a warning.
+
+When `RUN_MODE=enterprise`, the indexer treats the DLP configuration as mandatory. Any failure to compile built-in or custom patterns causes the process to exit during startup so that ingestion never proceeds without secret scanning. In `consumer` mode invalid custom expressions are skipped with a warning to keep local experimentation convenient, while the built-in patterns remain active in all modes.
 
 Results from search/history endpoints automatically omit paths that violate the ACL, and history requests return HTTP 403 when the caller is not authorised for the path.
 
 ## Mutual TLS
 
-TLS can be enabled for internal service-to-service traffic so the gateway and other callers must present client certificates when talking to the orchestrator.
+Enable service-to-service authentication by setting the orchestrator to require client certificates and configuring the gateway with matching credentials. When deploying via Helm, the recommended path is to turn on the chart-level `mtls.enabled` flag and reference a cert-manager issuer (see [Helm values](./reference/helm-values.md#mutual-tls-mtls)). The chart will:
 
-- **Orchestrator (`server.tls`)** – configure via `config/app.yaml` or environment variables listed above. When enabled, provide PEM-encoded key/cert pairs and, optionally, a CA bundle for client verification. Helm values under `orchestrator.tls` manage mounting a Kubernetes `Secret` with the required files.
-- **Gateway (`gatewayApi.tls`)** – when `enabled`, the chart mounts the client certificate secret and sets `ORCHESTRATOR_TLS_*` variables so the gateway performs mutual TLS when proxying to the orchestrator.
+1. Issue server and client certificates (default secret names `<release>-orchestrator-mtls` and `<release>-gateway-orchestrator-mtls`).
+2. Mount the secrets in the orchestrator and gateway pods.
+3. Flip `ORCHESTRATOR_URL` to `https://` and require certificate authentication automatically.
 
-Example Kubernetes secret creation:
+If you manage secrets manually (e.g. external PKI), set `mtls.enabled=false`, provide `orchestrator.tls.*` and `gatewayApi.tls.*`, and mount the secrets yourself. In that scenario, ensure the following environment variables are supplied:
 
-```bash
-kubectl create secret generic orchestrator-tls \
-  --from-file=tls.crt=server.crt \
-  --from-file=tls.key=server.key \
-  --from-file=ca.crt=ca.pem
+| Variable | Purpose |
+| --- | --- |
+| `SERVER_TLS_ENABLED` | Enables HTTPS for the orchestrator. |
+| `SERVER_TLS_CERT_PATH` / `SERVER_TLS_KEY_PATH` | Point to the PEM-encoded server certificate and key. |
+| `SERVER_TLS_CA_PATHS` | Comma-separated CA bundle files used to validate client certificates. |
+| `SERVER_TLS_REQUEST_CLIENT_CERT` | `true` to enforce mTLS. |
+| `ORCHESTRATOR_TLS_ENABLED` | Enables TLS for gateway→orchestrator traffic. |
+| `ORCHESTRATOR_CLIENT_CERT` / `ORCHESTRATOR_CLIENT_KEY` | Client certificate and key presented by the gateway. |
+| `ORCHESTRATOR_CA_CERT` | CA bundle used by the gateway to trust the orchestrator. |
+| `ORCHESTRATOR_TLS_SERVER_NAME` | Optional SNI override when the orchestrator certificate does not match the service DNS name. |
 
-kubectl create secret generic orchestrator-client-tls \
-  --from-file=client.crt=client.crt \
-  --from-file=client.key=client.key \
-  --from-file=ca.crt=ca.pem
-```
-
-Reference the secrets via `orchestrator.tls.secretName` and `gatewayApi.tls.secretName` in `values.yaml`.
+When mTLS is active, ensure ingress controllers or sidecars that terminate TLS are configured to present a certificate signed by the same CA or that they proxy requests without terminating the connection.
 
 ## Network policies
 
-Helm enables a chart-wide `NetworkPolicy` by default. Ingress remains namespace-scoped (allowing pods in the same namespace plus select operators), while egress is default-deny. Use the following knobs to curate outbound access:
+Helm enables a chart-wide `
 
-- `networkPolicy.egressRules`: list of Kubernetes egress rule objects. The defaults allow DNS (UDP/TCP 53 to pods labelled `k8s-app: kube-dns`) and OTLP/HTTP traffic to the bundled Jaeger collector (`app.kubernetes.io/component: jaeger`, TCP 4317).
-- `networkPolicy.egress` (advanced): provide a full list of egress rules to bypass the templated defaults entirely.
-- `networkPolicy.defaultDenyEgress`: set to `false` to fall back to the legacy “allow all” behaviour if you deliberately need it (not recommended in production).
+## Secrets rotation
 
-## Secrets backends
+Long-lived provider credentials (refresh tokens, API keys, service accounts) should be rotated without downtime. The orchestrator exposes a `VersionedSecretsManager` helper that wraps the existing `SecretsStore` and keeps a history of previous values. Key capabilities:
 
-| Mode | Description |
-| --- | --- |
-| `localfile` | Encrypted JSON stored at `config/secrets/local/secrets.json` (override with `LOCAL_SECRETS_PATH`). The orchestrator creates the directory automatically; provide `LOCAL_SECRETS_PASSPHRASE` via Compose/Helm or your host environment. |
-| `vault` | HashiCorp Vault integration (enabled automatically when `runMode: enterprise`). Configure `VAULT_ADDR`, `VAULT_TOKEN`, or Kubernetes auth via Helm values. |
+1. `rotate(key, value, { retain })` writes a new version, retains the latest `retain` copies (default 5), and keeps the plain key pointing at the active value so existing providers continue to work.
+2. `promote(key, versionId)` promotes a previous version back to active, making rollback easy when a newly issued credential fails.
+3. The manager persists metadata in the same backend (local keystore or Vault) so both consumer and enterprise modes share identical behaviour.
+4. `clear(key)` removes all versions and metadata when a secret is intentionally retired.
 
-Refer to the [Security Threat Model](./SECURITY-THREAT-MODEL.md) for mitigations tied to each backend and ensure CI includes the appropriate secret scanning rules.
+### Example: rotate the OpenRouter refresh token
 
-Compose sets `LOCAL_SECRETS_PATH=/app/config/secrets/local/secrets.json` inside the container so encrypted tokens persist across restarts. The Helm chart exposes the same variables under `orchestrator.env`; override `LOCAL_SECRETS_PASSPHRASE` with a Kubernetes `Secret` for production workloads.
+```ts
+import { getVersionedSecretsManager } from "../providers/ProviderRegistry";
 
-> **Notes:**
-> - When the orchestrator boots with `secrets.backend: localfile` and no `LOCAL_SECRETS_PASSPHRASE` is provided, initialization fails with an explicit `LocalFileStore requires LOCAL_SECRETS_PASSPHRASE to be set` error so you can supply the passphrase before retrying.
-> - Setting `providers.enabled: []` in YAML (or `PROVIDERS=""`) is respected as an intentional “no providers” configuration; the orchestrator will return a `503` instead of silently falling back to defaults.
+const secrets = getVersionedSecretsManager();
+await secrets.rotate("oauth:openrouter:refresh_token", newToken, {
+  retain: 5,
+  labels: { provider: "openrouter" }
+});
+```
+
+All previous values are stored under internal keys (prefixed with `secretver:`) and the metadata for each secret is tracked in `secretmeta:*`. These entries are encrypted inside the local keystore or protected by Vault according to the configured backend.
+
+### Admin HTTP API
+
+For automated rotations the orchestrator exposes authenticated endpoints guarded by the `secrets.manage` capability (and, when OIDC is enabled, an authenticated session):
+
+- `GET /secrets/:key/versions` returns metadata for all stored versions without exposing secret material.
+- `POST /secrets/:key/rotate` accepts `{ value: string, retain?: number, labels?: Record<string,string> }` and returns the activated version record.
+- `POST /secrets/:key/promote` accepts `{ versionId: string }` to roll back to a prior value.
+
+Clients receive the same metadata shape as the `VersionedSecretsManager`, which can be logged for audit purposes or used to orchestrate rollbacks.
+
+### Unified error schema
+
+All services (Gateway API, Orchestrator, Indexer) now emit the same JSON error payloads. Responses have HTTP status codes aligned with the failure and the body:
+
+```json
+{
+  "code": "invalid_request",
+  "message": "Request validation failed",
+  "details": [
+    { "path": "goal", "message": "goal is required" }
+  ],
+  "requestId": "f1fef12c-e1e8-4740-85b7-9dfd2845d3d2",
+  "traceId": "4c3a2d9b1f7e5a6c"
+}
+```
+
+- `code` – machine-readable identifier (e.g. `invalid_request`, `unauthorized`, `too_many_requests`).
+- `message` – human-readable summary safe to surface to users.
+- `details` – optional structured data (arrays or objects) with additional context.
+- `requestId` – correlates the failure to server logs.
+- `traceId` – OpenTelemetry trace identifier when available.
+
+Clients should rely on the `code` for programmatic handling and treat `message` as a localized, non-stable string. The `details` payload is service-specific but always serialises as JSON.
+
+When integrating new credentials (e.g. CLI helpers or admin APIs) prefer the manager over direct `SecretsStore#set` calls so rotation history is preserved automatically.

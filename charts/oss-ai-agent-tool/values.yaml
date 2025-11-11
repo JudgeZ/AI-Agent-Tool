@@ -84,6 +84,26 @@ containerSecurityContext:
     drop:
       - ALL
 
+mtls:
+  enabled: false
+  certManager:
+    enabled: true
+    issuerRef:
+      name: ""
+      kind: ClusterIssuer
+      group: cert-manager.io
+    duration: 2160h # 90 days
+    renewBefore: 360h # 15 days
+    privateKey:
+      algorithm: ECDSA
+      size: 256
+  orchestrator:
+    additionalDnsNames: []
+  gateway:
+    client:
+      commonName: ""
+      organizations: []
+
 networkPolicy:
   enabled: true
   ingress:
@@ -121,8 +141,37 @@ gatewayApi:
     type: ClusterIP
     port: 80
   env: {}
+  requestLimitBytes: 1048576
+  tolerations: []
+  nodeSelector: {}
+  affinity: {}
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
+  serviceAccount:
+    create: true
+    name: ""
   sse:
     maxConnectionsPerIP: 4
+  rateLimit:
+    redis:
+      enabled: true
+      url: ""
+    auth:
+      ip:
+        window: 5m
+        maxRequests: 100
+      identity:
+        window: 1m
+        maxRequests: 20
   tls:
     enabled: false
     secretName: ""
@@ -130,9 +179,19 @@ gatewayApi:
     clientCertFile: client.crt
     clientKeyFile: client.key
     caFile: ca.crt
+    serverName: ""
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
     limits: { cpu: "500m", memory: "256Mi" }
+  tracing:
+    enabled: true
+    endpoint: ""
+    sampleRatio: 1.0
+    environment: "development"
+    headers: {}
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
 
 orchestrator:
   replicas: 2
@@ -142,10 +201,10 @@ orchestrator:
     port: 4000
   env:
     LOCAL_SECRETS_PATH: /app/config/secrets/local/secrets.json
-    LOCAL_SECRETS_PASSPHRASE: change-me
-  sseQuotas:
-    maxConnectionsPerIP: 4
-    maxConnectionsPerSubject: 2
+  localSecrets:
+    passphrase: ""
+    passphraseSecretName: ""
+    passphraseSecretKey: passphrase
   tls:
     enabled: false
     secretName: ""
@@ -154,6 +213,50 @@ orchestrator:
     keyFile: tls.key
     caFile: ca.crt
     requestClientCert: true
+  sseQuotas:
+    maxConnectionsPerIP: 4
+    maxConnectionsPerSubject: 2
+  rateLimits:
+    backend:
+      provider: memory
+      redis:
+        url: ""
+    plan:
+      windowMs: 60000
+      maxRequests: 60
+      identityWindowMs: null
+      identityMaxRequests: null
+    chat:
+      windowMs: 60000
+      maxRequests: 600
+      identityWindowMs: null
+      identityMaxRequests: null
+    auth:
+      windowMs: 60000
+      maxRequests: 120
+      identityWindowMs: 60000
+      identityMaxRequests: 20
+  requestLimits:
+    jsonBytes: 1048576
+    urlEncodedBytes: 1048576
+  database:
+    postgres:
+      maxConnections: 20
+      minConnections: 2
+      idleTimeoutMs: 30000
+      connectionTimeoutMs: 5000
+      maxConnectionLifetimeMs: 1800000
+      statementTimeoutMs: 5000
+      queryTimeoutMs: 5000
+  policy:
+    cache:
+      enabled: false
+      provider: memory
+      ttlSeconds: 60
+      redis:
+        url: ""
+        keyPrefix: policy:decision
+      maxEntries: 10000
   hpa:
     enabled: true
     min: 2
@@ -163,19 +266,62 @@ orchestrator:
   resources:
     requests: { cpu: "200m", memory: "256Mi" }
     limits: { cpu: "1", memory: "512Mi" }
+  tracing:
+    enabled: true
+    endpoint: ""
+    sampleRatio: 1.0
+    environment: "development"
+    headers: {}
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+    serviceName: oss-ai-orchestrator
 
 indexer:
   enabled: true
   replicas: 1
   containerPort: 7070
   logLevel: info
+  requestLimitBytes: 1048576
   env: {}
+  auth:
+    disabled: false
+    jwt:
+      secret: ""
+      secretSecretName: ""
+      secretSecretKey: secret
+      issuer: ""
+      audience: ""
+  tolerations: []
+  nodeSelector: {}
+  affinity: {}
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 65532
+    runAsGroup: 65532
+    fsGroup: 65532
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
   service:
     type: ClusterIP
     port: 7070
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
     limits: { cpu: "500m", memory: "256Mi" }
+  tracing:
+    enabled: true
+    endpoint: ""
+    sampleRatio: 1.0
+    environment: "development"
+    headers: {}
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 1
+    serviceName: oss-indexer
 
 redis:
   enabled: true
@@ -192,6 +338,9 @@ postgres:
   database: ossaat
   username: ossaat
   password: ""
+  url: ""
+  urlSecretName: ""
+  urlSecretKey: url
   persistence:
     size: 8Gi
     storageClass: ""
@@ -207,6 +356,8 @@ rabbitmq:
   scheme: amqp
   vhost: ""
   url: ""
+  urlSecretName: ""
+  urlSecretKey: url
   persistence:
     enabled: false
     size: 5Gi
@@ -237,6 +388,14 @@ langfuse:
   salt: ""
   telemetryEnabled: "false"
   resources: {}
+  orchestrator:
+    baseUrl: ""
+    publicKey: ""
+    publicKeySecretName: ""
+    publicKeySecretKey: public-key
+    secretKey: ""
+    secretKeySecretName: ""
+    secretKeySecretKey: secret-key
 
 ingress:
   enabled: false

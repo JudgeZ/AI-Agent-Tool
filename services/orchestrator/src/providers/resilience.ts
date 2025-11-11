@@ -1,4 +1,6 @@
 import { ProviderError } from "./utils.js";
+import type { RateLimitStore } from "../rateLimit/store.js";
+import { createRateLimitStore } from "../rateLimit/store.js";
 
 type StoredTask = {
   fn: () => Promise<unknown>;
@@ -19,11 +21,11 @@ function sleep(ms: number): Promise<void> {
 
 export class RateLimiter {
   private readonly queues = new Map<string, StoredTask[]>();
-  private readonly timestamps = new Map<string, number[]>();
   private readonly processing = new Set<string>();
   private readonly options: RateLimiterOptions;
+  private readonly store: RateLimitStore;
 
-  constructor(options: RateLimiterOptions) {
+  constructor(options: RateLimiterOptions, store?: RateLimitStore, prefix = "orchestrator:provider-ratelimit") {
     if (!Number.isFinite(options.windowMs) || options.windowMs <= 0) {
       throw new Error("RateLimiter windowMs must be a positive number");
     }
@@ -31,16 +33,17 @@ export class RateLimiter {
       throw new Error("RateLimiter maxRequests must be a positive number");
     }
     this.options = options;
+    this.store = store ?? createRateLimitStore({ provider: "memory" }, { prefix });
   }
 
   async schedule<T>(key: string, task: () => Promise<T>): Promise<T> {
     return new Promise<T>((resolve, reject) => {
       const entry: StoredTask = {
         fn: async () => task(),
-        resolve: value => {
+        resolve: (value) => {
           resolve(value as T);
         },
-        reject
+        reject,
       };
       const queue = this.queues.get(key);
       if (queue) {
@@ -55,13 +58,17 @@ export class RateLimiter {
   reset(key?: string): void {
     if (typeof key === "string") {
       this.queues.delete(key);
-      this.timestamps.delete(key);
       this.processing.delete(key);
       return;
     }
     this.queues.clear();
-    this.timestamps.clear();
     this.processing.clear();
+  }
+
+  async shutdown(): Promise<void> {
+    if (typeof this.store.disconnect === "function") {
+      await this.store.disconnect();
+    }
   }
 
   private async runQueue(key: string): Promise<void> {
@@ -78,20 +85,10 @@ export class RateLimiter {
           return;
         }
 
-        const bucket = this.timestamps.get(key) ?? [];
-        if (!this.timestamps.has(key)) {
-          this.timestamps.set(key, bucket);
-        }
-
-        const now = Date.now();
-        const windowStart = now - this.options.windowMs;
-        while (bucket.length && bucket[0] <= windowStart) {
-          bucket.shift();
-        }
-
-        if (bucket.length >= this.options.maxRequests) {
-          const waitMs = Math.max(0, bucket[0] + this.options.windowMs - now);
-          await sleep(waitMs || 0);
+        const result = await this.store.allow(key, this.options.windowMs, this.options.maxRequests);
+        if (!result.allowed) {
+          const delay = Math.max(50, result.retryAfterMs || 0);
+          await sleep(delay);
           continue;
         }
 
@@ -99,11 +96,10 @@ export class RateLimiter {
         if (queue.length === 0) {
           this.queues.delete(key);
         }
-        bucket.push(Date.now());
 
         try {
-          const result = await next.fn();
-          next.resolve(result);
+          const res = await next.fn();
+          next.resolve(res);
         } catch (error) {
           next.reject(error);
         }

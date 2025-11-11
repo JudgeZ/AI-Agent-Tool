@@ -3,13 +3,23 @@ use std::path::{Component, Path, PathBuf};
 
 use regex::Regex;
 use thiserror::Error;
+use tracing::{info, warn};
 
-const DEFAULT_DLP_PATTERNS: [&str; 5] = [
+const DEFAULT_DLP_PATTERNS: [&str; 8] = [
+    // Private keys
     r"-----BEGIN (?:RSA|DSA|EC|PGP) PRIVATE KEY-----",
+    // AWS access key IDs
     r"AKIA[0-9A-Z]{16}",
+    // Generic secret / password assignments
     r"(?i)secret(?:key)?\s*[:=]\s*[^\s]{16,}",
     r"(?i)password\s*[:=]\s*[^\s]{12,}",
     r"(?i)api[_-]?key\s*[:=]\s*[^\s]{16,}",
+    // US Social Security Numbers
+    r"\b\d{3}-\d{2}-\d{4}\b",
+    // Generic credit card numbers (13-16 digits, optional separators)
+    r"\b(?:\d[ -]?){13,16}\b",
+    // JWT bearer tokens
+    r"(?i)bearer\s+[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+",
 ];
 
 #[derive(Debug, Error)]
@@ -25,6 +35,7 @@ pub struct SecurityConfig {
     allowed_prefixes: Vec<PathBuf>,
     allow_all: bool,
     dlp_patterns: Vec<Regex>,
+    strict_dlp: bool,
 }
 
 fn normalize_path(path: &str) -> Option<PathBuf> {
@@ -93,21 +104,75 @@ impl SecurityConfig {
             .filter(|entries| !entries.is_empty())
             .unwrap_or_else(Vec::new);
 
-        let mut patterns: Vec<Regex> = DEFAULT_DLP_PATTERNS
-            .iter()
-            .filter_map(|pattern| Regex::new(pattern).ok())
-            .collect();
+        let run_mode = env::var("RUN_MODE")
+            .map(|value| value.to_lowercase())
+            .unwrap_or_else(|_| "consumer".to_string());
+        let strict_dlp = run_mode == "enterprise";
+
+        let mut patterns: Vec<Regex> = Vec::new();
+        for pattern in DEFAULT_DLP_PATTERNS {
+            match Regex::new(pattern) {
+                Ok(regex) => patterns.push(regex),
+                Err(error) => {
+                    if strict_dlp {
+                        panic!("Failed to compile built-in DLP pattern '{pattern}': {error}");
+                    } else {
+                        warn!(
+                            pattern = pattern,
+                            error = %error,
+                            "Failed to compile built-in DLP pattern; skipping"
+                        );
+                    }
+                }
+            }
+        }
 
         if let Ok(extra) = env::var("INDEXER_DLP_BLOCK_PATTERNS") {
-            for pattern in extra
+            let fallback_patterns: Vec<Regex> = extra
                 .split(',')
                 .map(|entry| entry.trim())
                 .filter(|entry| !entry.is_empty())
-            {
-                if let Ok(regex) = Regex::new(pattern) {
-                    patterns.push(regex);
-                }
+                .filter_map(|pattern| match Regex::new(pattern) {
+                    Ok(regex) => Some(regex),
+                    Err(error) => {
+                        if strict_dlp {
+                            panic!("Failed to compile DLP pattern from INDEXER_DLP_BLOCK_PATTERNS ('{pattern}'): {error}");
+                        } else {
+                            warn!(
+                                pattern = pattern,
+                                error = %error,
+                                "Failed to compile custom DLP pattern from INDEXER_DLP_BLOCK_PATTERNS; skipping"
+                            );
+                            None
+                        }
+                    }
+                })
+                .collect();
+
+            if fallback_patterns.is_empty() && !strict_dlp {
+                warn!(
+                    "No valid custom DLP patterns configured via INDEXER_DLP_BLOCK_PATTERNS; using built-in defaults only"
+                );
+            } else if !fallback_patterns.is_empty() {
+                info!(
+                    count = fallback_patterns.len(),
+                    "Loaded additional DLP patterns from INDEXER_DLP_BLOCK_PATTERNS"
+                );
             }
+            patterns.extend(fallback_patterns);
+        }
+
+        if patterns.is_empty() {
+            if strict_dlp {
+                panic!("No valid DLP patterns available in enterprise run mode");
+            } else {
+                warn!("No valid DLP patterns configured; DLP scanning is effectively disabled");
+            }
+        } else if strict_dlp {
+            info!(
+                count = patterns.len(),
+                "DLP scanning enabled with mandatory patterns (enterprise mode)"
+            );
         }
 
         let (allow_all, normalized_allowed) = normalize_allowed_prefixes(allowed);
@@ -116,6 +181,7 @@ impl SecurityConfig {
             allowed_prefixes: normalized_allowed,
             allow_all,
             dlp_patterns: patterns,
+            strict_dlp,
         }
     }
 
@@ -126,7 +192,24 @@ impl SecurityConfig {
             allowed_prefixes: normalized_allowed,
             allow_all,
             dlp_patterns,
+            strict_dlp: false,
         }
+    }
+
+    pub fn allow_all(&self) -> bool {
+        self.allow_all
+    }
+
+    pub fn allowed_prefix_count(&self) -> usize {
+        self.allowed_prefixes.len()
+    }
+
+    pub fn dlp_pattern_count(&self) -> usize {
+        self.dlp_patterns.len()
+    }
+
+    pub fn strict_dlp(&self) -> bool {
+        self.strict_dlp
     }
 
     pub fn is_allowed(&self, path: &str) -> bool {
@@ -186,10 +269,47 @@ impl SecurityConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::lock_env;
     use std::env;
-    use std::sync::Mutex;
+    use std::panic::{self, AssertUnwindSafe};
 
-    static ENV_MUTEX: Mutex<()> = Mutex::new(());
+    struct EnvScope {
+        restorers: Vec<(String, Option<String>)>,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl EnvScope {
+        fn new(set_vars: &[(&str, &str)], unset_vars: &[&str]) -> Self {
+            let lock = lock_env();
+            let mut restorers = Vec::new();
+
+            for (key, value) in set_vars {
+                restorers.push((key.to_string(), env::var(key).ok()));
+                env::set_var(key, value);
+            }
+            for key in unset_vars {
+                restorers.push((key.to_string(), env::var(key).ok()));
+                env::remove_var(key);
+            }
+
+            Self {
+                restorers,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for EnvScope {
+        fn drop(&mut self) {
+            for (key, value) in self.restorers.drain(..) {
+                if let Some(original) = value {
+                    env::set_var(&key, original);
+                } else {
+                    env::remove_var(&key);
+                }
+            }
+        }
+    }
 
     #[test]
     fn acl_allows_prefixes() {
@@ -224,9 +344,14 @@ mod tests {
 
     #[test]
     fn from_env_requires_explicit_allowlist() {
-        let _guard = ENV_MUTEX.lock().unwrap();
-        let original = env::var("INDEXER_ACL_ALLOW").ok();
-        env::remove_var("INDEXER_ACL_ALLOW");
+        let _scope = EnvScope::new(
+            &[],
+            &[
+                "INDEXER_ACL_ALLOW",
+                "RUN_MODE",
+                "INDEXER_DLP_BLOCK_PATTERNS",
+            ],
+        );
 
         let config = SecurityConfig::from_env();
 
@@ -235,12 +360,6 @@ mod tests {
             config.check_path("src/lib.rs"),
             Err(SecurityError::AclViolation(_))
         ));
-
-        if let Some(value) = original {
-            env::set_var("INDEXER_ACL_ALLOW", value);
-        } else {
-            env::remove_var("INDEXER_ACL_ALLOW");
-        }
     }
 
     #[test]
@@ -256,5 +375,63 @@ mod tests {
             .scan_content("-----BEGIN RSA PRIVATE KEY-----")
             .unwrap_err();
         assert!(matches!(err, SecurityError::DlpMatch { .. }));
+    }
+
+    #[test]
+    fn dlp_blocks_sensitive_identifiers() {
+        let config = SecurityConfig::with_rules(
+            vec!["/".into()],
+            DEFAULT_DLP_PATTERNS
+                .iter()
+                .filter_map(|pattern| Regex::new(pattern).ok())
+                .collect(),
+        );
+
+        for sample in [
+            "Customer SSN: 123-45-6789",
+            "Card number 4242 4242 4242 4242 exp 10/30",
+            "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def",
+        ] {
+            let err = config.scan_content(sample).unwrap_err();
+            assert!(
+                matches!(err, SecurityError::DlpMatch { .. }),
+                "expected DLP match for sample {sample}"
+            );
+        }
+    }
+
+    #[test]
+    fn dlp_invalid_pattern_skipped_in_consumer_mode() {
+        let _scope = EnvScope::new(
+            &[
+                ("RUN_MODE", "consumer"),
+                ("INDEXER_DLP_BLOCK_PATTERNS", "["),
+            ],
+            &[],
+        );
+
+        let config = SecurityConfig::from_env();
+        let err = config
+            .scan_content("-----BEGIN RSA PRIVATE KEY-----")
+            .unwrap_err();
+        assert!(matches!(err, SecurityError::DlpMatch { .. }));
+    }
+
+    #[test]
+    fn dlp_invalid_pattern_panics_in_enterprise_mode() {
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            let _scope = EnvScope::new(
+                &[
+                    ("RUN_MODE", "enterprise"),
+                    ("INDEXER_DLP_BLOCK_PATTERNS", "["),
+                ],
+                &[],
+            );
+            SecurityConfig::from_env();
+        }));
+        assert!(
+            result.is_err(),
+            "expected panic when DLP pattern invalid in enterprise mode"
+        );
     }
 }

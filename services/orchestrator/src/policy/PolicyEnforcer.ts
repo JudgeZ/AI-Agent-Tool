@@ -9,6 +9,11 @@ import { loadConfig } from "../config.js";
 import type { PlanStep } from "../plan/planner.js";
 import type { AppConfig } from "../config.js";
 import { logAuditEvent } from "../observability/audit.js";
+import {
+  buildPolicyCacheKey,
+  createPolicyDecisionCache,
+  type PolicyDecisionCache,
+} from "./PolicyCache.js";
 
 export type DenyReason = {
   reason: string;
@@ -260,14 +265,16 @@ export function getPolicyEnforcer(): PolicyEnforcer {
 export class PolicyEnforcer {
   private readonly runMode: string;
   private readonly runtimePolicyData: PolicyRuntimeData;
+  private readonly cache: PolicyDecisionCache | null;
   private loading: Promise<WasmPolicy> | null = null;
   private loaded: WasmPolicy | null = null;
   private policyDataApplied = false;
 
-  constructor() {
+  constructor(options?: { cache?: PolicyDecisionCache | null }) {
     const config = loadConfig();
     this.runMode = config.runMode;
     this.runtimePolicyData = buildRuntimePolicyData(config);
+    this.cache = options?.cache ?? createPolicyDecisionCache(config.policy.cache);
   }
 
   async enforcePlanStep(
@@ -323,6 +330,13 @@ export class PolicyEnforcer {
   private async evaluate(
     input: Record<string, unknown>,
   ): Promise<PolicyDecision> {
+    const cacheKey = this.cache ? buildPolicyCacheKey(input) : null;
+    if (cacheKey && this.cache) {
+      const cached = await this.cache.get(cacheKey);
+      if (cached) {
+        return cached;
+      }
+    }
     const policy = await this.getPolicy();
     await this.applyRuntimePolicyData(policy);
     const result = policy.policy.evaluate(input);
@@ -332,7 +346,11 @@ export class PolicyEnforcer {
     const output = result[0]?.result as Record<string, unknown> | undefined;
     const allow = Boolean(output?.allow);
     const deny = normalizeDeny(output?.deny);
-    return { allow, deny };
+    const decision: PolicyDecision = { allow, deny };
+    if (cacheKey && this.cache) {
+      await this.cache.set(cacheKey, decision);
+    }
+    return decision;
   }
 
   async enforceHttpAction(options: {

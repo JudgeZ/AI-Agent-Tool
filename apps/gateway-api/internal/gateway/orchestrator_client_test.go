@@ -14,10 +14,7 @@ func TestBuildOrchestratorClientWithoutTLS(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("expected *http.Transport, got %T", client.Transport)
-	}
+	transport := unwrapHTTPTransport(t, client.Transport)
 	if transport.TLSClientConfig != nil && len(transport.TLSClientConfig.Certificates) > 0 {
 		t.Fatal("expected no client certificates when TLS disabled")
 	}
@@ -63,10 +60,7 @@ func TestBuildOrchestratorClientConfiguresMutualTLS(t *testing.T) {
 		t.Fatalf("expected key path %s, got %s", keyPath, loadedKeyPath)
 	}
 
-	transport, ok := client.Transport.(*http.Transport)
-	if !ok {
-		t.Fatalf("expected *http.Transport, got %T", client.Transport)
-	}
+	transport := unwrapHTTPTransport(t, client.Transport)
 
 	tlsConfig := transport.TLSClientConfig
 	if tlsConfig == nil {
@@ -81,4 +75,23 @@ func TestBuildOrchestratorClientConfiguresMutualTLS(t *testing.T) {
 	if tlsConfig.MinVersion != tls.VersionTLS12 {
 		t.Fatalf("expected TLS v1.2 minimum, got %d", tlsConfig.MinVersion)
 	}
+}
+
+type transportWithBase interface {
+	Base() *http.Transport
+}
+
+func unwrapHTTPTransport(t *testing.T, transport http.RoundTripper) *http.Transport {
+	t.Helper()
+
+	if withBase, ok := transport.(transportWithBase); ok {
+		return withBase.Base()
+	}
+
+	if base, ok := transport.(*http.Transport); ok {
+		return base
+	}
+
+	t.Fatalf("expected transport exposing Base() or *http.Transport, got %T", transport)
+	return nil
 }

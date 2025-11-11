@@ -1,7 +1,11 @@
 import type { Request, Response } from "express";
 import { loadConfig } from "../config.js";
-import { getSecretsStore } from "../providers/ProviderRegistry.js";
+import { OAuthCallbackSchema, formatValidationIssues } from "../http/validation.js";
+import { getSecretsStore, getVersionedSecretsManager } from "../providers/ProviderRegistry.js";
+import { respondWithError, respondWithValidationError } from "../http/errors.js";
 import { type SecretsStore } from "./SecretsStore.js";
+import { resolveEnv } from "../utils/env.js";
+import { ensureEgressAllowed } from "../network/EgressGuard.js";
 
 class HttpError extends Error {
   constructor(message: string, public readonly status: number) {
@@ -39,16 +43,16 @@ function getProviderConfig(provider: string): ProviderConfig | undefined {
     openrouter: {
       name: "openrouter",
       tokenUrl: "https://openrouter.ai/api/v1/oauth/token",
-      clientId: process.env.OPENROUTER_CLIENT_ID ?? "",
-      clientSecret: process.env.OPENROUTER_CLIENT_SECRET,
+      clientId: resolveEnv("OPENROUTER_CLIENT_ID", "") ?? "",
+      clientSecret: resolveEnv("OPENROUTER_CLIENT_SECRET"),
       redirectUri: `${redirectBase}/auth/openrouter/callback`,
       extraParams: { grant_type: "authorization_code" }
     },
     google: {
       name: "google",
       tokenUrl: "https://oauth2.googleapis.com/token",
-      clientId: process.env.GOOGLE_OAUTH_CLIENT_ID ?? "",
-      clientSecret: process.env.GOOGLE_OAUTH_CLIENT_SECRET,
+      clientId: resolveEnv("GOOGLE_OAUTH_CLIENT_ID", "") ?? "",
+      clientSecret: resolveEnv("GOOGLE_OAUTH_CLIENT_SECRET"),
       redirectUri: `${redirectBase}/auth/google/callback`,
       extraParams: { grant_type: "authorization_code" }
     }
@@ -65,7 +69,10 @@ export async function authorize(req: Request, res: Response) {
   const provider = req.params.provider;
   const cfg = getProviderConfig(provider);
   if (!cfg) {
-    res.status(404).json({ error: "unknown provider" });
+    respondWithError(res, 404, {
+      code: "not_found",
+      message: "unknown provider",
+    });
     return;
   }
   res.json({ provider: cfg.name, redirectUri: cfg.redirectUri });
@@ -75,38 +82,56 @@ export async function callback(req: Request, res: Response) {
   const provider = req.params.provider;
   const cfg = getProviderConfig(provider);
   if (!cfg) {
-    res.status(404).json({ error: "unknown provider" });
+    respondWithError(res, 404, {
+      code: "not_found",
+      message: "unknown provider",
+    });
     return;
   }
 
-  const { code, code_verifier: codeVerifier, redirect_uri: redirectUri } = req.body ?? {};
-  if (typeof code !== "string" || code.length === 0) {
-    res.status(400).json({ error: "code is required" });
+  const parsedBody = OAuthCallbackSchema.safeParse(req.body ?? {});
+  if (!parsedBody.success) {
+    respondWithValidationError(
+      res,
+      formatValidationIssues(parsedBody.error.issues),
+    );
     return;
   }
-  if (typeof codeVerifier !== "string" || codeVerifier.length < 43) {
-    res.status(400).json({ error: "code_verifier is required" });
-    return;
-  }
-  if (typeof redirectUri !== "string" || redirectUri !== cfg.redirectUri) {
-    res.status(400).json({ error: "redirect_uri mismatch" });
+  const { code, codeVerifier, redirectUri } = parsedBody.data;
+
+  if (redirectUri !== cfg.redirectUri) {
+    respondWithValidationError(res, [
+      { path: "redirect_uri", message: "redirect_uri mismatch" },
+    ]);
     return;
   }
 
   try {
     const tokens = await exchangeCodeForTokens(cfg, code, codeVerifier);
     const store = secrets();
+    const rotator = getVersionedSecretsManager();
     const normalizedTokens: TokenResponse & { expires_at?: number } = { ...tokens };
     if (typeof tokens.expires_in === "number") {
       normalizedTokens.expires_at = Date.now() + tokens.expires_in * 1000;
     }
-    await Promise.all([
+
+    const operations: Array<Promise<unknown>> = [
       store.set(`oauth:${provider}:access_token`, tokens.access_token),
-      store.set(`oauth:${provider}:tokens`, JSON.stringify(normalizedTokens)),
-      tokens.refresh_token
-        ? store.set(`oauth:${provider}:refresh_token`, tokens.refresh_token)
-        : store.delete(`oauth:${provider}:refresh_token`)
-    ]);
+      store.set(`oauth:${provider}:tokens`, JSON.stringify(normalizedTokens))
+    ];
+
+    if (tokens.refresh_token) {
+      operations.push(
+        rotator.rotate(`oauth:${provider}:refresh_token`, tokens.refresh_token, {
+          retain: 5,
+          labels: { provider }
+        })
+      );
+    } else {
+      operations.push(rotator.clear(`oauth:${provider}:refresh_token`));
+    }
+
+    await Promise.all(operations);
     res.json({ ok: true });
   } catch (error) {
     const message = error instanceof Error ? error.message : "failed to exchange code";
@@ -118,7 +143,10 @@ export async function callback(req: Request, res: Response) {
           ? (error as StatusLike).status
           : undefined;
     const status = typeof statusCandidate === "number" && Number.isFinite(statusCandidate) ? statusCandidate : 502;
-    res.status(status).json({ error: message });
+    respondWithError(res, status, {
+      code: status >= 500 ? "upstream_error" : "bad_request",
+      message,
+    });
   }
 }
 
@@ -144,6 +172,10 @@ async function exchangeCodeForTokens(cfg: ProviderConfig, code: string, codeVeri
   const timeoutHandle = setTimeout(() => controller.abort(), timeoutMs);
   let fetchResponse: globalThis.Response;
   try {
+    ensureEgressAllowed(cfg.tokenUrl, {
+      action: "oauth.token",
+      metadata: { provider: cfg.name },
+    });
     fetchResponse = await fetch(cfg.tokenUrl, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },

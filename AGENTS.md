@@ -41,7 +41,7 @@ Orchestrator (services/orchestrator)	TypeScript/Node 20 (Express + OTel)	Velocit
 Queue adapters	TypeScript (amqplib for RabbitMQ; kafkajs for Kafka)	Pluggable under a single interface
 Provider registry (src/providers/*)	TypeScript	SDK ecosystem, shared config & auth
 Indexer (services/indexer)	Rust (tree‑sitter/LSP)	Performance, memory safety, AST precision
-Memory/Cache glue (services/memory-svc)	TypeScript	Close to orchestrator & Redis/Postgres
+Memory/Cache glue (integrated)	TypeScript (future)	Currently handled inside orchestrator; dedicated service deferred
 GUI (apps/gui)	Tauri (Rust) + SvelteKit (TS)	Desktop + modern reactive UI; SSE‑friendly
 CLI (apps/cli)	TypeScript (esbuild)	Cross‑platform scripting
 Policies (infra/policies/*.rego)	Rego (OPA)	Declarative, auditable authorization

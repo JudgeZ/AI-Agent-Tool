@@ -1,5 +1,4 @@
 import express from "express";
-import rateLimit from "express-rate-limit";
 import request from "supertest";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -56,10 +55,14 @@ function buildConfig() {
     },
     server: {
       sseKeepAliveMs: 25000,
+    sseSendTimeoutMs: 5000,
+    sseMaxBufferEvents: 100,
+    sseMaxBufferBytes: 64 * 1024,
       rateLimits: {
+        backend: { provider: "memory" as const },
         plan: { windowMs: 60000, maxRequests: 60 },
         chat: { windowMs: 60000, maxRequests: 600 },
-        auth: { windowMs: 60000, maxRequests: 120 }
+        auth: { windowMs: 60000, maxRequests: 120, identityWindowMs: 60000, identityMaxRequests: 20 }
       },
       sseQuotas: {
         perIp: 4,
@@ -86,7 +89,13 @@ function buildConfig() {
         exporterHeaders: {},
         sampleRatio: 1
       }
-    }
+    },
+    network: {
+      egress: {
+        mode: "enforce",
+        allow: ["localhost", "127.0.0.1", "::1", "*.example.com"],
+      },
+    },
   };
 }
 
@@ -103,13 +112,6 @@ vi.mock("../config.js", () => {
 function createApp() {
   const app = express();
   app.use(express.json());
-  const authLimiter = rateLimit({
-    windowMs: 60000,
-    limit: 120,
-    standardHeaders: true,
-    legacyHeaders: false,
-  });
-  app.use("/auth", authLimiter);
   app.get("/auth/oidc/config", getOidcConfiguration);
   app.post("/auth/oidc/callback", handleOidcCallback);
   app.get("/auth/session", getSessionHandler);
@@ -125,6 +127,7 @@ const metadataResponse = JSON.stringify({
 });
 
 const originalFetch = globalThis.fetch;
+const originalCookieSecure = process.env.COOKIE_SECURE;
 const fetchMock = vi.fn<typeof fetch>();
 
 beforeEach(() => {
@@ -178,6 +181,11 @@ afterEach(() => {
   sessionStore.clear();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  if (originalCookieSecure === undefined) {
+    delete process.env.COOKIE_SECURE;
+  } else {
+    process.env.COOKIE_SECURE = originalCookieSecure;
+  }
 });
 
 afterAll(() => {
@@ -244,6 +252,23 @@ describe("OidcController", () => {
       .get("/auth/session")
       .set("Cookie", sessionCookie as string);
     expect(postLogout.status).toBe(401);
+  });
+
+  it("rejects callbacks with missing parameters", async () => {
+    const app = createApp();
+    const response = await request(app)
+      .post("/auth/oidc/callback")
+      .send({
+        code_verifier: "v".repeat(64),
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback"
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({
+      code: "invalid_request",
+      message: "Request validation failed",
+      details: [{ path: "code", message: "code is required" }]
+    });
   });
 
   it("resolves tenant id from nested claim values and records it in audit logs", async () => {
@@ -321,8 +346,188 @@ describe("OidcController", () => {
       });
 
     expect(response.status, JSON.stringify(response.body)).toBe(502);
-    expect(response.body).toEqual({ error: "token expiry too soon" });
+    expect(response.body).toMatchObject({
+      code: "upstream_error",
+      message: "token expiry too soon"
+    });
     const cookies = response.headers["set-cookie"];
     expect(cookies).toBeUndefined();
+  });
+
+  it("returns 404 when oidc support is disabled", async () => {
+    testConfig.auth.oidc.enabled = false;
+    const app = createApp();
+
+    const configResponse = await request(app).get("/auth/oidc/config");
+    expect(configResponse.status).toBe(404);
+
+    const callbackResponse = await request(app)
+      .post("/auth/oidc/callback")
+      .send({
+        code: "auth-code",
+        code_verifier: "v".repeat(64),
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback"
+      });
+    expect(callbackResponse.status).toBe(404);
+  });
+
+  it("rejects redirect mismatches", async () => {
+    const app = createApp();
+    const response = await request(app)
+      .post("/auth/oidc/callback")
+      .send({
+        code: "auth-code",
+        code_verifier: "v".repeat(64),
+        redirect_uri: "https://app.example.com/oidc"
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({
+      code: "invalid_request",
+      message: "Request validation failed",
+      details: [{ path: "redirect_uri", message: "redirect_uri mismatch" }]
+    });
+  });
+
+  it("rejects callbacks when state cookie does not match payload state", async () => {
+    const app = createApp();
+    const response = await request(app)
+      .post("/auth/oidc/callback")
+      .set("Cookie", "oss_oidc_state=expected")
+      .send({
+        code: "auth-code",
+        code_verifier: "v".repeat(64),
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback",
+        state: "different"
+      });
+
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({
+      code: "invalid_request",
+      message: "Request validation failed",
+      details: [{ path: "state", message: "state verification failed" }]
+    });
+  });
+
+  it("responds with upstream error when the token exchange omits an id token", async () => {
+    vi.spyOn(OidcClient, "exchangeCodeForTokens").mockResolvedValueOnce({
+      access_token: "access-token",
+      refresh_token: "refresh-token",
+      scope: "openid",
+      token_type: "Bearer"
+    } as any);
+
+    const app = createApp();
+    const response = await request(app)
+      .post("/auth/oidc/callback")
+      .send({
+        code: "auth-code",
+        code_verifier: "v".repeat(64),
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback"
+      });
+
+    expect(response.status).toBe(502);
+    expect(response.body).toMatchObject({
+      code: "upstream_error",
+      message: "id_token missing in response"
+    });
+  });
+
+  it("rejects callbacks when the id token payload lacks a subject", async () => {
+    vi.mocked(OidcClient.verifyIdToken).mockResolvedValueOnce({
+      payload: {
+        email: "user@example.com",
+        name: "Test User",
+        roles: ["admin"],
+        exp: Math.floor(Date.now() / 1000) + 3600
+      }
+    } as any);
+
+    const app = createApp();
+    const response = await request(app)
+      .post("/auth/oidc/callback")
+      .send({
+        code: "auth-code",
+        code_verifier: "v".repeat(64),
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback"
+      });
+
+    expect(response.status).toBe(502);
+    expect(response.body).toMatchObject({
+      code: "upstream_error",
+      message: "id_token missing subject"
+    });
+  });
+
+  it("treats exchange timeouts as gateway errors", async () => {
+    vi.spyOn(OidcClient, "exchangeCodeForTokens").mockRejectedValueOnce(
+      new Error("request timed out after 1000ms")
+    );
+
+    const app = createApp();
+    const response = await request(app)
+      .post("/auth/oidc/callback")
+      .send({
+        code: "auth-code",
+        code_verifier: "v".repeat(64),
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback"
+      });
+
+    expect(response.status).toBe(504);
+    expect(response.body).toMatchObject({
+      code: "upstream_error",
+      message: "request timed out after 1000ms"
+    });
+  });
+
+  it("requires secure cookies when running in enterprise mode", async () => {
+    process.env.COOKIE_SECURE = "false";
+    const app = createApp();
+    const response = await request(app)
+      .post("/auth/oidc/callback")
+      .send({
+        code: "auth-code",
+        code_verifier: "v".repeat(64),
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback"
+      });
+
+    expect(response.status).toBe(500);
+    expect(response.body).toMatchObject({
+      code: "configuration_error",
+      message: "secure cookies must be enabled when run mode is enterprise"
+    });
+  });
+
+  it("returns unauthorized when no session cookie is provided", async () => {
+    const app = createApp();
+    const response = await request(app).get("/auth/session");
+    expect(response.status).toBe(401);
+    expect(response.body).toMatchObject({
+      code: "unauthorized",
+      message: "session not found"
+    });
+  });
+
+  it("clears the session cookie during logout even when the session does not exist", async () => {
+    const app = createApp();
+    const response = await request(app)
+      .post("/auth/logout")
+      .set("Cookie", "oss_session=unknown-session");
+    expect(response.status).toBe(204);
+    expect(response.headers["set-cookie"] ?? []).toBeDefined();
+  });
+
+  it("logs metadata retrieval failures and surfaces upstream errors", async () => {
+    vi.spyOn(OidcClient, "fetchOidcMetadata").mockRejectedValueOnce(
+      new Error("metadata unavailable")
+    );
+
+    const app = createApp();
+    const response = await request(app).get("/auth/oidc/config");
+    expect(response.status).toBe(502);
+    expect(response.body).toMatchObject({
+      code: "upstream_error",
+      message: "metadata unavailable"
+    });
   });
 });

@@ -1,4 +1,5 @@
 import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
@@ -12,9 +13,15 @@ import {
 import { parsePlan } from "./validation.js";
 
 describe("planner", () => {
-  const plansDir = path.join(process.cwd(), ".plans");
+  const originalCwd = process.cwd();
+  let tempDir: string;
+  let plansDir: string;
+  const symlinkTest = process.platform === "win32" ? it.skip : it;
 
   beforeEach(() => {
+    tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "planner-test-"));
+    process.chdir(tempDir);
+    plansDir = path.join(process.cwd(), ".plans");
     clearPlanHistory();
     fs.rmSync(plansDir, { recursive: true, force: true });
     resetPlanArtifactCleanupSchedulerForTests();
@@ -24,6 +31,8 @@ describe("planner", () => {
     clearPlanHistory();
     fs.rmSync(plansDir, { recursive: true, force: true });
     resetPlanArtifactCleanupSchedulerForTests();
+    process.chdir(originalCwd);
+    fs.rmSync(tempDir, { recursive: true, force: true });
   });
 
   it("creates a validated plan with enriched metadata", async () => {
@@ -105,7 +114,7 @@ describe("planner", () => {
     expect(fs.existsSync(path.join(plansDir, plan.id))).toBe(true);
   });
 
-  it("does not follow symlinks outside the plans directory during cleanup", async () => {
+  symlinkTest("does not follow symlinks outside the plans directory during cleanup", async () => {
     const outsideDir = path.join(process.cwd(), "outside-plan-artifacts");
     fs.rmSync(outsideDir, { recursive: true, force: true });
     fs.mkdirSync(outsideDir, { recursive: true });

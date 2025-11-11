@@ -304,5 +304,25 @@ describe("KafkaAdapter", () => {
     await adapter.enqueue("plan.steps", { task: "rerun" }, { idempotencyKey: `${PLAN_ID}:s4` });
     expect(mocks.createTopics.mock.calls.length).toBe(initialCalls);
   });
+
+  it("skips publishing duplicate idempotency keys until released", async () => {
+    await adapter.enqueue("plan.steps", { task: "first" }, { idempotencyKey: `${PLAN_ID}:dedupe` });
+    expect(mocks.producerSend).toHaveBeenCalledTimes(1);
+
+    await adapter.enqueue("plan.steps", { task: "duplicate" }, { idempotencyKey: `${PLAN_ID}:dedupe` });
+    expect(mocks.producerSend).toHaveBeenCalledTimes(1);
+
+    adapter["releaseKey"](`${PLAN_ID}:dedupe`);
+    await adapter.enqueue("plan.steps", { task: "again" }, { idempotencyKey: `${PLAN_ID}:dedupe` });
+    expect(mocks.producerSend).toHaveBeenCalledTimes(2);
+  });
+
+  it("prepares payloads with incremented attempts", async () => {
+    const payload = { job: { attempt: 0, other: "value" }, extra: true } as const;
+    const result = adapter["preparePayloadForAttempt"](payload, 3) as typeof payload;
+
+    expect(result.job.attempt).toBe(3);
+    expect(result.extra).toBe(true);
+  });
 });
 

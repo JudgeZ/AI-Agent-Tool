@@ -5,6 +5,7 @@ import { Agent, type Dispatcher } from "undici";
 
 import { LocalKeystore } from "./LocalKeystore.js";
 import { resolveEnv } from "../utils/env.js";
+import { ensureEgressAllowed } from "../network/EgressGuard.js";
 
 export interface SecretsStore {
   get(key: string): Promise<string | undefined>;
@@ -236,30 +237,30 @@ export class VaultStore implements SecretsStore {
   private loginPromise: Promise<void> | null = null;
 
   constructor(options: VaultStoreOptions = {}) {
-    const url = (options.url ?? process.env.VAULT_ADDR ?? "").trim();
+    const url = (options.url ?? resolveEnv("VAULT_ADDR") ?? "").trim();
     if (!url) {
       throw new Error("VaultStore requires VAULT_ADDR to be set");
     }
     this.baseUrl = new URL(url);
 
-    const rawToken = options.token ?? process.env.VAULT_TOKEN;
+    const rawToken = options.token ?? resolveEnv("VAULT_TOKEN");
     const trimmedToken = rawToken?.trim();
     const namespace = (
-      options.namespace ?? process.env.VAULT_NAMESPACE
+      options.namespace ?? resolveEnv("VAULT_NAMESPACE")
     )?.trim();
     this.namespace = namespace && namespace.length > 0 ? namespace : undefined;
 
     const mountCandidate =
-      options.kvMountPath ?? process.env.VAULT_KV_MOUNT ?? "secret";
+      options.kvMountPath ?? resolveEnv("VAULT_KV_MOUNT", "secret") ?? "secret";
     const normalizedMount = trimSlashes(mountCandidate);
     this.mountPath = normalizedMount.length > 0 ? normalizedMount : "secret";
 
     const caCert = resolveCaCertificate(
-      options.caCert ?? process.env.VAULT_CA_CERT,
+      options.caCert ?? resolveEnv("VAULT_CA_CERT"),
     );
     const rejectUnauthorized =
       options.rejectUnauthorized ??
-      parseBoolean(process.env.VAULT_TLS_REJECT_UNAUTHORIZED);
+      parseBoolean(resolveEnv("VAULT_TLS_REJECT_UNAUTHORIZED"));
 
     if (options.dispatcher) {
       this.dispatcher = options.dispatcher;
@@ -275,29 +276,31 @@ export class VaultStore implements SecretsStore {
       this.dispatcher = new Agent(agentOptions);
     }
 
-    const authMethod = (options.authMethod ?? process.env.VAULT_AUTH_METHOD)
+    const authMethod = (options.authMethod ?? resolveEnv("VAULT_AUTH_METHOD"))
       ?.trim()
       ?.toLowerCase();
     let authConfig: VaultAuthConfig | undefined;
 
     if (!trimmedToken) {
       if (authMethod === "kubernetes") {
-        const role = (options.role ?? process.env.VAULT_ROLE)?.trim();
+        const role = (options.role ?? resolveEnv("VAULT_ROLE"))?.trim();
         if (!role) {
           throw new Error(
             "VaultStore requires VAULT_ROLE when using kubernetes auth",
           );
         }
         const mount = trimSlashes(
-          options.authMountPath ?? process.env.VAULT_AUTH_MOUNT ?? "kubernetes",
+          options.authMountPath ??
+            resolveEnv("VAULT_AUTH_MOUNT", "kubernetes") ??
+            "kubernetes",
         );
         const mountPath = mount.length > 0 ? mount : "kubernetes";
         const inlineToken = (
-          options.kubernetesToken ?? process.env.VAULT_K8S_TOKEN
+          options.kubernetesToken ?? resolveEnv("VAULT_K8S_TOKEN")
         )?.trim();
         const tokenPath =
           options.kubernetesTokenPath ??
-          process.env.VAULT_K8S_TOKEN_PATH ??
+          resolveEnv("VAULT_K8S_TOKEN_PATH", DEFAULT_KUBERNETES_TOKEN_PATH) ??
           DEFAULT_KUBERNETES_TOKEN_PATH;
         authConfig = {
           method: "kubernetes",
@@ -344,7 +347,9 @@ export class VaultStore implements SecretsStore {
       ...init,
       dispatcher: this.dispatcher,
     };
-    return fetch(this.buildUrl(path), requestInit);
+    const targetUrl = this.buildUrl(path);
+    ensureEgressAllowed(targetUrl, { action: "vault.request" });
+    return fetch(targetUrl, requestInit);
   }
 
   private invalidateToken(): void {

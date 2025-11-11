@@ -1,7 +1,11 @@
 #!/usr/bin/env node
 import http from 'node:http';
+import loggerModule from '../../../scripts/logger.js';
+
+const { createLogger } = loggerModule;
 
 const port = Number(process.env.MOCK_PORT || 4010);
+const logger = createLogger({ name: 'mock-orchestrator' });
 
 const plans = new Map();
 const clients = new Map();
@@ -277,5 +281,5 @@ const server = http.createServer((req, res) => {
 });
 
 server.listen(port, () => {
-  console.log(`Mock orchestrator listening on :${port}`);
+  logger.info('Mock orchestrator listening.', { port });
 });

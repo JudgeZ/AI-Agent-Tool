@@ -1,5 +1,5 @@
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
-import { GenericContainer, type StartedTestContainer } from "testcontainers";
+import { newDb } from "pg-mem";
 import { Pool } from "pg";
 
 import { PostgresPlanStateStore } from "./PlanStateStore.js";
@@ -22,29 +22,25 @@ const PLAN_ID = "plan-550e8400-e29b-41d4-a716-446655440000";
 const APPROVAL_PLAN_ID = "plan-12345678-9abc-4def-8abc-1234567890ab";
 
 describe("PostgresPlanStateStore", () => {
-  let container: StartedTestContainer;
   let pool: Pool;
   let store: PostgresPlanStateStore;
+  let disposePool: (() => Promise<void>) | undefined;
 
   beforeAll(async () => {
-    container = await new GenericContainer("postgres:15-alpine")
-      .withEnvironment({
-        POSTGRES_PASSWORD: "password",
-        POSTGRES_USER: "user",
-        POSTGRES_DB: "plans",
-      })
-      .withExposedPorts(5432)
-      .start();
-
-    const host = container.getHost();
-    const port = container.getMappedPort(5432);
-    const connectionString = `postgres://user:password@${host}:${port}/plans`;
-    pool = new Pool({ connectionString });
+    const db = newDb({ autoCreateForeignKeyIndices: true, noAstCoverageCheck: true });
+    const { Pool: MemPool } = db.adapters.createPg();
+    const memPool = new MemPool();
+    disposePool = async () => {
+      await memPool.end();
+    };
+    pool = memPool as unknown as Pool;
+    await pool.query("SELECT 1");
   });
 
   afterAll(async () => {
-    await pool.end();
-    await container.stop();
+    if (disposePool) {
+      await disposePool();
+    }
   });
 
   beforeEach(() => {

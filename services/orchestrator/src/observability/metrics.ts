@@ -8,6 +8,31 @@ export const QUEUE_RESULTS_NAME = "orchestrator_queue_results_total";
 export const QUEUE_PROCESSING_SECONDS_NAME = "orchestrator_queue_processing_seconds";
 export const QUEUE_PARTITION_LAG_NAME = "orchestrator_queue_partition_lag";
 export const QUEUE_LAG_NAME = "orchestrator_queue_lag";
+const RATE_LIMIT_HITS_NAME = "limit_hits_total";
+const RATE_LIMIT_BLOCKED_NAME = "limit_blocked_total";
+function getOrCreateRateLimitHitCounter(): Counter<string> {
+  const existing = register.getSingleMetric(RATE_LIMIT_HITS_NAME) as Counter<string> | undefined;
+  if (existing) {
+    return existing;
+  }
+  return new Counter({
+    name: RATE_LIMIT_HITS_NAME,
+    help: "Total number of requests allowed by rate limiting",
+    labelNames: ["endpoint", "identity_type"]
+  });
+}
+
+function getOrCreateRateLimitBlockedCounter(): Counter<string> {
+  const existing = register.getSingleMetric(RATE_LIMIT_BLOCKED_NAME) as Counter<string> | undefined;
+  if (existing) {
+    return existing;
+  }
+  return new Counter({
+    name: RATE_LIMIT_BLOCKED_NAME,
+    help: "Total number of requests blocked by rate limiting",
+    labelNames: ["endpoint", "identity_type"]
+  });
+}
 
 function getOrCreateGauge(): Gauge<string> {
   const existing = register.getSingleMetric(QUEUE_DEPTH_NAME) as Gauge<string> | undefined;
@@ -89,6 +114,8 @@ export const queueLagGauge = getOrCreateLagGauge();
 export const queuePartitionLagGauge = getOrCreatePartitionLagGauge();
 const resultCounter = getOrCreateResultCounter();
 const processingHistogram = getOrCreateProcessingHistogram();
+const rateLimitHitCounter = getOrCreateRateLimitHitCounter();
+const rateLimitBlockedCounter = getOrCreateRateLimitBlockedCounter();
 
 export function resetMetrics(): void {
   register.resetMetrics();
@@ -100,6 +127,8 @@ export function resetMetrics(): void {
   queuePartitionLagGauge.reset();
   resultCounter.reset();
   processingHistogram.reset();
+  rateLimitHitCounter.reset();
+  rateLimitBlockedCounter.reset();
 }
 
 function getOrCreateResultCounter(): Counter<string> {
@@ -136,4 +165,13 @@ export function getMetricsContentType(): string {
 
 export function getMetricsSnapshot(): Promise<string> {
   return register.metrics();
+}
+
+export function recordRateLimitOutcome(endpoint: string, identityType: string, allowed: boolean): void {
+  const labels = { endpoint, identity_type: identityType };
+  if (allowed) {
+    rateLimitHitCounter.labels(labels).inc();
+    return;
+  }
+  rateLimitBlockedCounter.labels(labels).inc();
 }

@@ -92,10 +92,10 @@ jobs:
         id: build
         uses: docker/build-push-action@v6
         with:
+          provenance: true
           context: ${{ matrix.image.context }}
           file: ${{ matrix.image.dockerfile }}
           push: true
-          provenance: false
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
@@ -107,6 +107,7 @@ jobs:
           image: ${{ steps.coords.outputs.repository }}@${{ steps.build.outputs.digest }}
           format: cyclonedx-json
           output-file: ${{ matrix.image.name }}-sbom.cdx.json
+          artifact-name: ${{ matrix.image.name }}-sbom.cdx.json
 
       - name: Install cosign
         if: steps.dockerfile.outputs.exists == 'true'
@@ -118,6 +119,16 @@ jobs:
           COSIGN_EXPERIMENTAL: "1"
         run: |
           cosign sign --yes ${{ steps.coords.outputs.repository }}@${{ steps.build.outputs.digest }}
+
+      - name: Generate attestations
+        if: steps.dockerfile.outputs.exists == 'true'
+        env:
+          COSIGN_EXPERIMENTAL: "1"
+        run: |
+          cosign attest --yes \
+            --type cyclonedx \
+            --predicate ${{ matrix.image.name }}-sbom.cdx.json \
+            ${{ steps.coords.outputs.repository }}@${{ steps.build.outputs.digest }}
 
       - name: Upload SBOM to release
         if: steps.dockerfile.outputs.exists == 'true' && github.event_name == 'push'

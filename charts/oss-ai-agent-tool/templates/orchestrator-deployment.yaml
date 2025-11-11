@@ -1,21 +1,63 @@
+{{- define "oss-ai-agent-tool.orchestratorServiceAccountName" -}}
+{{- if .Values.orchestrator.serviceAccount.create -}}
+{{- default (printf "%s-orchestrator" (include "oss-ai-agent-tool.fullname" .)) .Values.orchestrator.serviceAccount.name -}}
+{{- else -}}
+{{- default "default" .Values.orchestrator.serviceAccount.name -}}
+{{- end -}}
+{{- end -}}
 {{- $root := . -}}
 {{- $fullname := include "oss-ai-agent-tool.fullname" $root -}}
-{{- $postgresUser := $root.Values.postgres.username | default "ossaat" -}}
-{{- $postgresPassword := required "postgres.password must be provided" ($root.Values.postgres.password | default "") -}}
-{{- $postgresDatabase := $root.Values.postgres.database | default "ossaat" -}}
+{{- $postgresValues := default (dict) $root.Values.postgres -}}
+{{- $postgresUser := $postgresValues.username | default "ossaat" -}}
+{{- $postgresDatabase := $postgresValues.database | default "ossaat" -}}
+{{- $postgresUrlSecretName := $postgresValues.urlSecretName | default "" -}}
+{{- $postgresUrlSecretKey := $postgresValues.urlSecretKey | default "url" -}}
+{{- $postgresUrlValue := $postgresValues.url | default "" -}}
+{{- $postgresPasswordValue := $postgresValues.password | default "" -}}
 {{- $defaultOrchestratorEnv := dict }}
 {{- $orchestratorValueFromEnv := dict }}
 {{- $kafkaRuntime := dict }}
 {{- $messagingType := $root.Values.messaging.type | default "rabbitmq" -}}
+{{- $mtlsValues := $root.Values.mtls | default dict -}}
+{{- $mtlsEnabled := $mtlsValues.enabled | default false -}}
+{{- $orchestratorTlsValues := $root.Values.orchestrator.tls | default dict -}}
+{{- $orchestratorTlsEnabled := or ($orchestratorTlsValues.enabled | default false) $mtlsEnabled -}}
+{{- $orchestratorTlsSecretName := include "oss-ai-agent-tool.orchestratorTlsSecretName" $root -}}
+{{- if $orchestratorTlsEnabled -}}
+  {{- if not $orchestratorTlsSecretName -}}
+    {{- fail "orchestrator.tls.secretName must be provided when TLS is enabled. Set orchestrator.tls.secretName explicitly or enable mtls." -}}
+  {{- end -}}
+{{- end -}}
+{{- $orchestratorTlsMountPath := $orchestratorTlsValues.mountPath | default "/etc/orchestrator/tls" -}}
+{{- $orchestratorTlsCertFile := $orchestratorTlsValues.certFile | default "tls.crt" -}}
+{{- $orchestratorTlsKeyFile := $orchestratorTlsValues.keyFile | default "tls.key" -}}
+{{- $orchestratorTlsCaFile := $orchestratorTlsValues.caFile | default (ternary "ca.crt" "" $mtlsEnabled) -}}
+{{- $orchestratorRequestClientCert := true -}}
+{{- if hasKey $orchestratorTlsValues "requestClientCert" -}}
+  {{- $orchestratorRequestClientCert = $orchestratorTlsValues.requestClientCert -}}
+{{- end -}}
 {{- $_ := set $defaultOrchestratorEnv "RUN_MODE" ($root.Values.runMode | default "consumer") -}}
 {{- $_ := set $defaultOrchestratorEnv "MESSAGING_TYPE" $messagingType -}}
 {{- $_ := set $defaultOrchestratorEnv "MESSAGE_BUS" $messagingType -}}
 {{- $_ := set $defaultOrchestratorEnv "REDIS_URL" (printf "redis://%s-redis:6379/0" $fullname) -}}
-{{- $_ := set $defaultOrchestratorEnv "POSTGRES_URL" (printf "postgres://%s:%s@%s-postgres:5432/%s" $postgresUser $postgresPassword $fullname $postgresDatabase) -}}
+{{- if $postgresUrlSecretName -}}
+  {{- $_ := set $orchestratorValueFromEnv "POSTGRES_URL" (dict "secretName" $postgresUrlSecretName "secretKey" $postgresUrlSecretKey) -}}
+{{- else if $postgresUrlValue -}}
+  {{- $_ := set $defaultOrchestratorEnv "POSTGRES_URL" (printf "%v" $postgresUrlValue) -}}
+{{- else -}}
+  {{- if not $postgresPasswordValue -}}
+    {{- fail "postgres.password (or postgres.url / postgres.urlSecretName) must be provided" -}}
+  {{- end -}}
+  {{- $postgresHost := printf "%s-postgres" $fullname -}}
+  {{- $_ := set $defaultOrchestratorEnv "POSTGRES_URL" (printf "postgres://%s:%s@%s:5432/%s" $postgresUser $postgresPasswordValue $postgresHost $postgresDatabase) -}}
+{{- end -}}
 {{- if eq $messagingType "rabbitmq" -}}
   {{- $rabbit := default (dict) $root.Values.rabbitmq -}}
+  {{- $rabbitUrlSecretName := $rabbit.urlSecretName | default "" -}}
   {{- $rabbitUrl := $rabbit.url | default "" -}}
-  {{- if $rabbitUrl -}}
+  {{- if $rabbitUrlSecretName -}}
+    {{- $_ := set $orchestratorValueFromEnv "RABBITMQ_URL" (dict "secretName" $rabbitUrlSecretName "secretKey" ($rabbit.urlSecretKey | default "url")) -}}
+  {{- else if $rabbitUrl -}}
     {{- $_ := set $defaultOrchestratorEnv "RABBITMQ_URL" $rabbitUrl -}}
   {{- else -}}
     {{- $rabbitUser := required "rabbitmq.username must be provided when rabbitmq.url is unset" ($rabbit.username | default "") -}}
@@ -121,12 +163,163 @@
     {{- $_ := set $defaultOrchestratorEnv "KAFKA_SASL_PASSWORD" (printf "%v" $saslCfg.password) -}}
   {{- end -}}
 {{- end -}}
-{{- $_ := set $defaultOrchestratorEnv "LANGFUSE_BASE_URL" (printf "http://%s-langfuse:3000" $fullname) -}}
-{{- $_ := set $defaultOrchestratorEnv "LANGFUSE_PUBLIC_KEY" "dev-public" -}}
-{{- $_ := set $defaultOrchestratorEnv "LANGFUSE_SECRET_KEY" "dev-secret" -}}
-{{- $_ := set $defaultOrchestratorEnv "OTEL_EXPORTER_OTLP_ENDPOINT" (printf "http://%s-jaeger:4317" $fullname) -}}
+{{- $langfuseValues := default (dict) $root.Values.langfuse -}}
+{{- $langfuseOrchestrator := default (dict) $langfuseValues.orchestrator -}}
+{{- $langfuseBaseUrl := $langfuseOrchestrator.baseUrl | default "" -}}
+{{- if $langfuseBaseUrl -}}
+  {{- $_ := set $defaultOrchestratorEnv "LANGFUSE_BASE_URL" (printf "%v" $langfuseBaseUrl) -}}
+{{- else if ($langfuseValues.enabled | default false) -}}
+  {{- $_ := set $defaultOrchestratorEnv "LANGFUSE_BASE_URL" (printf "http://%s-langfuse:3000" $fullname) -}}
+{{- end -}}
+{{- if $langfuseOrchestrator.publicKeySecretName -}}
+  {{- $_ := set $orchestratorValueFromEnv "LANGFUSE_PUBLIC_KEY" (dict "secretName" $langfuseOrchestrator.publicKeySecretName "secretKey" ($langfuseOrchestrator.publicKeySecretKey | default "public-key")) -}}
+{{- else if $langfuseOrchestrator.publicKey -}}
+  {{- $_ := set $defaultOrchestratorEnv "LANGFUSE_PUBLIC_KEY" (printf "%v" $langfuseOrchestrator.publicKey) -}}
+{{- end -}}
+{{- if $langfuseOrchestrator.secretKeySecretName -}}
+  {{- $_ := set $orchestratorValueFromEnv "LANGFUSE_SECRET_KEY" (dict "secretName" $langfuseOrchestrator.secretKeySecretName "secretKey" ($langfuseOrchestrator.secretKeySecretKey | default "secret-key")) -}}
+{{- else if $langfuseOrchestrator.secretKey -}}
+  {{- $_ := set $defaultOrchestratorEnv "LANGFUSE_SECRET_KEY" (printf "%v" $langfuseOrchestrator.secretKey) -}}
+{{- end -}}
+{{- $localSecretsConfig := default (dict) $root.Values.orchestrator.localSecrets -}}
+{{- if $localSecretsConfig.passphraseSecretName -}}
+  {{- $_ := set $orchestratorValueFromEnv "LOCAL_SECRETS_PASSPHRASE" (dict "secretName" $localSecretsConfig.passphraseSecretName "secretKey" ($localSecretsConfig.passphraseSecretKey | default "passphrase")) -}}
+{{- else if $localSecretsConfig.passphrase -}}
+  {{- $_ := set $defaultOrchestratorEnv "LOCAL_SECRETS_PASSPHRASE" (printf "%v" $localSecretsConfig.passphrase) -}}
+{{- end -}}
+{{- $policyCacheConfig := default (dict) $root.Values.orchestrator.policy.cache -}}
+{{- $policyCacheEnabled := $policyCacheConfig.enabled | default false -}}
+{{- $_ := set $defaultOrchestratorEnv "POLICY_CACHE_ENABLED" (ternary "true" "false" $policyCacheEnabled) -}}
+{{- if hasKey $policyCacheConfig "provider" -}}
+  {{- $_ := set $defaultOrchestratorEnv "POLICY_CACHE_PROVIDER" (printf "%v" ($policyCacheConfig.provider | default "memory")) -}}
+{{- end -}}
+{{- if $policyCacheConfig.ttlSeconds -}}
+  {{- $_ := set $defaultOrchestratorEnv "POLICY_CACHE_TTL_SECONDS" (printf "%v" $policyCacheConfig.ttlSeconds) -}}
+{{- end -}}
+{{- if $policyCacheConfig.maxEntries -}}
+  {{- $_ := set $defaultOrchestratorEnv "POLICY_CACHE_MAX_ENTRIES" (printf "%v" $policyCacheConfig.maxEntries) -}}
+{{- end -}}
+{{- $policyCacheRedis := default (dict) $policyCacheConfig.redis -}}
+{{- if and $policyCacheEnabled (eq ($policyCacheConfig.provider | default "memory") "redis") -}}
+  {{- $policyRedisUrl := $policyCacheRedis.url | default "" -}}
+  {{- if $policyRedisUrl -}}
+    {{- $_ := set $defaultOrchestratorEnv "POLICY_CACHE_REDIS_URL" (printf "%v" $policyRedisUrl) -}}
+  {{- end -}}
+  {{- $policyRedisKeyPrefix := $policyCacheRedis.keyPrefix | default "" -}}
+  {{- if $policyRedisKeyPrefix -}}
+    {{- $_ := set $defaultOrchestratorEnv "POLICY_CACHE_REDIS_KEY_PREFIX" (printf "%v" $policyRedisKeyPrefix) -}}
+  {{- end -}}
+{{- end -}}
+{{- $orchestratorTracing := $root.Values.orchestrator.tracing | default dict -}}
+{{- $defaultTracingEndpoint := printf "http://%s-jaeger:4317" $fullname -}}
+{{- $tracingEndpoint := $orchestratorTracing.endpoint | default $defaultTracingEndpoint -}}
+{{- $_ := set $defaultOrchestratorEnv "OTEL_EXPORTER_OTLP_ENDPOINT" $tracingEndpoint -}}
+{{- $_ := set $defaultOrchestratorEnv "TRACING_OTLP_ENDPOINT" $tracingEndpoint -}}
+{{- if hasKey $orchestratorTracing "enabled" -}}
+  {{- $_ := set $defaultOrchestratorEnv "TRACING_ENABLED" (ternary "true" "false" ($orchestratorTracing.enabled | default true)) -}}
+{{- end -}}
+{{- if $orchestratorTracing.sampleRatio }}
+  {{- $_ := set $defaultOrchestratorEnv "TRACING_SAMPLE_RATIO" (printf "%v" $orchestratorTracing.sampleRatio) -}}
+{{- end -}}
+{{- if $orchestratorTracing.environment }}
+  {{- $_ := set $defaultOrchestratorEnv "TRACING_ENVIRONMENT" (printf "%v" $orchestratorTracing.environment) -}}
+{{- end -}}
+{{- if $orchestratorTracing.serviceName }}
+  {{- $_ := set $defaultOrchestratorEnv "TRACING_SERVICE_NAME" (printf "%v" $orchestratorTracing.serviceName) -}}
+  {{- $_ := set $defaultOrchestratorEnv "OTEL_SERVICE_NAME" (printf "%v" $orchestratorTracing.serviceName) -}}
+{{- else -}}
+  {{- $_ := set $defaultOrchestratorEnv "OTEL_SERVICE_NAME" "oss-ai-orchestrator" -}}
+{{- end -}}
+{{- if $orchestratorTracing.headers }}
+  {{- $headersList := list -}}
+  {{- range $key, $value := $orchestratorTracing.headers }}
+    {{- $headersList = append $headersList (printf "%s=%s" $key $value) -}}
+  {{- end -}}
+  {{- if gt (len $headersList) 0 -}}
+    {{- $_ := set $defaultOrchestratorEnv "TRACING_OTLP_HEADERS" (join "," $headersList) -}}
+  {{- end -}}
+{{- end -}}
 {{- $_ := set $defaultOrchestratorEnv "SSE_MAX_CONNECTIONS_PER_IP" (printf "%v" ($root.Values.orchestrator.sseQuotas.maxConnectionsPerIP | default 4)) -}}
 {{- $_ := set $defaultOrchestratorEnv "SSE_MAX_CONNECTIONS_PER_SUBJECT" (printf "%v" ($root.Values.orchestrator.sseQuotas.maxConnectionsPerSubject | default 2)) -}}
+{{- $rateLimitsValues := $root.Values.orchestrator.rateLimits | default dict -}}
+{{- $rateLimitBackendValues := $rateLimitsValues.backend | default dict -}}
+{{- $rateLimitProvider := $rateLimitBackendValues.provider | default "memory" -}}
+{{- $_ := set $defaultOrchestratorEnv "ORCHESTRATOR_RATE_LIMIT_BACKEND" $rateLimitProvider -}}
+{{- if eq $rateLimitProvider "redis" -}}
+  {{- $redisUrl := $rateLimitBackendValues.redis.url | default (printf "redis://%s-redis:6379/0" $fullname) -}}
+  {{- $_ := set $defaultOrchestratorEnv "ORCHESTRATOR_RATE_LIMIT_REDIS_URL" $redisUrl -}}
+{{- end -}}
+{{- with $rateLimitsValues.plan -}}
+  {{- if .windowMs -}}
+    {{- $_ := set $defaultOrchestratorEnv "SERVER_RATE_LIMIT_PLAN_WINDOW_MS" (printf "%v" .windowMs) -}}
+  {{- end -}}
+  {{- if .maxRequests -}}
+    {{- $_ := set $defaultOrchestratorEnv "SERVER_RATE_LIMIT_PLAN_MAX_REQUESTS" (printf "%v" .maxRequests) -}}
+  {{- end -}}
+  {{- if .identityWindowMs -}}
+    {{- $_ := set $defaultOrchestratorEnv "SERVER_RATE_LIMIT_PLAN_IDENTITY_WINDOW_MS" (printf "%v" .identityWindowMs) -}}
+  {{- end -}}
+  {{- if .identityMaxRequests -}}
+    {{- $_ := set $defaultOrchestratorEnv "SERVER_RATE_LIMIT_PLAN_IDENTITY_MAX_REQUESTS" (printf "%v" .identityMaxRequests) -}}
+  {{- end -}}
+{{- end -}}
+{{- with $rateLimitsValues.chat -}}
+  {{- if .windowMs -}}
+    {{- $_ := set $defaultOrchestratorEnv "SERVER_RATE_LIMIT_CHAT_WINDOW_MS" (printf "%v" .windowMs) -}}
+  {{- end -}}
+  {{- if .maxRequests -}}
+    {{- $_ := set $defaultOrchestratorEnv "SERVER_RATE_LIMIT_CHAT_MAX_REQUESTS" (printf "%v" .maxRequests) -}}
+  {{- end -}}
+  {{- if .identityWindowMs -}}
+    {{- $_ := set $defaultOrchestratorEnv "SERVER_RATE_LIMIT_CHAT_IDENTITY_WINDOW_MS" (printf "%v" .identityWindowMs) -}}
+  {{- end -}}
+  {{- if .identityMaxRequests -}}
+    {{- $_ := set $defaultOrchestratorEnv "SERVER_RATE_LIMIT_CHAT_IDENTITY_MAX_REQUESTS" (printf "%v" .identityMaxRequests) -}}
+  {{- end -}}
+{{- end -}}
+{{- with $rateLimitsValues.auth -}}
+  {{- if .windowMs -}}
+    {{- $_ := set $defaultOrchestratorEnv "SERVER_RATE_LIMIT_AUTH_WINDOW_MS" (printf "%v" .windowMs) -}}
+  {{- end -}}
+  {{- if .maxRequests -}}
+    {{- $_ := set $defaultOrchestratorEnv "SERVER_RATE_LIMIT_AUTH_MAX_REQUESTS" (printf "%v" .maxRequests) -}}
+  {{- end -}}
+  {{- if .identityWindowMs -}}
+    {{- $_ := set $defaultOrchestratorEnv "SERVER_RATE_LIMIT_AUTH_IDENTITY_WINDOW_MS" (printf "%v" .identityWindowMs) -}}
+  {{- end -}}
+  {{- if .identityMaxRequests -}}
+    {{- $_ := set $defaultOrchestratorEnv "SERVER_RATE_LIMIT_AUTH_IDENTITY_MAX_REQUESTS" (printf "%v" .identityMaxRequests) -}}
+  {{- end -}}
+{{- end -}}
+{{- $requestLimits := $root.Values.orchestrator.requestLimits | default dict -}}
+{{- if $requestLimits.jsonBytes }}
+  {{- $_ := set $defaultOrchestratorEnv "SERVER_REQUEST_LIMIT_JSON_BYTES" (printf "%v" $requestLimits.jsonBytes) -}}
+{{- end -}}
+{{- if $requestLimits.urlEncodedBytes }}
+  {{- $_ := set $defaultOrchestratorEnv "SERVER_REQUEST_LIMIT_URLENCODED_BYTES" (printf "%v" $requestLimits.urlEncodedBytes) -}}
+{{- end -}}
+{{- $postgresValues := $root.Values.orchestrator.database.postgres | default dict -}}
+{{- if $postgresValues.maxConnections }}
+  {{- $_ := set $defaultOrchestratorEnv "POSTGRES_MAX_CONNECTIONS" (printf "%v" $postgresValues.maxConnections) -}}
+{{- end -}}
+{{- if $postgresValues.minConnections }}
+  {{- $_ := set $defaultOrchestratorEnv "POSTGRES_MIN_CONNECTIONS" (printf "%v" $postgresValues.minConnections) -}}
+{{- end -}}
+{{- if $postgresValues.idleTimeoutMs }}
+  {{- $_ := set $defaultOrchestratorEnv "POSTGRES_IDLE_TIMEOUT_MS" (printf "%v" $postgresValues.idleTimeoutMs) -}}
+{{- end -}}
+{{- if $postgresValues.connectionTimeoutMs }}
+  {{- $_ := set $defaultOrchestratorEnv "POSTGRES_CONNECTION_TIMEOUT_MS" (printf "%v" $postgresValues.connectionTimeoutMs) -}}
+{{- end -}}
+{{- if $postgresValues.maxConnectionLifetimeMs }}
+  {{- $_ := set $defaultOrchestratorEnv "POSTGRES_MAX_CONNECTION_LIFETIME_MS" (printf "%v" $postgresValues.maxConnectionLifetimeMs) -}}
+{{- end -}}
+{{- if $postgresValues.statementTimeoutMs }}
+  {{- $_ := set $defaultOrchestratorEnv "POSTGRES_STATEMENT_TIMEOUT_MS" (printf "%v" $postgresValues.statementTimeoutMs) -}}
+{{- end -}}
+{{- if $postgresValues.queryTimeoutMs }}
+  {{- $_ := set $defaultOrchestratorEnv "POSTGRES_QUERY_TIMEOUT_MS" (printf "%v" $postgresValues.queryTimeoutMs) -}}
+{{- end -}}
 {{- if $root.Values.vault.enabled -}}
   {{- $_ := set $defaultOrchestratorEnv "SECRETS_BACKEND" "vault" -}}
   {{- if $root.Values.vault.address }}
@@ -194,10 +387,8 @@ spec:
         {{- include "oss-ai-agent-tool.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: orchestrator
     spec:
-      {{- if $root.Values.vault.serviceAccountName }}
-      serviceAccountName: {{ $root.Values.vault.serviceAccountName | quote }}
-      {{- end }}
-      {{- with .Values.podSecurityContext }}
+      serviceAccountName: {{ include "oss-ai-agent-tool.orchestratorServiceAccountName" . }}
+      {{- with .Values.orchestrator.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -229,32 +420,26 @@ spec:
                   name: {{ $root.Values.vault.tokenSecretName | quote }}
                   key: {{ ($root.Values.vault.tokenSecretKey | default "token") | quote }}
           {{- end }}
-          {{- if .Values.orchestrator.tls.enabled }}
-            {{- $mountPath := .Values.orchestrator.tls.mountPath | default "/etc/orchestrator/tls" -}}
-            {{- $certFile := .Values.orchestrator.tls.certFile | default "tls.crt" -}}
-            {{- $keyFile := .Values.orchestrator.tls.keyFile | default "tls.key" -}}
-            {{- $caFile := .Values.orchestrator.tls.caFile | default "" -}}
-            {{- $certPath := printf "%s/%s" $mountPath $certFile -}}
-            {{- $keyPath := printf "%s/%s" $mountPath $keyFile -}}
+          {{- if $orchestratorTlsEnabled }}
             - name: SERVER_TLS_ENABLED
               value: "true"
             - name: SERVER_TLS_CERT_PATH
-              value: {{ $certPath | quote }}
+              value: {{ printf "%s/%s" $orchestratorTlsMountPath $orchestratorTlsCertFile | quote }}
             - name: SERVER_TLS_KEY_PATH
-              value: {{ $keyPath | quote }}
-            {{- if $caFile }}
+              value: {{ printf "%s/%s" $orchestratorTlsMountPath $orchestratorTlsKeyFile | quote }}
+            {{- if $orchestratorTlsCaFile }}
             - name: SERVER_TLS_CA_PATHS
-              value: {{ printf "%s/%s" $mountPath $caFile | quote }}
+              value: {{ printf "%s/%s" $orchestratorTlsMountPath $orchestratorTlsCaFile | quote }}
             {{- end }}
             - name: SERVER_TLS_REQUEST_CLIENT_CERT
-              value: {{ ternary "true" "false" (.Values.orchestrator.tls.requestClientCert | default true) | quote }}
+              value: {{ ternary "true" "false" $orchestratorRequestClientCert | quote }}
           {{- end }}
           volumeMounts:
             - name: plan-state
               mountPath: /app/data
-          {{- if .Values.orchestrator.tls.enabled }}
+          {{- if $orchestratorTlsEnabled }}
             - name: orchestrator-tls
-              mountPath: {{ (.Values.orchestrator.tls.mountPath | default "/etc/orchestrator/tls") | quote }}
+              mountPath: {{ $orchestratorTlsMountPath | quote }}
               readOnly: true
           {{- end }}
           {{- $kafkaTlsSecretName := index $kafkaRuntime "tlsSecretName" -}}
@@ -267,7 +452,7 @@ spec:
           envFrom:
             {{- toYaml . | nindent 12 }}
           {{- end }}
-          {{- with .Values.containerSecurityContext }}
+          {{- with .Values.orchestrator.containerSecurityContext }}
           securityContext:
             {{- toYaml . | nindent 12 }}
           {{- end }}
@@ -277,7 +462,14 @@ spec:
           {{- end }}
           {{- with .Values.orchestrator.livenessProbe }}
           livenessProbe:
-            {{- toYaml . | nindent 12 }}
+            httpGet:
+              path: /healthz
+              port: http
+              {{ if $orchestratorTlsEnabled }}
+              scheme: HTTPS
+              {{ end }}
+            initialDelaySeconds: 5
+            periodSeconds: 15
           {{- else }}
           livenessProbe:
             httpGet:
@@ -288,7 +480,14 @@ spec:
           {{- end }}
           {{- with .Values.orchestrator.readinessProbe }}
           readinessProbe:
-            {{- toYaml . | nindent 12 }}
+            httpGet:
+              path: /healthz
+              port: http
+              {{ if $orchestratorTlsEnabled }}
+              scheme: HTTPS
+              {{ end }}
+            initialDelaySeconds: 2
+            periodSeconds: 10
           {{- else }}
           readinessProbe:
             httpGet:
@@ -300,14 +499,26 @@ spec:
       volumes:
         - name: plan-state
           emptyDir: {}
-      {{- if .Values.orchestrator.tls.enabled }}
+      {{- if $orchestratorTlsEnabled }}
         - name: orchestrator-tls
           secret:
-            secretName: {{ .Values.orchestrator.tls.secretName | quote }}
+            secretName: {{ $orchestratorTlsSecretName | quote }}
       {{- end }}
       {{- $kafkaTlsSecretName := index $kafkaRuntime "tlsSecretName" -}}
       {{- if $kafkaTlsSecretName }}
         - name: kafka-tls
           secret:
             secretName: {{ $kafkaTlsSecretName | quote }}
+      {{- end }}
+      {{- with .Values.orchestrator.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.orchestrator.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.orchestrator.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
       {{- end }}

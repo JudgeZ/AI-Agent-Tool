@@ -5,6 +5,9 @@ const { mkdirSync, rmSync, readFileSync, writeFileSync } = require("node:fs");
 const { resolve, join } = require("node:path");
 const { gunzipSync } = require("node:zlib");
 
+const { createLogger } = require("../../scripts/logger");
+const logger = createLogger({ name: "opa-build" });
+
 const cwd = resolve(__dirname);
 const distDir = join(cwd, "dist");
 const bundlePath = join(distDir, "capabilities.tar.gz");
@@ -16,7 +19,9 @@ try {
   rmSync(bundlePath, { force: true });
 } catch (err) {
   if (err && err.code !== "ENOENT") {
-    console.warn(`[opa] warning: unable to remove existing bundle: ${err.message}`);
+    logger.warn("Unable to remove existing OPA bundle.", {
+      error: err.message
+    });
   }
 }
 
@@ -39,22 +44,26 @@ const result = spawnSync("opa", args, {
 
 if (result.error) {
   if (result.error.code === "ENOENT") {
-    console.error(
-      "[opa] The 'opa' CLI was not found on your PATH. Install it from https://openpolicyagent.org/docs/latest/ or ensure it is available before running this script."
-    );
+    logger.error("The 'opa' CLI was not found on the system PATH.", {
+      remediation: "Install from https://openpolicyagent.org/docs/latest/ before running this script."
+    });
     process.exit(1);
   }
 
-  console.error(`[opa] Failed to launch opa: ${result.error.message}`);
+  logger.error("Failed to launch the OPA CLI.", {
+    error: result.error.message
+  });
   process.exit(1);
 }
 
 if (result.status !== 0) {
-  console.error(`[opa] opa build exited with status ${result.status}`);
+  logger.error("OPA build exited with a non-zero status.", {
+    status: result.status
+  });
   process.exit(result.status ?? 1);
 }
 
-console.log(`[opa] bundle written to ${bundlePath}`);
+logger.info("OPA bundle written.", { bundlePath });
 
 const archive = readFileSync(bundlePath);
 const tarBuffer = gunzipSync(archive);
@@ -93,7 +102,7 @@ function extractFiles(buffer) {
 const files = extractFiles(tarBuffer);
 const wasm = files.get("policy.wasm");
 if (!wasm) {
-  console.error("[opa] policy.wasm not found in bundle");
+  logger.error("policy.wasm not found in the generated bundle.");
   process.exit(1);
 }
 writeFileSync(join(distDir, "capabilities.wasm"), wasm);
@@ -103,5 +112,7 @@ if (data) {
   writeFileSync(join(distDir, "data.json"), data);
 }
 
-console.log(`[opa] extracted policy.wasm to ${join(distDir, "capabilities.wasm")}`);
+logger.info("Extracted policy.wasm to capabilities.wasm.", {
+  outputPath: join(distDir, "capabilities.wasm")
+});
 

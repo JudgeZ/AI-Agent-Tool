@@ -46,8 +46,12 @@ services:
       POSTGRES_URL_FILE: /run/secrets/orchestrator_postgres_url
       RABBITMQ_URL_FILE: /run/secrets/orchestrator_rabbitmq_url
       KAFKA_BROKERS: kafka:9092
+      POSTGRES_MIN_CONNECTIONS: ${POSTGRES_MIN_CONNECTIONS:-2}
+      POSTGRES_STATEMENT_TIMEOUT_MS: ${POSTGRES_STATEMENT_TIMEOUT_MS:-5000}
+      POSTGRES_QUERY_TIMEOUT_MS: ${POSTGRES_QUERY_TIMEOUT_MS:-5000}
+      GATEWAY_MAX_REQUEST_BODY_BYTES: ${GATEWAY_MAX_REQUEST_BODY_BYTES:-1048576}
       LANGFUSE_BASE_URL: http://langfuse:3000
-      LANGFUSE_PUBLIC_KEY: ${LANGFUSE_PUBLIC_KEY:-changeme}
+      LANGFUSE_PUBLIC_KEY_FILE: /run/secrets/langfuse_public_key
       LANGFUSE_SECRET_KEY_FILE: /run/secrets/langfuse_secret_key
       LOCAL_SECRETS_PASSPHRASE_FILE: /run/secrets/local_secrets_passphrase
       OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
@@ -70,6 +74,7 @@ services:
       - orchestrator_postgres_url
       - orchestrator_rabbitmq_url
       - langfuse_secret_key
+      - langfuse_public_key
       - local_secrets_passphrase
 
   indexer:
@@ -83,9 +88,15 @@ services:
       - /tmp
     environment:
       RUST_LOG: info
+      RUN_MODE: ${RUN_MODE:-consumer}
+      INDEXER_JWT_HS256_SECRET_FILE: /run/secrets/indexer_jwt_secret
+      INDEXER_JWT_ISSUER: ${INDEXER_JWT_ISSUER:-https://orchestrator:4000}
+      INDEXER_JWT_AUDIENCE: ${INDEXER_JWT_AUDIENCE:-oss-ai-indexer}
     restart: unless-stopped
     networks:
       - backend
+    secrets:
+      - indexer_jwt_secret
 
   redis:
     image: redis/redis-stack-server:7.2.0-v9
@@ -231,10 +242,14 @@ secrets:
     file: ./secrets/prod/orchestrator_rabbitmq_url.txt
   langfuse_secret_key:
     file: ./secrets/prod/langfuse_secret_key.txt
+  langfuse_public_key:
+    file: ./secrets/prod/langfuse_public_key.txt
   local_secrets_passphrase:
     file: ./secrets/prod/local_secrets_passphrase.txt
   postgres_password:
     file: ./secrets/prod/postgres_password.txt
+  indexer_jwt_secret:
+    file: ./secrets/prod/indexer_jwt_secret.txt
 
 networks:
   frontend:

@@ -3,6 +3,13 @@ import { isDeepStrictEqual } from "node:util";
 import { performance } from "node:perf_hooks";
 
 import {
+  context as otelContext,
+  propagation,
+  type TextMapGetter,
+  type TextMapSetter,
+} from "@opentelemetry/api";
+
+import {
   queueDepthGauge,
   queueProcessingHistogram,
   queueResultCounter,
@@ -29,6 +36,7 @@ import {
 } from "./PlanStateStore.js";
 import { getPostgresPool } from "../database/Postgres.js";
 import { withSpan } from "../observability/tracing.js";
+import { appLogger, normalizeError } from "../observability/logger.js";
 import {
   getPolicyEnforcer,
   PolicyViolationError,
@@ -54,6 +62,7 @@ export type PlanStepCompletionPayload = {
   timeoutSeconds?: number;
   approvalRequired?: boolean;
   traceId?: string;
+  requestId?: string;
   occurredAt?: string;
   attempt?: number;
   approvals?: Record<string, boolean>;
@@ -69,6 +78,56 @@ const planStateRetentionMs =
     ? runtimeConfig.retention.planStateDays * DAY_MS
     : undefined;
 const contentCaptureEnabled = runtimeConfig.retention.contentCapture.enabled;
+
+const queueLogger = appLogger.child({ component: "plan-queue-runtime" });
+
+const propagationSetter: TextMapSetter<Record<string, string>> = {
+  set: (carrier, key, value) => {
+    if (!value) {
+      return;
+    }
+    carrier[key] = value;
+  },
+};
+
+const propagationGetter: TextMapGetter<Record<string, string>> = {
+  keys: carrier => Object.keys(carrier),
+  get: (carrier, key) => {
+    const direct = carrier[key];
+    if (typeof direct === "string") {
+      return direct;
+    }
+    const lower = carrier[key.toLowerCase()];
+    if (typeof lower === "string") {
+      return lower;
+    }
+    const upper = carrier[key.toUpperCase()];
+    if (typeof upper === "string") {
+      return upper;
+    }
+    return undefined;
+  },
+};
+
+function normalizeHeaders(
+  headers: Record<string, string> | undefined,
+): Record<string, string> {
+  if (!headers) {
+    return {};
+  }
+  const carrier: Record<string, string> = {};
+  for (const [rawKey, rawValue] of Object.entries(headers)) {
+    if (typeof rawValue !== "string" || rawValue.length === 0) {
+      continue;
+    }
+    carrier[rawKey] = rawValue;
+    const lower = rawKey.toLowerCase();
+    if (!(lower in carrier)) {
+      carrier[lower] = rawValue;
+    }
+  }
+  return carrier;
+}
 
 function instantiatePlanStateStore(): PlanStatePersistence {
   if (runtimeConfig.planState.backend === "postgres") {
@@ -92,7 +151,7 @@ function instantiatePlanStateStore(): PlanStatePersistence {
 
 const stepRegistry = new Map<
   string,
-  { step: PlanStep; traceId: string; job: PlanJob; inFlight: boolean }
+  { step: PlanStep; traceId: string; requestId?: string; job: PlanJob; inFlight: boolean }
 >();
 const approvalCache = new Map<string, Record<string, boolean>>();
 const planSubjects = new Map<string, PlanSubject>();
@@ -426,17 +485,22 @@ async function releaseNextPlanSteps(planId: string): Promise<void> {
 
       const subjectContext =
         stepEntry.subject ?? existing?.subject ?? planSubjects.get(planId);
+      const baseRequestId = metadata.requestId ?? stepEntry.requestId ?? randomUUID();
       const job: PlanJob = {
         planId,
         step: stepEntry.step,
         attempt: existing?.attempt ?? stepEntry.attempt ?? 0,
         createdAt: existing?.createdAt ?? stepEntry.createdAt,
         traceId: metadata.traceId,
+        requestId: baseRequestId,
         subject: subjectContext ? clonePlanSubject(subjectContext) : undefined,
       };
 
+      metadata.requestId = baseRequestId;
+
       stepEntry.attempt = job.attempt;
       stepEntry.createdAt = job.createdAt;
+      stepEntry.requestId = baseRequestId;
       stepEntry.subject = job.subject ? clonePlanSubject(job.subject) : undefined;
 
       const approvals = await ensureApprovals(planId, stepEntry.step.id);
@@ -451,6 +515,7 @@ async function releaseNextPlanSteps(planId: string): Promise<void> {
       stepRegistry.set(key, {
         step: stepEntry.step,
         traceId: metadata.traceId,
+        requestId: job.requestId,
         job,
         inFlight: false,
       });
@@ -470,11 +535,12 @@ async function releaseNextPlanSteps(planId: string): Promise<void> {
               idempotencyKey: key,
               attempt: job.attempt,
               createdAt: job.createdAt,
+              requestId: job.requestId,
               approvals,
               subject: job.subject,
             },
           );
-          await emitPlanEvent(planId, stepEntry.step, metadata.traceId, {
+          await emitPlanEvent(planId, stepEntry.step, metadata.traceId, job.requestId, {
             state: "waiting_approval",
             summary: "Awaiting approval",
             attempt: job.attempt,
@@ -496,6 +562,7 @@ async function releaseNextPlanSteps(planId: string): Promise<void> {
             idempotencyKey: key,
             attempt: job.attempt,
             createdAt: job.createdAt,
+            requestId: job.requestId,
             approvals,
             subject: job.subject,
           },
@@ -503,18 +570,24 @@ async function releaseNextPlanSteps(planId: string): Promise<void> {
       }
 
       try {
+        const headers: Record<string, string> = {};
+        propagation.inject(otelContext.active(), headers, propagationSetter);
+        headers["trace-id"] = metadata.traceId;
+        if (job.requestId) {
+          headers["request-id"] = job.requestId;
+        }
         await queueAdapter.enqueue<PlanStepTaskPayload>(
           PLAN_STEPS_QUEUE,
           { ...job },
           {
             idempotencyKey: key,
-            headers: { "trace-id": metadata.traceId },
+            headers,
           },
         );
       } catch (error) {
         const summary =
           error instanceof Error ? error.message : "Failed to enqueue plan step";
-        await emitPlanEvent(planId, stepEntry.step, metadata.traceId, {
+        await emitPlanEvent(planId, stepEntry.step, metadata.traceId, job.requestId, {
           state: "failed",
           summary,
           attempt: job.attempt,
@@ -522,15 +595,19 @@ async function releaseNextPlanSteps(planId: string): Promise<void> {
         stepRegistry.delete(key);
         clearApprovals(planId, stepEntry.step.id);
         prunePlanSubject(planId);
-        console.warn(
-          "plan.step.enqueue_failed_cleanup",
-          { planId, stepId: stepEntry.step.id },
-          error,
+        queueLogger.warn(
+          {
+            err: normalizeError(error),
+            planId,
+            stepId: stepEntry.step.id,
+            event: "plan.step.enqueue_failed_cleanup",
+          },
+          "Plan step enqueue failed; cleaned up state",
         );
         throw error;
       }
 
-      await emitPlanEvent(planId, stepEntry.step, metadata.traceId, {
+      await emitPlanEvent(planId, stepEntry.step, metadata.traceId, job.requestId, {
         state: "queued",
         summary: "Queued for execution",
         attempt: job.attempt,
@@ -560,6 +637,7 @@ async function emitPlanEvent(
   planId: string,
   step: PlanStep,
   traceId: string,
+  requestId: string | undefined,
   update: Partial<ToolEvent> & {
     state: ToolEvent["state"];
     summary?: string;
@@ -597,6 +675,7 @@ async function emitPlanEvent(
   publishPlanStepEvent({
     event: "plan.step",
     traceId,
+    requestId,
     planId,
     occurredAt: update.occurredAt ?? new Date().toISOString(),
     step: {
@@ -624,7 +703,7 @@ async function publishToolEvents(
   events: ToolEvent[],
 ): Promise<void> {
   for (const event of events) {
-    await emitPlanEvent(planId, baseStep, traceId, {
+    await emitPlanEvent(planId, baseStep, traceId, job.requestId, {
       state: event.state,
       summary: event.summary,
       occurredAt: event.occurredAt,
@@ -668,7 +747,14 @@ async function initializeWithRetry(): Promise<void> {
       if (retryDelayMs !== undefined) {
         context.retryDelayMs = retryDelayMs;
       }
-      console.error("plan.queue_runtime.initialization_failed", context, error);
+      queueLogger.error(
+        {
+          err: normalizeError(error),
+          ...context,
+          event: "plan.queue_runtime.initialization_failed",
+        },
+        "Plan queue runtime initialization failed",
+      );
       if (!willRetry) {
         throw error;
       }
@@ -712,6 +798,7 @@ export function resetPlanQueueRuntime(): void {
 export async function submitPlanSteps(
   plan: Plan,
   traceId: string,
+  requestId?: string,
   subject?: PlanSubject,
 ): Promise<void> {
   await initializePlanQueueRuntime();
@@ -725,10 +812,12 @@ export async function submitPlanSteps(
   }
 
   const activeSubject = subject ?? planSubjects.get(plan.id);
+  const normalizedRequestId = requestId ?? randomUUID();
   const metadataSteps = plan.steps.map((step) => ({
     step,
     createdAt: new Date().toISOString(),
     attempt: 0,
+    requestId: normalizedRequestId,
     subject: activeSubject ? clonePlanSubject(activeSubject) : undefined,
   }));
 
@@ -736,6 +825,7 @@ export async function submitPlanSteps(
     await planStateStore?.rememberPlanMetadata(plan.id, {
       planId: plan.id,
       traceId,
+      requestId: normalizedRequestId,
       steps: metadataSteps,
       nextStepIndex: 0,
       lastCompletedIndex: -1,
@@ -767,10 +857,12 @@ export async function resolvePlanStepApproval(options: {
         attempt: persisted.attempt,
         createdAt: persisted.createdAt,
         traceId: persisted.traceId,
+        requestId: persisted.requestId,
       };
       metadata = {
         step: persisted.step,
         traceId: persisted.traceId,
+        requestId: persisted.requestId,
         job,
         inFlight: false,
       };
@@ -783,12 +875,13 @@ export async function resolvePlanStepApproval(options: {
   }
 
   const { step, traceId, job } = metadata;
+  const requestId = metadata.requestId ?? job.requestId;
   const decisionSummary =
     summary ??
     (decision === "approved" ? "Approved for execution" : "Step rejected");
 
   if (decision === "rejected") {
-    await emitPlanEvent(planId, step, traceId, {
+    await emitPlanEvent(planId, step, traceId, requestId, {
       state: "rejected",
       summary: decisionSummary,
       attempt: job.attempt,
@@ -818,7 +911,7 @@ export async function resolvePlanStepApproval(options: {
               )
               .join("; ")
           : error.message;
-      await emitPlanEvent(planId, step, traceId, {
+      await emitPlanEvent(planId, step, traceId, requestId, {
         state: "rejected",
         summary,
         attempt: job.attempt,
@@ -834,14 +927,15 @@ export async function resolvePlanStepApproval(options: {
   cacheApprovals(planId, stepId, updatedApprovals);
   await planStateStore?.recordApproval(planId, stepId, step.capability, true);
 
-  await emitPlanEvent(planId, step, traceId, {
+  await emitPlanEvent(planId, step, traceId, requestId, {
     state: "approved",
     summary: decisionSummary,
     attempt: job.attempt,
   });
   const refreshedJob: PlanJob = { ...job, createdAt: new Date().toISOString() };
   metadata.job = refreshedJob;
-  stepRegistry.set(key, { step, traceId, job: refreshedJob, inFlight: false });
+  metadata.requestId = requestId;
+  stepRegistry.set(key, { step, traceId, requestId, job: refreshedJob, inFlight: false });
 
   await releaseNextPlanSteps(planId);
 }
@@ -856,6 +950,13 @@ async function setupCompletionConsumer(): Promise<void> {
       await adapter.consume<PlanStepCompletionPayload>(
         PLAN_COMPLETIONS_QUEUE,
         async (message) => {
+          const headerCarrier = normalizeHeaders(message.headers);
+          const parentContext = propagation.extract(
+            otelContext.active(),
+            headerCarrier,
+            propagationGetter,
+          );
+          await otelContext.with(parentContext, async () => {
           const payload = message.payload;
           const key = `${payload.planId}:${payload.stepId}`;
           const metadata = stepRegistry.get(key);
@@ -881,17 +982,35 @@ async function setupCompletionConsumer(): Promise<void> {
             message.headers["idempotency-key"] ||
             message.headers["Idempotency-Key"] ||
             "";
+          const headerRequestId =
+            payload.requestId ||
+            message.headers["request-id"] ||
+            message.headers["requestId"] ||
+            message.headers["Request-Id"] ||
+            "";
+          const headerRequest =
+            headerRequestId.length > 0 ? headerRequestId : undefined;
+          const expectedRequestId =
+            metadata?.requestId ??
+            metadata?.job.requestId ??
+            persistedEntry?.requestId ??
+            headerRequest;
 
           if (!metadata && !persistedEntry) {
-            console.warn("plan.completion.unknown_step", {
-              planId: payload.planId,
-              stepId: payload.stepId,
-              messageId: message.id,
-            });
+            queueLogger.warn(
+              {
+                planId: payload.planId,
+                stepId: payload.stepId,
+                messageId: message.id,
+                event: "plan.completion.unknown_step",
+              },
+              "Received completion for unknown step",
+            );
             logAuditEvent({
               action: "plan.step.completion",
               outcome: "denied",
               traceId: receivedTraceId || message.id,
+              requestId: expectedRequestId,
               resource: "plan.step",
               subject: planSubjectToAuditSubject(subjectContext),
               details: {
@@ -940,19 +1059,24 @@ async function setupCompletionConsumer(): Promise<void> {
           }
 
           if (enforceMetadata && !metadataMatches) {
-            console.warn("plan.completion.metadata_mismatch", {
-              planId: payload.planId,
-              stepId: payload.stepId,
-              messageId: message.id,
-              expectedTraceId,
-              receivedTraceId,
-              expectedIdempotencyKey,
-              receivedIdempotencyKey,
-            });
+            queueLogger.warn(
+              {
+                planId: payload.planId,
+                stepId: payload.stepId,
+                messageId: message.id,
+                expectedTraceId,
+                receivedTraceId,
+                expectedIdempotencyKey,
+                receivedIdempotencyKey,
+                event: "plan.completion.metadata_mismatch",
+              },
+              "Plan completion metadata mismatch detected",
+            );
             logAuditEvent({
               action: "plan.step.completion",
               outcome: "denied",
               traceId: expectedTraceId || receivedTraceId || message.id,
+              requestId: expectedRequestId,
               resource: "plan.step",
               subject: planSubjectToAuditSubject(subjectContext),
               details: {
@@ -1001,6 +1125,7 @@ async function setupCompletionConsumer(): Promise<void> {
           publishPlanStepEvent({
             event: "plan.step",
             traceId: traceId || message.id,
+            requestId: expectedRequestId,
             planId: payload.planId,
             occurredAt: payload.occurredAt ?? new Date().toISOString(),
             step: {
@@ -1065,6 +1190,7 @@ async function setupCompletionConsumer(): Promise<void> {
           }
 
           await message.ack();
+        });
         },
       );
       completionConsumerReady = true;
@@ -1084,134 +1210,154 @@ async function setupStepConsumer(): Promise<void> {
     stepConsumerSetupPromise = (async () => {
       const adapter = await getQueueAdapter();
       await adapter.consume<unknown>(PLAN_STEPS_QUEUE, async (message) => {
-        let payload: PlanStepTaskPayload;
-        try {
-          payload = message.payload as PlanStepTaskPayload;
-        } catch (error) {
-          console.error("plan.step.invalid_payload", error);
-          await message.ack();
-          return;
-        }
+        const headerCarrier = normalizeHeaders(message.headers);
+        const parentContext = propagation.extract(
+          otelContext.active(),
+          headerCarrier,
+          propagationGetter,
+        );
+        await otelContext.with(parentContext, async () => {
+          let payload: PlanStepTaskPayload;
+          try {
+            payload = message.payload as PlanStepTaskPayload;
+          } catch (error) {
+            queueLogger.error(
+              { err: normalizeError(error), event: "plan.step.invalid_payload" },
+              "Received invalid plan step payload",
+            );
+            await message.ack();
+            return;
+          }
 
-        const job: PlanJob = {
-          ...payload,
-          attempt: Math.max(payload.attempt ?? 0, message.attempts ?? 0),
-        };
-        const planId = job.planId;
-        const step = payload.step;
-        const traceId =
-          job.traceId || message.headers["trace-id"] || message.id;
-        const invocationId = randomUUID();
-        const key = `${planId}:${step.id}`;
+          const job: PlanJob = {
+            ...payload,
+            attempt: Math.max(payload.attempt ?? 0, message.attempts ?? 0),
+          };
+          const planId = job.planId;
+          const step = payload.step;
+          const traceId =
+            job.traceId || message.headers["trace-id"] || message.id;
+          const invocationId = randomUUID();
+          const key = `${planId}:${step.id}`;
 
-        await withSpan(
-          "queue.plan_step.process",
-          async (span) => {
-            span.setAttribute("queue", PLAN_STEPS_QUEUE);
-            span.setAttribute("plan.id", planId);
-            span.setAttribute("plan.id_length", planId.length);
-            span.setAttribute("plan.step_id", step.id);
-            span.setAttribute("queue.attempt", job.attempt);
-            span.setAttribute("trace.id", traceId);
+          await withSpan(
+            "queue.plan_step.process",
+            async (span) => {
+              span.setAttribute("queue", PLAN_STEPS_QUEUE);
+              span.setAttribute("plan.id", planId);
+              span.setAttribute("plan.id_length", planId.length);
+              span.setAttribute("plan.step_id", step.id);
+              span.setAttribute("queue.attempt", job.attempt);
+              span.setAttribute("trace.id", traceId);
 
-            const entry = stepRegistry.get(key);
-            const existingAttempt = entry?.job.attempt ?? -1;
-            if (entry) {
-              if (!entry.inFlight || existingAttempt < job.attempt) {
-                entry.traceId = traceId;
-                entry.job = job;
-                entry.inFlight = true;
+              const entry = stepRegistry.get(key);
+              const existingAttempt = entry?.job.attempt ?? -1;
+              if (entry) {
+                if (!entry.inFlight || existingAttempt < job.attempt) {
+                  entry.traceId = traceId;
+                  entry.job = job;
+                  if (job.requestId) {
+                    entry.requestId = job.requestId;
+                  }
+                  entry.inFlight = true;
+                } else {
+                  await message.ack();
+                  return;
+                }
               } else {
-                await message.ack();
-                return;
+                stepRegistry.set(key, {
+                  step,
+                  traceId,
+                  requestId: job.requestId,
+                  job,
+                  inFlight: true,
+                });
               }
-            } else {
-              stepRegistry.set(key, { step, traceId, job, inFlight: true });
-            }
 
-            const startedAt = performance.now();
-            type QueueResult =
-              | "completed"
-              | "failed"
-              | "dead_lettered"
-              | "retry"
-              | "rejected";
+              const startedAt = performance.now();
+              type QueueResult =
+                | "completed"
+                | "failed"
+                | "dead_lettered"
+                | "retry"
+                | "rejected";
 
-            const recordResult = (result: QueueResult) => {
-              const durationSeconds = (performance.now() - startedAt) / 1000;
-              queueProcessingHistogram
-                .labels(PLAN_STEPS_QUEUE)
-                .observe(durationSeconds);
-              queueResultCounter.labels(PLAN_STEPS_QUEUE, result).inc();
-              span.setAttribute("queue.result", result);
-              span.setAttribute("queue.duration_ms", durationSeconds * 1000);
-            };
+              const recordResult = (result: QueueResult) => {
+                const durationSeconds = (performance.now() - startedAt) / 1000;
+                queueProcessingHistogram
+                  .labels(PLAN_STEPS_QUEUE)
+                  .observe(durationSeconds);
+                queueResultCounter.labels(PLAN_STEPS_QUEUE, result).inc();
+                span.setAttribute("queue.result", result);
+                span.setAttribute("queue.duration_ms", durationSeconds * 1000);
+              };
 
-            const metadataSnapshot = await planStateStore?.getPlanMetadata(planId);
-            if (metadataSnapshot) {
-              const stepIndex = metadataSnapshot.steps.findIndex(
-                (candidate) => candidate.step.id === step.id,
-              );
-              if (
-                stepIndex !== -1 &&
-                metadataSnapshot.lastCompletedIndex >= stepIndex
-              ) {
-                await message.ack();
-                recordResult("completed");
-                return;
+              const metadataSnapshot = await planStateStore?.getPlanMetadata(planId);
+              if (metadataSnapshot) {
+                const stepIndex = metadataSnapshot.steps.findIndex(
+                  (candidate) => candidate.step.id === step.id,
+                );
+                if (
+                  stepIndex !== -1 &&
+                  metadataSnapshot.lastCompletedIndex >= stepIndex
+                ) {
+                  await message.ack();
+                  recordResult("completed");
+                  return;
+                }
               }
-            }
 
-            const persisted = await planStateStore?.getEntry(planId, step.id);
-            if (persisted) {
-              if (
-                entry?.inFlight &&
-                persisted.state === "running" &&
-                persisted.attempt >= job.attempt
-              ) {
-                await message.ack();
-                return;
+              const persisted = await planStateStore?.getEntry(planId, step.id);
+              if (persisted) {
+                if (
+                  entry?.inFlight &&
+                  persisted.state === "running" &&
+                  persisted.attempt >= job.attempt
+                ) {
+                  await message.ack();
+                  return;
+                }
+                await planStateStore?.setState(
+                  planId,
+                  step.id,
+                  "running",
+                  undefined,
+                  undefined,
+                  job.attempt,
+                );
               }
-              await planStateStore?.setState(
-                planId,
-                step.id,
-                "running",
-                undefined,
-                undefined,
-                job.attempt,
-              );
-            }
-            const subjectContext = job.subject ?? planSubjects.get(planId);
-            if (job.subject) {
-              planSubjects.set(planId, clonePlanSubject(job.subject));
-              clearRetainedPlanSubject(planId);
-            }
-            if (!persisted) {
-              await planStateStore?.rememberStep(planId, step, traceId, {
-                initialState: "running",
-                idempotencyKey: key,
+              const subjectContext = job.subject ?? planSubjects.get(planId);
+              if (job.subject) {
+                planSubjects.set(planId, clonePlanSubject(job.subject));
+                clearRetainedPlanSubject(planId);
+              }
+              if (!persisted) {
+                await planStateStore?.rememberStep(planId, step, traceId, {
+                  initialState: "running",
+                  idempotencyKey: key,
+                  attempt: job.attempt,
+                  createdAt: job.createdAt,
+                  requestId: job.requestId,
+                  subject: subjectContext,
+                });
+              }
+
+              await emitPlanEvent(planId, step, traceId, job.requestId, {
+                state: "running",
+                summary: "Dispatching tool agent",
                 attempt: job.attempt,
-                createdAt: job.createdAt,
-                subject: subjectContext,
               });
-            }
 
-            await emitPlanEvent(planId, step, traceId, {
-              state: "running",
-              summary: "Dispatching tool agent",
-              attempt: job.attempt,
-            });
-
-            const approvals = await ensureApprovals(planId, step.id);
-            let policyDecision: PolicyDecision;
-            try {
-              policyDecision = await policyEnforcer.enforcePlanStep(step, {
-                planId,
-                traceId,
-                approvals,
-                subject: toPolicySubject(subjectContext),
-              });
-            } catch (error) {
+              const approvals = await ensureApprovals(planId, step.id);
+              let policyDecision: PolicyDecision;
+              try {
+                policyDecision = await policyEnforcer.enforcePlanStep(step, {
+                  planId,
+                  traceId,
+                  approvals,
+                  subject: toPolicySubject(subjectContext),
+                });
+              } catch (error) {
               if (error instanceof PolicyViolationError) {
                 logAuditEvent({
                   action: "plan.step.authorize",
@@ -1240,7 +1386,7 @@ async function setupStepConsumer(): Promise<void> {
                         .join("; ")
                     : error.message;
 
-                await emitPlanEvent(planId, step, traceId, {
+                await emitPlanEvent(planId, step, traceId, job.requestId, {
                   state: "rejected",
                   summary,
                   attempt: job.attempt,
@@ -1267,7 +1413,7 @@ async function setupStepConsumer(): Promise<void> {
                       )
                       .join("; ")
                   : "Capability policy denied execution";
-              await emitPlanEvent(planId, step, traceId, {
+              await emitPlanEvent(planId, step, traceId, job.requestId, {
                 state: "rejected",
                 summary,
                 attempt: job.attempt,
@@ -1309,7 +1455,7 @@ async function setupStepConsumer(): Promise<void> {
               if (events.length > 0) {
                 await publishToolEvents(planId, step, traceId, job, events);
               } else {
-                await emitPlanEvent(planId, step, traceId, {
+                await emitPlanEvent(planId, step, traceId, job.requestId, {
                   state: "completed",
                   summary: "Tool completed",
                   attempt: job.attempt,
@@ -1355,11 +1501,15 @@ async function setupStepConsumer(): Promise<void> {
                 try {
                   await releaseNextPlanSteps(planId);
                 } catch (error) {
-                  console.error("plan.step.release_failed", {
-                    planId,
-                    stepId: step.id,
-                    error,
-                  });
+                  queueLogger.error(
+                    {
+                      err: normalizeError(error),
+                      planId,
+                      stepId: step.id,
+                      event: "plan.step.release_failed",
+                    },
+                    "Failed to release next plan steps",
+                  );
                 }
               }
             } catch (error) {
@@ -1377,7 +1527,7 @@ async function setupStepConsumer(): Promise<void> {
                     );
 
               if (toolError.retryable && job.attempt < MAX_RETRIES) {
-                await emitPlanEvent(planId, step, traceId, {
+                await emitPlanEvent(planId, step, traceId, job.requestId, {
                   state: "retrying",
                   summary: `Retry scheduled (attempt ${job.attempt + 1}/${MAX_RETRIES}): ${toolError.message}`,
                   attempt: job.attempt,
@@ -1396,7 +1546,7 @@ async function setupStepConsumer(): Promise<void> {
                   entry.job = job;
                   entry.traceId = traceId;
                 } else {
-                  stepRegistry.set(key, { step, traceId, job, inFlight: false });
+                  stepRegistry.set(key, { step, traceId, requestId: job.requestId, job, inFlight: false });
                 }
                 await planStateStore?.setState(
                   planId,
@@ -1406,7 +1556,7 @@ async function setupStepConsumer(): Promise<void> {
                   undefined,
                   nextAttempt,
                 );
-                await emitPlanEvent(planId, step, traceId, {
+                await emitPlanEvent(planId, step, traceId, job.requestId, {
                   state: "queued",
                   summary: `Retry enqueued (attempt ${nextAttempt}/${MAX_RETRIES})`,
                   attempt: nextAttempt,
@@ -1417,7 +1567,7 @@ async function setupStepConsumer(): Promise<void> {
 
               if (toolError.retryable) {
                 const reason = `Retries exhausted after ${job.attempt} attempts: ${toolError.message}`;
-                await emitPlanEvent(planId, step, traceId, {
+                await emitPlanEvent(planId, step, traceId, job.requestId, {
                   state: "dead_lettered",
                   summary: reason,
                   attempt: job.attempt,
@@ -1431,7 +1581,7 @@ async function setupStepConsumer(): Promise<void> {
                 return;
               }
 
-              await emitPlanEvent(planId, step, traceId, {
+              await emitPlanEvent(planId, step, traceId, job.requestId, {
                 state: "failed",
                 summary: toolError.message,
                 attempt: job.attempt,
@@ -1452,6 +1602,7 @@ async function setupStepConsumer(): Promise<void> {
             attempt: job.attempt,
           },
         );
+        });
       });
       stepConsumerReady = true;
     })().catch((error) => {
@@ -1475,10 +1626,12 @@ async function rehydratePendingSteps(): Promise<void> {
       attempt: entry.attempt,
       createdAt: entry.createdAt,
       traceId: entry.traceId,
+      requestId: entry.requestId,
     };
     stepRegistry.set(key, {
       step: entry.step,
       traceId: entry.traceId,
+      requestId: entry.requestId,
       job,
       inFlight: false,
     });
@@ -1500,6 +1653,7 @@ async function rehydratePendingSteps(): Promise<void> {
     publishPlanStepEvent({
       event: "plan.step",
       traceId: entry.traceId,
+      requestId: entry.requestId,
       planId: entry.planId,
       occurredAt: entry.updatedAt,
       step: {
@@ -1590,3 +1744,4 @@ export async function getPlanSubject(
   }
   return getRetainedPlanSubject(planId);
 }
+

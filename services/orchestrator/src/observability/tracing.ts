@@ -1,12 +1,15 @@
 import {
   context,
   diag,
+  DiagConsoleLogger,
+  DiagLogLevel,
   SpanStatusCode,
   trace,
   type Attributes,
   type Span as OtelSpan
 } from "@opentelemetry/api";
 import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-http";
+import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node";
 import { NodeSDK } from "@opentelemetry/sdk-node";
 import {
   AlwaysOnSampler,
@@ -15,14 +18,19 @@ import {
 } from "@opentelemetry/sdk-trace-base";
 import { Resource } from "@opentelemetry/resources";
 import { SemanticResourceAttributes } from "@opentelemetry/semantic-conventions";
+import { appLogger, normalizeError } from "./logger.js";
 
 const TRACER_NAME = "oss-ai-agent-tool.orchestrator";
 const TRACER_VERSION = process.env.npm_package_version ?? "0.0.0";
 
+diag.setLogger(new DiagConsoleLogger(), DiagLogLevel.ERROR);
+
 function logTracingError(message: string, error: unknown): void {
   diag.error(message, error);
-  // eslint-disable-next-line no-console
-  console.error("[tracing]", message, error);
+  appLogger.error(
+    { err: normalizeError(error), subsystem: "tracing" },
+    message,
+  );
 }
 
 export type TracingConfig = {
@@ -230,11 +238,22 @@ export async function ensureTracing(config: TracingConfig): Promise<void> {
     [SemanticResourceAttributes.DEPLOYMENT_ENVIRONMENT]: config.environment,
     [SemanticResourceAttributes.SERVICE_VERSION]: TRACER_VERSION
   });
+  const instrumentations = getNodeAutoInstrumentations({
+    "@opentelemetry/instrumentation-fs": { enabled: false },
+    "@opentelemetry/instrumentation-dns": { enabled: false },
+    "@opentelemetry/instrumentation-http": {
+      ignoreIncomingRequestHook: request => {
+        const userAgent = request.headers["user-agent"] ?? request.headers["User-Agent"];
+        return typeof userAgent === "string" && userAgent.includes("kube-probe");
+      }
+    }
+  });
 
   const sdk = new NodeSDK({
     resource,
     traceExporter: exporter,
-    sampler: createSampler(config.sampleRatio)
+    sampler: createSampler(config.sampleRatio),
+    instrumentations
   });
 
   const startPromise = Promise.resolve(sdk.start());
