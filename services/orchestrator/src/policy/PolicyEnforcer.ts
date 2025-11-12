@@ -255,6 +255,7 @@ function normalizeDeny(deny: unknown): DenyReason[] {
 
 let singleton: PolicyEnforcer | null = null;
 let shutdownHookRegistered = false;
+const shutdownSignals: NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
 
 export function getPolicyEnforcer(): PolicyEnforcer {
   if (!singleton) {
@@ -269,8 +270,26 @@ function registerShutdownHook(): void {
     return;
   }
   shutdownHookRegistered = true;
-  process.once("exit", () => {
-    void closePolicyEnforcer();
+
+  const handleShutdown = (signal?: NodeJS.Signals) => {
+    const result = closePolicyEnforcer();
+    if (!signal) {
+      void result;
+      return;
+    }
+
+    const exitCode = signal === "SIGINT" ? 130 : 143;
+    void result.finally(() => {
+      process.exit(exitCode);
+    });
+  };
+
+  for (const signal of shutdownSignals) {
+    process.once(signal, () => handleShutdown(signal));
+  }
+
+  process.once("beforeExit", () => {
+    handleShutdown();
   });
 }
 
