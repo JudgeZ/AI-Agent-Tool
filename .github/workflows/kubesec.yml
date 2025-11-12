@@ -56,9 +56,11 @@ jobs:
           manifest="${{ matrix.manifest }}"
           manifest_rel="${manifest#${chart_root}/}"
           mkdir -p rendered
-          output="rendered/${manifest_rel//\//-}"
+          sanitized_name="${manifest_rel//\//-}"
+          output="rendered/${sanitized_name}"
           helm template oss-ai-agent-tool "$chart_root" --show-only "$manifest_rel" > "$output"
           echo "rendered_path=$output" >> "$GITHUB_OUTPUT"
+          echo "sarif_name=kubesec-results-${sanitized_name}.sarif" >> "$GITHUB_OUTPUT"
 
       - name: Run kubesec scanner
         uses: controlplaneio/kubesec-action@43d0ddff5ffee89a6bb9f29b64cd865411137b14
@@ -66,10 +68,10 @@ jobs:
           input: ${{ steps.render.outputs.rendered_path }}
           format: template
           template: template/sarif.tpl
-          output: kubesec-results-${{ replace(matrix.manifest, '/', '-') }}.sarif
+          output: ${{ steps.render.outputs.sarif_name }}
           exit-code: "0"
 
       - name: Upload Kubesec scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: kubesec-results-${{ replace(matrix.manifest, '/', '-') }}.sarif
+          sarif_file: ${{ steps.render.outputs.sarif_name }}
