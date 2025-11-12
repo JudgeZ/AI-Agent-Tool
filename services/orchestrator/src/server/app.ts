@@ -45,10 +45,10 @@ import {
 } from "../observability/metrics.js";
 import { logAuditEvent, type AuditSubject } from "../observability/audit.js";
 import {
-  runWithContext,
-  updateRequestContext,
   getRequestContext,
+  runWithContext,
   type RequestContext,
+  updateContextIdentifiers,
 } from "../observability/requestContext.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
 import {
@@ -198,6 +198,7 @@ function getRequestIds(res: Response): { requestId: string; traceId: string } {
   const context = getRequestContext();
   const requestId = context?.requestId ?? String(res.locals.requestId ?? randomUUID());
   const traceId = context?.traceId ?? String(res.locals.traceId ?? randomUUID());
+  updateContextIdentifiers({ requestId, traceId });
   return { requestId, traceId };
 }
 
@@ -281,17 +282,6 @@ function attachSession(req: ExtendedRequest, config: AppConfig): SessionRecord |
   const session = sessionStore.getSession(sessionId);
   if (session) {
     req.auth = { session };
-    updateRequestContext({
-      subject: {
-        sessionId: session.id,
-        userId: session.subject,
-        tenantId: session.tenantId,
-        email: session.email,
-        name: session.name,
-        roles: session.roles,
-        scopes: session.scopes,
-      },
-    });
   }
   return session;
 }
