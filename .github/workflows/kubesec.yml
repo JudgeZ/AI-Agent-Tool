@@ -15,28 +15,29 @@ on:
     - cron: '31 14 * * 3'
 
 jobs:
+  discover_manifests:
+    name: Discover Helm manifests
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build manifest matrix
+        id: set-matrix
+        run: |
+          manifests=$(find charts/oss-ai-agent-tool/templates -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) -print | sort)
+          manifest_list=$(printf '%s\n' "$manifests" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "matrix={\"manifest\":$manifest_list}" >> "$GITHUB_OUTPUT"
+
   lint:
     name: Kubesec
+    needs: discover_manifests
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      matrix:
-        manifest:
-          - charts/oss-ai-agent-tool/templates/gateway-deployment.yaml
-          - charts/oss-ai-agent-tool/templates/gateway-service.yaml
-          - charts/oss-ai-agent-tool/templates/indexer-deployment.yaml
-          - charts/oss-ai-agent-tool/templates/indexer-service.yaml
-          - charts/oss-ai-agent-tool/templates/ingress.yaml
-          - charts/oss-ai-agent-tool/templates/jaeger.yaml
-          - charts/oss-ai-agent-tool/templates/kafka.yaml
-          - charts/oss-ai-agent-tool/templates/langfuse.yaml
-          - charts/oss-ai-agent-tool/templates/networkpolicy.yaml
-          - charts/oss-ai-agent-tool/templates/orchestrator-deployment.yaml
-          - charts/oss-ai-agent-tool/templates/orchestrator-hpa.yaml
-          - charts/oss-ai-agent-tool/templates/orchestrator-service.yaml
-          - charts/oss-ai-agent-tool/templates/postgres.yaml
-          - charts/oss-ai-agent-tool/templates/rabbitmq.yaml
-          - charts/oss-ai-agent-tool/templates/redis.yaml
+      matrix: ${{ fromJson(needs.discover_manifests.outputs.matrix) }}
     permissions:
       actions: read
       contents: read
