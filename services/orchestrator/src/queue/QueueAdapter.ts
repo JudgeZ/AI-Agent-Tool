@@ -8,6 +8,7 @@ export type EnqueueOptions = {
   idempotencyKey?: string;
   headers?: Record<string, string>;
   delayMs?: number;
+  skipDedupe?: boolean;
 };
 
 export type RetryOptions = {

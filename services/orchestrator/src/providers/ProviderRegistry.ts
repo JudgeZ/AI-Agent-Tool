@@ -2,8 +2,11 @@ import { loadConfig } from "../config.js";
 import { LocalFileStore, VaultStore, type SecretsStore } from "../auth/SecretsStore.js";
 import { VersionedSecretsManager } from "../auth/VersionedSecretsManager.js";
 import { appLogger } from "../observability/logger.js";
-import { createRateLimitStore, type RateLimitStore } from "../rateLimit/store.js";
-import type { RateLimitBackendConfig } from "../config/schema.js";
+import {
+  createRateLimitStore,
+  type RateLimitBackendConfig,
+  type RateLimitStore,
+} from "../rateLimit/store.js";
 import type { ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
 import { AzureOpenAIProvider } from "./azureOpenAI.js";
 import { AnthropicProvider } from "./anthropic.js";

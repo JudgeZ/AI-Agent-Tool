@@ -1,0 +1,139 @@
+import type { Request } from "express";
+
+import type { AppConfig, RateLimitConfig } from "../config.js";
+import type { PlanSubject } from "../plan/validation.js";
+import { resolveClientIp } from "./clientIp.js";
+
+export type RequestIdentity = {
+  ip: string;
+  subjectId?: string;
+  agentName?: string;
+};
+
+export type RateLimitBucket = {
+  endpoint: string;
+  identityType: "ip" | "identity";
+  windowMs: number;
+  maxRequests: number;
+};
+
+type IdentityAwareRateLimitConfig = RateLimitConfig & {
+  identityWindowMs?: number | null;
+  identityMaxRequests?: number | null;
+};
+
+export function createRequestIdentity(
+  req: Request,
+  config: AppConfig,
+  subject?: PlanSubject,
+): RequestIdentity {
+  const ip = resolveClientIp(req, config.server.trustedProxyCidrs);
+  const identity: RequestIdentity = { ip };
+  const subjectId = subject?.sessionId ?? subject?.userId ?? subject?.tenantId;
+  if (subjectId) {
+    identity.subjectId = subjectId;
+  }
+  const agent = subject ? extractAgent(req) : undefined;
+  if (agent) {
+    identity.agentName = agent;
+  }
+  return identity;
+}
+
+export function buildRateLimitKey(identity: RequestIdentity): string {
+  if (identity.subjectId) {
+    return `subject:${identity.subjectId}`;
+  }
+  return `ip:${identity.ip}`;
+}
+
+export function buildRateLimitBuckets(
+  endpoint: string,
+  config: IdentityAwareRateLimitConfig,
+): RateLimitBucket[] {
+  const buckets: RateLimitBucket[] = [
+    {
+      endpoint,
+      identityType: "ip",
+      windowMs: sanitizePositive(config.windowMs),
+      maxRequests: sanitizePositive(config.maxRequests),
+    },
+  ];
+
+  if (hasIdentityLimits(config)) {
+    buckets.push({
+      endpoint,
+      identityType: "identity",
+      windowMs: sanitizePositive(config.identityWindowMs ?? 0),
+      maxRequests: sanitizePositive(config.identityMaxRequests ?? 0),
+    });
+  }
+
+  return buckets;
+}
+
+export function extractAgent(req: Request): string | undefined {
+  const headerValue = readHeader(req, "x-agent") ?? readHeader(req, "X-Agent");
+  const candidate = headerValue ?? readAgentFromBody(req.body);
+  if (!candidate) {
+    return undefined;
+  }
+  const trimmed = candidate.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+export function normalizeRedirectIdentity(value: string | undefined | null): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+  try {
+    const parsed = new URL(trimmed);
+    const portSegment = parsed.port ? `:${parsed.port}` : "";
+    return `${parsed.hostname.toLowerCase()}${portSegment}`;
+  } catch {
+    return trimmed;
+  }
+}
+
+function readHeader(req: Request, name: string): string | undefined {
+  if (typeof req.header === "function") {
+    const value = req.header(name);
+    if (typeof value === "string") {
+      return value;
+    }
+  }
+  const headers = req.headers as Record<string, unknown> | undefined;
+  if (!headers) {
+    return undefined;
+  }
+  const raw = headers[name] ?? headers[name.toLowerCase()];
+  return typeof raw === "string" ? raw : undefined;
+}
+
+function readAgentFromBody(body: unknown): string | undefined {
+  if (typeof body !== "object" || body === null) {
+    return undefined;
+  }
+  const candidate = (body as Record<string, unknown>).agent;
+  return typeof candidate === "string" ? candidate : undefined;
+}
+
+function hasIdentityLimits(config: IdentityAwareRateLimitConfig): boolean {
+  const windowMs = config.identityWindowMs;
+  const maxRequests = config.identityMaxRequests;
+  if (windowMs === undefined || windowMs === null || maxRequests === undefined || maxRequests === null) {
+    return false;
+  }
+  return sanitizePositive(windowMs) > 0 && sanitizePositive(maxRequests) > 0;
+}
+
+function sanitizePositive(value: number): number {
+  if (!Number.isFinite(value) || value <= 0) {
+    return 0;
+  }
+  return Math.floor(value);
+}
