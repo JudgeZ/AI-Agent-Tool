@@ -35,9 +35,23 @@ type CurrentSecret = {
 const DEFAULT_RETAIN_COUNT = 5;
 
 function clampRetain(value: number | undefined, fallback: number): number {
-  if (typeof value !== "number" || Number.isNaN(value) || value < 1) {
-    return Math.max(1, Math.floor(fallback));
+  const normalizedFallback =
+    typeof fallback === "number" &&
+    Number.isFinite(fallback) &&
+    !Number.isNaN(fallback) &&
+    fallback >= 1
+      ? Math.floor(fallback)
+      : DEFAULT_RETAIN_COUNT;
+
+  if (
+    typeof value !== "number" ||
+    Number.isNaN(value) ||
+    !Number.isFinite(value) ||
+    value < 1
+  ) {
+    return normalizedFallback;
   }
+
   return Math.floor(value);
 }
 
