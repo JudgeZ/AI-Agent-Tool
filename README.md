@@ -1,9 +1,9 @@
 # OSS AI Agent Tool
 
-[![CI](https://github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/actions/workflows/ci.yml)
-[![Release Images](https://github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/actions/workflows/release-images.yml/badge.svg)](https://github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/actions/workflows/release-images.yml)
-[![Release Helm Charts](https://github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/actions/workflows/release-charts.yml/badge.svg)](https://github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/actions/workflows/release-charts.yml)
-[![Security Scans](https://github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/actions/workflows/security.yml/badge.svg)](https://github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/actions/workflows/security.yml)
+[CI](https://github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/actions/workflows/ci.yml)
+[Release Images](https://github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/actions/workflows/release-images.yml)
+[Release Helm Charts](https://github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/actions/workflows/release-charts.yml)
+[Security Scans](https://github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/actions/workflows/security.yml)
 
 Local-first, auditable, multi-agent coding assistant with a desktop GUI.
 
