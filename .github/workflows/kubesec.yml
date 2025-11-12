@@ -15,9 +15,29 @@ on:
     - cron: '31 14 * * 3'
 
 jobs:
+  discover_manifests:
+    name: Discover Helm manifests
+    runs-on: ubuntu-latest
+    outputs:
+      matrix: ${{ steps.set-matrix.outputs.matrix }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Build manifest matrix
+        id: set-matrix
+        run: |
+          manifests=$(find charts/oss-ai-agent-tool/templates -maxdepth 1 -type f \( -name '*.yaml' -o -name '*.yml' \) -print | sort)
+          manifest_list=$(printf '%s\n' "$manifests" | jq -R -s -c 'split("\n") | map(select(length > 0))')
+          echo "matrix={\"manifest\":$manifest_list}" >> "$GITHUB_OUTPUT"
+
   lint:
     name: Kubesec
+    needs: discover_manifests
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJson(needs.discover_manifests.outputs.matrix) }}
     permissions:
       actions: read
       contents: read
@@ -26,16 +46,32 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+
+      - name: Render Helm manifest
+        id: render
+        run: |
+          chart_root="charts/oss-ai-agent-tool"
+          manifest="${{ matrix.manifest }}"
+          manifest_rel="${manifest#${chart_root}/}"
+          mkdir -p rendered
+          sanitized_name="${manifest_rel//\//-}"
+          output="rendered/${sanitized_name}"
+          helm template oss-ai-agent-tool "$chart_root" --show-only "$manifest_rel" > "$output"
+          echo "rendered_path=$output" >> "$GITHUB_OUTPUT"
+          echo "sarif_name=kubesec-results-${sanitized_name}.sarif" >> "$GITHUB_OUTPUT"
+
       - name: Run kubesec scanner
         uses: controlplaneio/kubesec-action@43d0ddff5ffee89a6bb9f29b64cd865411137b14
         with:
-          input: file.yaml # specify configuration file to scan here
+          input: ${{ steps.render.outputs.rendered_path }}
           format: template
           template: template/sarif.tpl
-          output: kubesec-results.sarif
+          output: ${{ steps.render.outputs.sarif_name }}
           exit-code: "0"
 
       - name: Upload Kubesec scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: kubesec-results.sarif
+          sarif_file: ${{ steps.render.outputs.sarif_name }}
