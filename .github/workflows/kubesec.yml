@@ -46,10 +46,24 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
+      - name: Install Helm
+        uses: azure/setup-helm@v3
+
+      - name: Render Helm manifest
+        id: render
+        run: |
+          chart_root="charts/oss-ai-agent-tool"
+          manifest="${{ matrix.manifest }}"
+          manifest_rel="${manifest#${chart_root}/}"
+          mkdir -p rendered
+          output="rendered/${manifest_rel//\//-}"
+          helm template oss-ai-agent-tool "$chart_root" --show-only "$manifest_rel" > "$output"
+          echo "rendered_path=$output" >> "$GITHUB_OUTPUT"
+
       - name: Run kubesec scanner
         uses: controlplaneio/kubesec-action@43d0ddff5ffee89a6bb9f29b64cd865411137b14
         with:
-          input: ${{ matrix.manifest }}
+          input: ${{ steps.render.outputs.rendered_path }}
           format: template
           template: template/sarif.tpl
           output: kubesec-results-${{ replace(matrix.manifest, '/', '-') }}.sarif
