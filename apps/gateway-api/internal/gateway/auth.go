@@ -17,6 +17,7 @@ import (
 	"os"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -42,6 +43,11 @@ const (
 	auditOutcomeSuccess = "success"
 	auditOutcomeDenied  = "denied"
 	auditOutcomeFailure = "failure"
+
+	defaultAuthIPLimit        = 30
+	defaultAuthIdentityLimit  = 10
+	defaultAuthIPWindow       = time.Minute
+	defaultAuthIdentityWindow = time.Minute
 )
 
 type validationError struct {
@@ -1033,6 +1039,52 @@ func methodNotAllowed(w http.ResponseWriter, r *http.Request, allowed string) {
 	writeErrorResponse(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
 }
 
+func respondTooManyRequests(w http.ResponseWriter, r *http.Request, retryAfter time.Duration) {
+	if retryAfter <= 0 {
+		retryAfter = time.Second
+	}
+	seconds := int((retryAfter + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	writeErrorResponse(w, r, http.StatusTooManyRequests, "too_many_requests", "too many requests", nil)
+}
+
+func writeValidationError(w http.ResponseWriter, r *http.Request, errs []validationError) {
+	details := any(errs)
+	if len(errs) == 0 {
+		details = nil
+	}
+	writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "invalid request", details)
+}
+
+type httpErrorResponse struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Details   any    `json:"details,omitempty"`
+	RequestID string `json:"requestId,omitempty"`
+	TraceID   string `json:"traceId,omitempty"`
+}
+
+func writeErrorResponse(w http.ResponseWriter, r *http.Request, status int, code, message string, details any) {
+	payload := httpErrorResponse{
+		Code:    code,
+		Message: message,
+		Details: details,
+	}
+
+	if requestID := strings.TrimSpace(r.Header.Get("X-Request-Id")); requestID != "" {
+		payload.RequestID = requestID
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		slog.ErrorContext(r.Context(), "gateway.write_error_response_failed", slog.String("error", err.Error()))
+	}
+}
+
 func getDurationEnv(key string, fallback time.Duration) time.Duration {
 	if value := os.Getenv(key); value != "" {
 		dur, err := time.ParseDuration(value)
@@ -1087,6 +1139,89 @@ func newAuthRateLimitPolicy() authRateLimitPolicy {
 			{Endpoint: "auth_token", IdentityType: "client", Window: identityWindow, Limit: identityLimit},
 		},
 	}
+}
+
+type rateLimitBucket struct {
+	Endpoint     string
+	IdentityType string
+	Window       time.Duration
+	Limit        int
+}
+
+type rateLimiter struct {
+	mu      sync.Mutex
+	windows map[string]rateLimitWindow
+	now     func() time.Time
+}
+
+type rateLimitWindow struct {
+	expires time.Time
+	count   int
+}
+
+func newRateLimiter() *rateLimiter {
+	return &rateLimiter{
+		windows: make(map[string]rateLimitWindow),
+		now:     time.Now,
+	}
+}
+
+func (r *rateLimiter) Allow(ctx context.Context, bucket rateLimitBucket, identity string) (bool, time.Duration, error) {
+	if r == nil {
+		return true, 0, nil
+	}
+	if bucket.Limit <= 0 || bucket.Window <= 0 {
+		return true, 0, nil
+	}
+
+	key := fmt.Sprintf("%s|%s|%s", bucket.Endpoint, bucket.IdentityType, identity)
+	now := r.now()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	state := r.windows[key]
+	if state.expires.IsZero() || now.After(state.expires) {
+		state = rateLimitWindow{expires: now.Add(bucket.Window), count: 0}
+	}
+
+	if state.count >= bucket.Limit {
+		retryAfter := state.expires.Sub(now)
+		if retryAfter < 0 {
+			retryAfter = 0
+		}
+		r.windows[key] = state
+		return false, retryAfter, nil
+	}
+
+	state.count++
+	r.windows[key] = state
+	return true, 0, nil
+}
+
+func resolveDuration(keys []string, fallback time.Duration) time.Duration {
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			if dur, err := time.ParseDuration(value); err == nil && dur > 0 {
+				return dur
+			}
+		}
+	}
+	return fallback
+}
+
+func resolveLimit(keys []string, fallback int) int {
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			if limit, err := strconv.Atoi(value); err == nil && limit > 0 {
+				return limit
+			}
+		}
+	}
+	if fallback <= 0 {
+		return 1
+	}
+	return fallback
 }
 
 type identityExtractor func(*http.Request) (string, bool)
