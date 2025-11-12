@@ -254,12 +254,53 @@ function normalizeDeny(deny: unknown): DenyReason[] {
 }
 
 let singleton: PolicyEnforcer | null = null;
+let shutdownHookRegistered = false;
+const shutdownSignals: NodeJS.Signals[] = ["SIGINT", "SIGTERM"];
 
 export function getPolicyEnforcer(): PolicyEnforcer {
   if (!singleton) {
     singleton = new PolicyEnforcer();
+    registerShutdownHook();
   }
   return singleton;
+}
+
+function registerShutdownHook(): void {
+  if (shutdownHookRegistered) {
+    return;
+  }
+  shutdownHookRegistered = true;
+
+  const handleShutdown = (signal?: NodeJS.Signals) => {
+    const result = closePolicyEnforcer();
+    if (!signal) {
+      void result;
+      return;
+    }
+
+    const exitCode = signal === "SIGINT" ? 130 : 143;
+    void result.finally(() => {
+      process.exit(exitCode);
+    });
+  };
+
+  for (const signal of shutdownSignals) {
+    process.once(signal, () => handleShutdown(signal));
+  }
+
+  process.once("beforeExit", () => {
+    handleShutdown();
+  });
+}
+
+export async function closePolicyEnforcer(): Promise<void> {
+  if (!singleton) {
+    return;
+  }
+  const instance = singleton;
+  singleton = null;
+  cachedProfiles.clear();
+  await instance.close();
 }
 
 export class PolicyEnforcer {
@@ -325,6 +366,15 @@ export class PolicyEnforcer {
     };
 
     return this.evaluate(input);
+  }
+
+  async close(): Promise<void> {
+    if (this.cache?.close) {
+      await this.cache.close();
+    }
+    this.loading = null;
+    this.loaded = null;
+    this.policyDataApplied = false;
   }
 
   private async evaluate(
