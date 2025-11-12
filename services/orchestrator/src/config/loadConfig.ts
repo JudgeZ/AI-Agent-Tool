@@ -4,15 +4,21 @@ import YAML from "yaml";
 
 import { appLogger } from "../observability/logger.js";
 import { startSpan, type Span, type TracingConfig } from "../observability/tracing.js";
-import type { RateLimitBackendConfig } from "../rateLimit/store.js";
 import { resolveEnv } from "../utils/env.js";
+
+export type RateLimitBackendProvider = "memory" | "redis";
+
+export type RateLimitBackendConfig = {
+  provider: RateLimitBackendProvider;
+  redisUrl?: string;
+};
 
 export type RateLimitConfig = {
   windowMs: number;
   maxRequests: number;
 };
 
-export type IdentityRateLimitConfig = RateLimitConfig & {
+export type IdentityAwareRateLimitConfig = RateLimitConfig & {
   identityWindowMs?: number | null;
   identityMaxRequests?: number | null;
 };
@@ -98,9 +104,9 @@ export type ObservabilityConfig = {
 
 export type ServerRateLimitsConfig = {
   backend: RateLimitBackendConfig;
-  plan: RateLimitConfig;
-  chat: RateLimitConfig;
-  auth: IdentityRateLimitConfig;
+  plan: IdentityAwareRateLimitConfig;
+  chat: IdentityAwareRateLimitConfig;
+  auth: IdentityAwareRateLimitConfig;
 };
 
 export type NetworkEgressMode = "enforce" | "report-only" | "allow";
@@ -230,14 +236,46 @@ export type AppConfig = {
   network: NetworkConfig;
 };
 
-function ensurePositiveRateLimit(value: RateLimitConfig, context: string): RateLimitConfig {
+function ensurePositiveRateLimit<T extends RateLimitConfig>(value: T, context: string): T {
   if (!Number.isFinite(value.windowMs) || value.windowMs <= 0) {
     throw new Error(`${context} windowMs must be a positive number`);
   }
   if (!Number.isFinite(value.maxRequests) || value.maxRequests <= 0) {
     throw new Error(`${context} maxRequests must be a positive number`);
   }
+  const identityWindow = (value as IdentityAwareRateLimitConfig).identityWindowMs;
+  const identityMax = (value as IdentityAwareRateLimitConfig).identityMaxRequests;
+  const hasIdentityWindow = identityWindow !== undefined && identityWindow !== null;
+  const hasIdentityMax = identityMax !== undefined && identityMax !== null;
+  if (hasIdentityWindow !== hasIdentityMax) {
+    throw new Error(`${context} identityWindowMs and identityMaxRequests must both be provided together`);
+  }
+  if (hasIdentityWindow && hasIdentityMax) {
+    if (!Number.isFinite(identityWindow) || identityWindow <= 0) {
+      throw new Error(`${context} identityWindowMs must be a positive number`);
+    }
+    if (!Number.isFinite(identityMax) || identityMax <= 0) {
+      throw new Error(`${context} identityMaxRequests must be a positive number`);
+    }
+  }
   return value;
+}
+
+function resolveIdentityLimitValue(
+  envValue: number | undefined,
+  fileValue: number | null | undefined,
+  defaultValue: number | null | undefined,
+): number | null {
+  if (envValue !== undefined) {
+    return envValue;
+  }
+  if (fileValue !== undefined) {
+    return fileValue ?? null;
+  }
+  if (defaultValue !== undefined) {
+    return defaultValue ?? null;
+  }
+  return null;
 }
 
 function sanitizeQuotaValue(value: number | undefined, fallback: number): number {
@@ -307,7 +345,7 @@ type PartialRateLimitConfig = {
   maxRequests?: number;
 };
 
-type PartialIdentityRateLimitConfig = PartialRateLimitConfig & {
+type PartialIdentityAwareRateLimitConfig = PartialRateLimitConfig & {
   identityWindowMs?: number | null;
   identityMaxRequests?: number | null;
 };
@@ -564,11 +602,15 @@ export const DEFAULT_CONFIG: AppConfig = {
       },
       plan: {
         windowMs: 60_000,
-        maxRequests: 60
+        maxRequests: 60,
+        identityWindowMs: null,
+        identityMaxRequests: null,
       },
       chat: {
         windowMs: 60_000,
-        maxRequests: 600
+        maxRequests: 600,
+        identityWindowMs: null,
+        identityMaxRequests: null,
       },
       auth: {
         windowMs: 60_000,
@@ -679,9 +721,9 @@ type PartialMessagingConfig = {
 
 type PartialServerRateLimitsConfig = {
   backend?: PartialRateLimitBackendConfig;
-  plan?: PartialRateLimitConfig;
-  chat?: PartialRateLimitConfig;
-  auth?: PartialIdentityRateLimitConfig;
+  plan?: PartialIdentityAwareRateLimitConfig;
+  chat?: PartialIdentityAwareRateLimitConfig;
+  auth?: PartialIdentityAwareRateLimitConfig;
 };
 
 type PartialRequestSizeLimitsConfig = {
@@ -830,13 +872,13 @@ function parseRateLimitBackendConfig(value: unknown): PartialRateLimitBackendCon
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
-function parseIdentityRateLimitConfig(value: unknown): PartialIdentityRateLimitConfig | undefined {
+function parseIdentityAwareRateLimitConfig(value: unknown): PartialIdentityAwareRateLimitConfig | undefined {
   const record = asRecord(value);
   if (!record) {
     return undefined;
   }
   const base = parseRateLimitConfig(value);
-  const result: PartialIdentityRateLimitConfig = base ? { ...base } : {};
+  const result: PartialIdentityAwareRateLimitConfig = base ? { ...base } : {};
   const identityWindowMs = asNumber(
     record.identityWindowMs ?? record.identity_window_ms ?? record.identityWindow ?? record.identity_window,
   );
@@ -1875,7 +1917,15 @@ export function loadConfig(): AppConfig {
                 serverRateLimits.backend_config,
             )
           : undefined;
-        const serverRateLimitAuth = serverRateLimits ? parseIdentityRateLimitConfig(serverRateLimits.auth) : undefined;
+        const serverRateLimitPlan = serverRateLimits
+          ? parseIdentityAwareRateLimitConfig(serverRateLimits.plan)
+          : undefined;
+        const serverRateLimitChat = serverRateLimits
+          ? parseIdentityAwareRateLimitConfig(serverRateLimits.chat)
+          : undefined;
+        const serverRateLimitAuth = serverRateLimits
+          ? parseIdentityAwareRateLimitConfig(serverRateLimits.auth)
+          : undefined;
         const serverSseQuotas = server
           ? parseSseQuotaConfig(server.sseQuotas ?? server.sse_quotas ?? server.quotas)
           : undefined;
@@ -1968,8 +2018,8 @@ export function loadConfig(): AppConfig {
                 rateLimits: serverRateLimits
                   ? {
                       backend: serverRateLimitBackend,
-                      plan: parseRateLimitConfig(serverRateLimits.plan),
-                      chat: parseRateLimitConfig(serverRateLimits.chat),
+                      plan: serverRateLimitPlan,
+                      chat: serverRateLimitChat,
                       auth: serverRateLimitAuth,
                     }
                   : undefined,
@@ -2041,14 +2091,61 @@ export function loadConfig(): AppConfig {
     process.env.SERVER_REQUEST_LIMIT_URLENCODED_BYTES,
   );
   const envRateLimitBackendProvider = asRateLimitBackendProvider(
-    process.env.PROVIDER_RATE_LIMIT_BACKEND ??
+    process.env.ORCHESTRATOR_RATE_LIMIT_BACKEND ??
       process.env.SERVER_RATE_LIMIT_BACKEND ??
+      process.env.PROVIDER_RATE_LIMIT_BACKEND ??
       process.env.RATE_LIMIT_BACKEND,
   );
   const envRateLimitBackendRedisUrl = asString(
-    process.env.PROVIDER_RATE_LIMIT_REDIS_URL ??
+    process.env.ORCHESTRATOR_RATE_LIMIT_REDIS_URL ??
       process.env.SERVER_RATE_LIMIT_REDIS_URL ??
+      process.env.PROVIDER_RATE_LIMIT_REDIS_URL ??
       process.env.RATE_LIMIT_REDIS_URL,
+  );
+  const envServerRateLimitPlanWindowMs = asNumber(
+    process.env.SERVER_RATE_LIMIT_PLAN_WINDOW_MS ?? process.env.ORCHESTRATOR_RATE_LIMIT_PLAN_WINDOW_MS,
+  );
+  const envServerRateLimitPlanMaxRequests = asNumber(
+    process.env.SERVER_RATE_LIMIT_PLAN_MAX_REQUESTS ??
+      process.env.ORCHESTRATOR_RATE_LIMIT_PLAN_MAX_REQUESTS,
+  );
+  const envServerRateLimitPlanIdentityWindowMs = asNumber(
+    process.env.SERVER_RATE_LIMIT_PLAN_IDENTITY_WINDOW_MS ??
+      process.env.ORCHESTRATOR_RATE_LIMIT_PLAN_IDENTITY_WINDOW_MS,
+  );
+  const envServerRateLimitPlanIdentityMaxRequests = asNumber(
+    process.env.SERVER_RATE_LIMIT_PLAN_IDENTITY_MAX_REQUESTS ??
+      process.env.ORCHESTRATOR_RATE_LIMIT_PLAN_IDENTITY_MAX_REQUESTS,
+  );
+  const envServerRateLimitChatWindowMs = asNumber(
+    process.env.SERVER_RATE_LIMIT_CHAT_WINDOW_MS ?? process.env.ORCHESTRATOR_RATE_LIMIT_CHAT_WINDOW_MS,
+  );
+  const envServerRateLimitChatMaxRequests = asNumber(
+    process.env.SERVER_RATE_LIMIT_CHAT_MAX_REQUESTS ??
+      process.env.ORCHESTRATOR_RATE_LIMIT_CHAT_MAX_REQUESTS,
+  );
+  const envServerRateLimitChatIdentityWindowMs = asNumber(
+    process.env.SERVER_RATE_LIMIT_CHAT_IDENTITY_WINDOW_MS ??
+      process.env.ORCHESTRATOR_RATE_LIMIT_CHAT_IDENTITY_WINDOW_MS,
+  );
+  const envServerRateLimitChatIdentityMaxRequests = asNumber(
+    process.env.SERVER_RATE_LIMIT_CHAT_IDENTITY_MAX_REQUESTS ??
+      process.env.ORCHESTRATOR_RATE_LIMIT_CHAT_IDENTITY_MAX_REQUESTS,
+  );
+  const envServerRateLimitAuthWindowMs = asNumber(
+    process.env.SERVER_RATE_LIMIT_AUTH_WINDOW_MS ?? process.env.ORCHESTRATOR_RATE_LIMIT_AUTH_WINDOW_MS,
+  );
+  const envServerRateLimitAuthMaxRequests = asNumber(
+    process.env.SERVER_RATE_LIMIT_AUTH_MAX_REQUESTS ??
+      process.env.ORCHESTRATOR_RATE_LIMIT_AUTH_MAX_REQUESTS,
+  );
+  const envServerRateLimitAuthIdentityWindowMs = asNumber(
+    process.env.SERVER_RATE_LIMIT_AUTH_IDENTITY_WINDOW_MS ??
+      process.env.ORCHESTRATOR_RATE_LIMIT_AUTH_IDENTITY_WINDOW_MS,
+  );
+  const envServerRateLimitAuthIdentityMaxRequests = asNumber(
+    process.env.SERVER_RATE_LIMIT_AUTH_IDENTITY_MAX_REQUESTS ??
+      process.env.ORCHESTRATOR_RATE_LIMIT_AUTH_IDENTITY_MAX_REQUESTS,
   );
   const envPolicyCacheEnabled = asBoolean(process.env.POLICY_CACHE_ENABLED);
   const envPolicyCacheProvider = asPolicyCacheProvider(process.env.POLICY_CACHE_PROVIDER);
@@ -2235,44 +2332,80 @@ export function loadConfig(): AppConfig {
       fileCfg.providers?.circuitBreaker?.resetTimeoutMs ?? DEFAULT_CONFIG.providers.circuitBreaker.resetTimeoutMs
   };
 
-  const serverPlanRateLimit = ensurePositiveRateLimit(
+  const fileServerPlanRateLimit = fileCfg.server?.rateLimits?.plan;
+  const serverPlanRateLimit = ensurePositiveRateLimit<IdentityAwareRateLimitConfig>(
     {
-      windowMs: fileCfg.server?.rateLimits?.plan?.windowMs ?? DEFAULT_CONFIG.server.rateLimits.plan.windowMs,
-      maxRequests: fileCfg.server?.rateLimits?.plan?.maxRequests ?? DEFAULT_CONFIG.server.rateLimits.plan.maxRequests
+      windowMs:
+        envServerRateLimitPlanWindowMs ??
+        fileServerPlanRateLimit?.windowMs ??
+        DEFAULT_CONFIG.server.rateLimits.plan.windowMs,
+      maxRequests:
+        envServerRateLimitPlanMaxRequests ??
+        fileServerPlanRateLimit?.maxRequests ??
+        DEFAULT_CONFIG.server.rateLimits.plan.maxRequests,
+      identityWindowMs: resolveIdentityLimitValue(
+        envServerRateLimitPlanIdentityWindowMs,
+        fileServerPlanRateLimit?.identityWindowMs,
+        DEFAULT_CONFIG.server.rateLimits.plan.identityWindowMs,
+      ),
+      identityMaxRequests: resolveIdentityLimitValue(
+        envServerRateLimitPlanIdentityMaxRequests,
+        fileServerPlanRateLimit?.identityMaxRequests,
+        DEFAULT_CONFIG.server.rateLimits.plan.identityMaxRequests,
+      ),
     },
-    "server.rateLimits.plan"
+    "server.rateLimits.plan",
   );
 
-  const serverChatRateLimit = ensurePositiveRateLimit(
+  const fileServerChatRateLimit = fileCfg.server?.rateLimits?.chat;
+  const serverChatRateLimit = ensurePositiveRateLimit<IdentityAwareRateLimitConfig>(
     {
-      windowMs: fileCfg.server?.rateLimits?.chat?.windowMs ?? DEFAULT_CONFIG.server.rateLimits.chat.windowMs,
-      maxRequests: fileCfg.server?.rateLimits?.chat?.maxRequests ?? DEFAULT_CONFIG.server.rateLimits.chat.maxRequests
+      windowMs:
+        envServerRateLimitChatWindowMs ??
+        fileServerChatRateLimit?.windowMs ??
+        DEFAULT_CONFIG.server.rateLimits.chat.windowMs,
+      maxRequests:
+        envServerRateLimitChatMaxRequests ??
+        fileServerChatRateLimit?.maxRequests ??
+        DEFAULT_CONFIG.server.rateLimits.chat.maxRequests,
+      identityWindowMs: resolveIdentityLimitValue(
+        envServerRateLimitChatIdentityWindowMs,
+        fileServerChatRateLimit?.identityWindowMs,
+        DEFAULT_CONFIG.server.rateLimits.chat.identityWindowMs,
+      ),
+      identityMaxRequests: resolveIdentityLimitValue(
+        envServerRateLimitChatIdentityMaxRequests,
+        fileServerChatRateLimit?.identityMaxRequests,
+        DEFAULT_CONFIG.server.rateLimits.chat.identityMaxRequests,
+      ),
     },
-    "server.rateLimits.chat"
+    "server.rateLimits.chat",
   );
 
-  const serverAuthBaseRateLimit = ensurePositiveRateLimit(
+  const fileServerAuthRateLimit = fileCfg.server?.rateLimits?.auth;
+  const serverAuthRateLimit = ensurePositiveRateLimit<IdentityAwareRateLimitConfig>(
     {
-      windowMs: fileCfg.server?.rateLimits?.auth?.windowMs ?? DEFAULT_CONFIG.server.rateLimits.auth.windowMs,
-      maxRequests: fileCfg.server?.rateLimits?.auth?.maxRequests ?? DEFAULT_CONFIG.server.rateLimits.auth.maxRequests,
+      windowMs:
+        envServerRateLimitAuthWindowMs ??
+        fileServerAuthRateLimit?.windowMs ??
+        DEFAULT_CONFIG.server.rateLimits.auth.windowMs,
+      maxRequests:
+        envServerRateLimitAuthMaxRequests ??
+        fileServerAuthRateLimit?.maxRequests ??
+        DEFAULT_CONFIG.server.rateLimits.auth.maxRequests,
+      identityWindowMs: resolveIdentityLimitValue(
+        envServerRateLimitAuthIdentityWindowMs,
+        fileServerAuthRateLimit?.identityWindowMs,
+        DEFAULT_CONFIG.server.rateLimits.auth.identityWindowMs,
+      ),
+      identityMaxRequests: resolveIdentityLimitValue(
+        envServerRateLimitAuthIdentityMaxRequests,
+        fileServerAuthRateLimit?.identityMaxRequests,
+        DEFAULT_CONFIG.server.rateLimits.auth.identityMaxRequests,
+      ),
     },
     "server.rateLimits.auth",
   );
-
-  const authIdentityWindowMs = sanitizeNonNegativeInteger(
-    fileCfg.server?.rateLimits?.auth?.identityWindowMs ?? DEFAULT_CONFIG.server.rateLimits.auth.identityWindowMs,
-    DEFAULT_CONFIG.server.rateLimits.auth.identityWindowMs,
-  );
-  const authIdentityMaxRequests = sanitizeNonNegativeInteger(
-    fileCfg.server?.rateLimits?.auth?.identityMaxRequests ?? DEFAULT_CONFIG.server.rateLimits.auth.identityMaxRequests,
-    DEFAULT_CONFIG.server.rateLimits.auth.identityMaxRequests,
-  );
-
-  const serverAuthRateLimit: IdentityRateLimitConfig = {
-    ...serverAuthBaseRateLimit,
-    identityWindowMs: authIdentityWindowMs,
-    identityMaxRequests: authIdentityMaxRequests,
-  };
 
   const serverRequestLimits: RequestSizeLimitsConfig = {
     jsonBytes: sanitizeRequestLimit(
@@ -2314,16 +2447,17 @@ export function loadConfig(): AppConfig {
   );
 
   const fileServerBackend = fileCfg.server?.rateLimits?.backend;
-  const serverRateLimitBackend: RateLimitBackendConfig = {
-    provider:
-      envRateLimitBackendProvider ??
-      fileServerBackend?.provider ??
-      DEFAULT_CONFIG.server.rateLimits.backend.provider,
-    redisUrl:
-      envRateLimitBackendRedisUrl ??
-      fileServerBackend?.redisUrl ??
-      DEFAULT_CONFIG.server.rateLimits.backend.redisUrl,
-  };
+  const resolvedBackendProvider =
+    envRateLimitBackendProvider ??
+    fileServerBackend?.provider ??
+    DEFAULT_CONFIG.server.rateLimits.backend.provider;
+  const resolvedBackendRedisUrl =
+    envRateLimitBackendRedisUrl ??
+    fileServerBackend?.redisUrl ??
+    DEFAULT_CONFIG.server.rateLimits.backend.redisUrl;
+  const serverRateLimitBackend: RateLimitBackendConfig = resolvedBackendRedisUrl
+    ? { provider: resolvedBackendProvider, redisUrl: resolvedBackendRedisUrl }
+    : { provider: resolvedBackendProvider };
 
   const resolvedTrustedProxyCidrs =
     envTrustedProxyCidrs ??
