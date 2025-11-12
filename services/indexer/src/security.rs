@@ -22,10 +22,23 @@ const DEFAULT_DLP_PATTERNS: [&str; 7] = [
 ];
 
 const CREDIT_CARD_PATTERN_LABEL: &str = "credit-card-luhn";
+const CREDIT_CARD_PATTERN: &str =
+    r"(?xi)
+        \b
+        (?:
+            4\d{3}(?:[\s-]?\d{4}){2}[\s-]?\d{1,4}|
+            5[1-5]\d{2}(?:[\s-]?\d{4}){3}|
+            2(?:2[2-9]\d|[3-6]\d{2}|7[01]\d|720\d)(?:[\s-]?\d{4}){3}|
+            3[47]\d{2}[\s-]?\d{6}[\s-]?\d{5}|
+            6(?:011|5\d{2})(?:[\s-]?\d{4}){3}|
+            3(?:0[0-5]|[68]\d)\d[\s-]?\d{6}[\s-]?\d{4}|
+            35(?:2[89]|[3-8]\d)\d(?:[\s-]?\d{4}){3}
+        )
+        \b
+    ";
 
-static CREDIT_CARD_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b\d(?:[ -]?\d){12,18}\b").expect("valid credit card candidate pattern")
-});
+static CREDIT_CARD_REGEX: Lazy<Regex> =
+    Lazy::new(|| Regex::new(CREDIT_CARD_PATTERN).expect("valid credit card candidate pattern"));
 
 #[derive(Debug, Error)]
 pub enum SecurityError {
@@ -480,6 +493,12 @@ mod tests {
         assert!(CREDIT_CARD_REGEX.is_match("4242 4242 4242 4242"));
         assert!(luhn_check("4242424242424242"));
         assert!(contains_credit_card_candidate("4242 4242 4242 4242"));
+    }
+
+    #[test]
+    fn issuer_prefix_filter_reduces_false_matches() {
+        assert!(!CREDIT_CARD_REGEX.is_match("Order ID: 1111-2222-3333-4445"));
+        assert!(CREDIT_CARD_REGEX.is_match("Valid Visa: 4242-4242-4242-4242"));
     }
 
     #[test]
