@@ -1,0 +1,6 @@
+[workspace]
+members = [
+    "services/indexer",
+    "apps/gui/src-tauri"
+]
+resolver = "2"
