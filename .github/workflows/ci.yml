@@ -249,7 +249,7 @@ jobs:
             libcairo2-dev \
             libpango1.0-dev \
             libsoup2.4-dev \
-            libwebkit2gtk-4.1-dev \
+            libwebkit2gtk-4.0-dev \
             libappindicator3-dev
 
       - name: Set up Rust
