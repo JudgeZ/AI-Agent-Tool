@@ -190,6 +190,14 @@ jobs:
           cache: 'npm'
           cache-dependency-path: apps/gui/package-lock.json
 
+      - name: Cache Playwright browsers
+        uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: ${{ runner.os }}-playwright-${{ hashFiles('apps/gui/package-lock.json') }}
+          restore-keys: |
+            ${{ runner.os }}-playwright-
+
       - name: Install npm dependencies
         run: npm ci
 
