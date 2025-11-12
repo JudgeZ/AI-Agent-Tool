@@ -143,17 +143,51 @@ export class VersionedSecretsManager {
       throw new Error(`stored value for version ${versionId} is missing`);
     }
 
-    await this.store.set(key, storedValue);
+    const previousMetadata: StoredMetadata = {
+      currentVersion: metadata.currentVersion,
+      versions: metadata.versions.map((version) => ({
+        id: version.id,
+        createdAt: version.createdAt,
+        ...(version.labels ? { labels: { ...version.labels } } : {}),
+      })),
+      retain: metadata.retain,
+    };
 
-    metadata.currentVersion = versionId;
-    metadata.versions = [
-      target,
-      ...metadata.versions.filter((version) => version.id !== versionId),
-    ];
+    const promotedVersion: StoredVersion = {
+      id: target.id,
+      createdAt: target.createdAt,
+      ...(target.labels ? { labels: { ...target.labels } } : {}),
+    };
 
-    await this.writeMetadata(key, metadata);
+    const updatedMetadata: StoredMetadata = {
+      currentVersion: versionId,
+      versions: [
+        promotedVersion,
+        ...metadata.versions
+          .filter((version) => version.id !== versionId)
+          .map((version) => ({
+            id: version.id,
+            createdAt: version.createdAt,
+            ...(version.labels ? { labels: { ...version.labels } } : {}),
+          })),
+      ],
+      retain: metadata.retain,
+    };
 
-    return this.toVersionInfo(target, metadata.currentVersion);
+    await this.writeMetadata(key, updatedMetadata);
+
+    try {
+      await this.store.set(key, storedValue);
+    } catch (error) {
+      try {
+        await this.writeMetadata(key, previousMetadata);
+      } catch {
+        // ignore rollback failure
+      }
+      throw error;
+    }
+
+    return this.toVersionInfo(promotedVersion, updatedMetadata.currentVersion);
   }
 
   async listVersions(key: string): Promise<{
