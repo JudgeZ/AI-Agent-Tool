@@ -1,12 +1,12 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "package": {
-    "productName": "Orchestrator GUI",
-    "version": "0.1.0"
-  },
-  "tauri": {
+  "productName": "Orchestrator GUI",
+  "version": "0.1.0",
+  "identifier": "com.ossaat.gui",
+  "app": {
     "windows": [
       {
+        "label": "main",
         "title": "OSS Agent Orchestrator",
         "width": 1280,
         "height": 800,
@@ -14,23 +14,14 @@
       }
     ],
     "security": {
-      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self' http://127.0.0.1:4000 http://localhost:4000 https://localhost:4000; frame-ancestors 'none'"
-    },
-    "allowlist": {
-      "http": {
-        "all": false,
-        "scope": [
-          "http://127.0.0.1:4000/**",
-          "http://localhost:4000/**",
-          "https://localhost:4000/**"
-        ]
-      }
+      "csp": "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; media-src 'self'; connect-src 'self' http://127.0.0.1:4000 http://localhost:4000 https://localhost:4000; frame-ancestors 'none'",
+      "capabilities": ["main"]
     }
   },
   "build": {
     "beforeDevCommand": "npm run dev",
     "beforeBuildCommand": "npm run build",
-    "devPath": "http://localhost:5173",
-    "distDir": "build"
+    "devUrl": "http://localhost:5173",
+    "frontendDist": null
   }
 }
