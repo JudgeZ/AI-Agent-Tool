@@ -12,6 +12,7 @@ import {
 const baseEvent: PlanStepEvent = {
   event: "plan.step",
   traceId: "trace-123",
+  requestId: "req-123",
   planId: "plan-550e8400-e29b-41d4-a716-446655440000",
   step: {
     id: "step-1",

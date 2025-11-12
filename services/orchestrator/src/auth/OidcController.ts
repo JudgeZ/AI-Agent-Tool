@@ -8,6 +8,8 @@ import {
 } from "./OidcClient.js";
 import { sessionStore } from "./SessionStore.js";
 import { logAuditEvent, type AuditSubject } from "../observability/audit.js";
+import { OidcCallbackSchema, formatValidationIssues } from "../http/validation.js";
+import { respondWithError, respondWithValidationError } from "../http/errors.js";
 
 const MINIMUM_SESSION_EXPIRY_BUFFER_MS = 5_000;
 
@@ -174,7 +176,10 @@ export async function getOidcConfiguration(req: Request, res: Response) {
   const config = loadConfig();
   const oidc = config.auth.oidc;
   if (!oidc.enabled) {
-    res.status(404).json({ error: "oidc not enabled" });
+    respondWithError(res, 404, {
+      code: "not_found",
+      message: "oidc not enabled",
+    });
     return;
   }
   try {
@@ -192,7 +197,10 @@ export async function getOidcConfiguration(req: Request, res: Response) {
   } catch (error) {
     const message =
       error instanceof Error ? error.message : "failed to load oidc metadata";
-    res.status(502).json({ error: message });
+    respondWithError(res, 502, {
+      code: "upstream_error",
+      message,
+    });
   }
 }
 
@@ -200,41 +208,30 @@ export async function handleOidcCallback(req: Request, res: Response) {
   const config = loadConfig();
   const oidc = config.auth.oidc;
   if (!oidc.enabled) {
-    res.status(404).json({ error: "oidc not enabled" });
+    respondWithError(res, 404, {
+      code: "not_found",
+      message: "oidc not enabled",
+    });
     return;
   }
 
-  const {
-    code,
-    code_verifier: codeVerifier,
-    redirect_uri: redirectUri,
-    state,
-  } = req.body ?? {};
-  if (typeof code !== "string" || code.length === 0) {
+  const parsedBody = OidcCallbackSchema.safeParse(req.body ?? {});
+  if (!parsedBody.success) {
+    const details = formatValidationIssues(parsedBody.error.issues);
     logAuditEvent({
       action: "auth.oidc.callback",
       outcome: "failure",
       requestId: req.header("x-request-id") ?? undefined,
       traceId: req.header("x-trace-id") ?? undefined,
       resource: "auth.session",
-      details: { reason: "code missing" },
+      details: { reason: details[0]?.message ?? "invalid request" },
     });
-    res.status(400).json({ error: "code is required" });
+    respondWithValidationError(res, details);
     return;
   }
-  if (typeof codeVerifier !== "string" || codeVerifier.length < 43) {
-    logAuditEvent({
-      action: "auth.oidc.callback",
-      outcome: "failure",
-      requestId: req.header("x-request-id") ?? undefined,
-      traceId: req.header("x-trace-id") ?? undefined,
-      resource: "auth.session",
-      details: { reason: "code_verifier invalid" },
-    });
-    res.status(400).json({ error: "code_verifier is required" });
-    return;
-  }
-  if (typeof redirectUri !== "string" || redirectUri !== oidc.redirectUri) {
+  const { code, codeVerifier, redirectUri, state } = parsedBody.data;
+
+  if (redirectUri !== oidc.redirectUri) {
     logAuditEvent({
       action: "auth.oidc.callback",
       outcome: "failure",
@@ -243,7 +240,9 @@ export async function handleOidcCallback(req: Request, res: Response) {
       resource: "auth.session",
       details: { reason: "redirect_uri mismatch", redirectUri },
     });
-    res.status(400).json({ error: "redirect_uri mismatch" });
+    respondWithValidationError(res, [
+      { path: "redirect_uri", message: "redirect_uri mismatch" },
+    ]);
     return;
   }
 
@@ -273,11 +272,7 @@ export async function handleOidcCallback(req: Request, res: Response) {
       }
     }
     if (stateCookie !== undefined) {
-      if (
-        typeof state !== "string" ||
-        state.length === 0 ||
-        state !== stateCookie
-      ) {
+      if (state === undefined || state !== stateCookie) {
         logAuditEvent({
           action: "auth.oidc.callback",
           outcome: "failure",
@@ -286,7 +281,9 @@ export async function handleOidcCallback(req: Request, res: Response) {
           resource: "auth.session",
           details: { reason: "state verification failed" },
         });
-        res.status(400).json({ error: "state verification failed" });
+        respondWithValidationError(res, [
+          { path: "state", message: "state verification failed" },
+        ]);
         return;
       }
     }
@@ -315,7 +312,10 @@ export async function handleOidcCallback(req: Request, res: Response) {
         resource: "auth.session",
         details: { reason: "id_token missing" },
       });
-      res.status(502).json({ error: "id_token missing in response" });
+      respondWithError(res, 502, {
+        code: "upstream_error",
+        message: "id_token missing in response",
+      });
       return;
     }
     const verification = await verifyIdToken(
@@ -333,7 +333,10 @@ export async function handleOidcCallback(req: Request, res: Response) {
         resource: "auth.session",
         details: { reason: "id_token subject missing" },
       });
-      res.status(502).json({ error: "id_token missing subject" });
+      respondWithError(res, 502, {
+        code: "upstream_error",
+        message: "id_token missing subject",
+      });
       return;
     }
 
@@ -370,7 +373,10 @@ export async function handleOidcCallback(req: Request, res: Response) {
           minimumAllowedExpiry: new Date(minimumAllowedExpiry).toISOString(),
         },
       });
-      res.status(502).json({ error: "token expiry too soon" });
+      respondWithError(res, 502, {
+        code: "upstream_error",
+        message: "token expiry too soon",
+      });
       return;
     }
 
@@ -414,6 +420,13 @@ export async function handleOidcCallback(req: Request, res: Response) {
       Math.floor((targetExpiry - now) / 1000),
     );
     const secureCookies = determineSecureCookieFlag(config.server.tls.enabled);
+    if (config.runMode === "enterprise" && !secureCookies) {
+      respondWithError(res, 500, {
+        code: "configuration_error",
+        message: "secure cookies must be enabled when run mode is enterprise",
+      });
+      return;
+    }
     res.cookie(
       cookieName,
       session.id,
@@ -464,7 +477,8 @@ export async function handleOidcCallback(req: Request, res: Response) {
       resource: "auth.session",
       details: { error: message },
     });
-    res.status(status).json({ error: message });
+    const code = status >= 500 ? "upstream_error" : "invalid_request";
+    respondWithError(res, status, { code, message });
   }
 }
 
@@ -473,13 +487,19 @@ export async function getSession(req: Request, res: Response) {
   const cookieName = config.auth.oidc.session.cookieName;
   const sessionId = extractSessionId(req, cookieName);
   if (!sessionId) {
-    res.status(401).json({ error: "session not found" });
+    respondWithError(res, 401, {
+      code: "unauthorized",
+      message: "session not found",
+    });
     return;
   }
   sessionStore.cleanupExpired();
   const session = sessionStore.getSession(sessionId);
   if (!session) {
-    res.status(401).json({ error: "session expired" });
+    respondWithError(res, 401, {
+      code: "unauthorized",
+      message: "session expired",
+    });
     return;
   }
   res.json({
@@ -528,3 +548,4 @@ export async function logout(req: Request, res: Response) {
   res.clearCookie(cookieName, { ...cookieOptions, maxAge: 0 });
   res.status(204).end();
 }
+

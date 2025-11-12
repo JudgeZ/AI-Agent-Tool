@@ -42,7 +42,7 @@ docker buildx build \
   services/orchestrator \
   --push
 
-# Repeat for additional services (indexer, memory-svc) once their Dockerfiles are available
+# Repeat for additional services (e.g., indexer) once their Dockerfiles are available
 ```
 
 Images are published under `ghcr.io/<owner>/oss-ai-agent-tool/<service>` and signed with cosign when built by CI. See [CI/CD](./ci-cd.md) for automation details.
@@ -99,9 +99,35 @@ observability:
     enabled: true
 ```
 
-Override with enterprise settings (Vault secrets, Kafka, OIDC) when deploying to production. Reference [Configuration](./configuration.md) and the chart README for all options.
+### Optional: enable internal mTLS with cert-manager
 
-With `secrets.backend: localfile`, the orchestrator expects an encrypted keystore at `config/secrets/local/secrets.json` inside the container (override with `LOCAL_SECRETS_PATH`). Leaving `LOCAL_SECRETS_PASSPHRASE` empty causes the pod to crash-loop with `LocalFileStore requires LOCAL_SECRETS_PASSPHRASE to be set` until the passphrase is provided. Use a Kubernetes Secret to project the passphrase and keystore path into `orchestrator.env` for production clusters.
+1. Install cert-manager (v1.13+) in your cluster if it is not already present.
+2. Create or reference a ClusterIssuer/Issuer that will sign internal certificates. A quick self-signed example:
+
+   ```yaml
+   apiVersion: cert-manager.io/v1
+   kind: ClusterIssuer
+   metadata:
+     name: ossaat-internal-ca
+   spec:
+     selfSigned: {}
+   ```
+
+3. Extend your `values.local.yaml` with the mTLS block:
+
+   ```yaml
+   mtls:
+     enabled: true
+     certManager:
+       issuerRef:
+         name: ossaat-internal-ca
+   # Optional SAN overrides for the orchestrator certificate
+   # orchestrator:
+   #   additionalDnsNames:
+   #     - orchestrator.dev.svc.local
+   ```
+
+When enabled, the chart issues certificates for the orchestrator and gateway automatically, mounts them into the pods, and switches `ORCHESTRATOR_URL` to `https://`. Health checks are updated to use HTTPS, and the gateway enforces certificate validation/rotation transparently. Disable `mtls.certManager.enabled` if you prefer to manage the TLS secrets yourself.
 
 ## 4. Install the chart
 

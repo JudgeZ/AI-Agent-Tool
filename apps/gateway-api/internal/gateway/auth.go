@@ -15,16 +15,115 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 	"unicode"
+
+	"github.com/go-playground/validator/v10"
+
+	"github.com/JudgeZ/OSS-AI-Agent-Tool/apps/gateway-api/internal/audit"
 )
 
 var stateTTL = getDurationEnv("OAUTH_STATE_TTL", 10*time.Minute)
 var orchestratorTimeout = getDurationEnv("ORCHESTRATOR_CALLBACK_TIMEOUT", 10*time.Second)
 var allowedRedirectOrigins = loadAllowedRedirectOrigins()
+var requestValidator = validator.New(validator.WithRequiredStructEnabled())
+
+const (
+	auditEventAuthorize   = "auth.oauth.authorize"
+	auditEventCallback    = "auth.oauth.callback"
+	auditEventRedirectErr = "auth.oauth.redirect"
+	auditTargetAuth       = "auth.oauth"
+	auditCapabilityAuth   = "auth.public"
+
+	auditOutcomeSuccess = "success"
+	auditOutcomeDenied  = "denied"
+	auditOutcomeFailure = "failure"
+
+	defaultAuthIPLimit        = 30
+	defaultAuthIdentityLimit  = 10
+	defaultAuthIPWindow       = time.Minute
+	defaultAuthIdentityWindow = time.Minute
+)
+
+type validationError struct {
+	Field   string `json:"field"`
+	Message string `json:"message"`
+}
+
+type authorizeRequestParams struct {
+	RedirectURI string `validate:"required,uri,max=2048" json:"redirect_uri"`
+}
+
+type callbackRequestParams struct {
+	Code  string `validate:"required,max=512" json:"code"`
+	State string `validate:"required,max=512" json:"state"`
+}
+
+func emitAuthEvent(ctx context.Context, r *http.Request, trusted []*net.IPNet, eventName, outcome string, details map[string]any) {
+	actor := hashedActorFromRequest(r, trusted)
+	ctx = audit.WithActor(ctx, actor)
+	sanitised := auditDetails(details)
+	event := audit.Event{
+		Name:       eventName,
+		Outcome:    outcome,
+		Target:     auditTargetAuth,
+		Capability: auditCapabilityAuth,
+		ActorID:    actor,
+		Details:    sanitised,
+	}
+
+	switch outcome {
+	case auditOutcomeSuccess:
+		gatewayAuditLogger.Info(ctx, event)
+	case auditOutcomeDenied:
+		gatewayAuditLogger.Security(ctx, event)
+	default:
+		gatewayAuditLogger.Error(ctx, event)
+	}
+}
+
+func auditAuthorizeEvent(ctx context.Context, r *http.Request, trusted []*net.IPNet, outcome string, details map[string]any) {
+	emitAuthEvent(ctx, r, trusted, auditEventAuthorize, outcome, details)
+}
+
+func auditCallbackEvent(ctx context.Context, r *http.Request, trusted []*net.IPNet, outcome string, details map[string]any) {
+	emitAuthEvent(ctx, r, trusted, auditEventCallback, outcome, details)
+}
+
+func auditRedirectEvent(ctx context.Context, r *http.Request, trusted []*net.IPNet, outcome string, details map[string]any) {
+	emitAuthEvent(ctx, r, trusted, auditEventRedirectErr, outcome, details)
+}
+
+func redirectHost(redirectURI string) string {
+	parsed, err := url.Parse(redirectURI)
+	if err != nil {
+		return ""
+	}
+	return parsed.Host
+}
+
+func redirectHash(redirectURI string) string {
+	if redirectURI == "" {
+		return ""
+	}
+	return gatewayAuditLogger.HashIdentity(redirectURI)
+}
+
+func mergeDetails(base map[string]any, extras map[string]any) map[string]any {
+	result := make(map[string]any, len(base)+len(extras))
+	for key, value := range base {
+		result[key] = value
+	}
+	for key, value := range extras {
+		result[key] = value
+	}
+	return result
+}
 
 type oidcDiscovery struct {
 	authorizationEndpoint string
@@ -68,19 +167,27 @@ func getProviderConfig(provider string) (oauthProvider, error) {
 	switch provider {
 	case "openrouter", "google":
 		redirectBase := strings.TrimRight(getEnv("OAUTH_REDIRECT_BASE", "http://127.0.0.1:8080"), "/")
+		openrouterClientID, err := resolveEnvValue("OPENROUTER_CLIENT_ID")
+		if err != nil {
+			return oauthProvider{}, fmt.Errorf("failed to load OPENROUTER_CLIENT_ID: %w", err)
+		}
+		googleClientID, err := resolveEnvValue("GOOGLE_OAUTH_CLIENT_ID")
+		if err != nil {
+			return oauthProvider{}, fmt.Errorf("failed to load GOOGLE_OAUTH_CLIENT_ID: %w", err)
+		}
 		configs := map[string]oauthProvider{
 			"openrouter": {
 				Name:         "openrouter",
 				AuthorizeURL: "https://openrouter.ai/oauth/authorize",
 				RedirectURI:  fmt.Sprintf("%s/auth/openrouter/callback", redirectBase),
-				ClientID:     os.Getenv("OPENROUTER_CLIENT_ID"),
+				ClientID:     openrouterClientID,
 				Scopes:       []string{"offline", "openid", "profile"},
 			},
 			"google": {
 				Name:         "google",
 				AuthorizeURL: "https://accounts.google.com/o/oauth2/v2/auth",
 				RedirectURI:  fmt.Sprintf("%s/auth/google/callback", redirectBase),
-				ClientID:     os.Getenv("GOOGLE_OAUTH_CLIENT_ID"),
+				ClientID:     googleClientID,
 				Scopes:       []string{"openid", "profile", "email", "https://www.googleapis.com/auth/cloud-platform"},
 			},
 		}
@@ -102,32 +209,50 @@ func getProviderConfig(provider string) (oauthProvider, error) {
 func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, allowInsecureStateCookie bool) {
 	provider := strings.TrimPrefix(r.URL.Path, "/auth/")
 	provider = strings.TrimSuffix(provider, "/authorize")
-	baseAttrs := append(auditRequestAttrs(r, trustedProxies), slog.String("provider", provider))
 	cfg, err := getProviderConfig(provider)
 	if err != nil {
-		logAudit(r.Context(), "oauth.authorize", "failure", append(baseAttrs, slog.String("error", err.Error()))...)
-		http.Error(w, err.Error(), http.StatusNotFound)
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, map[string]any{
+			"provider": provider,
+			"error":    err.Error(),
+		})
+		writeErrorResponse(w, r, http.StatusNotFound, "not_found", err.Error(), nil)
 		return
 	}
 
-	redirectURI := r.URL.Query().Get("redirect_uri")
-	if redirectURI == "" {
-		logAudit(r.Context(), "oauth.authorize", "failure", append(baseAttrs, slog.String("error", "redirect_uri is required"))...)
-		http.Error(w, "redirect_uri is required", http.StatusBadRequest)
+	params := authorizeRequestParams{
+		RedirectURI: strings.TrimSpace(r.URL.Query().Get("redirect_uri")),
+	}
+	if errs := validateRequestParams(params); len(errs) > 0 {
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, map[string]any{
+			"provider": provider,
+			"reason":   errs[0].Message,
+		})
+		writeValidationError(w, r, errs)
 		return
 	}
+	redirectURI := params.RedirectURI
 	if err := validateClientRedirect(redirectURI); err != nil {
-		attrs := append(baseAttrs, slog.String("redirect_uri", redirectURI), slog.String("error", err.Error()))
-		logAudit(r.Context(), "oauth.authorize", "failure", attrs...)
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, map[string]any{
+			"provider":           provider,
+			"reason":             err.Error(),
+			"redirect_uri_hash":  redirectHash(redirectURI),
+			"redirect_uri_host":  redirectHost(redirectURI),
+			"validation_failure": true,
+		})
+		writeValidationError(w, r, []validationError{
+			{Field: "redirect_uri", Message: err.Error()},
+		})
 		return
 	}
 
 	state, codeVerifier, codeChallenge, err := generateStateAndPKCE()
 	if err != nil {
-		attrs := append(baseAttrs, slog.String("redirect_uri", redirectURI), slog.String("error", "state generation failed"))
-		logAudit(r.Context(), "oauth.authorize", "failure", attrs...)
-		http.Error(w, "failed to generate state", http.StatusInternalServerError)
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, map[string]any{
+			"provider":          provider,
+			"reason":            "state_generation_failed",
+			"redirect_uri_hash": redirectHash(redirectURI),
+		})
+		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "failed to generate state", nil)
 		return
 	}
 
@@ -140,42 +265,55 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*
 	}
 
 	if err := setStateCookie(w, r, trustedProxies, allowInsecureStateCookie, data); err != nil {
-		attrs := append(baseAttrs, slog.String("redirect_uri", redirectURI), slog.String("error", "state persistence failed"))
-		logAudit(r.Context(), "oauth.authorize", "failure", attrs...)
-		http.Error(w, "failed to persist state", http.StatusInternalServerError)
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, map[string]any{
+			"provider":          provider,
+			"reason":            "state_persistence_failed",
+			"redirect_uri_hash": redirectHash(redirectURI),
+		})
+		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "failed to persist state", nil)
 		return
 	}
 
 	authURL, err := buildAuthorizeURL(cfg, state, codeChallenge)
 	if err != nil {
-		attrs := append(baseAttrs, slog.String("redirect_uri", redirectURI), slog.String("error", "authorize url build failed"))
-		logAudit(r.Context(), "oauth.authorize", "failure", attrs...)
-		http.Error(w, "failed to build authorize url", http.StatusInternalServerError)
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, map[string]any{
+			"provider":          provider,
+			"reason":            "authorize_url_build_failed",
+			"redirect_uri_hash": redirectHash(redirectURI),
+		})
+		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "failed to build authorize url", nil)
 		return
 	}
 
 	if err := validateAuthorizeRedirect(authURL, cfg.AuthorizeURL); err != nil {
-		attrs := append(baseAttrs, slog.String("redirect_uri", redirectURI), slog.String("error", "authorize url validation failed"))
-		logAudit(r.Context(), "oauth.authorize", "failure", attrs...)
-		http.Error(w, "failed to build authorize url", http.StatusInternalServerError)
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, map[string]any{
+			"provider":          provider,
+			"reason":            "authorize_url_validation_failed",
+			"redirect_uri_hash": redirectHash(redirectURI),
+		})
+		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "failed to build authorize url", nil)
 		return
 	}
 
-	successAttrs := append(baseAttrs, slog.String("redirect_uri", redirectURI))
-	logAudit(r.Context(), "oauth.authorize", "success", successAttrs...)
+	auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeSuccess, map[string]any{
+		"provider":          provider,
+		"redirect_uri_host": redirectHost(redirectURI),
+	})
 
-	sendRedirect(w, authURL)
+	sendRedirect(w, r, authURL)
 }
 
 func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, allowInsecureStateCookie bool) {
 	provider := strings.TrimPrefix(r.URL.Path, "/auth/")
 	provider = strings.TrimSuffix(provider, "/callback")
-	baseAttrs := append(auditRequestAttrs(r, trustedProxies), slog.String("provider", provider))
+	baseDetails := map[string]any{"provider": provider}
 
 	cfg, err := getProviderConfig(provider)
 	if err != nil {
-		logAudit(r.Context(), "oauth.callback", "failure", append(baseAttrs, slog.String("error", err.Error()))...)
-		http.Error(w, err.Error(), http.StatusNotFound)
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, mergeDetails(baseDetails, map[string]any{
+			"error": err.Error(),
+		}))
+		writeErrorResponse(w, r, http.StatusNotFound, "not_found", err.Error(), nil)
 		return
 	}
 
@@ -184,35 +322,43 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 		return
 	}
 
-	code := r.URL.Query().Get("code")
-	state := r.URL.Query().Get("state")
-	if code == "" || state == "" {
-		logAudit(r.Context(), "oauth.callback", "failure", append(baseAttrs, slog.String("error", "code and state are required"))...)
-		http.Error(w, "code and state are required", http.StatusBadRequest)
+	params := callbackRequestParams{
+		Code:  strings.TrimSpace(r.URL.Query().Get("code")),
+		State: strings.TrimSpace(r.URL.Query().Get("state")),
+	}
+	if errs := validateRequestParams(params); len(errs) > 0 {
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, mergeDetails(baseDetails, map[string]any{
+			"reason": errs[0].Message,
+		}))
+		writeValidationError(w, r, errs)
 		return
 	}
 
-	data, err := readStateCookie(r, state)
+	data, err := readStateCookie(r, params.State)
 	if err != nil || data.Provider != provider {
-		attrs := append(baseAttrs, slog.String("state", state), slog.String("error", "invalid or expired state"))
-		logAudit(r.Context(), "oauth.callback", "failure", attrs...)
-		http.Error(w, "invalid or expired state", http.StatusBadRequest)
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, mergeDetails(baseDetails, map[string]any{
+			"reason": "invalid_or_expired_state",
+			"state":  params.State,
+		}))
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "invalid or expired state", nil)
 		return
 	}
 
-	deleteStateCookie(w, r, trustedProxies, allowInsecureStateCookie, state)
+	deleteStateCookie(w, r, trustedProxies, allowInsecureStateCookie, params.State)
 
 	payload := map[string]string{
-		"code":          code,
+		"code":          params.Code,
 		"code_verifier": data.CodeVerifier,
 		"redirect_uri":  cfg.RedirectURI,
 	}
 
 	buf, err := json.Marshal(payload)
 	if err != nil {
-		attrs := append(baseAttrs, slog.String("redirect_uri", data.RedirectURI), slog.String("error", "payload encoding failed"))
-		logAudit(r.Context(), "oauth.callback", "failure", attrs...)
-		http.Error(w, "failed to encode payload", http.StatusInternalServerError)
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, mergeDetails(baseDetails, map[string]any{
+			"reason":            "payload_encoding_failed",
+			"redirect_uri_hash": redirectHash(data.RedirectURI),
+		}))
+		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "failed to encode payload", nil)
 		return
 	}
 	orchestratorURL := strings.TrimRight(getEnv("ORCHESTRATOR_URL", "http://127.0.0.1:4000"), "/")
@@ -222,37 +368,48 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(buf))
 	if err != nil {
-		attrs := append(baseAttrs, slog.String("redirect_uri", data.RedirectURI), slog.String("error", "failed to create upstream request"))
-		logAudit(r.Context(), "oauth.callback", "failure", attrs...)
-		http.Error(w, "failed to create upstream request", http.StatusInternalServerError)
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, mergeDetails(baseDetails, map[string]any{
+			"reason":            "upstream_request_failed",
+			"redirect_uri_hash": redirectHash(data.RedirectURI),
+		}))
+		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "failed to create upstream request", nil)
 		return
 	}
 	req.Header.Set("Content-Type", "application/json")
 
 	client, clientErr := getOrchestratorClient()
 	if clientErr != nil {
-		attrs := append(baseAttrs, slog.String("redirect_uri", data.RedirectURI), slog.String("error", "orchestrator client misconfigured"))
-		logAudit(r.Context(), "oauth.callback", "failure", attrs...)
-		http.Error(w, "orchestrator client not configured", http.StatusInternalServerError)
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, mergeDetails(baseDetails, map[string]any{
+			"reason":            "upstream_client_not_configured",
+			"redirect_uri_hash": redirectHash(data.RedirectURI),
+		}))
+		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "orchestrator client not configured", nil)
 		return
 	}
 
 	resp, err := client.Do(req)
 	if err != nil {
-		attrs := append(baseAttrs, slog.String("redirect_uri", data.RedirectURI), slog.String("error", "failed to contact orchestrator"))
-		logAudit(r.Context(), "oauth.callback", "failure", attrs...)
-		http.Error(w, "failed to contact orchestrator", http.StatusBadGateway)
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, mergeDetails(baseDetails, map[string]any{
+			"reason":            "upstream_unreachable",
+			"redirect_uri_hash": redirectHash(data.RedirectURI),
+		}))
+		writeErrorResponse(w, r, http.StatusBadGateway, "upstream_error", "failed to contact orchestrator", nil)
 		return
 	}
 	defer resp.Body.Close()
 	body, _ := io.ReadAll(resp.Body)
 	if resp.StatusCode >= 400 {
 		safeError, detailedError, errorCode := sanitizeOrchestratorError(body)
-		attrs := append(baseAttrs, slog.String("redirect_uri", data.RedirectURI), slog.Int("status_code", resp.StatusCode), slog.String("error", detailedError))
+		details := mergeDetails(baseDetails, map[string]any{
+			"reason":            "upstream_error",
+			"status_code":       resp.StatusCode,
+			"error":             detailedError,
+			"redirect_uri_hash": redirectHash(data.RedirectURI),
+		})
 		if errorCode != "" {
-			attrs = append(attrs, slog.String("error_code", errorCode))
+			details["error_code"] = errorCode
 		}
-		logAudit(r.Context(), "oauth.callback", "failure", attrs...)
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, details)
 		redirectWithStatus(w, r, data.RedirectURI, data.State, "error", safeError)
 		return
 	}
@@ -261,8 +418,9 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 		http.SetCookie(w, cookie)
 	}
 
-	successAttrs := append(baseAttrs, slog.String("redirect_uri", data.RedirectURI))
-	logAudit(r.Context(), "oauth.callback", "success", successAttrs...)
+	auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeSuccess, mergeDetails(baseDetails, map[string]any{
+		"redirect_uri_host": redirectHost(data.RedirectURI),
+	}))
 
 	redirectWithStatus(w, r, data.RedirectURI, data.State, "success", "")
 }
@@ -270,28 +428,34 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 func redirectError(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, allowInsecureStateCookie bool, errParam string) {
 	state := r.URL.Query().Get("state")
 	if state == "" {
-		attrs := append(auditRequestAttrs(r, trustedProxies), slog.String("error", errParam))
-		logAudit(r.Context(), "oauth.callback", "failure", attrs...)
-		http.Error(w, errParam, http.StatusBadRequest)
+		auditRedirectEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, map[string]any{
+			"reason": errParam,
+		})
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", errParam, nil)
 		return
 	}
 	data, err := readStateCookie(r, state)
 	if err != nil {
-		attrs := append(auditRequestAttrs(r, trustedProxies), slog.String("state", state), slog.String("error", errParam))
-		logAudit(r.Context(), "oauth.callback", "failure", attrs...)
-		http.Error(w, errParam, http.StatusBadRequest)
+		auditRedirectEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, map[string]any{
+			"reason": errParam,
+			"state":  state,
+		})
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", errParam, nil)
 		return
 	}
 	deleteStateCookie(w, r, trustedProxies, allowInsecureStateCookie, state)
-	attrs := append(auditRequestAttrs(r, trustedProxies), slog.String("state", state), slog.String("redirect_uri", data.RedirectURI), slog.String("error", errParam))
-	logAudit(r.Context(), "oauth.callback", "failure", attrs...)
+	auditRedirectEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, map[string]any{
+		"reason":            errParam,
+		"state":             state,
+		"redirect_uri_hash": redirectHash(data.RedirectURI),
+	})
 	redirectWithStatus(w, r, data.RedirectURI, data.State, "error", errParam)
 }
 
 func redirectWithStatus(w http.ResponseWriter, r *http.Request, redirectURI, state, status, message string) {
 	target, err := url.Parse(redirectURI)
 	if err != nil {
-		http.Error(w, "invalid redirect_uri", http.StatusInternalServerError)
+		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "invalid redirect_uri", nil)
 		return
 	}
 	q := target.Query()
@@ -303,7 +467,71 @@ func redirectWithStatus(w http.ResponseWriter, r *http.Request, redirectURI, sta
 		q.Set("error", message)
 	}
 	target.RawQuery = q.Encode()
-	sendRedirect(w, target)
+	sendRedirect(w, r, target)
+}
+
+func validateRequestParams(payload interface{}) []validationError {
+	if payload == nil {
+		return []validationError{{Field: "", Message: "invalid request"}}
+	}
+	if err := requestValidator.Struct(payload); err != nil {
+		var validationErrs validator.ValidationErrors
+		if errors.As(err, &validationErrs) {
+			return convertValidationErrors(payload, validationErrs)
+		}
+		return []validationError{{Field: "", Message: err.Error()}}
+	}
+	return nil
+}
+
+func convertValidationErrors(payload interface{}, errs validator.ValidationErrors) []validationError {
+	var result []validationError
+	payloadType := reflect.TypeOf(payload)
+	if payloadType.Kind() == reflect.Ptr {
+		payloadType = payloadType.Elem()
+	}
+
+	tagLookup := map[string]string{}
+	if payloadType.Kind() == reflect.Struct {
+		for i := 0; i < payloadType.NumField(); i++ {
+			field := payloadType.Field(i)
+			if field.PkgPath != "" {
+				continue
+			}
+			if tag := field.Tag.Get("json"); tag != "" && tag != "-" {
+				parts := strings.Split(tag, ",")
+				if len(parts) > 0 && parts[0] != "" {
+					tagLookup[field.Name] = parts[0]
+				}
+			}
+		}
+	}
+
+	for _, fieldErr := range errs {
+		fieldName := fieldErr.StructField()
+		if jsonName, ok := tagLookup[fieldName]; ok {
+			fieldName = jsonName
+		}
+		message := formatValidationMessage(fieldName, fieldErr)
+		result = append(result, validationError{
+			Field:   fieldName,
+			Message: message,
+		})
+	}
+	return result
+}
+
+func formatValidationMessage(field string, err validator.FieldError) string {
+	switch err.Tag() {
+	case "required":
+		return fmt.Sprintf("%s is required", field)
+	case "uri":
+		return fmt.Sprintf("%s must be a valid URL", field)
+	case "max":
+		return fmt.Sprintf("%s must not exceed %s characters", field, err.Param())
+	default:
+		return fmt.Sprintf("%s failed %s validation", field, err.Tag())
+	}
 }
 
 var orchestratorErrorMessages = map[string]string{
@@ -316,9 +544,19 @@ var orchestratorErrorMessages = map[string]string{
 	"server_error":            "authentication temporarily unavailable",
 }
 
-type orchestratorError struct {
-	Error string `json:"error"`
-	Code  string `json:"code"`
+type orchestratorErrorEnvelope struct {
+	Error json.RawMessage `json:"error"`
+	Code  string          `json:"code"`
+}
+
+type orchestratorErrorBody struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
+}
+
+type orchestratorUnifiedError struct {
+	Code    string `json:"code"`
+	Message string `json:"message"`
 }
 
 func sanitizeOrchestratorError(body []byte) (safe string, detailed string, code string) {
@@ -327,16 +565,59 @@ func sanitizeOrchestratorError(body []byte) (safe string, detailed string, code 
 	if detailed == "" {
 		detailed = "authentication failed"
 	}
+	defaultDetailed := detailed
 
-	var payload orchestratorError
-	if err := json.Unmarshal(body, &payload); err == nil {
-		if payload.Error != "" {
-			detailed = payload.Error
+	var unified orchestratorUnifiedError
+	if err := json.Unmarshal(body, &unified); err == nil {
+		if unified.Message != "" {
+			detailed = unified.Message
 		}
-		if payload.Code != "" {
-			code = payload.Code
-			if msg, ok := orchestratorErrorMessages[payload.Code]; ok {
-				safe = msg
+		if unified.Code != "" {
+			code = unified.Code
+		}
+	}
+
+	var envelope orchestratorErrorEnvelope
+	if err := json.Unmarshal(body, &envelope); err == nil {
+		if len(envelope.Error) > 0 {
+			var structured orchestratorErrorBody
+			if err := json.Unmarshal(envelope.Error, &structured); err == nil {
+				if structured.Message != "" && detailed == defaultDetailed {
+					detailed = structured.Message
+				}
+				if structured.Code != "" && code == "" {
+					code = structured.Code
+				}
+			} else {
+				var legacyMessage string
+				if err := json.Unmarshal(envelope.Error, &legacyMessage); err == nil && legacyMessage != "" && detailed == defaultDetailed {
+					detailed = legacyMessage
+				}
+			}
+		}
+		if code == "" && envelope.Code != "" {
+			code = envelope.Code
+		}
+	}
+
+	if code != "" {
+		if msg, ok := orchestratorErrorMessages[code]; ok {
+			safe = msg
+		}
+	} else {
+		var legacy struct {
+			Error string `json:"error"`
+			Code  string `json:"code"`
+		}
+		if err := json.Unmarshal(body, &legacy); err == nil {
+			if legacy.Error != "" {
+				detailed = legacy.Error
+			}
+			if legacy.Code != "" {
+				code = legacy.Code
+				if msg, ok := orchestratorErrorMessages[legacy.Code]; ok {
+					safe = msg
+				}
 			}
 		}
 	}
@@ -515,6 +796,31 @@ func getEnv(key, defaultValue string) string {
 	return defaultValue
 }
 
+func resolveEnvValue(key string) (string, error) {
+	fileKey := key + "_FILE"
+	if path := strings.TrimSpace(os.Getenv(fileKey)); path != "" {
+		data, err := readSecretFile(path)
+		if err != nil {
+			return "", fmt.Errorf("failed to read %s: %w", fileKey, err)
+		}
+		value := strings.TrimSpace(string(data))
+		if value != "" {
+			return value, nil
+		}
+		return "", nil
+	}
+	value := strings.TrimSpace(os.Getenv(key))
+	if value != "" {
+		return value, nil
+	}
+	return "", nil
+}
+
+func readSecretFile(path string) ([]byte, error) {
+	rootDir := strings.TrimSpace(os.Getenv("GATEWAY_SECRET_FILE_ROOT"))
+	return readFileFromAllowedRoot(path, rootDir)
+}
+
 func setStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, allowInsecure bool, data stateData) error {
 	secureRequest := isRequestSecure(r, trustedProxies)
 	if !secureRequest && !allowInsecure {
@@ -636,9 +942,9 @@ func defaultPortForScheme(scheme string) string {
 	}
 }
 
-func sendRedirect(w http.ResponseWriter, target *url.URL) {
+func sendRedirect(w http.ResponseWriter, r *http.Request, target *url.URL) {
 	if target == nil {
-		http.Error(w, "failed to resolve redirect", http.StatusInternalServerError)
+		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "failed to resolve redirect", nil)
 		return
 	}
 	w.Header().Set("Location", target.String())
@@ -713,25 +1019,28 @@ func RegisterAuthRoutes(mux *http.ServeMux, cfg AuthRouteConfig) {
 		panic(fmt.Sprintf("invalid trusted proxy configuration: %v", err))
 	}
 
-	limiter := newAuthRateLimiter()
+	limiter := newRateLimiter()
+	policy := newAuthRateLimitPolicy()
+
 	authorize := withAuthRateLimit(func(w http.ResponseWriter, r *http.Request) {
 		authorizeHandler(w, r, trustedProxies, cfg.AllowInsecureStateCookie)
-	}, limiter, trustedProxies)
+	}, limiter, policy.loginBuckets, trustedProxies, extractAuthorizeIdentity)
+
 	callback := withAuthRateLimit(func(w http.ResponseWriter, r *http.Request) {
 		callbackHandler(w, r, trustedProxies, cfg.AllowInsecureStateCookie)
-	}, limiter, trustedProxies)
+	}, limiter, policy.tokenBuckets, trustedProxies, extractCallbackIdentity)
 
 	mux.HandleFunc("/auth/", func(w http.ResponseWriter, r *http.Request) {
 		switch {
 		case strings.HasSuffix(r.URL.Path, "/authorize"):
 			if r.Method != http.MethodGet {
-				methodNotAllowed(w, http.MethodGet)
+				methodNotAllowed(w, r, http.MethodGet)
 				return
 			}
 			authorize(w, r)
 		case strings.HasSuffix(r.URL.Path, "/callback"):
 			if r.Method != http.MethodGet {
-				methodNotAllowed(w, http.MethodGet)
+				methodNotAllowed(w, r, http.MethodGet)
 				return
 			}
 			callback(w, r)
@@ -741,9 +1050,55 @@ func RegisterAuthRoutes(mux *http.ServeMux, cfg AuthRouteConfig) {
 	})
 }
 
-func methodNotAllowed(w http.ResponseWriter, allowed string) {
+func methodNotAllowed(w http.ResponseWriter, r *http.Request, allowed string) {
 	w.Header().Set("Allow", allowed)
-	http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	writeErrorResponse(w, r, http.StatusMethodNotAllowed, "method_not_allowed", "method not allowed", nil)
+}
+
+func respondTooManyRequests(w http.ResponseWriter, r *http.Request, retryAfter time.Duration) {
+	if retryAfter <= 0 {
+		retryAfter = time.Second
+	}
+	seconds := int((retryAfter + time.Second - 1) / time.Second)
+	if seconds < 1 {
+		seconds = 1
+	}
+	w.Header().Set("Retry-After", strconv.Itoa(seconds))
+	writeErrorResponse(w, r, http.StatusTooManyRequests, "too_many_requests", "too many requests", nil)
+}
+
+func writeValidationError(w http.ResponseWriter, r *http.Request, errs []validationError) {
+	details := any(errs)
+	if len(errs) == 0 {
+		details = nil
+	}
+	writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "invalid request", details)
+}
+
+type httpErrorResponse struct {
+	Code      string `json:"code"`
+	Message   string `json:"message"`
+	Details   any    `json:"details,omitempty"`
+	RequestID string `json:"requestId,omitempty"`
+	TraceID   string `json:"traceId,omitempty"`
+}
+
+func writeErrorResponse(w http.ResponseWriter, r *http.Request, status int, code, message string, details any) {
+	payload := httpErrorResponse{
+		Code:    code,
+		Message: message,
+		Details: details,
+	}
+
+	if requestID := strings.TrimSpace(r.Header.Get("X-Request-Id")); requestID != "" {
+		payload.RequestID = requestID
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(status)
+	if err := json.NewEncoder(w).Encode(payload); err != nil {
+		slog.ErrorContext(r.Context(), "gateway.write_error_response_failed", slog.String("error", err.Error()))
+	}
 }
 
 func getDurationEnv(key string, fallback time.Duration) time.Duration {
@@ -779,30 +1134,121 @@ func parseScopeList(raw string) []string {
 	return result
 }
 
-type ipRateLimiter struct {
-	window time.Duration
-	max    int
-	mu     sync.Mutex
-	hits   map[string][]time.Time
+type authRateLimitPolicy struct {
+	loginBuckets []rateLimitBucket
+	tokenBuckets []rateLimitBucket
 }
 
-func newAuthRateLimiter() *ipRateLimiter {
-	window := getDurationEnv("GATEWAY_AUTH_RATE_LIMIT_WINDOW", time.Minute)
-	max := getIntEnv("GATEWAY_AUTH_RATE_LIMIT_MAX", 10)
-	if max <= 0 {
-		return nil
-	}
-	if window <= 0 {
-		window = time.Minute
-	}
-	return &ipRateLimiter{
-		window: window,
-		max:    max,
-		hits:   make(map[string][]time.Time),
+func newAuthRateLimitPolicy() authRateLimitPolicy {
+	ipWindow := resolveDuration([]string{"GATEWAY_AUTH_IP_RATE_LIMIT_WINDOW", "GATEWAY_AUTH_RATE_LIMIT_WINDOW"}, defaultAuthIPWindow)
+	ipLimit := resolveLimit([]string{"GATEWAY_AUTH_IP_RATE_LIMIT_MAX", "GATEWAY_AUTH_RATE_LIMIT_MAX"}, defaultAuthIPLimit)
+	identityWindow := resolveDuration([]string{"GATEWAY_AUTH_ID_RATE_LIMIT_WINDOW"}, defaultAuthIdentityWindow)
+	identityLimit := resolveLimit([]string{"GATEWAY_AUTH_ID_RATE_LIMIT_MAX"}, defaultAuthIdentityLimit)
+
+	return authRateLimitPolicy{
+		loginBuckets: []rateLimitBucket{
+			{Endpoint: "auth_login", IdentityType: "ip", Window: ipWindow, Limit: ipLimit},
+			{Endpoint: "auth_login", IdentityType: "client", Window: identityWindow, Limit: identityLimit},
+		},
+		tokenBuckets: []rateLimitBucket{
+			{Endpoint: "auth_token", IdentityType: "ip", Window: ipWindow, Limit: ipLimit},
+			{Endpoint: "auth_token", IdentityType: "client", Window: identityWindow, Limit: identityLimit},
+		},
 	}
 }
 
-func withAuthRateLimit(handler http.HandlerFunc, limiter *ipRateLimiter, trustedProxies []*net.IPNet) http.HandlerFunc {
+type rateLimitBucket struct {
+	Endpoint     string
+	IdentityType string
+	Window       time.Duration
+	Limit        int
+}
+
+type rateLimiter struct {
+	mu      sync.Mutex
+	windows map[string]rateLimitWindow
+	now     func() time.Time
+}
+
+type rateLimitWindow struct {
+	expires time.Time
+	count   int
+}
+
+func newRateLimiter() *rateLimiter {
+	return &rateLimiter{
+		windows: make(map[string]rateLimitWindow),
+		now:     time.Now,
+	}
+}
+
+func (r *rateLimiter) Allow(ctx context.Context, bucket rateLimitBucket, identity string) (bool, time.Duration, error) {
+	if r == nil {
+		return true, 0, nil
+	}
+	if bucket.Limit <= 0 || bucket.Window <= 0 {
+		return true, 0, nil
+	}
+
+	key := fmt.Sprintf("%s|%s|%s", bucket.Endpoint, bucket.IdentityType, identity)
+	now := r.now()
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	state := r.windows[key]
+	if state.expires.IsZero() || now.After(state.expires) {
+		state = rateLimitWindow{expires: now.Add(bucket.Window), count: 0}
+	}
+
+	if state.count >= bucket.Limit {
+		retryAfter := state.expires.Sub(now)
+		if retryAfter < 0 {
+			retryAfter = 0
+		}
+		r.windows[key] = state
+		return false, retryAfter, nil
+	}
+
+	state.count++
+	r.windows[key] = state
+	return true, 0, nil
+}
+
+func resolveDuration(keys []string, fallback time.Duration) time.Duration {
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			if dur, err := time.ParseDuration(value); err == nil && dur > 0 {
+				return dur
+			}
+		}
+	}
+	return fallback
+}
+
+func resolveLimit(keys []string, fallback int) int {
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			if limit, err := strconv.Atoi(value); err == nil && limit > 0 {
+				return limit
+			}
+		}
+	}
+	if fallback <= 0 {
+		return 1
+	}
+	return fallback
+}
+
+type identityExtractor func(*http.Request) (string, bool)
+
+func withAuthRateLimit(
+	handler http.HandlerFunc,
+	limiter *rateLimiter,
+	buckets []rateLimitBucket,
+	trustedProxies []*net.IPNet,
+	extractor identityExtractor,
+) http.HandlerFunc {
 	if limiter == nil {
 		return handler
 	}
@@ -811,33 +1257,90 @@ func withAuthRateLimit(handler http.HandlerFunc, limiter *ipRateLimiter, trusted
 		if ip == "" {
 			ip = "unknown"
 		}
-		if !limiter.Allow(ip) {
-			http.Error(w, "too many requests", http.StatusTooManyRequests)
-			return
+
+		var identity string
+		identityLoaded := false
+
+		for _, bucket := range buckets {
+			var key string
+			switch bucket.IdentityType {
+			case "ip":
+				key = ip
+			default:
+				if extractor == nil {
+					continue
+				}
+				if !identityLoaded {
+					identity, identityLoaded = extractor(r)
+				}
+				if !identityLoaded || identity == "" {
+					continue
+				}
+				key = identity
+			}
+
+			allowed, retryAfter, err := limiter.Allow(r.Context(), bucket, key)
+			if err != nil {
+				slog.WarnContext(r.Context(), "gateway.ratelimit.allow_error",
+					slog.String("endpoint", bucket.Endpoint),
+					slog.String("identity_type", bucket.IdentityType),
+					slog.String("error", err.Error()),
+				)
+				continue
+			}
+			if !allowed {
+				respondTooManyRequests(w, r, retryAfter)
+				return
+			}
 		}
+
 		handler(w, r)
 	}
 }
 
-func (l *ipRateLimiter) Allow(id string) bool {
-	now := time.Now()
-	cutoff := now.Add(-l.window)
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	entries := l.hits[id]
-	keep := entries[:0]
-	for _, ts := range entries {
-		if ts.After(cutoff) {
-			keep = append(keep, ts)
-		}
+func extractAuthorizeIdentity(r *http.Request) (string, bool) {
+	redirectURI := strings.TrimSpace(r.URL.Query().Get("redirect_uri"))
+	if redirectURI == "" {
+		return "", false
 	}
-	if len(keep) >= l.max {
-		l.hits[id] = keep
-		return false
+	parsed, err := url.Parse(redirectURI)
+	if err != nil {
+		return redirectURI, true
 	}
-	keep = append(keep, now)
-	l.hits[id] = keep
-	return true
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		return redirectURI, true
+	}
+	if port := strings.TrimSpace(parsed.Port()); port != "" {
+		host = fmt.Sprintf("%s:%s", host, port)
+	}
+	return strings.ToLower(host), true
+}
+
+func extractCallbackIdentity(r *http.Request) (string, bool) {
+	state := strings.TrimSpace(r.URL.Query().Get("state"))
+	if state == "" {
+		return "", false
+	}
+	data, err := readStateCookie(r, state)
+	if err != nil {
+		return "", false
+	}
+	if data.RedirectURI == "" {
+		return "", false
+	}
+	parsed, err := url.Parse(data.RedirectURI)
+	if err != nil {
+		return data.RedirectURI, true
+	}
+	host := strings.TrimSpace(parsed.Hostname())
+	if host == "" {
+		return data.RedirectURI, true
+	}
+	if port := strings.TrimSpace(parsed.Port()); port != "" {
+		host = fmt.Sprintf("%s:%s", host, port)
+	}
+	return strings.ToLower(host), true
 }
 
 func loadOidcMetadata(issuer string) (oidcDiscovery, error) {
@@ -899,7 +1402,10 @@ func getOidcProvider() (oauthProvider, error) {
 	if issuer == "" {
 		return oauthProvider{}, fmt.Errorf("oidc issuer not configured")
 	}
-	clientID := strings.TrimSpace(os.Getenv("OIDC_CLIENT_ID"))
+	clientID, err := resolveEnvValue("OIDC_CLIENT_ID")
+	if err != nil {
+		return oauthProvider{}, fmt.Errorf("failed to load OIDC_CLIENT_ID: %w", err)
+	}
 	if clientID == "" {
 		return oauthProvider{}, fmt.Errorf("oidc client id not configured")
 	}

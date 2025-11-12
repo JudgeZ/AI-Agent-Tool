@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import { printLine } from "../output";
+
 export interface PlanStep {
   id: string;
   action: string;
@@ -77,14 +79,29 @@ async function readErrorMessage(response: Response): Promise<string | undefined>
       const parsed = JSON.parse(bodyText);
       if (typeof parsed === "string") return parsed;
       if (parsed && typeof parsed === "object") {
-        if (typeof parsed.error === "string" && parsed.error.trim()) {
-          return parsed.error.trim();
+        const candidateMessages: string[] = [];
+
+        const topLevel = parsed as Record<string, unknown>;
+        if (typeof topLevel.message === "string" && topLevel.message.trim()) {
+          candidateMessages.push(topLevel.message.trim());
         }
-        if (typeof parsed.message === "string" && parsed.message.trim()) {
-          return parsed.message.trim();
+
+        const topLevelError = topLevel.error;
+        if (typeof topLevelError === "string" && topLevelError.trim()) {
+          candidateMessages.push(topLevelError.trim());
+        } else if (topLevelError && typeof topLevelError === "object") {
+          const nested = topLevelError as Record<string, unknown>;
+          if (typeof nested.message === "string" && nested.message.trim()) {
+            candidateMessages.push(nested.message.trim());
+          }
         }
-        if (Array.isArray(parsed.errors) && parsed.errors.length > 0) {
-          return parsed.errors.map(err => String(err)).join(", ");
+
+        if (candidateMessages.length > 0) {
+          return candidateMessages[0];
+        }
+
+        if (Array.isArray(topLevel.errors) && topLevel.errors.length > 0) {
+          return topLevel.errors.map(err => String(err)).join(", ");
         }
       }
     } catch {
@@ -228,18 +245,18 @@ function formatSuccessCriteria(plan: Plan): string[] {
 
 export async function runPlan(goal: string): Promise<Plan> {
   const plan = await createPlan(goal);
-  console.log(`Plan created: ${plan.id}`);
-  console.log("Goal:", plan.goal);
-  console.log("Steps:");
+  printLine(`Plan created: ${plan.id}`);
+  printLine("Goal:", plan.goal);
+  printLine("Steps:");
   for (const line of formatSteps(plan)) {
-    console.log(line);
+    printLine(line);
   }
   if (plan.successCriteria?.length) {
-    console.log("Success criteria:");
+    printLine("Success criteria:");
     for (const line of formatSuccessCriteria(plan)) {
-      console.log(line);
+      printLine(line);
     }
   }
-  console.log(`SSE stream: /plan/${plan.id}/events`);
+  printLine(`SSE stream: /plan/${plan.id}/events`);
   return plan;
 }

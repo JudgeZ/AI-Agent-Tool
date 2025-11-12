@@ -8,12 +8,13 @@
 Local-first, auditable, multi-agent coding assistant with a desktop GUI.
 
 - **Reliability**: gRPC “inner loop” + MQ “outer loop”, idempotent jobs, SSE streaming.
-- **Security**: OAuth 2.1 + PKCE, least-privilege capabilities (MCP), sandboxed tools, OPA approvals, OTel traces.
+- **Security**: OAuth 2.1 + PKCE, cert-manager managed mTLS between services, least-privilege capabilities (MCP), sandboxed tools, OPA approvals, OTel traces.
 - **Performance/Cost**: Prompt caching, hybrid context engine, queue-based autoscaling.
 - **Modes**: Consumer (single-user, local-first) and Enterprise (multi-tenant, K8s).
 
 ## Quick start (dev)
 ```bash
+cp env.example .env
 docker compose -f compose.dev.yaml up --build
 ```
 
@@ -24,7 +25,6 @@ The development Compose file builds the in-repo services and starts the full dep
 | `gateway` | `/gateway-api` | Waits on the orchestrator container before accepting requests. |
 | `orchestrator` | `node dist/index.js` | Requires Redis, Postgres, RabbitMQ, and Kafka to be reachable. |
 | `indexer` | `/app/indexer` | Independent Rust service providing repository insights. |
-| `memory-svc` | `tail -f /dev/null` | Utility workspace container for building the future memory service implementation. |
 | `redis` | Image default (`redis-stack-server`) | Provides cache + vector store features consumed by the orchestrator. |
 | `postgres` | Image default (`docker-entrypoint.sh postgres`) | Backing relational datastore for orchestrator + Langfuse. |
 | `rabbitmq` | Image default (`docker-entrypoint.sh rabbitmq-server`) | Message queue for the outer loop. |
@@ -48,3 +48,14 @@ npm --workspace apps/cli run build
 ```
 
 See: `docs/agents/README.md`, `docs/consumer-enterprise-modes.md`, `docs/planner.md`.
+
+## FAQ & Troubleshooting
+- Common fixes and coverage tips live in [`docs/faq-troubleshooting.md`](./docs/faq-troubleshooting.md).
+- Contribution process: see [`CONTRIBUTING.md`](./CONTRIBUTING.md).
+- Code of conduct: see [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
+- Looking for your first task? See [`docs/good-first-issues.md`](./docs/good-first-issues.md).
+
+## Oncall Runbooks
+- Gateway/API incidents: [`docs/runbooks/gateway-api.md`](./docs/runbooks/gateway-api.md)
+- Orchestrator queue/policy incidents: [`docs/runbooks/orchestrator.md`](./docs/runbooks/orchestrator.md)
+- Indexer ingestion incidents: [`docs/runbooks/indexer.md`](./docs/runbooks/indexer.md)

@@ -13,6 +13,7 @@ export type PersistedStep = {
   planId: string;
   stepId: string;
   traceId: string;
+  requestId?: string;
   step: PlanStep;
   state: PlanStepState;
   summary?: string;
@@ -29,12 +30,14 @@ export type PlanStepMetadata = {
   step: PlanStep;
   createdAt: string;
   attempt: number;
+  requestId?: string;
   subject?: PlanSubject;
 };
 
 export type PersistedPlanMetadata = {
   planId: string;
   traceId: string;
+  requestId?: string;
   steps: PlanStepMetadata[];
   nextStepIndex: number;
   lastCompletedIndex: number;
@@ -56,6 +59,7 @@ export type RememberStepOptions = {
   idempotencyKey?: string;
   attempt?: number;
   createdAt?: string;
+  requestId?: string;
   approvals?: Record<string, boolean>;
   subject?: PlanSubject;
 };
@@ -85,6 +89,7 @@ export interface PlanStatePersistence {
       idempotencyKey: string;
       attempt: number;
       createdAt: string;
+      requestId?: string;
       approvals?: Record<string, boolean>;
       subject?: PlanSubject;
     }
@@ -131,6 +136,7 @@ export class FilePlanStateStore implements PlanStatePersistence {
       idempotencyKey: string;
       attempt: number;
       createdAt: string;
+      requestId?: string;
       approvals?: Record<string, boolean>;
       subject?: PlanSubject;
     }
@@ -143,6 +149,7 @@ export class FilePlanStateStore implements PlanStatePersistence {
       planId,
       stepId: step.id,
       traceId,
+      requestId: options.requestId,
       step,
       state: options.initialState ?? "queued",
       updatedAt: new Date().toISOString(),
@@ -189,6 +196,7 @@ export class FilePlanStateStore implements PlanStatePersistence {
         state,
         summary,
         output,
+        requestId: existing.requestId,
         updatedAt: new Date().toISOString(),
         attempt: attempt ?? existing.attempt
       });
@@ -281,10 +289,12 @@ export class FilePlanStateStore implements PlanStatePersistence {
     this.purgeExpired();
     const entry: PersistedPlanMetadata & { updatedAt: string } = {
       ...metadata,
+      requestId: metadata.requestId,
       steps: metadata.steps.map(stepEntry => ({
         step: { ...stepEntry.step, labels: [...stepEntry.step.labels] },
         createdAt: stepEntry.createdAt,
         attempt: stepEntry.attempt,
+        requestId: stepEntry.requestId,
         subject: stepEntry.subject
           ? {
               ...stepEntry.subject,
@@ -312,12 +322,14 @@ export class FilePlanStateStore implements PlanStatePersistence {
     return {
       planId: entry.planId,
       traceId: entry.traceId,
+      requestId: entry.requestId,
       nextStepIndex: entry.nextStepIndex,
       lastCompletedIndex: entry.lastCompletedIndex,
       steps: entry.steps.map(stepEntry => ({
         step: { ...stepEntry.step, labels: [...stepEntry.step.labels] },
         createdAt: stepEntry.createdAt,
         attempt: stepEntry.attempt,
+        requestId: stepEntry.requestId,
         subject: stepEntry.subject
           ? {
               ...stepEntry.subject,
@@ -335,12 +347,14 @@ export class FilePlanStateStore implements PlanStatePersistence {
     const plans = Array.from(this.planRecords.values()).map(entry => ({
       planId: entry.planId,
       traceId: entry.traceId,
+      requestId: entry.requestId,
       nextStepIndex: entry.nextStepIndex,
       lastCompletedIndex: entry.lastCompletedIndex,
       steps: entry.steps.map(stepEntry => ({
         step: { ...stepEntry.step, labels: [...stepEntry.step.labels] },
         createdAt: stepEntry.createdAt,
         attempt: stepEntry.attempt,
+        requestId: stepEntry.requestId,
         subject: stepEntry.subject
           ? {
               ...stepEntry.subject,
@@ -401,10 +415,12 @@ export class FilePlanStateStore implements PlanStatePersistence {
           if (plan && typeof plan.planId === "string") {
             this.planRecords.set(plan.planId, {
               ...plan,
+              requestId: plan.requestId,
               steps: plan.steps.map(stepEntry => ({
                 step: stepEntry.step,
                 createdAt: stepEntry.createdAt,
                 attempt: stepEntry.attempt,
+                requestId: stepEntry.requestId,
                 subject: stepEntry.subject
               })),
               updatedAt: new Date().toISOString()
@@ -437,12 +453,14 @@ export class FilePlanStateStore implements PlanStatePersistence {
       plans: Array.from(this.planRecords.values()).map(entry => ({
         planId: entry.planId,
         traceId: entry.traceId,
+        requestId: entry.requestId,
         nextStepIndex: entry.nextStepIndex,
         lastCompletedIndex: entry.lastCompletedIndex,
         steps: entry.steps.map(stepEntry => ({
           step: stepEntry.step,
           createdAt: stepEntry.createdAt,
           attempt: stepEntry.attempt,
+          requestId: stepEntry.requestId,
           subject: stepEntry.subject
         }))
       }))
@@ -492,6 +510,7 @@ type PlanStateRow = {
   step_id: string;
   id: string;
   trace_id: string;
+  request_id: string | null;
   step: PlanStep;
   state: PlanStepState;
   summary: string | null;
@@ -507,6 +526,7 @@ type PlanStateRow = {
 type PlanMetadataRow = {
   plan_id: string;
   trace_id: string;
+  request_id: string | null;
   steps: PlanStepMetadata[];
   next_step_index: number;
   last_completed_index: number;
@@ -549,6 +569,7 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
       idempotencyKey: string;
       attempt: number;
       createdAt: string;
+      requestId?: string;
       approvals?: Record<string, boolean>;
       subject?: PlanSubject;
     }
@@ -565,6 +586,7 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
         step_id,
         id,
         trace_id,
+        request_id,
         step,
         state,
         summary,
@@ -575,11 +597,12 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
         created_at,
         approvals,
         subject
-      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+      ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
       ON CONFLICT (plan_id, step_id)
       DO UPDATE SET
         id = EXCLUDED.id,
         trace_id = EXCLUDED.trace_id,
+        request_id = EXCLUDED.request_id,
         step = EXCLUDED.step,
         state = EXCLUDED.state,
         summary = EXCLUDED.summary,
@@ -595,6 +618,7 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
         step.id,
         randomUUID(),
         traceId,
+        options.requestId ?? null,
         storedStep,
         options.initialState ?? "queued",
         null,
@@ -668,7 +692,7 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
     await this.ready;
     await this.purgeExpired();
     const result = await this.pool.query<PlanStateRow>(
-      `SELECT plan_id, step_id, id, trace_id, step, state, summary, output, updated_at, attempt, idempotency_key, created_at, approvals, subject
+      `SELECT plan_id, step_id, id, trace_id, request_id, step, state, summary, output, updated_at, attempt, idempotency_key, created_at, approvals, subject
        FROM plan_state`,
     );
     return result.rows.map((row: PlanStateRow) => this.toPersistedStep(row));
@@ -678,7 +702,7 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
     await this.ready;
     await this.purgeExpired();
     const result = await this.pool.query<PlanStateRow>(
-      `SELECT plan_id, step_id, id, trace_id, step, state, summary, output, updated_at, attempt, idempotency_key, created_at, approvals, subject
+      `SELECT plan_id, step_id, id, trace_id, request_id, step, state, summary, output, updated_at, attempt, idempotency_key, created_at, approvals, subject
        FROM plan_state
        WHERE plan_id = $1 AND step_id = $2`,
       [planId, stepId],
@@ -706,10 +730,11 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
     await this.purgeExpired();
     const now = new Date();
     await this.pool.query(
-      `INSERT INTO plan_state_metadata (plan_id, trace_id, steps, next_step_index, last_completed_index, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6)
+      `INSERT INTO plan_state_metadata (plan_id, trace_id, request_id, steps, next_step_index, last_completed_index, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
        ON CONFLICT (plan_id)
        DO UPDATE SET trace_id = EXCLUDED.trace_id,
+                     request_id = EXCLUDED.request_id,
                      steps = EXCLUDED.steps,
                      next_step_index = EXCLUDED.next_step_index,
                      last_completed_index = EXCLUDED.last_completed_index,
@@ -717,10 +742,12 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
       [
         planId,
         metadata.traceId,
+        metadata.requestId ?? null,
         metadata.steps.map((entry) => ({
           step: cloneStep(entry.step),
           createdAt: entry.createdAt,
           attempt: entry.attempt,
+          requestId: entry.requestId,
           subject: cloneSubject(entry.subject),
         })),
         metadata.nextStepIndex,
@@ -734,7 +761,7 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
     await this.ready;
     await this.purgeExpired();
     const result = await this.pool.query<PlanMetadataRow>(
-      `SELECT plan_id, trace_id, steps, next_step_index, last_completed_index, updated_at
+      `SELECT plan_id, trace_id, request_id, steps, next_step_index, last_completed_index, updated_at
        FROM plan_state_metadata
        WHERE plan_id = $1`,
       [planId],
@@ -750,7 +777,7 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
     await this.ready;
     await this.purgeExpired();
     const result = await this.pool.query<PlanMetadataRow>(
-      `SELECT plan_id, trace_id, steps, next_step_index, last_completed_index, updated_at FROM plan_state_metadata`,
+      `SELECT plan_id, trace_id, request_id, steps, next_step_index, last_completed_index, updated_at FROM plan_state_metadata`,
     );
     return result.rows.map((row) => this.toPersistedPlanMetadata(row));
   }
@@ -774,6 +801,7 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
         step_id TEXT NOT NULL,
         id UUID NOT NULL,
         trace_id TEXT NOT NULL,
+        request_id TEXT,
         step JSONB NOT NULL,
         state TEXT NOT NULL,
         summary TEXT,
@@ -794,11 +822,20 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
       CREATE TABLE IF NOT EXISTS plan_state_metadata (
         plan_id TEXT PRIMARY KEY,
         trace_id TEXT NOT NULL,
+        request_id TEXT,
         steps JSONB NOT NULL,
         next_step_index INTEGER NOT NULL,
         last_completed_index INTEGER NOT NULL,
         updated_at TIMESTAMPTZ NOT NULL
       )
+    `);
+    await this.pool.query(`
+      ALTER TABLE plan_state
+      ADD COLUMN IF NOT EXISTS request_id TEXT
+    `);
+    await this.pool.query(`
+      ALTER TABLE plan_state_metadata
+      ADD COLUMN IF NOT EXISTS request_id TEXT
     `);
     await this.pool.query(`
       CREATE INDEX IF NOT EXISTS plan_state_metadata_updated_at_idx ON plan_state_metadata(updated_at)
@@ -842,6 +879,7 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
       planId: row.plan_id,
       stepId: row.step_id,
       traceId: row.trace_id,
+      requestId: row.request_id ?? undefined,
       step: cloneStep(row.step),
       state: row.state,
       summary: row.summary ?? undefined,
@@ -859,6 +897,7 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
     return {
       planId: row.plan_id,
       traceId: row.trace_id,
+      requestId: row.request_id ?? undefined,
       nextStepIndex: row.next_step_index,
       lastCompletedIndex: row.last_completed_index,
       steps: row.steps.map((entry) => ({

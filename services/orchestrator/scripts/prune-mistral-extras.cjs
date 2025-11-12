@@ -3,8 +3,62 @@
 const fs = require("fs");
 const path = require("path");
 
+let createLogger;
+
+try {
+  ({ createLogger } = require("../../../scripts/logger"));
+} catch (error) {
+  const isMissing =
+    error?.code === "MODULE_NOT_FOUND" &&
+    typeof error?.message === "string" &&
+    error.message.includes("../../../scripts/logger");
+
+  if (!isMissing) {
+    throw error;
+  }
+
+  createLogger = function fallbackCreateLogger(options = {}) {
+    const { name = "" } = options;
+
+    const emit = (level, message, context) => {
+      const payload = {
+        level,
+        msg: message,
+        time: new Date().toISOString()
+      };
+
+      if (name) {
+        payload.name = name;
+      }
+
+      if (context !== undefined) {
+        payload.context = context;
+      }
+
+      const writer = console[level] || console.log;
+      writer(JSON.stringify(payload));
+    };
+
+    return {
+      debug(message, context) {
+        emit("debug", message, context);
+      },
+      info(message, context) {
+        emit("info", message, context);
+      },
+      warn(message, context) {
+        emit("warn", message, context);
+      },
+      error(message, context) {
+        emit("error", message, context);
+      }
+    };
+  };
+}
+
 const pkgName = "@mistralai/mistralai";
 const moduleRoot = path.join(__dirname, "..", "node_modules", "@mistralai", "mistralai");
+const logger = createLogger({ name: "prune-mistral-extras" });
 
 const targets = [
   "examples",
@@ -38,7 +92,11 @@ const main = () => {
       fs.rmSync(fullPath, { recursive: true, force: true });
       removed.push(target);
     } catch (error) {
-      console.warn("Failed to prune %s/%s: %s", pkgName, target, formatError(error));
+      logger.warn("Failed to prune mistral extras target.", {
+        package: pkgName,
+        target,
+        error: formatError(error)
+      });
     }
   }
 
@@ -52,7 +110,11 @@ const main = () => {
       fs.rmSync(lockPath, { force: true });
       removed.push(path.normalize(lockRelPath));
     } catch (error) {
-      console.warn("Failed to remove %s lock file %s: %s", pkgName, lockRelPath, formatError(error));
+      logger.warn("Failed to remove mistral lockfile.", {
+        package: pkgName,
+        lockFile: lockRelPath,
+        error: formatError(error)
+      });
     }
   }
 
@@ -62,8 +124,14 @@ const main = () => {
 try {
   const removed = main();
   if (removed.length > 0) {
-    console.log("Pruned %s extras: %s", pkgName, removed.join(", "));
+    logger.info("Pruned mistral extras.", {
+      package: pkgName,
+      removed
+    });
   }
 } catch (error) {
-  console.warn("Failed to prune %s extras: %s", pkgName, formatError(error));
+  logger.warn("Failed to prune mistral extras.", {
+    package: pkgName,
+    error: formatError(error)
+  });
 }

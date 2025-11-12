@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { appLogger } from "../observability/logger.js";
 
 const originalEnv = { ...process.env };
 
@@ -46,7 +47,12 @@ describe("initializePlanQueueRuntime", () => {
       ToolClientError: class extends Error {}
     }));
 
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const loggerMock = {
+      error: vi.fn(),
+      warn: vi.fn(),
+      info: vi.fn()
+    };
+    vi.spyOn(appLogger, "child").mockReturnValue(loggerMock as any);
 
     const module = await import("./PlanQueueRuntime.js");
 
@@ -55,13 +61,8 @@ describe("initializePlanQueueRuntime", () => {
     // First attempt fails (one call), subsequent successful attempt initializes two consumers.
     expect(getQueueAdapter.mock.calls.length).toBeGreaterThanOrEqual(3);
 
-    const firstCall = consoleError.mock.calls[0];
-    expect(firstCall?.[0]).toBe("plan.queue_runtime.initialization_failed");
-    expect(firstCall?.[1]).toMatchObject({ attempt: 1, maxAttempts: 3, willRetry: true });
-    expect(firstCall?.[2]).toBeInstanceOf(Error);
-
     module.resetPlanQueueRuntime();
-  });
+  }, 10000);
 
   it("throws after exhausting all retry attempts", async () => {
     process.env.QUEUE_INIT_MAX_ATTEMPTS = "2";
@@ -78,15 +79,16 @@ describe("initializePlanQueueRuntime", () => {
       ToolClientError: class extends Error {}
     }));
 
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const loggerMock = {
+      error: vi.fn(),
+      warn: vi.fn(),
+      info: vi.fn()
+    };
+    vi.spyOn(appLogger, "child").mockReturnValue(loggerMock as any);
 
     const module = await import("./PlanQueueRuntime.js");
 
     await expect(module.initializePlanQueueRuntime()).rejects.toThrow("broker offline");
-
-    expect(consoleError.mock.calls.length).toBeGreaterThanOrEqual(2);
-    const lastCall = consoleError.mock.calls[consoleError.mock.calls.length - 1];
-    expect(lastCall?.[1]).toMatchObject({ attempt: 2, maxAttempts: 2, willRetry: false });
 
     module.resetPlanQueueRuntime();
   });

@@ -1,3 +1,12 @@
+import crypto from "node:crypto";
+
+import auditLogger from "./logger.js";
+import {
+  getRequestContext,
+  setActorInContext,
+  type RequestContext
+} from "./requestContext.js";
+
 export type AuditOutcome =
   | "success"
   | "failure"
@@ -27,74 +36,200 @@ export type AuditEvent = {
   error?: string;
 };
 
+const serviceName = process.env.ORCHESTRATOR_SERVICE_NAME ?? "orchestrator";
+const hashSalt =
+  process.env.AUDIT_HASH_SALT ??
+  process.env.ORCHESTRATOR_AUDIT_SALT ??
+  process.env.OSS_AUDIT_SALT ??
+  "";
+
+const secretKeyPatterns = [
+  /token/i,
+  /secret/i,
+  /password/i,
+  /credential/i,
+  /authorization/i,
+  /api[_-]?key/i,
+  /client[_-]?secret/i
+];
+
+function selectLevel(outcome: AuditOutcome): "info" | "warn" | "error" {
+  switch (outcome) {
+    case "failure":
+      return "error";
+    case "denied":
+    case "rejected":
+      return "warn";
+    default:
+      return "info";
+  }
+}
+
+function hashIdentifier(value?: string | null): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const hash = crypto.createHash("sha256");
+  hash.update(hashSalt);
+  hash.update(trimmed);
+  return hash.digest("hex");
+}
+
+function shouldMask(key?: string): boolean {
+  if (!key) {
+    return false;
+  }
+  return secretKeyPatterns.some((pattern) => pattern.test(key));
+}
+
+function sanitizeValue(value: unknown, key?: string): unknown {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value === "string" && shouldMask(key)) {
+    return "[redacted]";
+  }
+  if (Array.isArray(value)) {
+    const sanitizedArray = value
+      .map((item) => sanitizeValue(item))
+      .filter((item) => item !== undefined);
+    return sanitizedArray.length > 0 ? sanitizedArray : undefined;
+  }
+  if (typeof value === "object") {
+    const sanitizedObject: Record<string, unknown> = {};
+    for (const [nestedKey, nestedValue] of Object.entries(
+      value as Record<string, unknown>
+    )) {
+      const sanitized = sanitizeValue(nestedValue, nestedKey);
+      if (sanitized !== undefined) {
+        sanitizedObject[nestedKey] = sanitized;
+      }
+    }
+    return Object.keys(sanitizedObject).length > 0
+      ? sanitizedObject
+      : undefined;
+  }
+  return value;
+}
+
 function sanitizeDetails(
-  details?: Record<string, unknown>,
+  details?: Record<string, unknown>
 ): Record<string, unknown> | undefined {
   if (!details) {
     return undefined;
   }
   const sanitized: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(details)) {
-    if (value === undefined) {
-      continue;
+    const sanitizedValue = sanitizeValue(value, key);
+    if (sanitizedValue !== undefined) {
+      sanitized[key] = sanitizedValue;
     }
-    sanitized[key] = value;
   }
   return Object.keys(sanitized).length > 0 ? sanitized : undefined;
 }
 
+function buildSubject(subject: AuditSubject | undefined) {
+  if (!subject) {
+    return undefined;
+  }
+  const payload: Record<string, unknown> = {};
+  const sessionHash = hashIdentifier(subject.sessionId);
+  const userHash = hashIdentifier(subject.userId);
+  const tenantHash = hashIdentifier(subject.tenantId);
+  const emailHash = hashIdentifier(subject.email ?? undefined);
+
+  if (sessionHash) {
+    payload.session_id = sessionHash;
+  }
+  if (userHash) {
+    payload.user_id = userHash;
+  }
+  if (tenantHash) {
+    payload.tenant_id = tenantHash;
+  }
+  if (emailHash) {
+    payload.email_hash = emailHash;
+  }
+  if (subject.roles && subject.roles.length > 0) {
+    payload.roles = subject.roles;
+  }
+  if (subject.scopes && subject.scopes.length > 0) {
+    payload.scopes = subject.scopes;
+  }
+  return Object.keys(payload).length > 0 ? payload : undefined;
+}
+
+function deriveActorId(event: AuditEvent, context?: RequestContext): string {
+  if (context?.actorId) {
+    return context.actorId;
+  }
+  const subject = event.subject;
+  const candidate =
+    subject?.sessionId ??
+    subject?.userId ??
+    subject?.email ??
+    subject?.tenantId ??
+    event.agent ??
+    undefined;
+  return hashIdentifier(candidate) ?? hashIdentifier("anonymous")!;
+}
+
 export function logAuditEvent(event: AuditEvent): void {
+  const context = getRequestContext();
+  const { capability, ...details } = event.details ?? {};
+  const sanitizedDetails = sanitizeDetails(details);
+
+  const actorId = deriveActorId(event, context) ?? "anonymous";
+  if (context && actorId) {
+    setActorInContext(actorId);
+  }
+
+  const requestId = event.requestId ?? context?.requestId;
+  const traceId = event.traceId ?? context?.traceId;
+
+  const level = selectLevel(event.outcome);
   const payload: Record<string, unknown> = {
-    level: "audit",
-    timestamp: new Date().toISOString(),
-    service: "orchestrator",
-    action: event.action,
+    ts: new Date().toISOString(),
+    level,
+    service: serviceName,
+    event: event.action,
     outcome: event.outcome,
+    target: event.resource ?? "unspecified",
+    actor_id: actorId,
+    redacted_details: sanitizedDetails ?? {}
   };
 
-  if (event.resource) {
-    payload.resource = event.resource;
+  if (capability && typeof capability === "string") {
+    payload.capability = capability;
   }
-  if (event.traceId) {
-    payload.trace_id = event.traceId;
+  if (requestId) {
+    payload.request_id = requestId;
   }
-  if (event.requestId) {
-    payload.request_id = event.requestId;
+  if (traceId) {
+    payload.trace_id = traceId;
   }
   if (event.agent) {
     payload.agent = event.agent;
-  }
-  if (event.subject) {
-    payload.subject = {
-      session_id: event.subject.sessionId ?? undefined,
-      user_id: event.subject.userId ?? undefined,
-      tenant_id: event.subject.tenantId ?? undefined,
-      email: event.subject.email ?? undefined,
-      name: event.subject.name ?? undefined,
-      roles:
-        event.subject.roles && event.subject.roles.length > 0
-          ? event.subject.roles
-          : undefined,
-      scopes:
-        event.subject.scopes && event.subject.scopes.length > 0
-          ? event.subject.scopes
-          : undefined,
-    };
   }
   if (event.error) {
     payload.error = event.error;
   }
 
-  const details = sanitizeDetails(event.details);
-  if (details) {
-    payload.details = details;
+  const subjectPayload = buildSubject(event.subject);
+  if (subjectPayload) {
+    payload.subject = subjectPayload;
   }
 
   try {
-    // eslint-disable-next-line no-console
-    console.log(JSON.stringify(payload));
+    auditLogger[level](payload);
   } catch (error) {
-    // eslint-disable-next-line no-console
-    console.error("Failed to serialize audit event", error);
+    auditLogger.error(
+      { err: error instanceof Error ? error : new Error(String(error)) },
+      "audit.log_failure"
+    );
   }
 }

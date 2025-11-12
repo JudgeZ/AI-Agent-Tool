@@ -3,13 +3,17 @@ import fs from "fs";
 import path from "path";
 
 import { runPlan } from "./commands/plan";
+import { logger } from "./logger";
+import { printErrorLine, printLine } from "./output";
 
 function usage() {
-  console.log(`oss-ai-agent-tool CLI
+  printLine(
+    `oss-ai-agent-tool CLI
 Usage:
   aidt new-agent <name>           Create agents/<name>/agent.md from template
   aidt plan <goal...>             Create a plan under .plans/
-`);
+`
+  );
 }
 
 function normalizeAgentName(name: string): string {
@@ -56,7 +60,8 @@ async function newAgent(name: string) {
 
   const templatePath = path.resolve(repoRoot, "docs", "agents", "templates", "agent.md");
   if (!fs.existsSync(templatePath)) {
-    console.error("Template not found:", templatePath);
+    logger.error("Template not found for agent creation", { templatePath });
+    printErrorLine("Template not found:", templatePath);
     process.exit(1);
   }
   fs.mkdirSync(agentsRoot, { recursive: true });
@@ -75,7 +80,7 @@ async function newAgent(name: string) {
     }
     throw error;
   }
-  console.log("Created", file);
+  printLine("Created", file);
 }
 
 async function main() {
@@ -93,4 +98,9 @@ async function main() {
   usage();
 }
 
-main().catch(e => { console.error(e); process.exit(1); });
+main().catch(error => {
+  const err = error instanceof Error ? error : new Error(String(error));
+  logger.error(err);
+  printErrorLine("Error:", err.message);
+  process.exit(1);
+});

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { logger } from '$lib/logger';
   import { timeline } from '$lib/stores/planTimeline';
   import ApprovalModal from './ApprovalModal.svelte';
   import DiffViewer from './DiffViewer.svelte';
@@ -62,7 +63,7 @@
     try {
       await timeline.submitApproval(decision, rationale);
     } catch (error) {
-      console.error(error);
+      logger.error('Failed to submit plan decision.', { error });
     }
   };
 </script>

@@ -1,25 +1,49 @@
 package gateway
 
 import (
-        "bufio"
-        "encoding/json"
-        "io"
-        "net"
-        "net/http"
-        "net/http/httptest"
-        "strings"
-        "testing"
-        "time"
+	"bufio"
+	"encoding/json"
+	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"testing"
+	"time"
 )
 
 const routesPlanID = "plan-550e8400-e29b-41d4-a716-446655440000"
 
 func TestHealthRouteReturnsReadinessData(t *testing.T) {
+	orchestrator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/readyz" {
+			t.Fatalf("unexpected orchestrator path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok","details":{}}`))
+	}))
+	defer orchestrator.Close()
+
+	indexer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/healthz" {
+			t.Fatalf("unexpected indexer path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"status":"ok"}`))
+	}))
+	defer indexer.Close()
+
+	t.Setenv("ORCHESTRATOR_URL", orchestrator.URL)
+	t.Setenv("INDEXER_URL", indexer.URL)
+	ResetOrchestratorClient()
+
 	mux := http.NewServeMux()
 	started := time.Now().Add(-1 * time.Minute)
 	RegisterHealthRoutes(mux, started)
 
-	req := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	req := httptest.NewRequest(http.MethodGet, "/readyz", nil)
 	rec := httptest.NewRecorder()
 
 	mux.ServeHTTP(rec, req)
@@ -41,6 +65,18 @@ func TestHealthRouteReturnsReadinessData(t *testing.T) {
 		t.Fatalf("unexpected status: %s", body.Status)
 	}
 
+	if _, ok := body.Details["orchestrator"]; !ok {
+		t.Fatalf("expected orchestrator details, got %+v", body.Details)
+	}
+	if body.Details["orchestrator"].Status != "pass" {
+		t.Fatalf("expected orchestrator pass, got %+v", body.Details["orchestrator"])
+	}
+	if _, ok := body.Details["indexer"]; !ok {
+		t.Fatalf("expected indexer details, got %+v", body.Details)
+	}
+	if body.Details["indexer"].Status != "pass" {
+		t.Fatalf("expected indexer pass, got %+v", body.Details["indexer"])
+	}
 	if body.UptimeSeconds <= 0 {
 		t.Fatalf("expected positive uptime, got %f", body.UptimeSeconds)
 	}
@@ -73,7 +109,7 @@ func TestEventsHandlerForwardsSSEStream(t *testing.T) {
 	gatewaySrv := httptest.NewServer(mux)
 	defer gatewaySrv.Close()
 
-        req, err := http.NewRequest(http.MethodGet, gatewaySrv.URL+"/events?plan_id="+routesPlanID, nil)
+	req, err := http.NewRequest(http.MethodGet, gatewaySrv.URL+"/events?plan_id="+routesPlanID, nil)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
@@ -105,8 +141,8 @@ func TestEventsHandlerForwardsSSEStream(t *testing.T) {
 	}
 
 	select {
-        case path := <-planPath:
-                if path != "/plan/"+routesPlanID+"/events" {
+	case path := <-planPath:
+		if path != "/plan/"+routesPlanID+"/events" {
 			t.Fatalf("unexpected upstream path: %s", path)
 		}
 	case <-time.After(time.Second):
@@ -150,7 +186,7 @@ func TestEventsHandlerPropagatesForwardingHeaders(t *testing.T) {
 	gatewaySrv := httptest.NewServer(mux)
 	defer gatewaySrv.Close()
 
-        req, err := http.NewRequest(http.MethodGet, gatewaySrv.URL+"/events?plan_id="+routesPlanID, nil)
+	req, err := http.NewRequest(http.MethodGet, gatewaySrv.URL+"/events?plan_id="+routesPlanID, nil)
 	if err != nil {
 		t.Fatalf("failed to create request: %v", err)
 	}
@@ -262,7 +298,7 @@ func TestEventsHandlerEnforcesConnectionLimit(t *testing.T) {
 	gatewaySrv := httptest.NewServer(mux)
 	defer gatewaySrv.Close()
 
-    req1, err := http.NewRequest(http.MethodGet, gatewaySrv.URL+"/events?plan_id="+routesPlanID, nil)
+	req1, err := http.NewRequest(http.MethodGet, gatewaySrv.URL+"/events?plan_id="+routesPlanID, nil)
 	if err != nil {
 		t.Fatalf("failed to create first request: %v", err)
 	}
@@ -275,7 +311,7 @@ func TestEventsHandlerEnforcesConnectionLimit(t *testing.T) {
 		t.Fatalf("expected 200 for first stream, got %d", resp1.StatusCode)
 	}
 
-    req2, err := http.NewRequest(http.MethodGet, gatewaySrv.URL+"/events?plan_id="+routesPlanID, nil)
+	req2, err := http.NewRequest(http.MethodGet, gatewaySrv.URL+"/events?plan_id="+routesPlanID, nil)
 	if err != nil {
 		t.Fatalf("failed to create second request: %v", err)
 	}
@@ -313,7 +349,7 @@ func TestEventsHandlerLimiterRejectsSpoofedForwardedForFromUntrustedClient(t *te
 
 	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 0, newConnectionLimiter(1), nil)
 
-    req1 := httptest.NewRequest(http.MethodGet, "/events?plan_id="+routesPlanID, nil)
+	req1 := httptest.NewRequest(http.MethodGet, "/events?plan_id="+routesPlanID, nil)
 	req1.RemoteAddr = "203.0.113.10:1234"
 	req1.Header.Set("Accept", "text/event-stream")
 	req1.Header.Set("X-Forwarded-For", "198.51.100.1")
@@ -327,7 +363,7 @@ func TestEventsHandlerLimiterRejectsSpoofedForwardedForFromUntrustedClient(t *te
 
 	<-started
 
-    req2 := httptest.NewRequest(http.MethodGet, "/events?plan_id="+routesPlanID, nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/events?plan_id="+routesPlanID, nil)
 	req2.RemoteAddr = "203.0.113.10:5678"
 	req2.Header.Set("Accept", "text/event-stream")
 	req2.Header.Set("X-Forwarded-For", "203.0.113.200")
@@ -370,7 +406,7 @@ func TestEventsHandlerLimiterHonorsTrustedProxyForwardedFor(t *testing.T) {
 
 	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 0, newConnectionLimiter(1), []*net.IPNet{trustedNet})
 
-    req1 := httptest.NewRequest(http.MethodGet, "/events?plan_id="+routesPlanID, nil)
+	req1 := httptest.NewRequest(http.MethodGet, "/events?plan_id="+routesPlanID, nil)
 	req1.RemoteAddr = "10.1.2.3:1234"
 	req1.Header.Set("Accept", "text/event-stream")
 	req1.Header.Set("X-Forwarded-For", "198.51.100.1, 10.1.2.3")
@@ -384,7 +420,7 @@ func TestEventsHandlerLimiterHonorsTrustedProxyForwardedFor(t *testing.T) {
 
 	<-started
 
-    req2 := httptest.NewRequest(http.MethodGet, "/events?plan_id="+routesPlanID, nil)
+	req2 := httptest.NewRequest(http.MethodGet, "/events?plan_id="+routesPlanID, nil)
 	req2.RemoteAddr = "10.1.2.3:5678"
 	req2.Header.Set("Accept", "text/event-stream")
 	req2.Header.Set("X-Forwarded-For", "203.0.113.200, 10.1.2.3")

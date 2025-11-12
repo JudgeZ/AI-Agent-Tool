@@ -88,7 +88,6 @@ Compose will build images for the in-repo services and then start the following 
 | `gateway` | `./apps/gateway-api` → distroless | `/gateway-api` | `orchestrator` | `8080` | Serves the Gateway HTTP API with SSE endpoints. |
 | `orchestrator` | `./services/orchestrator` | `node dist/index.js` | `redis`, `postgres`, `rabbitmq`, `kafka` | `4000` | Runs orchestration flows and provider integrations. |
 | `indexer` | `./services/indexer` → distroless | `/app/indexer` | _n/a_ | `7070` | Provides AST/indexing APIs for repositories. |
-| `memory-svc` | `node:20-alpine` | `tail -f /dev/null` | _n/a_ | _n/a_ | Development container for building the memory service. |
 | `redis` | `redis/redis-stack-server:7.2.0-v9` | Image default (`redis-stack-server`) | _n/a_ | `6379` | In-memory cache and vector store. |
 | `postgres` | `postgres:15-alpine` | Image default (`docker-entrypoint.sh postgres`) | _n/a_ | `5432` | Application relational datastore. |
 | `rabbitmq` | `rabbitmq:3.13-management` | Image default (`docker-entrypoint.sh rabbitmq-server`) | _n/a_ | `5672`, `15672` | Message queue plus management UI. |

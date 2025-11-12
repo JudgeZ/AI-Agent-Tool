@@ -5,6 +5,13 @@ const MAX_RATIONALE_LENGTH = 2000;
 const MAX_MODEL_LENGTH = 256;
 const MAX_MESSAGE_LENGTH = 16000;
 const MAX_MESSAGE_COUNT = 50;
+const MIN_CODE_VERIFIER_LENGTH = 43;
+const MAX_CODE_VERIFIER_LENGTH = 128;
+const MAX_SECRET_KEY_LENGTH = 128;
+const MAX_SECRET_LABEL_KEY_LENGTH = 64;
+const MAX_SECRET_LABEL_VALUE_LENGTH = 256;
+const MAX_SECRET_LABEL_ENTRIES = 20;
+const MAX_SECRET_VALUE_LENGTH = 8192;
 
 const LEGACY_PLAN_ID_REGEX = /^plan-[0-9a-f]{8}$/i;
 const UUID_PLAN_ID_REGEX =
@@ -87,6 +94,121 @@ export const ChatRequestSchema = z
 export type PlanRequestPayload = z.infer<typeof PlanRequestSchema>;
 export type PlanApprovalPayload = z.infer<typeof PlanApprovalSchema>;
 export type ChatRequestPayload = z.infer<typeof ChatRequestSchema>;
+
+const CodeVerifierSchema = z
+  .string({ required_error: "code_verifier is required" })
+  .trim()
+  .min(MIN_CODE_VERIFIER_LENGTH, {
+    message: `code_verifier must be at least ${MIN_CODE_VERIFIER_LENGTH} characters`,
+  })
+  .max(MAX_CODE_VERIFIER_LENGTH, {
+    message: `code_verifier must not exceed ${MAX_CODE_VERIFIER_LENGTH} characters`,
+  })
+  .regex(/^[A-Za-z0-9._~-]+$/u, {
+    message: "code_verifier contains invalid characters",
+  });
+
+const RedirectUriSchema = z
+  .string({ required_error: "redirect_uri is required" })
+  .trim()
+  .url({ message: "redirect_uri must be a valid URL" });
+
+const RawOAuthCallbackSchema = z.object({
+  code: z
+    .string({ required_error: "code is required" })
+    .trim()
+    .min(1, { message: "code is required" }),
+  code_verifier: CodeVerifierSchema,
+  redirect_uri: RedirectUriSchema,
+});
+
+export const OAuthCallbackSchema = RawOAuthCallbackSchema.transform(
+  ({ code, code_verifier, redirect_uri }) => ({
+    code,
+    codeVerifier: code_verifier,
+    redirectUri: redirect_uri,
+  }),
+);
+
+export const OidcCallbackSchema = RawOAuthCallbackSchema.extend({
+  state: z
+    .string()
+    .trim()
+    .min(1, { message: "state is required" })
+    .optional(),
+}).transform(({ code, code_verifier, redirect_uri, state }) => ({
+  code,
+  codeVerifier: code_verifier,
+  redirectUri: redirect_uri,
+  state: state && state.length > 0 ? state : undefined,
+}));
+
+export type OAuthCallbackPayload = z.infer<typeof OAuthCallbackSchema>;
+export type OidcCallbackPayload = z.infer<typeof OidcCallbackSchema>;
+
+const SecretKeyRegex = /^[A-Za-z0-9._:-]{1,128}$/u;
+const SecretLabelKeyRegex = /^[A-Za-z0-9._:-]{1,64}$/u;
+
+export const SecretKeySchema = z
+  .string({ required_error: "secret key is required" })
+  .trim()
+  .min(1, { message: "secret key is required" })
+  .max(MAX_SECRET_KEY_LENGTH, {
+    message: `secret key must not exceed ${MAX_SECRET_KEY_LENGTH} characters`,
+  })
+  .regex(SecretKeyRegex, { message: "secret key contains invalid characters" });
+
+const SecretLabelKeySchema = z
+  .string()
+  .trim()
+  .min(1, { message: "label key is required" })
+  .max(MAX_SECRET_LABEL_KEY_LENGTH, {
+    message: `label keys must not exceed ${MAX_SECRET_LABEL_KEY_LENGTH} characters`,
+  })
+  .regex(SecretLabelKeyRegex, { message: "label key contains invalid characters" });
+
+const SecretLabelValueSchema = z
+  .string()
+  .min(1, { message: "label value is required" })
+  .max(MAX_SECRET_LABEL_VALUE_LENGTH, {
+    message: `label values must not exceed ${MAX_SECRET_LABEL_VALUE_LENGTH} characters`,
+  });
+
+const SecretLabelsSchema = z
+  .record(SecretLabelKeySchema, SecretLabelValueSchema)
+  .refine(
+    (labels) => Object.keys(labels).length <= MAX_SECRET_LABEL_ENTRIES,
+    { message: `labels must not exceed ${MAX_SECRET_LABEL_ENTRIES} entries` },
+  );
+
+export const SecretRotateSchema = z.object({
+  value: z
+    .string({ required_error: "value is required" })
+    .min(1, { message: "value is required" })
+    .max(MAX_SECRET_VALUE_LENGTH, {
+      message: `value must not exceed ${MAX_SECRET_VALUE_LENGTH} characters`,
+    }),
+  retain: z
+    .number()
+    .int({ message: "retain must be an integer" })
+    .min(1, { message: "retain must be at least 1" })
+    .max(50, { message: "retain must not exceed 50" })
+    .optional(),
+  labels: SecretLabelsSchema.optional(),
+});
+
+export const SecretPromoteSchema = z.object({
+  versionId: z
+    .string({ required_error: "versionId is required" })
+    .trim()
+    .min(1, { message: "versionId is required" })
+    .max(128, {
+      message: "versionId must not exceed 128 characters",
+    }),
+});
+
+export type SecretRotatePayload = z.infer<typeof SecretRotateSchema>;
+export type SecretPromotePayload = z.infer<typeof SecretPromoteSchema>;
 
 export function formatValidationIssues(
   issues: z.ZodIssue[],

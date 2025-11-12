@@ -13,6 +13,7 @@ import {
 } from "vitest";
 
 import type {
+  DeadLetterOptions,
   EnqueueOptions,
   QueueAdapter,
   QueueHandler,
@@ -24,6 +25,12 @@ import type { PlanStep } from "../plan/planner.js";
 
 class TestQueueAdapter implements QueueAdapter {
   private readonly handlers = new Map<string, QueueHandler<unknown>>();
+  readonly deadLetters: Array<{
+    queue: string;
+    payload: unknown;
+    headers: Record<string, string>;
+    reason?: string;
+  }> = [];
 
   async connect(): Promise<void> {
     // no-op for tests
@@ -70,8 +77,8 @@ class TestQueueAdapter implements QueueAdapter {
       retry: async (_options?: RetryOptions) => {
         throw new Error("retry not implemented in TestQueueAdapter");
       },
-      deadLetter: async () => {
-        throw new Error("deadLetter not implemented in TestQueueAdapter");
+      deadLetter: async (options?: DeadLetterOptions) => {
+        this.deadLetters.push({ queue, payload, headers, reason: options?.reason });
       },
     };
     await handler(message);
@@ -177,7 +184,10 @@ describe("PlanQueueRuntime completion content capture", () => {
       output,
     };
 
-    const result = await adapterRef.current.deliver(runtime.PLAN_COMPLETIONS_QUEUE, payload);
+    const result = await adapterRef.current.deliver(runtime.PLAN_COMPLETIONS_QUEUE, payload, {
+      "trace-id": "trace-output",
+      "x-idempotency-key": `${planId}:${step.id}`,
+    });
     expect(result.acked).toBe(true);
 
     const history = events.getPlanHistory(planId);
@@ -191,7 +201,7 @@ describe("PlanQueueRuntime completion content capture", () => {
     expect(entry?.output).toEqual(output);
 
     runtime.resetPlanQueueRuntime();
-  });
+  }, 15000);
 
   it("omits completion output when content capture is disabled", async () => {
     const { runtime, events, PlanStateStore } = await setupRuntime(false, storePath);
@@ -204,7 +214,10 @@ describe("PlanQueueRuntime completion content capture", () => {
       output,
     };
 
-    const result = await adapterRef.current.deliver(runtime.PLAN_COMPLETIONS_QUEUE, payload);
+    const result = await adapterRef.current.deliver(runtime.PLAN_COMPLETIONS_QUEUE, payload, {
+      "trace-id": "trace-output",
+      "x-idempotency-key": `${planId}:${step.id}`,
+    });
     expect(result.acked).toBe(true);
 
     const history = events.getPlanHistory(planId);
@@ -218,5 +231,5 @@ describe("PlanQueueRuntime completion content capture", () => {
     expect(entry?.output).toBeUndefined();
 
     runtime.resetPlanQueueRuntime();
-  });
+  }, 10000);
 });

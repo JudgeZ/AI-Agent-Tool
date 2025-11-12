@@ -4,10 +4,14 @@ import path from "node:path";
 import { trace, type Tracer } from "@opentelemetry/api";
 import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
 
+import { appLogger } from "./observability/logger.js";
 import { __resetLegacyMessagingWarningForTests, invalidateConfigCache, loadConfig } from "./config.js";
+import { DEFAULT_CONFIG } from "./config/defaults.js";
 
 const ENV_KEYS = [
   "RUN_MODE",
+  "NODE_ENV",
+  "COOKIE_SECURE",
   "MESSAGE_BUS",
   "MESSAGING_TYPE",
   "PROVIDERS",
@@ -85,6 +89,18 @@ const ENV_KEYS = [
   "SSE_MAX_CONNECTIONS_PER_IP",
   "SSE_MAX_CONNECTIONS_PER_SUBJECT",
   "SERVER_CORS_ALLOWED_ORIGINS",
+  "POSTGRES_MIN_CONNECTIONS",
+  "POSTGRES_STATEMENT_TIMEOUT_MS",
+  "POSTGRES_QUERY_TIMEOUT_MS",
+  "NETWORK_EGRESS_MODE",
+  "NETWORK_EGRESS_ALLOW",
+  "EGRESS_MODE",
+  "EGRESS_ALLOW",
+  "ORCHESTRATOR_EGRESS_ALLOW",
+  "OIDC_CLIENT_SECRET_FILE",
+  "VAULT_TOKEN_FILE",
+  "VAULT_CA_CERT_FILE",
+  "VAULT_K8S_TOKEN_FILE",
 ] as const;
 
 const originalEnv: Partial<Record<(typeof ENV_KEYS)[number], string>> = {};
@@ -116,13 +132,13 @@ function restoreEnv(): void {
 }
 
 describe("loadConfig", () => {
-  let warnSpy: MockInstance<typeof console.warn>;
+  let warnSpy: MockInstance<typeof appLogger.warn>;
 
   beforeEach(() => {
     restoreEnv();
     __resetLegacyMessagingWarningForTests();
     invalidateConfigCache();
-    warnSpy = vi.spyOn(console, "warn");
+    warnSpy = vi.spyOn(appLogger, "warn");
     warnSpy.mockImplementation(() => {});
   });
 
@@ -199,6 +215,9 @@ secrets:
   backend: vault
 server:
   sseKeepAliveMs: 10000
+  sseSendTimeoutMs: 1500
+  sseMaxBufferEvents: 42
+  sseMaxBufferBytes: 32768
   rateLimits:
     plan:
       windowMs: 120000
@@ -298,9 +317,18 @@ observability:
     expect(config.planState.backend).toBe("postgres");
     expect(config.secrets.backend).toBe("vault");
     expect(config.server.sseKeepAliveMs).toBe(10000);
+    expect(config.server.sseSendTimeoutMs).toBe(1500);
+    expect(config.server.sseMaxBufferEvents).toBe(42);
+    expect(config.server.sseMaxBufferBytes).toBe(32768);
+    expect(config.server.rateLimits.backend).toEqual({ provider: "memory" });
     expect(config.server.rateLimits.plan).toEqual({ windowMs: 120000, maxRequests: 20 });
     expect(config.server.rateLimits.chat).toEqual({ windowMs: 30000, maxRequests: 200 });
-    expect(config.server.rateLimits.auth).toEqual({ windowMs: 45000, maxRequests: 50 });
+    expect(config.server.rateLimits.auth).toEqual({
+      windowMs: 45000,
+      maxRequests: 50,
+      identityWindowMs: 60000,
+      identityMaxRequests: 20
+    });
     expect(config.server.sseQuotas).toEqual({ perIp: 3, perSubject: 1 });
     expect(config.server.cors.allowedOrigins).toEqual(["https://ui.example.com"]);
     expect(config.server.tls).toEqual({
@@ -323,6 +351,35 @@ observability:
         enabled: false
       }
     });
+    expect(config.network.egress.mode).toBe(DEFAULT_CONFIG.network.egress.mode);
+    expect(config.network.egress.allow).toEqual(DEFAULT_CONFIG.network.egress.allow);
+  });
+
+  it("throws when COOKIE_SECURE is false in production environments", () => {
+    process.env.NODE_ENV = "production";
+    process.env.COOKIE_SECURE = "false";
+
+    expect(() => loadConfig()).toThrow("COOKIE_SECURE cannot be false when NODE_ENV=production");
+  });
+
+  it("throws when COOKIE_SECURE is false in enterprise run mode", () => {
+    process.env.RUN_MODE = "enterprise";
+    process.env.COOKIE_SECURE = "false";
+
+    expect(() => loadConfig()).toThrow("COOKIE_SECURE cannot be false when RUN_MODE=enterprise");
+  });
+
+  it("warns when COOKIE_SECURE is false outside production and enterprise modes", () => {
+    process.env.NODE_ENV = "development";
+    process.env.COOKIE_SECURE = "false";
+
+    const config = loadConfig();
+
+    expect(config.runMode).toBe("consumer");
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "config.cookie_secure.insecure" }),
+      expect.stringContaining("COOKIE_SECURE"),
+    );
   });
 
   it("memoizes configuration reads until the file changes", () => {
@@ -368,7 +425,13 @@ runMode: enterprise
     process.env.OIDC_SESSION_TTL_SECONDS = "1800";
     process.env.SSE_MAX_CONNECTIONS_PER_IP = "7";
     process.env.SSE_MAX_CONNECTIONS_PER_SUBJECT = "4";
+    process.env.SSE_SEND_TIMEOUT_MS = "2500";
+    process.env.SSE_MAX_BUFFER_EVENTS = "55";
+    process.env.SSE_MAX_BUFFER_BYTES = "8192";
     process.env.SERVER_CORS_ALLOWED_ORIGINS = "https://env-ui.example.com,https://env-alt.example.com/path";
+    process.env.POSTGRES_MIN_CONNECTIONS = "3";
+    process.env.POSTGRES_STATEMENT_TIMEOUT_MS = "4500";
+    process.env.POSTGRES_QUERY_TIMEOUT_MS = "4000";
 
     const config = loadConfig();
 
@@ -395,14 +458,32 @@ runMode: enterprise
       tenantMappings: {}
     });
     expect(config.planState.backend).toBe("postgres");
+    expect(config.server.rateLimits.backend).toEqual({ provider: "memory" });
     expect(config.server.rateLimits.plan).toEqual({ windowMs: 60000, maxRequests: 60 });
     expect(config.server.rateLimits.chat).toEqual({ windowMs: 60000, maxRequests: 600 });
-    expect(config.server.rateLimits.auth).toEqual({ windowMs: 60000, maxRequests: 120 });
+    expect(config.server.rateLimits.auth).toEqual({
+      windowMs: 60000,
+      maxRequests: 120,
+      identityWindowMs: 60000,
+      identityMaxRequests: 20
+    });
+    expect(config.server.sseSendTimeoutMs).toBe(2500);
+    expect(config.server.sseMaxBufferEvents).toBe(55);
+    expect(config.server.sseMaxBufferBytes).toBe(8192);
     expect(config.server.sseQuotas).toEqual({ perIp: 7, perSubject: 4 });
     expect(config.server.cors.allowedOrigins).toEqual([
       "https://env-ui.example.com",
       "https://env-alt.example.com",
     ]);
+    expect(config.database.postgres).toEqual({
+      maxConnections: 20,
+      minConnections: 3,
+      idleTimeoutMs: 30_000,
+      connectionTimeoutMs: 5_000,
+      maxConnectionLifetimeMs: 30 * 60_000,
+      statementTimeoutMs: 4_500,
+      queryTimeoutMs: 4_000,
+    });
     expect(config.retention).toEqual({
       planStateDays: 30,
       planArtifactsDays: 30,
@@ -411,6 +492,33 @@ runMode: enterprise
       }
     });
     expect(config.secrets.backend).toBe("vault");
+  });
+
+  it("honors network egress environment overrides", () => {
+    delete process.env.APP_CONFIG;
+    process.env.NETWORK_EGRESS_MODE = "report-only";
+    process.env.NETWORK_EGRESS_ALLOW = "api.internal.local,https://vault.example.com";
+
+    const config = loadConfig();
+
+    expect(config.network.egress.mode).toBe("report-only");
+    expect(config.network.egress.allow).toEqual([
+      "api.internal.local",
+      "https://vault.example.com",
+    ]);
+  });
+
+  it("loads OIDC client secret from *_FILE overrides", () => {
+    delete process.env.APP_CONFIG;
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "oidc-secret-"));
+    tempDirs.push(dir);
+    const secretPath = path.join(dir, "oidc-client-secret.txt");
+    fs.writeFileSync(secretPath, "super-secret", "utf-8");
+    process.env.OIDC_CLIENT_SECRET_FILE = secretPath;
+
+    const config = loadConfig();
+
+    expect(config.auth.oidc.clientSecret).toBe("super-secret");
   });
 
   it("enables server TLS from environment variables", () => {
@@ -470,7 +578,10 @@ runMode: enterprise
     const config = loadConfig();
 
     expect(config.messaging.type).toBe("kafka");
-    expect(warnSpy).toHaveBeenCalledWith("MESSAGE_BUS is deprecated; use MESSAGING_TYPE instead");
+    expect(warnSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "config.legacy_message_bus" }),
+      "MESSAGE_BUS is deprecated; use MESSAGING_TYPE instead",
+    );
   });
 
   it("merges file configuration with environment overrides using existing precedence", () => {
@@ -547,9 +658,15 @@ secrets:
     expect(config.secrets.backend).toBe("localfile");
     expect(config.providers.rateLimit).toEqual({ windowMs: 60000, maxRequests: 120 });
     expect(config.providers.circuitBreaker).toEqual({ failureThreshold: 5, resetTimeoutMs: 30000 });
+    expect(config.server.rateLimits.backend).toEqual({ provider: "memory" });
     expect(config.server.rateLimits.plan).toEqual({ windowMs: 60000, maxRequests: 60 });
     expect(config.server.rateLimits.chat).toEqual({ windowMs: 60000, maxRequests: 600 });
-    expect(config.server.rateLimits.auth).toEqual({ windowMs: 60000, maxRequests: 120 });
+    expect(config.server.rateLimits.auth).toEqual({
+      windowMs: 60000,
+      maxRequests: 120,
+      identityWindowMs: 60000,
+      identityMaxRequests: 20
+    });
     expect(config.observability.tracing).toEqual({
       enabled: false,
       serviceName: "oss-ai-orchestrator",
@@ -707,9 +824,15 @@ server:
     const config = loadConfig();
 
     expect(config.providers.rateLimit).toEqual({ windowMs: 1, maxRequests: 1 });
+    expect(config.server.rateLimits.backend).toEqual({ provider: "memory" });
     expect(config.server.rateLimits.plan).toEqual({ windowMs: 1, maxRequests: 1 });
     expect(config.server.rateLimits.chat).toEqual({ windowMs: 1, maxRequests: 1 });
-    expect(config.server.rateLimits.auth).toEqual({ windowMs: 1, maxRequests: 1 });
+    expect(config.server.rateLimits.auth).toEqual({
+      windowMs: 1,
+      maxRequests: 1,
+      identityWindowMs: 60000,
+      identityMaxRequests: 20
+    });
   });
 
   it("defaults to vault secrets in enterprise mode when unspecified", () => {

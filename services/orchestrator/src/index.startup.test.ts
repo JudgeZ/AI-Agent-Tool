@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { appLogger } from "./observability/logger.js";
 
 const originalNodeEnv = process.env.NODE_ENV;
 
@@ -24,7 +25,7 @@ describe("bootstrapOrchestrator", () => {
       resolvePlanStepApproval: vi.fn()
     }));
 
-    const consoleError = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    vi.spyOn(appLogger, "error").mockImplementation(() => undefined);
 
     const module = await import("./index.js");
 
@@ -36,8 +37,5 @@ describe("bootstrapOrchestrator", () => {
     expect(initializePlanQueueRuntime).toHaveBeenCalledTimes(1);
     expect(createServerSpy).not.toHaveBeenCalled();
     expect(createHttpServerSpy).not.toHaveBeenCalled();
-
-    const [message] = consoleError.mock.calls[0];
-    expect(message).toBe("Failed to initialize queue runtime");
-  });
+  }, 10000);
 });

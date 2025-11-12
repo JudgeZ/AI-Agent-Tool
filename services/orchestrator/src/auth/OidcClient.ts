@@ -1,5 +1,6 @@
 import { createRemoteJWKSet, jwtVerify, type JWTPayload, type JWTVerifyResult } from "jose";
 import { loadConfig, type OidcAuthConfig } from "../config.js";
+import { ensureEgressAllowed } from "../network/EgressGuard.js";
 
 export type OidcMetadata = {
   issuer: string;
@@ -34,6 +35,10 @@ export async function fetchOidcMetadata(config: OidcAuthConfig): Promise<OidcMet
     return cached.metadata;
   }
   const wellKnownUrl = `${config.issuer.replace(/\/+$/, "")}/.well-known/openid-configuration`;
+  ensureEgressAllowed(wellKnownUrl, {
+    action: "oidc.discovery",
+    metadata: { issuer: config.issuer },
+  });
   const response = await fetch(wellKnownUrl, {
     method: "GET",
     headers: { Accept: "application/json" }
@@ -61,6 +66,10 @@ function getRemoteJwks(metadata: OidcMetadata) {
   if (existing) {
     return existing;
   }
+  ensureEgressAllowed(metadata.jwks_uri, {
+    action: "oidc.jwks",
+    metadata: { issuer: metadata.issuer },
+  });
   const remote = createRemoteJWKSet(new URL(metadata.jwks_uri));
   jwksCache.set(metadata.jwks_uri, remote);
   return remote;
@@ -92,6 +101,10 @@ export async function exchangeCodeForTokens(
   }
 
   try {
+    ensureEgressAllowed(metadata.token_endpoint, {
+      action: "oidc.token",
+      metadata: { issuer: metadata.issuer },
+    });
     const response = await fetch(metadata.token_endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },

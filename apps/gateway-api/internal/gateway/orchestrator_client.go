@@ -9,6 +9,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 )
 
 var (
@@ -48,7 +50,7 @@ func buildOrchestratorClient() (*http.Client, error) {
 		}
 
 		if caPath := strings.TrimSpace(os.Getenv("ORCHESTRATOR_CA_CERT")); caPath != "" {
-			caData, err := os.ReadFile(caPath)
+			caData, err := readCACertificate(caPath)
 			if err != nil {
 				return nil, fmt.Errorf("failed to read orchestrator CA certificate: %w", err)
 			}
@@ -66,7 +68,7 @@ func buildOrchestratorClient() (*http.Client, error) {
 		transport.TLSClientConfig = tlsConfig
 	}
 
-	return &http.Client{Transport: transport}, nil
+	return &http.Client{Transport: newInstrumentedTransport(transport)}, nil
 }
 
 func SetOrchestratorClientFactory(factory func() (*http.Client, error)) {
@@ -96,4 +98,32 @@ func getBoolEnv(key string) bool {
 	default:
 		return false
 	}
+}
+
+type instrumentedTransport struct {
+	base *http.Transport
+	rt   http.RoundTripper
+}
+
+func newInstrumentedTransport(base *http.Transport) http.RoundTripper {
+	return &instrumentedTransport{
+		base: base,
+		rt:   otelhttp.NewTransport(base),
+	}
+}
+
+func (i *instrumentedTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	return i.rt.RoundTrip(req)
+}
+
+func (i *instrumentedTransport) Base() *http.Transport {
+	return i.base
+}
+
+func readCACertificate(path string) ([]byte, error) {
+	rootDir := strings.TrimSpace(os.Getenv("GATEWAY_CERT_FILE_ROOT"))
+	if rootDir == "" {
+		rootDir = strings.TrimSpace(os.Getenv("GATEWAY_SECRET_FILE_ROOT"))
+	}
+	return readFileFromAllowedRoot(path, rootDir)
 }

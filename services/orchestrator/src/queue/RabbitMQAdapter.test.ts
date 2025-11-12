@@ -242,4 +242,134 @@ describe("RabbitMQAdapter", () => {
       expect.stringContaining("Failed to parse message from plan.steps")
     );
   });
+
+  it("deduplicates idempotency keys until the message is acknowledged", async () => {
+    const consumed: Array<Parameters<Parameters<typeof adapter.consume>[1]>[0]> = [];
+    let heldMessage: Parameters<Parameters<typeof adapter.consume>[1]>[0] | undefined;
+
+    await adapter.consume("plan.steps", async message => {
+      consumed.push(message);
+      if (consumed.length === 1) {
+        heldMessage = message;
+        return;
+      }
+      await message.ack();
+    });
+
+    const key = `${PLAN_ID}:dedupe`;
+
+    await adapter.enqueue("plan.steps", { task: "first" }, { idempotencyKey: key });
+    await flushMicrotasks();
+
+    expect(channel.getPublishedCount("plan.steps")).toBe(1);
+    expect(consumed).toHaveLength(1);
+
+    await adapter.enqueue("plan.steps", { task: "second" }, { idempotencyKey: key });
+    await flushMicrotasks();
+
+    expect(channel.getPublishedCount("plan.steps")).toBe(1);
+    expect(consumed).toHaveLength(1);
+
+    await heldMessage?.ack();
+    await flushMicrotasks();
+
+    await adapter.enqueue("plan.steps", { task: "third" }, { idempotencyKey: key });
+    await flushMicrotasks();
+
+    expect(channel.getPublishedCount("plan.steps")).toBe(2);
+    expect(consumed).toHaveLength(2);
+  });
+
+  it("releases idempotency keys after dead-lettering", async () => {
+    const consumed: Array<Parameters<Parameters<typeof adapter.consume>[1]>[0]> = [];
+
+    await adapter.consume("plan.steps", async message => {
+      consumed.push(message);
+      if (consumed.length === 1) {
+        await message.deadLetter({ reason: "invalid" });
+        return;
+      }
+      await message.ack();
+    });
+
+    const key = `${PLAN_ID}:dead`;
+
+    await adapter.enqueue("plan.steps", { task: "first" }, { idempotencyKey: key });
+    await flushMicrotasks();
+
+    expect(channel.getPublishedCount("plan.steps.dead")).toBe(1);
+    expect(consumed).toHaveLength(1);
+
+    await adapter.enqueue("plan.steps", { task: "second" }, { idempotencyKey: key });
+    await flushMicrotasks();
+
+    expect(channel.getPublishedCount("plan.steps")).toBe(2);
+    expect(consumed).toHaveLength(2);
+  });
+
+  it("releases idempotency keys when publishing fails", async () => {
+    const key = `${PLAN_ID}:failure`;
+    const originalSend = channel.sendToQueue.bind(channel);
+    const sendSpy = vi.spyOn(channel, "sendToQueue");
+    sendSpy
+      .mockImplementationOnce(() => {
+        throw new Error("send failed");
+      })
+      .mockImplementation(originalSend);
+
+    await expect(
+      adapter.enqueue("plan.steps", { task: "first" }, { idempotencyKey: key }),
+    ).rejects.toThrow("send failed");
+
+    expect(channel.getPublishedCount("plan.steps")).toBe(0);
+
+    await adapter.consume("plan.steps", async message => {
+      await message.ack();
+    });
+
+    await adapter.enqueue("plan.steps", { task: "second" }, { idempotencyKey: key });
+    await flushMicrotasks();
+
+    expect(channel.getPublishedCount("plan.steps")).toBe(1);
+  });
+
+  it("publishes duplicate keys when dedupe is skipped", async () => {
+    const received: Array<{ task: string }> = [];
+
+    await adapter.consume("plan.steps", async message => {
+      received.push(message.payload as { task: string });
+      // Intentionally acknowledge after capture to ensure no redelivery
+      await message.ack();
+    });
+
+    const key = `${PLAN_ID}:skip`;
+    await adapter.enqueue("plan.steps", { task: "first" }, { idempotencyKey: key, skipDedupe: true });
+    await adapter.enqueue("plan.steps", { task: "second" }, { idempotencyKey: key, skipDedupe: true });
+
+    await flushMicrotasks();
+
+    expect(channel.getPublishedCount("plan.steps")).toBe(2);
+    expect(received.map(item => item.task)).toEqual(["first", "second"]);
+  });
+
+  it("annotates job payloads with retry attempts", async () => {
+    const payloads: Array<{ job: { id: string; attempt: number } }> = [];
+
+    await adapter.consume("plan.steps", async message => {
+      payloads.push(message.payload as { job: { id: string; attempt: number } });
+      if (message.attempts === 0) {
+        await message.retry({ delayMs: 0 });
+        return;
+      }
+      await message.ack();
+    });
+
+    await adapter.enqueue("plan.steps", { job: { id: "job-1" } }, { idempotencyKey: `${PLAN_ID}:job` });
+
+    await flushMicrotasks();
+
+    expect(payloads).toHaveLength(2);
+    expect(payloads[0].job).toEqual({ id: "job-1", attempt: 0 });
+    expect(payloads[1].job).toEqual({ id: "job-1", attempt: 1 });
+  });
 });

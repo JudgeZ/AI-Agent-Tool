@@ -41,6 +41,7 @@ export const PlanStepStateSchema = z.union([
 export const PlanStepEventSchema = z.object({
   event: z.literal("plan.step"),
   traceId: z.string().min(1),
+  requestId: z.string().min(1).optional(),
   planId: z.string().min(1),
   occurredAt: z.string().optional(),
   step: z.object({
@@ -101,6 +102,7 @@ export const PlanJobSchema = z.object({
   traceId: z.string().min(1),
   attempt: z.number().int().nonnegative().default(0),
   createdAt: z.string().datetime(),
+  requestId: z.string().min(1).optional(),
   subject: PlanSubjectSchema.optional()
 });
 

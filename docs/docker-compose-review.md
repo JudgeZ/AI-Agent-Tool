@@ -115,7 +115,6 @@ services:
 
 #### Issues
 
--   **Dev compose line 62-63**: memory-svc mounts entire project (security risk)
 -   **No volume permissions**: Should specify uid:gid for volume ownership
 -   **No backup strategy**: Volumes not backed up
 
@@ -212,7 +211,6 @@ Without limits:
 
 #### Issues
 
--   **memory-svc (dev)**: Placeholder service with no purpose. Should be removed or documented.
 -   **Kafka auto-create topics**: Disabled in prod (good), enabled in dev (acceptable but should document why)
 -   **Jaeger ports**: Dev exposes all ports, prod only UI. ✅ Correct approach.
 

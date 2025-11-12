@@ -6,6 +6,7 @@ import { Agent } from "undici";
 import { GenericContainer, type StartedTestContainer } from "testcontainers";
 
 import { LocalFileStore, VaultStore } from "./SecretsStore.js";
+import { appLogger } from "../observability/logger.js";
 
 describe("LocalFileStore", () => {
   test("persists encrypted secrets to disk", async () => {
@@ -294,8 +295,14 @@ describe("VaultStore (integration)", () => {
       }
     } catch (error) {
       skipSuite = true;
-      console.warn("Skipping Vault integration test because no container runtime is available");
-      console.warn(String(error));
+      appLogger.warn(
+        { event: "test.skip", reason: "missing_container_runtime", test: "SecretsStore.vault" },
+        "Skipping Vault integration test because no container runtime is available",
+      );
+      appLogger.warn(
+        { event: "test.skip.detail", test: "SecretsStore.vault" },
+        String(error),
+      );
     }
   }, 90000);
 

@@ -1,95 +1,143 @@
-import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
-import { logAuditEvent } from "./audit";
+vi.mock("./logger", () => {
+  return {
+    default: {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn()
+    }
+  };
+});
+
+import { logAuditEvent } from "./audit.js";
+import auditLogger from "./logger.js";
+import { runWithContext } from "./requestContext.js";
 
 describe("logAuditEvent", () => {
-  let logSpy: MockInstance;
-  let errorSpy: MockInstance;
+  const logger = auditLogger as unknown as {
+    info: ReturnType<typeof vi.fn>;
+    warn: ReturnType<typeof vi.fn>;
+    error: ReturnType<typeof vi.fn>;
+  };
 
   beforeEach(() => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2024-01-01T00:00:00.000Z"));
-    logSpy = vi.spyOn(console, "log").mockImplementation(() => {});
-    errorSpy = vi.spyOn(console, "error").mockImplementation(() => {});
+    logger.info.mockReset();
+    logger.warn.mockReset();
+    logger.error.mockReset();
   });
 
-  afterEach(() => {
-    vi.useRealTimers();
-    logSpy.mockRestore();
-    errorSpy.mockRestore();
-  });
-
-  it("omits undefined fields and serializes subjects", () => {
-    logAuditEvent({
-      action: "access-control",
-      outcome: "success",
-      resource: "resource-1",
-      traceId: "trace-123",
-      agent: "policy",
-      subject: {
-        sessionId: "session-1",
-        userId: "user-1",
-        tenantId: undefined,
-        email: "user@example.com",
-        name: null,
-        roles: ["admin", "user"],
-        scopes: []
+  it("emits hashed identifiers and sanitised details", () => {
+    runWithContext(
+      {
+        requestId: "req-123",
+        traceId: "trace-abc"
       },
-      details: {
-        allowed: true,
-        skipped: undefined
+      () => {
+        logAuditEvent({
+          action: "access-control",
+          outcome: "success",
+          resource: "resource-1",
+          details: {
+            allowed: true,
+            apiKey: "secret-key",
+            nested: {
+              refresh_token: "very-secret"
+            }
+          },
+          subject: {
+            sessionId: "session-1",
+            userId: "user-1",
+            email: "user@example.com",
+            roles: ["admin"]
+          }
+        });
       }
-    });
+    );
 
-    expect(logSpy).toHaveBeenCalledTimes(1);
-    const payload = JSON.parse(String(logSpy.mock.calls[0][0]));
-
+    expect(logger.info).toHaveBeenCalledTimes(1);
+    const payload = logger.info.mock.calls[0][0] as Record<string, unknown>;
     expect(payload).toMatchObject({
-      level: "audit",
-      timestamp: "2024-01-01T00:00:00.000Z",
+      ts: "2024-01-01T00:00:00.000Z",
+      level: "info",
       service: "orchestrator",
-      action: "access-control",
+      event: "access-control",
       outcome: "success",
-      resource: "resource-1",
-      trace_id: "trace-123",
-      agent: "policy",
-      subject: {
-        session_id: "session-1",
-        user_id: "user-1",
-        email: "user@example.com",
-        roles: ["admin", "user"]
-      },
-      details: {
-        allowed: true
+      target: "resource-1",
+      request_id: "req-123",
+      trace_id: "trace-abc",
+      redacted_details: {
+        allowed: true,
+        apiKey: "[redacted]",
+        nested: {
+          refresh_token: "[redacted]"
+        }
       }
     });
 
-    expect(payload).not.toHaveProperty("request_id");
-    expect(payload.subject).not.toHaveProperty("tenant_id");
-    expect(payload.subject).not.toHaveProperty("scopes");
-    expect(payload.subject).not.toHaveProperty("name");
+    expect(typeof payload.actor_id).toBe("string");
+    expect((payload.actor_id as string).length).toBe(64);
+    expect(payload.actor_id).not.toContain("session-1");
+
+    const subject = payload.subject as Record<string, unknown>;
+    expect(subject.session_id).toBeTypeOf("string");
+    expect(subject.session_id).not.toBe("session-1");
+    expect(subject.roles).toEqual(["admin"]);
   });
 
-  it("swallows serialization failures", () => {
-    const stringifySpy = vi
-      .spyOn(JSON, "stringify")
-      .mockImplementation(() => {
-        throw new Error("boom");
-      });
+  it("falls back to warning/error levels based on outcome", () => {
+    logAuditEvent({
+      action: "plan.approval",
+      outcome: "denied",
+      details: {
+        capability: "plan.approve"
+      }
+    });
+
+    expect(logger.warn).toHaveBeenCalledTimes(1);
+    const warnPayload = logger.warn.mock.calls[0][0] as Record<string, unknown>;
+    expect(warnPayload.capability).toBe("plan.approve");
+
+    logAuditEvent({
+      action: "plan.execution",
+      outcome: "failure",
+      error: "timeout"
+    });
+
+    expect(logger.error).toHaveBeenCalledTimes(1);
+    const errorPayload = logger.error.mock.calls[0][0] as Record<string, unknown>;
+    expect(errorPayload.error).toBe("timeout");
+  });
+
+  it("reports logger failures without throwing", () => {
+    logger.info.mockImplementationOnce(() => {
+      throw new Error("write failed");
+    });
 
     expect(() =>
       logAuditEvent({
-        action: "broken",
-        outcome: "failure"
-      })
+        action: "plan.execute",
+        outcome: "success",
+      }),
     ).not.toThrow();
 
-    expect(logSpy).not.toHaveBeenCalled();
-    expect(errorSpy).toHaveBeenCalledTimes(1);
-    expect(errorSpy.mock.calls[0][0]).toBe("Failed to serialize audit event");
-    expect(errorSpy.mock.calls[0][1]).toBeInstanceOf(Error);
-    expect((errorSpy.mock.calls[0][1] as Error).message).toBe("boom");
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.objectContaining({ err: expect.any(Error) }),
+      "audit.log_failure",
+    );
+  });
 
-    stringifySpy.mockRestore();
+  it("hashes anonymous actor when no identifiers are present", () => {
+    logAuditEvent({
+      action: "plan.execute",
+      outcome: "success",
+    });
+
+    expect(logger.info).toHaveBeenCalledTimes(1);
+    const payload = logger.info.mock.calls[0][0] as Record<string, unknown>;
+    expect(payload.actor_id).toBeTypeOf("string");
+    expect((payload.actor_id as string).length).toBe(64);
   });
 });

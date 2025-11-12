@@ -10,6 +10,7 @@ services:
       INDEXER_URL: http://indexer:7070
       PORT: "8080"
       GATEWAY_SSE_MAX_CONNECTIONS_PER_IP: "4"
+      GATEWAY_MAX_REQUEST_BODY_BYTES: ${GATEWAY_MAX_REQUEST_BODY_BYTES:-1048576}
       OAUTH_ALLOW_INSECURE_STATE_COOKIE: "true"
     ports:
       - "8080:8080"
@@ -29,6 +30,9 @@ services:
       POSTGRES_URL: postgres://ossaat:ossaat@postgres:5432/ossaat
       RABBITMQ_URL: amqp://guest:guest@rabbitmq:5672
       KAFKA_BROKERS: kafka:9092
+      POSTGRES_MIN_CONNECTIONS: ${POSTGRES_MIN_CONNECTIONS:-2}
+      POSTGRES_STATEMENT_TIMEOUT_MS: ${POSTGRES_STATEMENT_TIMEOUT_MS:-5000}
+      POSTGRES_QUERY_TIMEOUT_MS: ${POSTGRES_QUERY_TIMEOUT_MS:-5000}
       LANGFUSE_BASE_URL: http://langfuse:3000
       LANGFUSE_PUBLIC_KEY: dev-public
       LANGFUSE_SECRET_KEY: dev-secret
@@ -37,6 +41,8 @@ services:
       LOCAL_SECRETS_PATH: ${LOCAL_SECRETS_PATH:-/app/config/secrets/local/secrets.json}
       SSE_MAX_CONNECTIONS_PER_IP: "4"
       SSE_MAX_CONNECTIONS_PER_SUBJECT: "2"
+      SERVER_REQUEST_LIMIT_JSON_BYTES: "1048576"
+      SERVER_REQUEST_LIMIT_URLENCODED_BYTES: "1048576"
     ports:
       - "4000:4000"
     depends_on:
@@ -52,19 +58,14 @@ services:
       dockerfile: Dockerfile
     environment:
       RUST_LOG: info
+      INDEXER_MAX_REQUEST_BODY_BYTES: "1048576"
+      RUN_MODE: ${RUN_MODE:-consumer}
+      INDEXER_JWT_HS256_SECRET: ${INDEXER_JWT_HS256_SECRET:-dev-indexer-secret}
+      INDEXER_JWT_ISSUER: ${INDEXER_JWT_ISSUER:-http://orchestrator:4000}
+      INDEXER_JWT_AUDIENCE: ${INDEXER_JWT_AUDIENCE:-oss-ai-indexer}
     ports:
       - "7070:7070"
     restart: unless-stopped
-
-  memory-svc:
-    image: node:20-alpine
-    working_dir: /workspace/services/memory-svc
-    command: ["tail", "-f", "/dev/null"]
-    security_opt:
-      - no-new-privileges:true
-    read_only: true
-    volumes:
-      - ./:/workspace:delegated
 
   redis:
     image: redis/redis-stack-server:7.2.0-v9

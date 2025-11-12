@@ -1,6 +1,71 @@
+{{- define "oss-ai-agent-tool.gatewayServiceAccountName" -}}
+{{- if .Values.gatewayApi.serviceAccount.create -}}
+{{- default (printf "%s-gateway" (include "oss-ai-agent-tool.fullname" .)) .Values.gatewayApi.serviceAccount.name -}}
+{{- else -}}
+{{- default "default" .Values.gatewayApi.serviceAccount.name -}}
+{{- end -}}
+{{- end -}}
 {{- $root := . -}}
-{{- $defaultGatewayEnv := dict "ORCHESTRATOR_URL" (printf "http://%s-orchestrator:%d" (include "oss-ai-agent-tool.fullname" $root) ($root.Values.orchestrator.service.port | default 4000)) "INDEXER_URL" (printf "http://%s-indexer:%d" (include "oss-ai-agent-tool.fullname" $root) ($root.Values.indexer.service.port | default 7070)) -}}
+{{- $fullname := include "oss-ai-agent-tool.fullname" $root -}}
+{{- $mtlsValues := $root.Values.mtls | default dict -}}
+{{- $mtlsEnabled := $mtlsValues.enabled | default false -}}
+{{- $orchestratorTlsValues := $root.Values.orchestrator.tls | default dict -}}
+{{- $orchestratorTlsEnabled := or ($orchestratorTlsValues.enabled | default false) $mtlsEnabled -}}
+{{- $gatewayTlsValues := $root.Values.gatewayApi.tls | default dict -}}
+{{- $gatewayTlsEnabled := or ($gatewayTlsValues.enabled | default false) $mtlsEnabled -}}
+{{- $gatewayTlsSecretName := include "oss-ai-agent-tool.gatewayClientTlsSecretName" $root -}}
+{{- if $gatewayTlsEnabled -}}
+  {{- $gatewayTlsSecretName = required "gatewayApi.tls.secretName must be provided when TLS is enabled. Set gatewayApi.tls.secretName explicitly or enable mtls." $gatewayTlsSecretName -}}
+{{- end -}}
+{{- $gatewayTlsMountPath := $gatewayTlsValues.mountPath | default "/etc/orchestrator/tls" -}}
+{{- $gatewayTlsCertFile := $gatewayTlsValues.clientCertFile | default "client.crt" -}}
+{{- $gatewayTlsKeyFile := $gatewayTlsValues.clientKeyFile | default "client.key" -}}
+{{- $gatewayTlsCaFile := $gatewayTlsValues.caFile | default (ternary "ca.crt" "" $mtlsEnabled) -}}
+{{- $orchestratorHost := printf "%s-orchestrator" $fullname -}}
+{{- $orchestratorFqdn := printf "%s.%s.svc.cluster.local" $orchestratorHost $.Release.Namespace -}}
+{{- $gatewayTlsServerName := $gatewayTlsValues.serverName | default $orchestratorFqdn -}}
+{{- $orchestratorScheme := ternary "https" "http" $orchestratorTlsEnabled -}}
+{{- $defaultGatewayEnv := dict "ORCHESTRATOR_URL" (printf "%s://%s:%d" $orchestratorScheme $orchestratorHost ($root.Values.orchestrator.service.port | default 4000)) "INDEXER_URL" (printf "http://%s-indexer:%d" $fullname ($root.Values.indexer.service.port | default 7070)) -}}
 {{- $_ := set $defaultGatewayEnv "GATEWAY_SSE_MAX_CONNECTIONS_PER_IP" (printf "%v" ($root.Values.gatewayApi.sse.maxConnectionsPerIP | default 4)) -}}
+{{- if $root.Values.gatewayApi.requestLimitBytes }}
+  {{- $_ := set $defaultGatewayEnv "GATEWAY_MAX_REQUEST_BODY_BYTES" (printf "%v" $root.Values.gatewayApi.requestLimitBytes) -}}
+{{- end -}}
+{{- $gatewayDlp := $root.Values.gatewayApi.dlp | default dict -}}
+{{- if not ($gatewayDlp.disableCreditCardPattern | default false) -}}
+  {{- $defaultCardPatternParts := list
+        "4\\d{3}(?:[\\s-]?\\d{4}){2}[\\s-]?\\d{1,4}"
+        "5[1-5]\\d{2}(?:[\\s-]?\\d{4}){3}"
+        "2(?:2[2-9]\\d|[3-6]\\d{2}|7[01]\\d|720\\d)(?:[\\s-]?\\d{4}){3}"
+        "3[47]\\d{2}[\\s-]?\\d{6}[\\s-]?\\d{5}"
+        "6(?:011|5\\d{2})(?:[\\s-]?\\d{4}){3}"
+        "3(?:0[0-5]|[68]\\d)\\d[\\s-]?\\d{6}[\\s-]?\\d{4}"
+        "35(?:2[89]|[3-8]\\d)\\d(?:[\\s-]?\\d{4}){3}"
+    -}}
+  {{- $defaultCreditCardPattern := printf "(?xi)\\b(?:%s)\\b" (join "|" $defaultCardPatternParts) -}}
+  {{- $creditCardPattern := $gatewayDlp.creditCardPattern | default $defaultCreditCardPattern -}}
+  {{- $_ := set $defaultGatewayEnv "GATEWAY_DLP_CREDIT_CARD_PATTERN" $creditCardPattern -}}
+{{- end -}}
+{{- $gatewayRateLimit := $root.Values.gatewayApi.rateLimit | default dict -}}
+{{- $rateLimitRedis := $gatewayRateLimit.redis | default dict -}}
+{{- if or (not (hasKey $rateLimitRedis "enabled")) ($rateLimitRedis.enabled | default true) -}}
+  {{- $redisUrl := $rateLimitRedis.url | default (printf "redis://%s-redis:6379/1" $fullname) -}}
+  {{- $_ := set $defaultGatewayEnv "GATEWAY_RATE_LIMIT_REDIS_URL" $redisUrl -}}
+{{- end -}}
+{{- $authRateLimit := $gatewayRateLimit.auth | default dict -}}
+{{- $authIpRateLimit := $authRateLimit.ip | default dict -}}
+{{- if $authIpRateLimit.window }}
+  {{- $_ := set $defaultGatewayEnv "GATEWAY_AUTH_IP_RATE_LIMIT_WINDOW" (printf "%v" $authIpRateLimit.window) -}}
+{{- end -}}
+{{- if $authIpRateLimit.maxRequests }}
+  {{- $_ := set $defaultGatewayEnv "GATEWAY_AUTH_IP_RATE_LIMIT_MAX" (printf "%v" $authIpRateLimit.maxRequests) -}}
+{{- end -}}
+{{- $authIdentityRateLimit := $authRateLimit.identity | default dict -}}
+{{- if $authIdentityRateLimit.window }}
+  {{- $_ := set $defaultGatewayEnv "GATEWAY_AUTH_ID_RATE_LIMIT_WINDOW" (printf "%v" $authIdentityRateLimit.window) -}}
+{{- end -}}
+{{- if $authIdentityRateLimit.maxRequests }}
+  {{- $_ := set $defaultGatewayEnv "GATEWAY_AUTH_ID_RATE_LIMIT_MAX" (printf "%v" $authIdentityRateLimit.maxRequests) -}}
+{{- end -}}
 {{- if $root.Values.auth.oidc.enabled -}}
   {{- $oidc := $root.Values.auth.oidc -}}
   {{- $_ := set $defaultGatewayEnv "OIDC_ENABLED" "true" -}}
@@ -29,10 +94,27 @@
     {{- $_ := set $defaultGatewayEnv "OIDC_SCOPES" (join " " $allScopes) -}}
   {{- end -}}
 {{- end -}}
-{{- $gatewayEnv := merge $defaultGatewayEnv ($root.Values.gatewayApi.env | default dict) -}}
-{{- if and .Values.gatewayApi.tls.enabled (not .Values.gatewayApi.tls.secretName) -}}
-  {{- fail "gatewayApi.tls.secretName must be provided when gatewayApi.tls.enabled is true" -}}
+{{- $gatewayTracing := $root.Values.gatewayApi.tracing | default dict -}}
+{{- $gatewayTracingEndpoint := $gatewayTracing.endpoint | default (printf "http://%s-jaeger:4317" $fullname) -}}
+{{- $_ := set $defaultGatewayEnv "OTEL_EXPORTER_OTLP_ENDPOINT" $gatewayTracingEndpoint -}}
+{{- $_ := set $defaultGatewayEnv "GATEWAY_TRACING_ENABLED" (ternary "true" "false" ($gatewayTracing.enabled | default true)) -}}
+{{- if $gatewayTracing.sampleRatio }}
+  {{- $_ := set $defaultGatewayEnv "GATEWAY_TRACING_SAMPLE_RATIO" (printf "%v" $gatewayTracing.sampleRatio) -}}
 {{- end -}}
+{{- if $gatewayTracing.environment }}
+  {{- $_ := set $defaultGatewayEnv "GATEWAY_TRACING_ENVIRONMENT" (printf "%v" $gatewayTracing.environment) -}}
+{{- end -}}
+{{- if $gatewayTracing.headers }}
+  {{- $gatewayHeaderList := list -}}
+  {{- range $key, $value := $gatewayTracing.headers }}
+    {{- $gatewayHeaderList = append $gatewayHeaderList (printf "%s=%s" $key $value) -}}
+  {{- end -}}
+  {{- if gt (len $gatewayHeaderList) 0 }}
+    {{- $_ := set $defaultGatewayEnv "OTEL_EXPORTER_OTLP_HEADERS" (join "," $gatewayHeaderList) -}}
+  {{- end -}}
+{{- end -}}
+{{- $_ := set $defaultGatewayEnv "OTEL_SERVICE_NAME" "gateway-api" -}}
+{{- $gatewayEnv := merge $defaultGatewayEnv ($root.Values.gatewayApi.env | default dict) -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -51,7 +133,8 @@ spec:
         {{- include "oss-ai-agent-tool.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: gateway-api
     spec:
-      {{- with .Values.podSecurityContext }}
+      serviceAccountName: {{ include "oss-ai-agent-tool.gatewayServiceAccountName" . }}
+      {{- with .Values.gatewayApi.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
       {{- end }}
@@ -69,6 +152,20 @@ spec:
             - name: {{ $key }}
               value: {{ $value | quote }}
           {{- end }}
+          {{- if $gatewayTlsEnabled }}
+            - name: ORCHESTRATOR_TLS_ENABLED
+              value: "true"
+            - name: ORCHESTRATOR_CLIENT_CERT
+              value: {{ printf "%s/%s" $gatewayTlsMountPath $gatewayTlsCertFile | quote }}
+            - name: ORCHESTRATOR_CLIENT_KEY
+              value: {{ printf "%s/%s" $gatewayTlsMountPath $gatewayTlsKeyFile | quote }}
+            {{- if $gatewayTlsCaFile }}
+            - name: ORCHESTRATOR_CA_CERT
+              value: {{ printf "%s/%s" $gatewayTlsMountPath $gatewayTlsCaFile | quote }}
+            {{- end }}
+            - name: ORCHESTRATOR_TLS_SERVER_NAME
+              value: {{ $gatewayTlsServerName | quote }}
+          {{- end }}
           {{- if and $root.Values.auth.oidc.enabled $root.Values.auth.oidc.clientSecretSecretName }}
             - name: OIDC_CLIENT_SECRET
               valueFrom:
@@ -76,65 +173,27 @@ spec:
                   name: {{ $root.Values.auth.oidc.clientSecretSecretName | quote }}
                   key: {{ ($root.Values.auth.oidc.clientSecretKey | default "client-secret") | quote }}
           {{- end }}
-          {{- if .Values.gatewayApi.tls.enabled }}
-            {{- $mountPath := .Values.gatewayApi.tls.mountPath | default "/etc/orchestrator/tls" -}}
-            {{- $clientCertFile := .Values.gatewayApi.tls.clientCertFile | default "client.crt" -}}
-            {{- $clientKeyFile := .Values.gatewayApi.tls.clientKeyFile | default "client.key" -}}
-            {{- $caFile := .Values.gatewayApi.tls.caFile | default "ca.crt" -}}
-            - name: ORCHESTRATOR_TLS_ENABLED
-              value: "true"
-            - name: ORCHESTRATOR_CLIENT_CERT
-              value: {{ printf "%s/%s" $mountPath $clientCertFile | quote }}
-            - name: ORCHESTRATOR_CLIENT_KEY
-              value: {{ printf "%s/%s" $mountPath $clientKeyFile | quote }}
-            {{- if $caFile }}
-            - name: ORCHESTRATOR_CA_CERT
-              value: {{ printf "%s/%s" $mountPath $caFile | quote }}
-            {{- end }}
-          {{- end }}
-          {{- with .Values.gatewayApi.envFrom }}
-          envFrom:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          {{- with .Values.containerSecurityContext }}
-          securityContext:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          {{- with .Values.gatewayApi.resources }}
-          resources:
-            {{- toYaml . | nindent 12 }}
-          {{- end }}
-          {{- with .Values.gatewayApi.livenessProbe }}
-          livenessProbe:
-            {{- toYaml . | nindent 12 }}
-          {{- else }}
-          livenessProbe:
-            httpGet:
-              path: /healthz
-              port: http
-            initialDelaySeconds: 5
-            periodSeconds: 15
-          {{- end }}
-          {{- with .Values.gatewayApi.readinessProbe }}
-          readinessProbe:
-            {{- toYaml . | nindent 12 }}
-          {{- else }}
-          readinessProbe:
-            httpGet:
-              path: /healthz
-              port: http
-            initialDelaySeconds: 2
-            periodSeconds: 10
-          {{- end }}
-          {{- if .Values.gatewayApi.tls.enabled }}
+          {{- if $gatewayTlsEnabled }}
           volumeMounts:
             - name: orchestrator-client-tls
-              mountPath: {{ (.Values.gatewayApi.tls.mountPath | default "/etc/orchestrator/tls") | quote }}
+              mountPath: {{ $gatewayTlsMountPath | quote }}
               readOnly: true
           {{- end }}
-      {{- if .Values.gatewayApi.tls.enabled }}
+      {{- if $gatewayTlsEnabled }}
       volumes:
         - name: orchestrator-client-tls
           secret:
-            secretName: {{ .Values.gatewayApi.tls.secretName | quote }}
+            secretName: {{ $gatewayTlsSecretName | quote }}
+      {{- end }}
+      {{- with .Values.gatewayApi.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gatewayApi.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.gatewayApi.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
       {{- end }}

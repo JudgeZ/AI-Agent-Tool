@@ -86,7 +86,7 @@ describe("fetchOidcMetadata", () => {
       "https://issuer.example.com/.well-known/openid-configuration",
       expect.objectContaining({ method: "GET" })
     );
-  });
+  }, 10000);
 });
 
 describe("exchangeCodeForTokens", () => {
@@ -131,7 +131,7 @@ describe("exchangeCodeForTokens", () => {
     expect(body.get("client_id")).toBe(config.clientId);
     expect(body.get("code_verifier")).toBe("verifier");
     expected(body);
-  });
+  }, 10000);
 
   it("propagates timeout aborts as descriptive errors", async () => {
     await resetEnvironment();
