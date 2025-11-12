@@ -18,6 +18,11 @@ export type CorsConfig = {
   allowedOrigins: string[];
 };
 
+export type RequestSizeLimitsConfig = {
+  jsonBytes: number;
+  urlEncodedBytes: number;
+};
+
 export type CircuitBreakerConfig = {
   failureThreshold: number;
   resetTimeoutMs: number;
@@ -150,6 +155,7 @@ export type AppConfig = {
   };
   server: {
     sseKeepAliveMs: number;
+    requestLimits: RequestSizeLimitsConfig;
     rateLimits: {
       plan: RateLimitConfig;
       chat: RateLimitConfig;
@@ -179,6 +185,17 @@ function sanitizeQuotaValue(value: number | undefined, fallback: number): number
   }
   const normalized = Math.floor(value);
   return normalized < 0 ? 0 : normalized;
+}
+
+function sanitizeRequestLimit(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return fallback;
+  }
+  const normalized = Math.floor(value);
+  if (normalized <= 0) {
+    return fallback;
+  }
+  return normalized;
 }
 
 type PartialRateLimitConfig = {
@@ -377,6 +394,10 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   server: {
     sseKeepAliveMs: 25000,
+    requestLimits: {
+      jsonBytes: 1_048_576,
+      urlEncodedBytes: 1_048_576,
+    },
     rateLimits: {
       plan: {
         windowMs: 60_000,
@@ -462,8 +483,14 @@ type PartialServerRateLimitsConfig = {
   auth?: PartialRateLimitConfig;
 };
 
+type PartialRequestSizeLimitsConfig = {
+  jsonBytes?: number;
+  urlEncodedBytes?: number;
+};
+
 type PartialServerConfig = {
   sseKeepAliveMs?: number;
+  requestLimits?: PartialRequestSizeLimitsConfig;
   rateLimits?: PartialServerRateLimitsConfig;
   tls?: PartialTlsConfig;
   sseQuotas?: PartialSseQuotaConfig;
@@ -1554,6 +1581,10 @@ export function loadConfig(): AppConfig {
   const envServerCorsAllowedOrigins = parseStringList(
     process.env.SERVER_CORS_ALLOWED_ORIGINS ?? process.env.CORS_ALLOWED_ORIGINS,
   );
+  const envServerRequestLimitJson = asNumber(process.env.SERVER_REQUEST_LIMIT_JSON_BYTES);
+  const envServerRequestLimitUrlEncoded = asNumber(
+    process.env.SERVER_REQUEST_LIMIT_URLENCODED_BYTES,
+  );
   const envTracingEnabled = asBoolean(process.env.TRACING_ENABLED ?? process.env.OTEL_TRACES_EXPORTER_ENABLED);
   const envTracingServiceName = process.env.TRACING_SERVICE_NAME ?? process.env.OTEL_SERVICE_NAME;
   const envTracingEnvironment =
@@ -1743,6 +1774,17 @@ export function loadConfig(): AppConfig {
     },
     "server.rateLimits.auth",
   );
+
+  const serverRequestLimits: RequestSizeLimitsConfig = {
+    jsonBytes: sanitizeRequestLimit(
+      envServerRequestLimitJson ?? fileCfg.server?.requestLimits?.jsonBytes,
+      DEFAULT_CONFIG.server.requestLimits.jsonBytes,
+    ),
+    urlEncodedBytes: sanitizeRequestLimit(
+      envServerRequestLimitUrlEncoded ?? fileCfg.server?.requestLimits?.urlEncodedBytes,
+      DEFAULT_CONFIG.server.requestLimits.urlEncodedBytes,
+    ),
+  };
 
   const serverSseQuotaConfig: SseQuotaConfig = {
     perIp: sanitizeQuotaValue(
@@ -1986,6 +2028,7 @@ export function loadConfig(): AppConfig {
     server: {
       sseKeepAliveMs:
         envSseKeepAlive ?? fileCfg.server?.sseKeepAliveMs ?? DEFAULT_CONFIG.server.sseKeepAliveMs,
+      requestLimits: serverRequestLimits,
       rateLimits: {
         plan: serverPlanRateLimit,
         chat: serverChatRateLimit,
