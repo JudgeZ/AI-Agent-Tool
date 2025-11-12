@@ -10,12 +10,31 @@ type ErrorBody = {
   details?: unknown;
 };
 
+function sanitize(body: ErrorBody): ErrorBody {
+  const sanitized: ErrorBody = {
+    code: body.code,
+    message: body.message,
+  };
+
+  if (body.details !== undefined) {
+    sanitized.details = body.details;
+  }
+
+  return sanitized;
+}
+
 function enrich(body: ErrorBody): ErrorBody & { requestId?: string; traceId?: string } {
   const context = getRequestContext();
+  const metadata: { requestId?: string; traceId?: string } = {};
+
+  if (context) {
+    metadata.requestId = context.requestId;
+    metadata.traceId = context.traceId;
+  }
+
   return {
-    ...body,
-    requestId: context?.requestId,
-    traceId: context?.traceId,
+    ...sanitize(body),
+    ...metadata,
   };
 }
 
