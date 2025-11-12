@@ -350,7 +350,35 @@ export function createServer(config?: AppConfig): Express {
     res.setHeader("x-trace-id", traceId);
     const context: RequestContext = { requestId, traceId };
     runWithContext(context, () => {
-      next();
+      return new Promise<void>((resolve) => {
+        let completed = false;
+        const complete = () => {
+          if (completed) {
+            return;
+          }
+          completed = true;
+          res.off("finish", complete);
+          res.off("close", complete);
+          resolve();
+        };
+
+        res.once("finish", complete);
+        res.once("close", complete);
+
+        const wrappedNext: NextFunction = (err?: unknown) => {
+          if (err !== undefined) {
+            complete();
+          }
+          return next(err);
+        };
+
+        try {
+          wrappedNext();
+        } catch (error) {
+          complete();
+          throw error;
+        }
+      });
     });
   });
 
