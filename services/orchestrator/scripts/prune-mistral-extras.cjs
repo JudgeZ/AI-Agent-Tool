@@ -3,7 +3,58 @@
 const fs = require("fs");
 const path = require("path");
 
-const { createLogger } = require("../../../scripts/logger");
+let createLogger;
+
+try {
+  ({ createLogger } = require("../../../scripts/logger"));
+} catch (error) {
+  const isMissing =
+    error?.code === "MODULE_NOT_FOUND" &&
+    typeof error?.message === "string" &&
+    error.message.includes("../../../scripts/logger");
+
+  if (!isMissing) {
+    throw error;
+  }
+
+  createLogger = function fallbackCreateLogger(options = {}) {
+    const { name = "" } = options;
+
+    const emit = (level, message, context) => {
+      const payload = {
+        level,
+        msg: message,
+        time: new Date().toISOString()
+      };
+
+      if (name) {
+        payload.name = name;
+      }
+
+      if (context !== undefined) {
+        payload.context = context;
+      }
+
+      const writer = console[level] || console.log;
+      writer(JSON.stringify(payload));
+    };
+
+    return {
+      debug(message, context) {
+        emit("debug", message, context);
+      },
+      info(message, context) {
+        emit("info", message, context);
+      },
+      warn(message, context) {
+        emit("warn", message, context);
+      },
+      error(message, context) {
+        emit("error", message, context);
+      }
+    };
+  };
+}
 
 const pkgName = "@mistralai/mistralai";
 const moduleRoot = path.join(__dirname, "..", "node_modules", "@mistralai", "mistralai");
