@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"oss-ai-agent-tool/apps/gateway-api/internal/audit"
+	"github.com/JudgeZ/OSS-AI-Agent-Tool/apps/gateway-api/internal/audit"
 )
 
 var gatewayAuditLogger = audit.Default()

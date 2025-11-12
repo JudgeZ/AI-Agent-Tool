@@ -15,7 +15,6 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"path/filepath"
 	"reflect"
 	"sort"
 	"strconv"
@@ -26,7 +25,7 @@ import (
 
 	"github.com/go-playground/validator/v10"
 
-	"oss-ai-agent-tool/apps/gateway-api/internal/audit"
+	"github.com/JudgeZ/OSS-AI-Agent-Tool/apps/gateway-api/internal/audit"
 )
 
 var stateTTL = getDurationEnv("OAUTH_STATE_TTL", 10*time.Minute)
@@ -819,37 +818,7 @@ func resolveEnvValue(key string) (string, error) {
 
 func readSecretFile(path string) ([]byte, error) {
 	rootDir := strings.TrimSpace(os.Getenv("GATEWAY_SECRET_FILE_ROOT"))
-	if rootDir == "" {
-		rootDir = "/"
-	}
-
-	cleanedPath := filepath.Clean(path)
-	if !filepath.IsAbs(cleanedPath) {
-		cleanedPath = filepath.Join(rootDir, cleanedPath)
-	}
-
-	cleanedRoot := filepath.Clean(rootDir)
-	rel, err := filepath.Rel(cleanedRoot, cleanedPath)
-	if err != nil {
-		return nil, err
-	}
-	if strings.HasPrefix(rel, "..") {
-		return nil, fmt.Errorf("secret file %q is outside allowed root %q", path, cleanedRoot)
-	}
-
-	root, err := os.OpenRoot(cleanedRoot)
-	if err != nil {
-		return nil, err
-	}
-	defer root.Close()
-
-	file, err := root.Open(rel)
-	if err != nil {
-		return nil, err
-	}
-	defer file.Close()
-
-	return io.ReadAll(file)
+	return readFileFromAllowedRoot(path, rootDir)
 }
 
 func setStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, allowInsecure bool, data stateData) error {

@@ -2,7 +2,7 @@ syntax = "proto3";
 
 package agent.v1;
 
-option go_package = "oss-ai-agent-tool/apps/gateway-api/internal/agentpb";
+option go_package = "github.com/JudgeZ/OSS-AI-Agent-Tool/apps/gateway-api/internal/agentpb";
 
 message ToolInvocation {
   string invocation_id = 1;

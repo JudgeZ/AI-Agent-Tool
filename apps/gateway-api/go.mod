@@ -1,4 +1,4 @@
-module oss-ai-agent-tool/apps/gateway-api
+module github.com/JudgeZ/OSS-AI-Agent-Tool/apps/gateway-api
 
 go 1.24.0
 

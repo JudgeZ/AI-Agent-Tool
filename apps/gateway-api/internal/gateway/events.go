@@ -200,7 +200,13 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	var closeOnce sync.Once
-	closeBody := func() { closeOnce.Do(func() { resp.Body.Close() }) }
+	closeBody := func() {
+		closeOnce.Do(func() {
+			if err := resp.Body.Close(); err != nil {
+				logger.WarnContext(ctx, "gateway.events.response_close_failed", slog.String("plan_id", planID), slog.String("error", err.Error()))
+			}
+		})
+	}
 	defer closeBody()
 
 	if resp.StatusCode >= 400 {
