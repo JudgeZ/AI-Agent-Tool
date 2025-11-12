@@ -62,9 +62,9 @@ export class VersionedSecretsManager {
   }
 
   async rotate(key: string, value: string, options?: RotateOptions): Promise<VersionInfo> {
-    const metadata = await this.readMetadata(key);
+    const existingMetadata = await this.readMetadata(key);
     const retain = clampRetain(
-      options?.retain ?? metadata.retain ?? this.defaultRetain,
+      options?.retain ?? existingMetadata.retain ?? this.defaultRetain,
       this.defaultRetain,
     );
     const newVersion: StoredVersion = {
@@ -73,24 +73,62 @@ export class VersionedSecretsManager {
       ...(options?.labels ? { labels: { ...options.labels } } : {}),
     };
 
-    await this.store.set(key, value);
-    await this.store.set(this.versionKey(key, newVersion.id), value);
+    const versionKey = this.versionKey(key, newVersion.id);
+    await this.store.set(versionKey, value);
 
-    const mergedVersions = [newVersion, ...metadata.versions.filter((version) => version.id !== newVersion.id)];
+    const mergedVersions = [
+      newVersion,
+      ...existingMetadata.versions.filter((version) => version.id !== newVersion.id),
+    ];
     const retainedVersions = mergedVersions.slice(0, retain);
     const removedVersions = mergedVersions.slice(retain);
 
-    metadata.currentVersion = newVersion.id;
-    metadata.versions = retainedVersions;
-    metadata.retain = retain;
+    const updatedMetadata: StoredMetadata = {
+      currentVersion: newVersion.id,
+      versions: retainedVersions,
+      retain,
+    };
+    const previousMetadata: StoredMetadata = {
+      currentVersion: existingMetadata.currentVersion,
+      versions: existingMetadata.versions.map((version) => ({
+        id: version.id,
+        createdAt: version.createdAt,
+        ...(version.labels ? { labels: { ...version.labels } } : {}),
+      })),
+      retain: existingMetadata.retain,
+    };
 
-    await this.writeMetadata(key, metadata);
+    try {
+      await this.writeMetadata(key, updatedMetadata);
+      try {
+        await this.store.set(key, value);
+      } catch (error) {
+        try {
+          await this.writeMetadata(key, previousMetadata);
+        } catch {
+          // ignore rollback failure
+        }
+        try {
+          await this.store.delete(versionKey);
+        } catch {
+          // ignore rollback failure
+        }
+        throw error;
+      }
+    } catch (error) {
+      try {
+        await this.store.delete(versionKey);
+      } catch {
+        // ignore rollback failure
+      }
+      throw error;
+    }
 
     await Promise.all(
       removedVersions.map((version) => this.store.delete(this.versionKey(key, version.id)).catch(() => undefined)),
     );
 
-    return this.toVersionInfo(newVersion, metadata.currentVersion);
+    return this.toVersionInfo(newVersion, updatedMetadata.currentVersion);
   }
 
   async promote(key: string, versionId: string): Promise<VersionInfo> {
