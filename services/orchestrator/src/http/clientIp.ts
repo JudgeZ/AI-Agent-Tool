@@ -147,3 +147,14 @@ export function resolveClientIp(req: Request, trustedProxyCidrs: readonly string
   return remote.formatted;
 }
 
+export function isTrustedProxyAddress(
+  address: string | undefined,
+  trustedProxyCidrs: readonly string[],
+): boolean {
+  const parsed = parseIpAddress(address);
+  if (!parsed) {
+    return false;
+  }
+  return isTrustedProxy(parsed, trustedProxyCidrs);
+}
+
