@@ -74,7 +74,9 @@ export class VersionedSecretsManager {
     };
 
     const versionKey = this.versionKey(key, newVersion.id);
+    let versionKeyCreated = false;
     await this.store.set(versionKey, value);
+    versionKeyCreated = true;
 
     const mergedVersions = [
       newVersion,
@@ -110,16 +112,19 @@ export class VersionedSecretsManager {
         }
         try {
           await this.store.delete(versionKey);
+          versionKeyCreated = false;
         } catch {
           // ignore rollback failure
         }
         throw error;
       }
     } catch (error) {
-      try {
-        await this.store.delete(versionKey);
-      } catch {
-        // ignore rollback failure
+      if (versionKeyCreated) {
+        try {
+          await this.store.delete(versionKey);
+        } catch {
+          // ignore rollback failure
+        }
       }
       throw error;
     }
