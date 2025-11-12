@@ -3,4 +3,5 @@ members = [
     "services/indexer",
     "apps/gui/src-tauri"
 ]
+default-members = ["services/indexer"]
 resolver = "2"

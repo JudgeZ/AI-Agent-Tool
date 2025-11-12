@@ -1,0 +1,26 @@
+[advisories]
+ignore = [
+    # GTK3 bindings remain unmaintained until tauri/wry migrates to gtk4 (tracked in tauri-apps/wry#1850)
+    "RUSTSEC-2024-0413",
+    "RUSTSEC-2024-0416",
+    "RUSTSEC-2024-0412",
+    "RUSTSEC-2024-0418",
+    "RUSTSEC-2024-0411",
+    "RUSTSEC-2024-0417",
+    "RUSTSEC-2024-0414",
+    "RUSTSEC-2024-0415",
+    "RUSTSEC-2024-0420",
+    "RUSTSEC-2024-0419",
+    # gtk3-macros transitively use proc-macro-error until gtk-rs refresh lands
+    "RUSTSEC-2024-0370",
+    # urlpattern via tauri-utils still depends on legacy unic crates (see tauri-apps/tauri#10169)
+    "RUSTSEC-2025-0081",
+    "RUSTSEC-2025-0075",
+    "RUSTSEC-2025-0080",
+    "RUSTSEC-2025-0100",
+    "RUSTSEC-2025-0098",
+    # wry 0.53 pulls selectors/fxhash until WebKit GTK upgrade ships upstream
+    "RUSTSEC-2025-0057",
+    # glib 0.18 unsoundness resolved once gtk4 migration completes
+    "RUSTSEC-2024-0429"
+]

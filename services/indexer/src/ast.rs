@@ -171,11 +171,11 @@ fn serialize_node(
 
 fn language_for_id(id: &str) -> Option<Language> {
     match id {
-        "typescript" | "ts" => Some(tree_sitter_typescript::language_typescript()),
-        "tsx" => Some(tree_sitter_typescript::language_tsx()),
-        "javascript" | "js" => Some(tree_sitter_javascript::language()),
-        "json" => Some(tree_sitter_json::language()),
-        "rust" | "rs" => Some(tree_sitter_rust::language()),
+        "typescript" | "ts" => Some(tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into()),
+        "tsx" => Some(tree_sitter_typescript::LANGUAGE_TSX.into()),
+        "javascript" | "js" => Some(tree_sitter_javascript::LANGUAGE.into()),
+        "json" => Some(tree_sitter_json::LANGUAGE.into()),
+        "rust" | "rs" => Some(tree_sitter_rust::LANGUAGE.into()),
         _ => None,
     }
 }
