@@ -35,7 +35,43 @@ export function respondWithValidationError(res: Response, details: ErrorDetails)
   });
 }
 
+type ExpressPayloadTooLargeError = Error & {
+  status?: number;
+  statusCode?: number;
+  type?: string;
+  limit?: number;
+};
+
+function isPayloadTooLargeError(error: unknown): error is ExpressPayloadTooLargeError {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+
+  const candidate = error as ExpressPayloadTooLargeError;
+  const status = candidate.status ?? candidate.statusCode;
+
+  return status === 413 || candidate.type === "entity.too.large";
+}
+
+export function respondWithPayloadTooLargeError(
+  res: Response,
+  error: ExpressPayloadTooLargeError,
+): void {
+  const details = Number.isFinite(error.limit) ? { limit: error.limit } : undefined;
+
+  respondWithError(res, 413, {
+    code: "payload_too_large",
+    message: "Request body exceeds the configured limit",
+    details,
+  });
+}
+
 export function respondWithUnexpectedError(res: Response, error: unknown): void {
+  if (isPayloadTooLargeError(error)) {
+    respondWithPayloadTooLargeError(res, error);
+    return;
+  }
+
   const message = error instanceof Error ? error.message : "unexpected error";
   respondWithError(res, 500, {
     code: "internal_error",
