@@ -97,6 +97,36 @@ const ENV_KEYS = [
   "EGRESS_MODE",
   "EGRESS_ALLOW",
   "ORCHESTRATOR_EGRESS_ALLOW",
+  "PROVIDER_RATE_LIMIT_BACKEND",
+  "PROVIDER_RATE_LIMIT_REDIS_URL",
+  "SERVER_RATE_LIMIT_BACKEND",
+  "SERVER_RATE_LIMIT_REDIS_URL",
+  "SERVER_RATE_LIMIT_PLAN_WINDOW_MS",
+  "SERVER_RATE_LIMIT_PLAN_MAX_REQUESTS",
+  "SERVER_RATE_LIMIT_PLAN_IDENTITY_WINDOW_MS",
+  "SERVER_RATE_LIMIT_PLAN_IDENTITY_MAX_REQUESTS",
+  "SERVER_RATE_LIMIT_CHAT_WINDOW_MS",
+  "SERVER_RATE_LIMIT_CHAT_MAX_REQUESTS",
+  "SERVER_RATE_LIMIT_CHAT_IDENTITY_WINDOW_MS",
+  "SERVER_RATE_LIMIT_CHAT_IDENTITY_MAX_REQUESTS",
+  "SERVER_RATE_LIMIT_AUTH_WINDOW_MS",
+  "SERVER_RATE_LIMIT_AUTH_MAX_REQUESTS",
+  "SERVER_RATE_LIMIT_AUTH_IDENTITY_WINDOW_MS",
+  "SERVER_RATE_LIMIT_AUTH_IDENTITY_MAX_REQUESTS",
+  "ORCHESTRATOR_RATE_LIMIT_BACKEND",
+  "ORCHESTRATOR_RATE_LIMIT_REDIS_URL",
+  "ORCHESTRATOR_RATE_LIMIT_PLAN_WINDOW_MS",
+  "ORCHESTRATOR_RATE_LIMIT_PLAN_MAX_REQUESTS",
+  "ORCHESTRATOR_RATE_LIMIT_PLAN_IDENTITY_WINDOW_MS",
+  "ORCHESTRATOR_RATE_LIMIT_PLAN_IDENTITY_MAX_REQUESTS",
+  "ORCHESTRATOR_RATE_LIMIT_CHAT_WINDOW_MS",
+  "ORCHESTRATOR_RATE_LIMIT_CHAT_MAX_REQUESTS",
+  "ORCHESTRATOR_RATE_LIMIT_CHAT_IDENTITY_WINDOW_MS",
+  "ORCHESTRATOR_RATE_LIMIT_CHAT_IDENTITY_MAX_REQUESTS",
+  "ORCHESTRATOR_RATE_LIMIT_AUTH_WINDOW_MS",
+  "ORCHESTRATOR_RATE_LIMIT_AUTH_MAX_REQUESTS",
+  "ORCHESTRATOR_RATE_LIMIT_AUTH_IDENTITY_WINDOW_MS",
+  "ORCHESTRATOR_RATE_LIMIT_AUTH_IDENTITY_MAX_REQUESTS",
   "POLICY_CACHE_ENABLED",
   "POLICY_CACHE_PROVIDER",
   "POLICY_CACHE_TTL_SECONDS",
@@ -228,9 +258,13 @@ server:
     plan:
       windowMs: 120000
       maxRequests: 20
+      identityWindowMs: 60000
+      identityMaxRequests: 10
     chat:
       windowMs: 30000
       maxRequests: 200
+      identityWindowMs: 45000
+      identityMaxRequests: 150
     auth:
       windowMs: 45000
       maxRequests: 50
@@ -327,8 +361,18 @@ observability:
     expect(config.server.sseMaxBufferEvents).toBe(42);
     expect(config.server.sseMaxBufferBytes).toBe(32768);
     expect(config.server.rateLimits.backend).toEqual({ provider: "memory" });
-    expect(config.server.rateLimits.plan).toEqual({ windowMs: 120000, maxRequests: 20 });
-    expect(config.server.rateLimits.chat).toEqual({ windowMs: 30000, maxRequests: 200 });
+    expect(config.server.rateLimits.plan).toEqual({
+      windowMs: 120000,
+      maxRequests: 20,
+      identityWindowMs: 60000,
+      identityMaxRequests: 10,
+    });
+    expect(config.server.rateLimits.chat).toEqual({
+      windowMs: 30000,
+      maxRequests: 200,
+      identityWindowMs: 45000,
+      identityMaxRequests: 150,
+    });
     expect(config.server.rateLimits.auth).toEqual({
       windowMs: 45000,
       maxRequests: 50,
@@ -475,8 +519,18 @@ runMode: enterprise
     });
     expect(config.planState.backend).toBe("postgres");
     expect(config.server.rateLimits.backend).toEqual({ provider: "memory" });
-    expect(config.server.rateLimits.plan).toEqual({ windowMs: 60000, maxRequests: 60 });
-    expect(config.server.rateLimits.chat).toEqual({ windowMs: 60000, maxRequests: 600 });
+    expect(config.server.rateLimits.plan).toEqual({
+      windowMs: 60000,
+      maxRequests: 60,
+      identityWindowMs: null,
+      identityMaxRequests: null,
+    });
+    expect(config.server.rateLimits.chat).toEqual({
+      windowMs: 60000,
+      maxRequests: 600,
+      identityWindowMs: null,
+      identityMaxRequests: null,
+    });
     expect(config.server.rateLimits.auth).toEqual({
       windowMs: 60000,
       maxRequests: 120,
@@ -540,6 +594,49 @@ runMode: enterprise
         url: "redis://cache.example.com:6379/5",
         keyPrefix: "custom:policy",
       },
+    });
+  });
+
+  it("honors orchestrator-prefixed server rate limit overrides", () => {
+    delete process.env.APP_CONFIG;
+    process.env.ORCHESTRATOR_RATE_LIMIT_BACKEND = "redis";
+    process.env.ORCHESTRATOR_RATE_LIMIT_REDIS_URL = "redis://ratelimit:6379/1";
+    process.env.ORCHESTRATOR_RATE_LIMIT_PLAN_WINDOW_MS = "15000";
+    process.env.ORCHESTRATOR_RATE_LIMIT_PLAN_MAX_REQUESTS = "75";
+    process.env.ORCHESTRATOR_RATE_LIMIT_PLAN_IDENTITY_WINDOW_MS = "600000";
+    process.env.ORCHESTRATOR_RATE_LIMIT_PLAN_IDENTITY_MAX_REQUESTS = "200";
+    process.env.ORCHESTRATOR_RATE_LIMIT_CHAT_WINDOW_MS = "10000";
+    process.env.ORCHESTRATOR_RATE_LIMIT_CHAT_MAX_REQUESTS = "500";
+    process.env.ORCHESTRATOR_RATE_LIMIT_CHAT_IDENTITY_WINDOW_MS = "45000";
+    process.env.ORCHESTRATOR_RATE_LIMIT_CHAT_IDENTITY_MAX_REQUESTS = "250";
+    process.env.ORCHESTRATOR_RATE_LIMIT_AUTH_WINDOW_MS = "2000";
+    process.env.ORCHESTRATOR_RATE_LIMIT_AUTH_MAX_REQUESTS = "20";
+    process.env.ORCHESTRATOR_RATE_LIMIT_AUTH_IDENTITY_WINDOW_MS = "4000";
+    process.env.ORCHESTRATOR_RATE_LIMIT_AUTH_IDENTITY_MAX_REQUESTS = "5";
+
+    const config = loadConfig();
+
+    expect(config.server.rateLimits.backend).toEqual({
+      provider: "redis",
+      redisUrl: "redis://ratelimit:6379/1",
+    });
+    expect(config.server.rateLimits.plan).toEqual({
+      windowMs: 15000,
+      maxRequests: 75,
+      identityWindowMs: 600000,
+      identityMaxRequests: 200,
+    });
+    expect(config.server.rateLimits.chat).toEqual({
+      windowMs: 10000,
+      maxRequests: 500,
+      identityWindowMs: 45000,
+      identityMaxRequests: 250,
+    });
+    expect(config.server.rateLimits.auth).toEqual({
+      windowMs: 2000,
+      maxRequests: 20,
+      identityWindowMs: 4000,
+      identityMaxRequests: 5,
     });
   });
 
@@ -708,8 +805,18 @@ secrets:
     expect(config.providers.rateLimit).toEqual({ windowMs: 60000, maxRequests: 120 });
     expect(config.providers.circuitBreaker).toEqual({ failureThreshold: 5, resetTimeoutMs: 30000 });
     expect(config.server.rateLimits.backend).toEqual({ provider: "memory" });
-    expect(config.server.rateLimits.plan).toEqual({ windowMs: 60000, maxRequests: 60 });
-    expect(config.server.rateLimits.chat).toEqual({ windowMs: 60000, maxRequests: 600 });
+    expect(config.server.rateLimits.plan).toEqual({
+      windowMs: 60000,
+      maxRequests: 60,
+      identityWindowMs: null,
+      identityMaxRequests: null,
+    });
+    expect(config.server.rateLimits.chat).toEqual({
+      windowMs: 60000,
+      maxRequests: 600,
+      identityWindowMs: null,
+      identityMaxRequests: null,
+    });
     expect(config.server.rateLimits.auth).toEqual({
       windowMs: 60000,
       maxRequests: 120,
@@ -884,8 +991,18 @@ server:
 
     expect(config.providers.rateLimit).toEqual({ windowMs: 1, maxRequests: 1 });
     expect(config.server.rateLimits.backend).toEqual({ provider: "memory" });
-    expect(config.server.rateLimits.plan).toEqual({ windowMs: 1, maxRequests: 1 });
-    expect(config.server.rateLimits.chat).toEqual({ windowMs: 1, maxRequests: 1 });
+    expect(config.server.rateLimits.plan).toEqual({
+      windowMs: 1,
+      maxRequests: 1,
+      identityWindowMs: null,
+      identityMaxRequests: null,
+    });
+    expect(config.server.rateLimits.chat).toEqual({
+      windowMs: 1,
+      maxRequests: 1,
+      identityWindowMs: null,
+      identityMaxRequests: null,
+    });
     expect(config.server.rateLimits.auth).toEqual({
       windowMs: 1,
       maxRequests: 1,

@@ -1,6 +1,6 @@
 import type { Request } from "express";
 
-import type { AppConfig, RateLimitConfig } from "../config.js";
+import type { AppConfig, IdentityAwareRateLimitConfig } from "../config.js";
 import type { PlanSubject } from "../plan/validation.js";
 import { resolveClientIp } from "./clientIp.js";
 
@@ -15,11 +15,6 @@ export type RateLimitBucket = {
   identityType: "ip" | "identity";
   windowMs: number;
   maxRequests: number;
-};
-
-type IdentityAwareRateLimitConfig = RateLimitConfig & {
-  identityWindowMs?: number | null;
-  identityMaxRequests?: number | null;
 };
 
 export function createRequestIdentity(
