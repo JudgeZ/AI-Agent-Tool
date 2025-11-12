@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"reflect"
 	"sort"
 	"strconv"
@@ -490,16 +491,27 @@ func convertValidationErrors(payload interface{}, errs validator.ValidationError
 	if payloadType.Kind() == reflect.Ptr {
 		payloadType = payloadType.Elem()
 	}
-	for _, fieldErr := range errs {
-		fieldName := fieldErr.StructField()
-		if payloadType.Kind() == reflect.Struct {
-			if structField, ok := payloadType.FieldByName(fieldErr.StructField()); ok {
-				if jsonTag := structField.Tag.Get("json"); jsonTag != "" && jsonTag != "-" {
-					if parts := strings.Split(jsonTag, ","); len(parts) > 0 && parts[0] != "" {
-						fieldName = parts[0]
-					}
+
+	tagLookup := map[string]string{}
+	if payloadType.Kind() == reflect.Struct {
+		for i := 0; i < payloadType.NumField(); i++ {
+			field := payloadType.Field(i)
+			if field.PkgPath != "" {
+				continue
+			}
+			if tag := field.Tag.Get("json"); tag != "" && tag != "-" {
+				parts := strings.Split(tag, ",")
+				if len(parts) > 0 && parts[0] != "" {
+					tagLookup[field.Name] = parts[0]
 				}
 			}
+		}
+	}
+
+	for _, fieldErr := range errs {
+		fieldName := fieldErr.StructField()
+		if jsonName, ok := tagLookup[fieldName]; ok {
+			fieldName = jsonName
 		}
 		message := formatValidationMessage(fieldName, fieldErr)
 		result = append(result, validationError{
@@ -788,7 +800,7 @@ func getEnv(key, defaultValue string) string {
 func resolveEnvValue(key string) (string, error) {
 	fileKey := key + "_FILE"
 	if path := strings.TrimSpace(os.Getenv(fileKey)); path != "" {
-		data, err := os.ReadFile(path)
+		data, err := readSecretFile(path)
 		if err != nil {
 			return "", fmt.Errorf("failed to read %s: %w", fileKey, err)
 		}
@@ -803,6 +815,41 @@ func resolveEnvValue(key string) (string, error) {
 		return value, nil
 	}
 	return "", nil
+}
+
+func readSecretFile(path string) ([]byte, error) {
+	rootDir := strings.TrimSpace(os.Getenv("GATEWAY_SECRET_FILE_ROOT"))
+	if rootDir == "" {
+		rootDir = "/"
+	}
+
+	cleanedPath := filepath.Clean(path)
+	if !filepath.IsAbs(cleanedPath) {
+		cleanedPath = filepath.Join(rootDir, cleanedPath)
+	}
+
+	cleanedRoot := filepath.Clean(rootDir)
+	rel, err := filepath.Rel(cleanedRoot, cleanedPath)
+	if err != nil {
+		return nil, err
+	}
+	if strings.HasPrefix(rel, "..") {
+		return nil, fmt.Errorf("secret file %q is outside allowed root %q", path, cleanedRoot)
+	}
+
+	root, err := os.OpenRoot(cleanedRoot)
+	if err != nil {
+		return nil, err
+	}
+	defer root.Close()
+
+	file, err := root.Open(rel)
+	if err != nil {
+		return nil, err
+	}
+	defer file.Close()
+
+	return io.ReadAll(file)
 }
 
 func setStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, allowInsecure bool, data stateData) error {
