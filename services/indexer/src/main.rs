@@ -1,8 +1,6 @@
 mod ast;
 mod audit;
-mod auth;
 mod lsp;
-mod rate_limit;
 mod request_context;
 mod security;
 mod semantic;

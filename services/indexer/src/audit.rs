@@ -128,7 +128,9 @@ pub fn log_audit(action: &str, outcome: &str, resource: Option<&str>, details: O
 
     let context = current_request_context();
     let request_id = context.as_ref().map(|ctx| ctx.request_id().to_string());
-    let trace_id = context.as_ref().map(|ctx| ctx.trace_id().to_string());
+    let trace_id = context
+        .as_ref()
+        .and_then(|ctx| ctx.trace_id().map(str::to_string));
     let client_ip = context
         .as_ref()
         .and_then(|ctx| ctx.client_ip().map(|ip| ip.to_string()))
