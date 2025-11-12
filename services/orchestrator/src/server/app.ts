@@ -45,10 +45,10 @@ import {
 } from "../observability/metrics.js";
 import { logAuditEvent, type AuditSubject } from "../observability/audit.js";
 import {
-  runWithContext,
-  updateRequestContext,
   getRequestContext,
+  runWithContext,
   type RequestContext,
+  updateContextIdentifiers,
 } from "../observability/requestContext.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
 import {
@@ -198,6 +198,7 @@ function getRequestIds(res: Response): { requestId: string; traceId: string } {
   const context = getRequestContext();
   const requestId = context?.requestId ?? String(res.locals.requestId ?? randomUUID());
   const traceId = context?.traceId ?? String(res.locals.traceId ?? randomUUID());
+  updateContextIdentifiers({ requestId, traceId });
   return { requestId, traceId };
 }
 
@@ -281,17 +282,6 @@ function attachSession(req: ExtendedRequest, config: AppConfig): SessionRecord |
   const session = sessionStore.getSession(sessionId);
   if (session) {
     req.auth = { session };
-    updateRequestContext({
-      subject: {
-        sessionId: session.id,
-        userId: session.subject,
-        tenantId: session.tenantId,
-        email: session.email,
-        name: session.name,
-        roles: session.roles,
-        scopes: session.scopes,
-      },
-    });
   }
   return session;
 }
@@ -360,7 +350,35 @@ export function createServer(config?: AppConfig): Express {
     res.setHeader("x-trace-id", traceId);
     const context: RequestContext = { requestId, traceId };
     runWithContext(context, () => {
-      next();
+      return new Promise<void>((resolve) => {
+        let completed = false;
+        const complete = () => {
+          if (completed) {
+            return;
+          }
+          completed = true;
+          res.off("finish", complete);
+          res.off("close", complete);
+          resolve();
+        };
+
+        res.once("finish", complete);
+        res.once("close", complete);
+
+        const wrappedNext: NextFunction = (err?: unknown) => {
+          if (err !== undefined) {
+            complete();
+          }
+          return next(err);
+        };
+
+        try {
+          wrappedNext();
+        } catch (error) {
+          complete();
+          throw error;
+        }
+      });
     });
   });
 
