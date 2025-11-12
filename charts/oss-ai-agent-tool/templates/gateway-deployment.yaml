@@ -30,6 +30,11 @@
 {{- if $root.Values.gatewayApi.requestLimitBytes }}
   {{- $_ := set $defaultGatewayEnv "GATEWAY_MAX_REQUEST_BODY_BYTES" (printf "%v" $root.Values.gatewayApi.requestLimitBytes) -}}
 {{- end -}}
+{{- $gatewayDlp := $root.Values.gatewayApi.dlp | default dict -}}
+{{- if not ($gatewayDlp.disableCreditCardPattern | default false) -}}
+  {{- $creditCardPattern := $gatewayDlp.creditCardPattern | default "(?xi)\\b(?:4\\d{3}(?:[ -]?\\d{4}){2}[ -]?\\d{1,4}|5[1-5]\\d{2}(?:[ -]?\\d{4}){3}|2(?:2[2-9]\\d|[3-6]\\d{2}|7[01]\\d|720\\d)(?:[ -]?\\d{4}){3}|3[47]\\d{2}[ -]?\\d{6}[ -]?\\d{5}|6(?:011|5\\d{2})(?:[ -]?\\d{4}){3}|3(?:0[0-5]|[68]\\d)\\d[ -]?\\d{6}[ -]?\\d{4}|35(?:2[89]|[3-8]\\d)\\d(?:[ -]?\\d{4}){3})\\b" -}}
+  {{- $_ := set $defaultGatewayEnv "GATEWAY_DLP_CREDIT_CARD_PATTERN" $creditCardPattern -}}
+{{- end -}}
 {{- $gatewayRateLimit := $root.Values.gatewayApi.rateLimit | default dict -}}
 {{- $rateLimitRedis := $gatewayRateLimit.redis | default dict -}}
 {{- if or (not (hasKey $rateLimitRedis "enabled")) ($rateLimitRedis.enabled | default true) -}}

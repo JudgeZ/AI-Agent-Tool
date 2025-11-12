@@ -1,11 +1,12 @@
 use std::env;
 use std::path::{Component, Path, PathBuf};
 
+use once_cell::sync::Lazy;
 use regex::Regex;
 use thiserror::Error;
 use tracing::{info, warn};
 
-const DEFAULT_DLP_PATTERNS: [&str; 8] = [
+const DEFAULT_DLP_PATTERNS: [&str; 7] = [
     // Private keys
     r"-----BEGIN (?:RSA|DSA|EC|PGP) PRIVATE KEY-----",
     // AWS access key IDs
@@ -16,11 +17,15 @@ const DEFAULT_DLP_PATTERNS: [&str; 8] = [
     r"(?i)api[_-]?key\s*[:=]\s*[^\s]{16,}",
     // US Social Security Numbers
     r"\b\d{3}-\d{2}-\d{4}\b",
-    // Generic credit card numbers (13-16 digits, optional separators)
-    r"\b(?:\d[ -]?){13,16}\b",
     // JWT bearer tokens
     r"(?i)bearer\s+[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+\.[A-Za-z0-9\-_]+",
 ];
+
+const CREDIT_CARD_PATTERN_LABEL: &str = "credit-card-luhn";
+
+static CREDIT_CARD_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(r"\b\d(?:[ -]?\d){12,18}\b").expect("valid credit card candidate pattern")
+});
 
 #[derive(Debug, Error)]
 pub enum SecurityError {
@@ -262,16 +267,68 @@ impl SecurityConfig {
                 });
             }
         }
+
+        if contains_credit_card_candidate(content) {
+            return Err(SecurityError::DlpMatch {
+                pattern: CREDIT_CARD_PATTERN_LABEL.to_string(),
+            });
+        }
         Ok(())
     }
+}
+
+fn contains_credit_card_candidate(content: &str) -> bool {
+    CREDIT_CARD_REGEX
+        .find_iter(content)
+        .filter_map(|m| {
+            let digits: String = m
+                .as_str()
+                .chars()
+                .filter(|ch| ch.is_ascii_digit())
+                .collect();
+
+            if (13..=19).contains(&digits.len()) && luhn_check(&digits) {
+                Some(())
+            } else {
+                None
+            }
+        })
+        .next()
+        .is_some()
+}
+
+fn luhn_check(digits: &str) -> bool {
+    let mut sum = 0u32;
+    let mut double = false;
+
+    for ch in digits.chars().rev() {
+        let mut value = (ch as u8 - b'0') as u32;
+        if double {
+            value *= 2;
+            if value > 9 {
+                value -= 9;
+            }
+        }
+        sum += value;
+        double = !double;
+    }
+
+    sum % 10 == 0
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::test_support::lock_env;
     use std::env;
     use std::panic::{self, AssertUnwindSafe};
+
+    static ENV_LOCK: Lazy<std::sync::Mutex<()>> = Lazy::new(|| std::sync::Mutex::new(()));
+
+    fn lock_env() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+    }
 
     struct EnvScope {
         restorers: Vec<(String, Option<String>)>,
@@ -398,6 +455,31 @@ mod tests {
                 "expected DLP match for sample {sample}"
             );
         }
+    }
+
+    #[test]
+    fn luhn_filter_ignores_false_positives() {
+        let config = SecurityConfig::with_rules(
+            vec!["/".into()],
+            DEFAULT_DLP_PATTERNS
+                .iter()
+                .filter_map(|pattern| Regex::new(pattern).ok())
+                .collect(),
+        );
+
+        let benign_sample = "Order ID: 1111-2222-3333-4445";
+        assert!(config.scan_content(benign_sample).is_ok());
+
+        let valid_card = "Refund to 3782-822463-10005"; // American Express test number
+        let err = config.scan_content(valid_card).unwrap_err();
+        assert!(matches!(err, SecurityError::DlpMatch { .. }));
+    }
+
+    #[test]
+    fn luhn_helper_detects_known_card() {
+        assert!(CREDIT_CARD_REGEX.is_match("4242 4242 4242 4242"));
+        assert!(luhn_check("4242424242424242"));
+        assert!(contains_credit_card_candidate("4242 4242 4242 4242"));
     }
 
     #[test]
