@@ -2,11 +2,19 @@ import fs from "fs";
 import path from "path";
 import YAML from "yaml";
 
+import { appLogger } from "../observability/logger.js";
 import { startSpan, type Span, type TracingConfig } from "../observability/tracing.js";
+import type { RateLimitBackendConfig } from "../rateLimit/store.js";
+import { resolveEnv } from "../utils/env.js";
 
 export type RateLimitConfig = {
   windowMs: number;
   maxRequests: number;
+};
+
+export type IdentityRateLimitConfig = RateLimitConfig & {
+  identityWindowMs?: number | null;
+  identityMaxRequests?: number | null;
 };
 
 export type SseQuotaConfig = {
@@ -88,6 +96,57 @@ export type ObservabilityConfig = {
   tracing: TracingConfig;
 };
 
+export type ServerRateLimitsConfig = {
+  backend: RateLimitBackendConfig;
+  plan: RateLimitConfig;
+  chat: RateLimitConfig;
+  auth: IdentityRateLimitConfig;
+};
+
+export type NetworkEgressMode = "enforce" | "report-only" | "allow";
+
+export type NetworkEgressConfig = {
+  mode: NetworkEgressMode;
+  allow: string[];
+};
+
+export type NetworkConfig = {
+  egress: NetworkEgressConfig;
+};
+
+export type PostgresDatabaseConfig = {
+  maxConnections: number;
+  minConnections: number;
+  idleTimeoutMs: number;
+  connectionTimeoutMs: number;
+  maxConnectionLifetimeMs: number;
+  statementTimeoutMs: number;
+  queryTimeoutMs: number;
+};
+
+export type DatabaseConfig = {
+  postgres: PostgresDatabaseConfig;
+};
+
+export type PolicyCacheProvider = "memory" | "redis";
+
+export type PolicyCacheRedisConfig = {
+  url?: string;
+  keyPrefix?: string;
+};
+
+export type PolicyCacheConfig = {
+  enabled: boolean;
+  provider: PolicyCacheProvider;
+  ttlSeconds: number;
+  maxEntries: number;
+  redis?: PolicyCacheRedisConfig;
+};
+
+export type PolicyConfig = {
+  cache: PolicyCacheConfig;
+};
+
 export type ContentCaptureConfig = {
   enabled: boolean;
 };
@@ -155,18 +214,20 @@ export type AppConfig = {
   };
   server: {
     sseKeepAliveMs: number;
+    sseSendTimeoutMs: number;
+    sseMaxBufferEvents: number;
+    sseMaxBufferBytes: number;
     requestLimits: RequestSizeLimitsConfig;
-    rateLimits: {
-      plan: RateLimitConfig;
-      chat: RateLimitConfig;
-      auth: RateLimitConfig;
-    };
+    rateLimits: ServerRateLimitsConfig;
     sseQuotas: SseQuotaConfig;
     tls: TlsConfig;
     trustedProxyCidrs: string[];
     cors: CorsConfig;
   };
   observability: ObservabilityConfig;
+  policy: PolicyConfig;
+  database: DatabaseConfig;
+  network: NetworkConfig;
 };
 
 function ensurePositiveRateLimit(value: RateLimitConfig, context: string): RateLimitConfig {
@@ -198,9 +259,57 @@ function sanitizeRequestLimit(value: number | undefined, fallback: number): numb
   return normalized;
 }
 
+function sanitizePositiveInteger(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return Math.max(1, Math.floor(fallback));
+  }
+  const normalized = Math.floor(value);
+  if (normalized <= 0) {
+    return Math.max(1, Math.floor(fallback));
+  }
+  return normalized;
+}
+
+function sanitizeNonNegativeInteger(value: number | undefined, fallback: number): number {
+  if (value === undefined || !Number.isFinite(value)) {
+    return Math.max(0, Math.floor(fallback));
+  }
+  const normalized = Math.floor(value);
+  return normalized < 0 ? 0 : normalized;
+}
+
+function validateCookieSecure(runMode: AppConfig["runMode"]): void {
+  const raw = process.env.COOKIE_SECURE;
+  if (raw === undefined) {
+    return;
+  }
+  const normalized = raw.trim().toLowerCase();
+  if (["true", "1", "yes", "on"].includes(normalized)) {
+    return;
+  }
+  if (["false", "0", "no", "off"].includes(normalized)) {
+    const nodeEnv = process.env.NODE_ENV?.trim().toLowerCase();
+    if (nodeEnv === "production") {
+      throw new Error("COOKIE_SECURE cannot be false when NODE_ENV=production");
+    }
+    if (runMode === "enterprise") {
+      throw new Error("COOKIE_SECURE cannot be false when RUN_MODE=enterprise");
+    }
+    appLogger.warn(
+      { event: "config.cookie_secure.insecure" },
+      "COOKIE_SECURE=false; secure cookies are disabled",
+    );
+  }
+}
+
 type PartialRateLimitConfig = {
   windowMs?: number;
   maxRequests?: number;
+};
+
+type PartialIdentityRateLimitConfig = PartialRateLimitConfig & {
+  identityWindowMs?: number | null;
+  identityMaxRequests?: number | null;
 };
 
 type PartialSseQuotaConfig = {
@@ -278,6 +387,51 @@ type PartialToolingConfig = {
   tls?: PartialToolAgentTlsConfig;
 };
 
+type PartialRateLimitBackendConfig = {
+  provider?: RateLimitBackendConfig["provider"];
+  redisUrl?: string;
+};
+
+type PartialPolicyCacheRedisConfig = {
+  url?: string;
+  keyPrefix?: string;
+};
+
+type PartialPolicyCacheConfig = {
+  enabled?: boolean;
+  provider?: PolicyCacheProvider;
+  ttlSeconds?: number;
+  maxEntries?: number;
+  redis?: PartialPolicyCacheRedisConfig;
+};
+
+type PartialPolicyConfig = {
+  cache?: PartialPolicyCacheConfig;
+};
+
+type PartialPostgresDatabaseConfig = {
+  maxConnections?: number;
+  minConnections?: number;
+  idleTimeoutMs?: number;
+  connectionTimeoutMs?: number;
+  maxConnectionLifetimeMs?: number;
+  statementTimeoutMs?: number;
+  queryTimeoutMs?: number;
+};
+
+type PartialDatabaseConfig = {
+  postgres?: PartialPostgresDatabaseConfig;
+};
+
+type PartialNetworkEgressConfig = {
+  mode?: NetworkEgressMode;
+  allow?: string[];
+};
+
+type PartialNetworkConfig = {
+  egress?: PartialNetworkEgressConfig;
+};
+
 type PartialAppConfig = {
   runMode?: AppConfig["runMode"];
   messaging?: PartialMessagingConfig;
@@ -289,6 +443,9 @@ type PartialAppConfig = {
   tooling?: PartialToolingConfig;
   server?: PartialServerConfig;
   observability?: PartialObservabilityConfig;
+  policy?: PartialPolicyConfig;
+  database?: PartialDatabaseConfig;
+  network?: PartialNetworkConfig;
 };
 
 const DEFAULT_TRACING_CONFIG: TracingConfig = {
@@ -394,11 +551,17 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   server: {
     sseKeepAliveMs: 25000,
+    sseSendTimeoutMs: 5000,
+    sseMaxBufferEvents: 100,
+    sseMaxBufferBytes: 64 * 1024,
     requestLimits: {
       jsonBytes: 1_048_576,
       urlEncodedBytes: 1_048_576,
     },
     rateLimits: {
+      backend: {
+        provider: "memory",
+      },
       plan: {
         windowMs: 60_000,
         maxRequests: 60
@@ -409,7 +572,9 @@ export const DEFAULT_CONFIG: AppConfig = {
       },
       auth: {
         windowMs: 60_000,
-        maxRequests: 120
+        maxRequests: 120,
+        identityWindowMs: 60_000,
+        identityMaxRequests: 20,
       }
     },
     sseQuotas: {
@@ -430,6 +595,41 @@ export const DEFAULT_CONFIG: AppConfig = {
   },
   observability: {
     tracing: { ...DEFAULT_TRACING_CONFIG }
+  },
+  policy: {
+    cache: {
+      enabled: false,
+      provider: "memory",
+      ttlSeconds: 60,
+      maxEntries: 10_000,
+      redis: {
+        keyPrefix: "policy:decision"
+      }
+    }
+  },
+  database: {
+    postgres: {
+      maxConnections: 20,
+      minConnections: 2,
+      idleTimeoutMs: 30_000,
+      connectionTimeoutMs: 5_000,
+      maxConnectionLifetimeMs: 30 * 60_000,
+      statementTimeoutMs: 5_000,
+      queryTimeoutMs: 5_000,
+    }
+  },
+  network: {
+    egress: {
+      mode: "enforce",
+      allow: [
+        "localhost",
+        "127.0.0.1",
+        "::1",
+        "*.example.com",
+        "*.svc",
+        "*.svc.cluster.local",
+      ],
+    },
   }
 };
 
@@ -478,9 +678,10 @@ type PartialMessagingConfig = {
 };
 
 type PartialServerRateLimitsConfig = {
+  backend?: PartialRateLimitBackendConfig;
   plan?: PartialRateLimitConfig;
   chat?: PartialRateLimitConfig;
-  auth?: PartialRateLimitConfig;
+  auth?: PartialIdentityRateLimitConfig;
 };
 
 type PartialRequestSizeLimitsConfig = {
@@ -490,6 +691,9 @@ type PartialRequestSizeLimitsConfig = {
 
 type PartialServerConfig = {
   sseKeepAliveMs?: number;
+  sseSendTimeoutMs?: number;
+  sseMaxBufferEvents?: number;
+  sseMaxBufferBytes?: number;
   requestLimits?: PartialRequestSizeLimitsConfig;
   rateLimits?: PartialServerRateLimitsConfig;
   tls?: PartialTlsConfig;
@@ -605,6 +809,45 @@ function parseRateLimitConfig(value: unknown): PartialRateLimitConfig | undefine
   }
   if (maxRequests !== undefined) {
     result.maxRequests = maxRequests;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseRateLimitBackendConfig(value: unknown): PartialRateLimitBackendConfig | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const result: PartialRateLimitBackendConfig = {};
+  const provider = asRateLimitBackendProvider(record.provider ?? record.type);
+  if (provider) {
+    result.provider = provider;
+  }
+  const redisUrl = asString(record.redisUrl ?? record.redis_url ?? record.url);
+  if (redisUrl) {
+    result.redisUrl = redisUrl;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseIdentityRateLimitConfig(value: unknown): PartialIdentityRateLimitConfig | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const base = parseRateLimitConfig(value);
+  const result: PartialIdentityRateLimitConfig = base ? { ...base } : {};
+  const identityWindowMs = asNumber(
+    record.identityWindowMs ?? record.identity_window_ms ?? record.identityWindow ?? record.identity_window,
+  );
+  if (identityWindowMs !== undefined) {
+    result.identityWindowMs = identityWindowMs;
+  }
+  const identityMaxRequests = asNumber(
+    record.identityMaxRequests ?? record.identity_max_requests ?? record.identityMax ?? record.identity_max,
+  );
+  if (identityMaxRequests !== undefined) {
+    result.identityMaxRequests = identityMaxRequests;
   }
   return Object.keys(result).length > 0 ? result : undefined;
 }
@@ -739,6 +982,28 @@ function asBoolean(value: unknown): boolean | undefined {
   return undefined;
 }
 
+function asPolicyCacheProvider(value: unknown): PolicyCacheProvider | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "memory" || normalized === "redis") {
+    return normalized;
+  }
+  return undefined;
+}
+
+function asRateLimitBackendProvider(value: unknown): RateLimitBackendConfig["provider"] | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "memory" || normalized === "redis") {
+    return normalized;
+  }
+  return undefined;
+}
+
 function asStringRecord(value: unknown): Record<string, string> | undefined {
   const record = asRecord(value);
   if (!record) {
@@ -781,6 +1046,86 @@ function parseTracingConfigRecord(value: unknown): PartialTracingConfig | undefi
     partial.sampleRatio = sampleRatio;
   }
   return Object.keys(partial).length > 0 ? partial : undefined;
+}
+
+function parsePolicyCacheRedisConfig(value: unknown): PartialPolicyCacheRedisConfig | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const partial: PartialPolicyCacheRedisConfig = {};
+  const url = asString(record.url ?? record.connectionString ?? record.redisUrl ?? record.redis_url);
+  if (url) {
+    partial.url = url;
+  }
+  const keyPrefix = asString(record.keyPrefix ?? record.key_prefix ?? record.prefix);
+  if (keyPrefix) {
+    partial.keyPrefix = keyPrefix;
+  }
+  return Object.keys(partial).length > 0 ? partial : undefined;
+}
+
+function parsePolicyCacheConfig(value: unknown): PartialPolicyCacheConfig | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const partial: PartialPolicyCacheConfig = {};
+  const enabled = asBoolean(record.enabled);
+  if (enabled !== undefined) {
+    partial.enabled = enabled;
+  }
+  const provider = asPolicyCacheProvider(record.provider);
+  if (provider) {
+    partial.provider = provider;
+  }
+  const ttlSeconds = asNumber(record.ttlSeconds ?? record.ttl_seconds ?? record.ttl);
+  if (ttlSeconds !== undefined) {
+    partial.ttlSeconds = ttlSeconds;
+  }
+  const maxEntries = asNumber(record.maxEntries ?? record.max_entries ?? record.max);
+  if (maxEntries !== undefined) {
+    partial.maxEntries = maxEntries;
+  }
+  const redisRecord =
+    record.redis !== undefined
+      ? parsePolicyCacheRedisConfig(record.redis)
+      : parsePolicyCacheRedisConfig({
+          url: record.redisUrl ?? record.redis_url,
+          keyPrefix: record.redisKeyPrefix ?? record.redis_key_prefix,
+        });
+  if (redisRecord) {
+    partial.redis = redisRecord;
+  }
+  return Object.keys(partial).length > 0 ? partial : undefined;
+}
+
+function asNetworkEgressMode(value: unknown): NetworkEgressMode | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "enforce" || normalized === "report-only" || normalized === "allow") {
+    return normalized;
+  }
+  return undefined;
+}
+
+function parseNetworkEgressRecord(value: unknown): PartialNetworkEgressConfig | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const result: PartialNetworkEgressConfig = {};
+  const mode = asNetworkEgressMode(record.mode ?? record.policy ?? record.state);
+  if (mode) {
+    result.mode = mode;
+  }
+  const allow = parseStringArrayFlexible(record.allow ?? record.allowList ?? record.whitelist);
+  if (allow && allow.length > 0) {
+    result.allow = allow;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
 }
 
 function parseHeadersString(value: string | undefined): Record<string, string> | undefined {
@@ -873,6 +1218,21 @@ function normalizeOriginList(origins: readonly string[] | undefined): string[] {
   const seen = new Set<string>();
   for (const entry of origins) {
     const normalized = normalizeOriginString(entry);
+    if (!normalized || seen.has(normalized)) {
+      continue;
+    }
+    seen.add(normalized);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function normalizeEgressAllowList(allow: readonly string[] | undefined, fallback: readonly string[]): string[] {
+  const source = allow && allow.length > 0 ? allow : fallback;
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const entry of source) {
+    const normalized = entry.trim();
     if (!normalized || seen.has(normalized)) {
       continue;
     }
@@ -1272,8 +1632,10 @@ function warnLegacyMessageBus(value: string | undefined): void {
     return;
   }
   legacyMessageBusWarningIssued = true;
-  // eslint-disable-next-line no-console
-  console.warn("MESSAGE_BUS is deprecated; use MESSAGING_TYPE instead");
+  appLogger.warn(
+    { event: "config.legacy_message_bus" },
+    "MESSAGE_BUS is deprecated; use MESSAGING_TYPE instead",
+  );
 }
 
 export function __resetLegacyMessagingWarningForTests(): void {
@@ -1373,6 +1735,47 @@ function parseRetentionConfigRecord(value: unknown): PartialRetentionConfig | un
   return Object.keys(result).length > 0 ? result : undefined;
 }
 
+function parsePostgresDatabaseRecord(value: unknown): PartialPostgresDatabaseConfig | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const result: PartialPostgresDatabaseConfig = {};
+  const maxConnections = asNumber(record.maxConnections ?? record.max_connections ?? record.max);
+  if (maxConnections !== undefined) {
+    result.maxConnections = maxConnections;
+  }
+  const minConnections = asNumber(record.minConnections ?? record.min_connections ?? record.min);
+  if (minConnections !== undefined) {
+    result.minConnections = minConnections;
+  }
+  const idleTimeoutMs = asNumber(record.idleTimeoutMs ?? record.idle_timeout_ms ?? record.idleTimeout);
+  if (idleTimeoutMs !== undefined) {
+    result.idleTimeoutMs = idleTimeoutMs;
+  }
+  const connectionTimeoutMs = asNumber(
+    record.connectionTimeoutMs ?? record.connection_timeout_ms ?? record.connectionTimeout,
+  );
+  if (connectionTimeoutMs !== undefined) {
+    result.connectionTimeoutMs = connectionTimeoutMs;
+  }
+  const maxConnectionLifetimeMs = asNumber(
+    record.maxConnectionLifetimeMs ?? record.max_connection_lifetime_ms ?? record.maxLifetimeMs,
+  );
+  if (maxConnectionLifetimeMs !== undefined) {
+    result.maxConnectionLifetimeMs = maxConnectionLifetimeMs;
+  }
+  const statementTimeoutMs = asNumber(record.statementTimeoutMs ?? record.statement_timeout_ms);
+  if (statementTimeoutMs !== undefined) {
+    result.statementTimeoutMs = statementTimeoutMs;
+  }
+  const queryTimeoutMs = asNumber(record.queryTimeoutMs ?? record.query_timeout_ms);
+  if (queryTimeoutMs !== undefined) {
+    result.queryTimeoutMs = queryTimeoutMs;
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
 type ConfigCacheState = {
   path: string;
   mtimeMs: number | null;
@@ -1445,15 +1848,45 @@ export function loadConfig(): AppConfig {
         const tracing = parseTracingConfigRecord(observability?.tracing);
         const retention = parseRetentionConfigRecord(doc.retention);
         const planStateRecord = asRecord(doc.planState ?? doc.plan_state);
+        const databaseRecord = asRecord(doc.database);
+        const networkRecord = asRecord(doc.network);
         const planStateBackendFromFile = planStateRecord
           ? asPlanStateBackend(planStateRecord.backend)
+          : undefined;
+        const policyRecord = asRecord(doc.policy);
+        const policyCache = policyRecord
+          ? parsePolicyCacheConfig(
+              policyRecord.cache ??
+                policyRecord.cacheConfig ??
+                policyRecord.cache_config ??
+                policyRecord.decisionCache ??
+                policyRecord.decision_cache,
+            )
           : undefined;
 
         const providerRateLimit = providers ? parseRateLimitConfig(providers.rateLimit) : undefined;
         const providerCircuitBreaker = providers ? parseCircuitBreakerConfig(providers.circuitBreaker) : undefined;
         const serverRateLimits = server ? asRecord(server.rateLimits) : undefined;
+        const serverRateLimitBackend = serverRateLimits
+          ? parseRateLimitBackendConfig(
+              serverRateLimits.backend ??
+                serverRateLimits.store ??
+                serverRateLimits.backendConfig ??
+                serverRateLimits.backend_config,
+            )
+          : undefined;
+        const serverRateLimitAuth = serverRateLimits ? parseIdentityRateLimitConfig(serverRateLimits.auth) : undefined;
         const serverSseQuotas = server
           ? parseSseQuotaConfig(server.sseQuotas ?? server.sse_quotas ?? server.quotas)
+          : undefined;
+        const serverSseSendTimeout = server
+          ? asNumber(server.sseSendTimeoutMs ?? server.sse_send_timeout_ms ?? server.sseTimeoutMs)
+          : undefined;
+        const serverSseMaxBufferEvents = server
+          ? asNumber(server.sseMaxBufferEvents ?? server.sse_max_buffer_events ?? server.sseBufferEvents)
+          : undefined;
+        const serverSseMaxBufferBytes = server
+          ? asNumber(server.sseMaxBufferBytes ?? server.sse_max_buffer_bytes ?? server.sseBufferBytes)
           : undefined;
         const serverTrustedProxies = server
           ? parseStringArrayFlexible(
@@ -1468,6 +1901,18 @@ export function loadConfig(): AppConfig {
           : undefined;
         const kafkaMessaging = messagingRecord ? parseKafkaMessagingRecord(messagingRecord.kafka) : undefined;
         const fileOidc = parseOidcConfigRecord(oidc);
+        const postgresConfig = databaseRecord
+          ? parsePostgresDatabaseRecord(databaseRecord.postgres ?? databaseRecord.pg)
+          : undefined;
+        const networkEgress = networkRecord
+          ? parseNetworkEgressRecord(
+              networkRecord.egress ??
+                networkRecord.egressConfig ??
+                networkRecord.egress_config ??
+                networkRecord.egressPolicy ??
+                networkRecord.egress_policy,
+            )
+          : undefined;
 
         const authPartial: PartialAuthConfig = {};
         let hasAuthConfig = false;
@@ -1517,11 +1962,15 @@ export function loadConfig(): AppConfig {
           server: server
             ? {
                 sseKeepAliveMs: asNumber(server.sseKeepAliveMs),
+                sseSendTimeoutMs: serverSseSendTimeout,
+                sseMaxBufferEvents: serverSseMaxBufferEvents,
+                sseMaxBufferBytes: serverSseMaxBufferBytes,
                 rateLimits: serverRateLimits
                   ? {
+                      backend: serverRateLimitBackend,
                       plan: parseRateLimitConfig(serverRateLimits.plan),
                       chat: parseRateLimitConfig(serverRateLimits.chat),
-                      auth: parseRateLimitConfig(serverRateLimits.auth)
+                      auth: serverRateLimitAuth,
                     }
                   : undefined,
                 tls: parseTlsConfig(server.tls),
@@ -1530,7 +1979,10 @@ export function loadConfig(): AppConfig {
                 cors: serverCors,
               }
             : undefined,
-          observability: tracing ? { tracing } : undefined
+          observability: tracing ? { tracing } : undefined,
+          policy: policyCache ? { cache: policyCache } : undefined,
+          database: postgresConfig ? { postgres: postgresConfig } : undefined,
+          network: networkEgress ? { egress: networkEgress } : undefined,
         };
       } else {
         const span = startSpan("config.file.invalid", { reason: "non_object_root" });
@@ -1573,6 +2025,9 @@ export function loadConfig(): AppConfig {
   const envAgentTlsKeyPath = asString(process.env.TOOL_AGENT_TLS_KEY_PATH);
   const envAgentTlsCaPaths = parseStringList(process.env.TOOL_AGENT_TLS_CA_PATHS);
   const envSseKeepAlive = asNumber(process.env.SSE_KEEP_ALIVE_MS);
+  const envSseSendTimeout = asNumber(process.env.SSE_SEND_TIMEOUT_MS);
+  const envSseMaxBufferEvents = asNumber(process.env.SSE_MAX_BUFFER_EVENTS);
+  const envSseMaxBufferBytes = asNumber(process.env.SSE_MAX_BUFFER_BYTES);
   const envSseMaxConnectionsPerIp = asNumber(process.env.SSE_MAX_CONNECTIONS_PER_IP);
   const envSseMaxConnectionsPerSubject = asNumber(process.env.SSE_MAX_CONNECTIONS_PER_SUBJECT);
   const envTrustedProxyCidrs = parseStringList(
@@ -1584,6 +2039,30 @@ export function loadConfig(): AppConfig {
   const envServerRequestLimitJson = asNumber(process.env.SERVER_REQUEST_LIMIT_JSON_BYTES);
   const envServerRequestLimitUrlEncoded = asNumber(
     process.env.SERVER_REQUEST_LIMIT_URLENCODED_BYTES,
+  );
+  const envRateLimitBackendProvider = asRateLimitBackendProvider(
+    process.env.PROVIDER_RATE_LIMIT_BACKEND ??
+      process.env.SERVER_RATE_LIMIT_BACKEND ??
+      process.env.RATE_LIMIT_BACKEND,
+  );
+  const envRateLimitBackendRedisUrl = asString(
+    process.env.PROVIDER_RATE_LIMIT_REDIS_URL ??
+      process.env.SERVER_RATE_LIMIT_REDIS_URL ??
+      process.env.RATE_LIMIT_REDIS_URL,
+  );
+  const envPolicyCacheEnabled = asBoolean(process.env.POLICY_CACHE_ENABLED);
+  const envPolicyCacheProvider = asPolicyCacheProvider(process.env.POLICY_CACHE_PROVIDER);
+  const envPolicyCacheTtlSeconds = asNumber(process.env.POLICY_CACHE_TTL_SECONDS);
+  const envPolicyCacheMaxEntries = asNumber(process.env.POLICY_CACHE_MAX_ENTRIES);
+  const envPolicyCacheRedisUrl = asString(process.env.POLICY_CACHE_REDIS_URL);
+  const envPolicyCacheRedisKeyPrefix = asString(process.env.POLICY_CACHE_REDIS_KEY_PREFIX);
+  const envNetworkEgressMode = asNetworkEgressMode(
+    process.env.NETWORK_EGRESS_MODE ?? process.env.EGRESS_MODE,
+  );
+  const envNetworkEgressAllow = parseStringList(
+    process.env.NETWORK_EGRESS_ALLOW ??
+      process.env.EGRESS_ALLOW ??
+      process.env.ORCHESTRATOR_EGRESS_ALLOW,
   );
   const envTracingEnabled = asBoolean(process.env.TRACING_ENABLED ?? process.env.OTEL_TRACES_EXPORTER_ENABLED);
   const envTracingServiceName = process.env.TRACING_SERVICE_NAME ?? process.env.OTEL_SERVICE_NAME;
@@ -1632,7 +2111,7 @@ export function loadConfig(): AppConfig {
   const envOidcEnabled = asBoolean(process.env.OIDC_ENABLED);
   const envOidcIssuer = process.env.OIDC_ISSUER_URL?.trim();
   const envOidcClientId = process.env.OIDC_CLIENT_ID?.trim();
-  const envOidcClientSecret = process.env.OIDC_CLIENT_SECRET?.trim();
+  const envOidcClientSecret = resolveEnv("OIDC_CLIENT_SECRET")?.trim();
   const envOidcRedirectBase = process.env.OIDC_REDIRECT_BASE?.trim();
   const envOidcScopes = parseScopesString(process.env.OIDC_SCOPES);
   const envOidcTenantClaim = process.env.OIDC_TENANT_CLAIM?.trim();
@@ -1644,6 +2123,9 @@ export function loadConfig(): AppConfig {
   const envPlanArtifactRetentionDays = asNumber(process.env.RETENTION_PLAN_ARTIFACT_DAYS);
   const envPlanStateBackend = asPlanStateBackend(process.env.PLAN_STATE_BACKEND);
   const envContentCaptureEnabled = asBoolean(process.env.CONTENT_CAPTURE_ENABLED);
+  const envPostgresMinConnections = asNumber(process.env.POSTGRES_MIN_CONNECTIONS);
+  const envPostgresStatementTimeoutMs = asNumber(process.env.POSTGRES_STATEMENT_TIMEOUT_MS);
+  const envPostgresQueryTimeoutMs = asNumber(process.env.POSTGRES_QUERY_TIMEOUT_MS);
   const envOidcRoleClaim = process.env.OIDC_ROLE_CLAIM?.trim();
   const envOidcFallbackRoles = parseRolesValue(process.env.OIDC_DEFAULT_ROLES);
   const envOidcRoleMappingsValue = parseJsonEnv(process.env.OIDC_ROLE_MAPPINGS, "OIDC_ROLE_MAPPINGS");
@@ -1731,6 +2213,8 @@ export function loadConfig(): AppConfig {
   const defaultPlanStateBackend = runMode === "enterprise" ? "postgres" : DEFAULT_CONFIG.planState.backend;
   const planStateBackend = envPlanStateBackend ?? fileCfg.planState?.backend ?? defaultPlanStateBackend;
 
+  validateCookieSecure(runMode);
+
   const secretsDefault = runMode === "enterprise" ? "vault" : DEFAULT_CONFIG.secrets.backend;
   const providersEnabledDefault = DEFAULT_CONFIG.providers.enabled;
   const envEnabled = providersEnabledFromEnv?.map(provider => provider);
@@ -1767,13 +2251,28 @@ export function loadConfig(): AppConfig {
     "server.rateLimits.chat"
   );
 
-  const serverAuthRateLimit = ensurePositiveRateLimit(
+  const serverAuthBaseRateLimit = ensurePositiveRateLimit(
     {
       windowMs: fileCfg.server?.rateLimits?.auth?.windowMs ?? DEFAULT_CONFIG.server.rateLimits.auth.windowMs,
       maxRequests: fileCfg.server?.rateLimits?.auth?.maxRequests ?? DEFAULT_CONFIG.server.rateLimits.auth.maxRequests,
     },
     "server.rateLimits.auth",
   );
+
+  const authIdentityWindowMs = sanitizeNonNegativeInteger(
+    fileCfg.server?.rateLimits?.auth?.identityWindowMs ?? DEFAULT_CONFIG.server.rateLimits.auth.identityWindowMs,
+    DEFAULT_CONFIG.server.rateLimits.auth.identityWindowMs,
+  );
+  const authIdentityMaxRequests = sanitizeNonNegativeInteger(
+    fileCfg.server?.rateLimits?.auth?.identityMaxRequests ?? DEFAULT_CONFIG.server.rateLimits.auth.identityMaxRequests,
+    DEFAULT_CONFIG.server.rateLimits.auth.identityMaxRequests,
+  );
+
+  const serverAuthRateLimit: IdentityRateLimitConfig = {
+    ...serverAuthBaseRateLimit,
+    identityWindowMs: authIdentityWindowMs,
+    identityMaxRequests: authIdentityMaxRequests,
+  };
 
   const serverRequestLimits: RequestSizeLimitsConfig = {
     jsonBytes: sanitizeRequestLimit(
@@ -1799,6 +2298,31 @@ export function loadConfig(): AppConfig {
         DEFAULT_CONFIG.server.sseQuotas.perSubject,
       DEFAULT_CONFIG.server.sseQuotas.perSubject,
     ),
+  };
+
+  const serverSseSendTimeoutMs = sanitizePositiveInteger(
+    envSseSendTimeout ?? fileCfg.server?.sseSendTimeoutMs,
+    DEFAULT_CONFIG.server.sseSendTimeoutMs,
+  );
+  const serverSseMaxBufferEvents = sanitizeNonNegativeInteger(
+    envSseMaxBufferEvents ?? fileCfg.server?.sseMaxBufferEvents,
+    DEFAULT_CONFIG.server.sseMaxBufferEvents,
+  );
+  const serverSseMaxBufferBytes = sanitizeNonNegativeInteger(
+    envSseMaxBufferBytes ?? fileCfg.server?.sseMaxBufferBytes,
+    DEFAULT_CONFIG.server.sseMaxBufferBytes,
+  );
+
+  const fileServerBackend = fileCfg.server?.rateLimits?.backend;
+  const serverRateLimitBackend: RateLimitBackendConfig = {
+    provider:
+      envRateLimitBackendProvider ??
+      fileServerBackend?.provider ??
+      DEFAULT_CONFIG.server.rateLimits.backend.provider,
+    redisUrl:
+      envRateLimitBackendRedisUrl ??
+      fileServerBackend?.redisUrl ??
+      DEFAULT_CONFIG.server.rateLimits.backend.redisUrl,
   };
 
   const resolvedTrustedProxyCidrs =
@@ -1832,6 +2356,46 @@ export function loadConfig(): AppConfig {
       throw new Error("TLS enabled but SERVER_TLS_KEY_PATH and SERVER_TLS_CERT_PATH are not fully specified");
     }
   }
+
+  const filePostgres = fileCfg.database?.postgres;
+  const postgresConfig: PostgresDatabaseConfig = {
+    maxConnections: sanitizePositiveInteger(
+      filePostgres?.maxConnections ?? DEFAULT_CONFIG.database.postgres.maxConnections,
+      DEFAULT_CONFIG.database.postgres.maxConnections,
+    ),
+    minConnections: sanitizeNonNegativeInteger(
+      envPostgresMinConnections ?? filePostgres?.minConnections,
+      DEFAULT_CONFIG.database.postgres.minConnections,
+    ),
+    idleTimeoutMs: sanitizeNonNegativeInteger(
+      filePostgres?.idleTimeoutMs ?? DEFAULT_CONFIG.database.postgres.idleTimeoutMs,
+      DEFAULT_CONFIG.database.postgres.idleTimeoutMs,
+    ),
+    connectionTimeoutMs: sanitizeNonNegativeInteger(
+      filePostgres?.connectionTimeoutMs ?? DEFAULT_CONFIG.database.postgres.connectionTimeoutMs,
+      DEFAULT_CONFIG.database.postgres.connectionTimeoutMs,
+    ),
+    maxConnectionLifetimeMs: sanitizePositiveInteger(
+      filePostgres?.maxConnectionLifetimeMs ?? DEFAULT_CONFIG.database.postgres.maxConnectionLifetimeMs,
+      DEFAULT_CONFIG.database.postgres.maxConnectionLifetimeMs,
+    ),
+    statementTimeoutMs: sanitizeNonNegativeInteger(
+      envPostgresStatementTimeoutMs ?? filePostgres?.statementTimeoutMs,
+      DEFAULT_CONFIG.database.postgres.statementTimeoutMs,
+    ),
+    queryTimeoutMs: sanitizeNonNegativeInteger(
+      envPostgresQueryTimeoutMs ?? filePostgres?.queryTimeoutMs,
+      DEFAULT_CONFIG.database.postgres.queryTimeoutMs,
+    ),
+  };
+
+  const fileNetworkEgress = fileCfg.network?.egress;
+  const networkEgressMode =
+    envNetworkEgressMode ?? fileNetworkEgress?.mode ?? DEFAULT_CONFIG.network.egress.mode;
+  const networkEgressAllow = normalizeEgressAllowList(
+    envNetworkEgressAllow ?? fileNetworkEgress?.allow,
+    DEFAULT_CONFIG.network.egress.allow,
+  );
 
   const fileTracing = fileCfg.observability?.tracing;
   const sanitizedServiceName = envTracingServiceName?.trim();
@@ -1960,6 +2524,34 @@ export function loadConfig(): AppConfig {
     return tlsConfig;
   })();
 
+  const filePolicyCache = fileCfg.policy?.cache;
+  const resolvedPolicyCacheEnabled =
+    envPolicyCacheEnabled ?? filePolicyCache?.enabled ?? DEFAULT_CONFIG.policy.cache.enabled;
+  const resolvedPolicyCacheProvider =
+    envPolicyCacheProvider ?? filePolicyCache?.provider ?? DEFAULT_CONFIG.policy.cache.provider;
+  const resolvedPolicyCacheTtlSeconds = sanitizePositiveInteger(
+    envPolicyCacheTtlSeconds ?? filePolicyCache?.ttlSeconds,
+    DEFAULT_CONFIG.policy.cache.ttlSeconds,
+  );
+  const resolvedPolicyCacheMaxEntries = sanitizePositiveInteger(
+    envPolicyCacheMaxEntries ?? filePolicyCache?.maxEntries,
+    DEFAULT_CONFIG.policy.cache.maxEntries,
+  );
+  const filePolicyCacheRedis = filePolicyCache?.redis;
+  const resolvedPolicyCacheRedisUrl =
+    envPolicyCacheRedisUrl ?? filePolicyCacheRedis?.url ?? DEFAULT_CONFIG.policy.cache.redis?.url;
+  const resolvedPolicyCacheRedisKeyPrefix =
+    envPolicyCacheRedisKeyPrefix ??
+    filePolicyCacheRedis?.keyPrefix ??
+    DEFAULT_CONFIG.policy.cache.redis?.keyPrefix;
+  const resolvedPolicyCacheRedis =
+    resolvedPolicyCacheRedisUrl || resolvedPolicyCacheRedisKeyPrefix
+      ? {
+          url: resolvedPolicyCacheRedisUrl,
+          keyPrefix: resolvedPolicyCacheRedisKeyPrefix,
+        }
+      : undefined;
+
   const resolvedConfig: AppConfig = {
     runMode,
     messaging: {
@@ -2028,8 +2620,12 @@ export function loadConfig(): AppConfig {
     server: {
       sseKeepAliveMs:
         envSseKeepAlive ?? fileCfg.server?.sseKeepAliveMs ?? DEFAULT_CONFIG.server.sseKeepAliveMs,
+      sseSendTimeoutMs: serverSseSendTimeoutMs,
+      sseMaxBufferEvents: serverSseMaxBufferEvents,
+      sseMaxBufferBytes: serverSseMaxBufferBytes,
       requestLimits: serverRequestLimits,
       rateLimits: {
+        backend: serverRateLimitBackend,
         plan: serverPlanRateLimit,
         chat: serverChatRateLimit,
         auth: serverAuthRateLimit
@@ -2056,7 +2652,25 @@ export function loadConfig(): AppConfig {
         exporterHeaders: tracingHeaders,
         sampleRatio: tracingSampleRatio
       }
-    }
+    },
+    policy: {
+      cache: {
+        enabled: resolvedPolicyCacheEnabled,
+        provider: resolvedPolicyCacheProvider ?? DEFAULT_CONFIG.policy.cache.provider,
+        ttlSeconds: resolvedPolicyCacheTtlSeconds,
+        maxEntries: resolvedPolicyCacheMaxEntries,
+        redis: resolvedPolicyCacheRedis
+      }
+    },
+    database: {
+      postgres: postgresConfig,
+    },
+    network: {
+      egress: {
+        mode: networkEgressMode,
+        allow: [...networkEgressAllow],
+      },
+    },
   };
   const metadataAfter = readConfigFileMetadata(cfgPath);
   configCache = {

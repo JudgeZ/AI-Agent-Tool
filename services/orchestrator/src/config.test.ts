@@ -97,6 +97,12 @@ const ENV_KEYS = [
   "EGRESS_MODE",
   "EGRESS_ALLOW",
   "ORCHESTRATOR_EGRESS_ALLOW",
+  "POLICY_CACHE_ENABLED",
+  "POLICY_CACHE_PROVIDER",
+  "POLICY_CACHE_TTL_SECONDS",
+  "POLICY_CACHE_MAX_ENTRIES",
+  "POLICY_CACHE_REDIS_URL",
+  "POLICY_CACHE_REDIS_KEY_PREFIX",
   "OIDC_CLIENT_SECRET_FILE",
   "VAULT_TOKEN_FILE",
   "VAULT_CA_CERT_FILE",
@@ -338,6 +344,16 @@ observability:
       caPaths: ["/etc/orchestrator/tls/ca.crt"],
       requestClientCert: true
     });
+    expect(config.policy.cache).toEqual({
+      enabled: false,
+      provider: "memory",
+      ttlSeconds: 60,
+      maxEntries: 10_000,
+      redis: {
+        url: undefined,
+        keyPrefix: "policy:decision",
+      },
+    });
     expect(config.observability.tracing.enabled).toBe(true);
     expect(config.observability.tracing.serviceName).toBe("orchestrator-svc");
     expect(config.observability.tracing.environment).toBe("staging");
@@ -475,6 +491,16 @@ runMode: enterprise
       "https://env-ui.example.com",
       "https://env-alt.example.com",
     ]);
+    expect(config.policy.cache).toEqual({
+      enabled: false,
+      provider: "memory",
+      ttlSeconds: 60,
+      maxEntries: 10_000,
+      redis: {
+        url: undefined,
+        keyPrefix: "policy:decision",
+      },
+    });
     expect(config.database.postgres).toEqual({
       maxConnections: 20,
       minConnections: 3,
@@ -492,6 +518,29 @@ runMode: enterprise
       }
     });
     expect(config.secrets.backend).toBe("vault");
+  });
+
+  it("configures the policy cache from environment variables", () => {
+    delete process.env.APP_CONFIG;
+    process.env.POLICY_CACHE_ENABLED = "true";
+    process.env.POLICY_CACHE_PROVIDER = "redis";
+    process.env.POLICY_CACHE_TTL_SECONDS = "120";
+    process.env.POLICY_CACHE_MAX_ENTRIES = "5000";
+    process.env.POLICY_CACHE_REDIS_URL = "redis://cache.example.com:6379/5";
+    process.env.POLICY_CACHE_REDIS_KEY_PREFIX = "custom:policy";
+
+    const config = loadConfig();
+
+    expect(config.policy.cache).toEqual({
+      enabled: true,
+      provider: "redis",
+      ttlSeconds: 120,
+      maxEntries: 5000,
+      redis: {
+        url: "redis://cache.example.com:6379/5",
+        keyPrefix: "custom:policy",
+      },
+    });
   });
 
   it("honors network egress environment overrides", () => {
@@ -674,6 +723,16 @@ secrets:
       exporterEndpoint: "http://127.0.0.1:4318/v1/traces",
       exporterHeaders: {},
       sampleRatio: 1
+    });
+    expect(config.policy.cache).toEqual({
+      enabled: false,
+      provider: "memory",
+      ttlSeconds: 60,
+      maxEntries: 10_000,
+      redis: {
+        url: undefined,
+        keyPrefix: "policy:decision",
+      },
     });
   });
   it("throws when the configuration file cannot be parsed", () => {
