@@ -5,15 +5,33 @@ use once_cell::sync::Lazy;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use tracing::{event, Level};
+use uuid::Uuid;
 
 use crate::request_context::current_request_context;
 
 const SERVICE_NAME: &str = "indexer";
 
 static HASH_SALT: Lazy<String> = Lazy::new(|| {
-    env::var("INDEXER_AUDIT_SALT")
-        .or_else(|_| env::var("AUDIT_HASH_SALT"))
-        .unwrap_or_default()
+    let salt = env::var("INDEXER_AUDIT_SALT")
+        .ok()
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| {
+            env::var("AUDIT_HASH_SALT")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+        });
+
+    match salt {
+        Some(value) => value,
+        None => {
+            tracing::warn!(
+                target: "audit",
+                service = SERVICE_NAME,
+                "No audit hash salt configured; generated ephemeral audit hash salt for this process"
+            );
+            Uuid::new_v4().to_string()
+        }
+    }
 });
 
 static SECRET_KEY_PATTERNS: Lazy<Vec<regex::Regex>> = Lazy::new(|| {
