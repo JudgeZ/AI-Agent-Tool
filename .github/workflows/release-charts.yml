@@ -8,6 +8,7 @@ on:
   workflow_dispatch:
 
 permissions:
+  actions: write
   contents: write
   packages: write
   pages: write
@@ -34,6 +35,16 @@ jobs:
         uses: azure/setup-helm@v4
         with:
           version: v3.14.4
+
+      - name: Cache Helm client data
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cache/helm
+            ~/.config/helm
+          key: ${{ runner.os }}-helm-${{ hashFiles('charts/oss-ai-agent-tool/Chart.yaml', 'charts/oss-ai-agent-tool/Chart.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-helm-
 
       - name: Configure git
         run: |
