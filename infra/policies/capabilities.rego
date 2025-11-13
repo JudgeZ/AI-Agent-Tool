@@ -21,11 +21,12 @@ package orchestrator.capabilities
 
 default allow := false
 
-requires_approval[capability] {
-  capability := [
-    "repo.write",
-    "network.egress"
-  ][_]
+requires_approval(capability) if {
+  capability == "repo.write"
+}
+
+requires_approval(capability) if {
+  capability == "network.egress"
 }
 
 policy_capabilities := object.get(object.get(input, "context", {}), "capabilities", {})
@@ -44,8 +45,7 @@ action_capabilities := object.get(input.action, "capabilities", [])
 
 subject_approvals := object.get(input.subject, "approvals", {})
 
-missing_capability[cap] {
-  cap := action_capabilities[_]
+subject_has_capability(cap) if {
   subject_count := count([1 | subject_capabilities[_] == cap])
   role_count := count([
     1 |
@@ -60,16 +60,15 @@ missing_capability[cap] {
     tenant_caps := object.get(object.get(tenant_role_bindings, tenant_id, {}), role, [])
     tenant_caps[_] == cap
   ])
-  subject_count + role_count + tenant_count == 0
+  subject_count + role_count + tenant_count > 0
 }
 
-missing_approval[cap] {
-  cap := action_capabilities[_]
-  requires_approval[cap]
+approval_missing(cap) if {
+  requires_approval(cap)
   object.get(subject_approvals, cap, false) != true
 }
 
-run_mode_mismatch {
+run_mode_mismatch if {
   required := object.get(input.action, "run_mode", "")
   required != ""
   required != "any"
@@ -77,27 +76,33 @@ run_mode_mismatch {
   subject != required
 }
 
-deny[{
-  "reason": "missing_capability",
-  "capability": cap
-}] {
-  cap := missing_capability[_]
+deny contains {"reason": "missing_capability", "capability": cap} if {
+  cap := action_capabilities[_]
+  not subject_has_capability(cap)
 }
 
-deny[{
-  "reason": "approval_required",
-  "capability": cap
-}] {
-  cap := missing_approval[_]
+deny contains {"reason": "approval_required", "capability": cap} if {
+  cap := action_capabilities[_]
+  approval_missing(cap)
 }
 
-deny[{"reason": "run_mode_mismatch"}] {
+deny contains {"reason": "run_mode_mismatch"} if {
   run_mode_mismatch
 }
 
-allow {
-  count({cap | missing_capability[cap]}) == 0
-  count({cap | missing_approval[cap]}) == 0
+has_missing_capability if {
+  cap := action_capabilities[_]
+  not subject_has_capability(cap)
+}
+
+has_missing_approval if {
+  cap := action_capabilities[_]
+  approval_missing(cap)
+}
+
+allow if {
+  not has_missing_capability
+  not has_missing_approval
   not run_mode_mismatch
 }
 
