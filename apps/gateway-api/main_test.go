@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/JudgeZ/OSS-AI-Agent-Tool/apps/gateway-api/internal/gateway"
+	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/gateway"
 )
 
 func TestTrustedProxyCIDRsFromEnv(t *testing.T) {
