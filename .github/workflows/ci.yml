@@ -81,7 +81,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.24.3'
           check-latest: true
 
       - name: Compute Go dependency hash
@@ -420,7 +420,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version: '1.24.3'
           check-latest: true
 
       - name: Install dependencies
