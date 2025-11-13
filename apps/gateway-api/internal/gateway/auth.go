@@ -25,7 +25,7 @@ import (
 
 	"github.com/go-playground/validator/v10"
 
-	"github.com/JudgeZ/OSS-AI-Agent-Tool/apps/gateway-api/internal/audit"
+	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/audit"
 )
 
 var stateTTL = getDurationEnv("OAUTH_STATE_TTL", 10*time.Minute)

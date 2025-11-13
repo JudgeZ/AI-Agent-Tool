@@ -136,6 +136,9 @@ jobs:
             exit 1
           fi
 
+      - name: Verify gateway module path
+        run: go list github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/...
+
       - name: Go vet
         run: go vet ./...
 

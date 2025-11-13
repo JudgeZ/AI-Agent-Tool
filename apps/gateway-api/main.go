@@ -15,9 +15,9 @@ import (
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
-	"github.com/JudgeZ/OSS-AI-Agent-Tool/apps/gateway-api/internal/audit"
-	"github.com/JudgeZ/OSS-AI-Agent-Tool/apps/gateway-api/internal/gateway"
-	"github.com/JudgeZ/OSS-AI-Agent-Tool/apps/gateway-api/internal/observability/tracing"
+	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/audit"
+	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/gateway"
+	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/observability/tracing"
 )
 
 func main() {
