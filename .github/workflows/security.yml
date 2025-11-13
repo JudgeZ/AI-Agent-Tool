@@ -38,9 +38,14 @@ jobs:
     name: Trivy filesystem scan
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+    env:
+      TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Reset Trivy cache
+        run: rm -rf "${TRIVY_CACHE_DIR:-$HOME/.cache/trivy}"
 
       - name: Run Trivy filesystem scan
         uses: aquasecurity/trivy-action@0.25.0
@@ -68,9 +73,14 @@ jobs:
           - name: indexer
             context: services/indexer
             dockerfile: services/indexer/Dockerfile
+    env:
+      TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Reset Trivy cache
+        run: rm -rf "${TRIVY_CACHE_DIR:-$HOME/.cache/trivy}"
 
       - name: Determine if Dockerfile exists
         id: has_dockerfile
@@ -101,9 +111,14 @@ jobs:
     name: Trivy config scan (Helm)
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+    env:
+      TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Reset Trivy cache
+        run: rm -rf "${TRIVY_CACHE_DIR:-$HOME/.cache/trivy}"
 
       - name: Scan Helm chart configuration
         uses: aquasecurity/trivy-action@0.25.0
