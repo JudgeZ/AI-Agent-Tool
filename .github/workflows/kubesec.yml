@@ -54,13 +54,59 @@ jobs:
       - name: Render Helm manifest
         id: render
         run: |
+          set -euo pipefail
+
           chart_root="charts/oss-ai-agent-tool"
           manifest="${{ matrix.manifest }}"
           manifest_rel="${manifest#${chart_root}/}"
           mkdir -p rendered
           sanitized_name="${manifest_rel//\//-}"
           output="rendered/${sanitized_name}"
-          helm template oss-ai-agent-tool "$chart_root" --show-only "$manifest_rel" > "$output"
+
+          extra_args=()
+          case "$manifest_rel" in
+            templates/kafka.yaml)
+              echo "Detected optional Kafka manifest; enabling chart for rendering."
+              extra_args+=(--set)
+              extra_args+=("kafka.enabled=true")
+              ;;
+            templates/langfuse.yaml)
+              echo "Detected optional Langfuse manifest; enabling chart with placeholder secrets for rendering."
+              extra_args+=(--set)
+              extra_args+=("langfuse.enabled=true")
+              extra_args+=(--set-string)
+              extra_args+=("langfuse.databaseUrl=postgres://langfuse:password@postgres:5432/langfuse")
+              extra_args+=(--set-string)
+              extra_args+=("langfuse.nextAuthSecret=0123456789abcdef0123456789abcdef")
+              extra_args+=(--set-string)
+              extra_args+=("langfuse.salt=langfuse-dummy-salt")
+              ;;
+            templates/ingress.yaml)
+              echo "Detected optional Ingress manifest; enabling chart for rendering."
+              extra_args+=(--set)
+              extra_args+=("ingress.enabled=true")
+              extra_args+=(--set-string)
+              extra_args+=("ingress.hosts[0].host=oss-ai-agent.example.com")
+              extra_args+=(--set-string)
+              extra_args+=("ingress.hosts[0].paths[0].path=/")
+              extra_args+=(--set-string)
+              extra_args+=("ingress.hosts[0].paths[0].pathType=Prefix")
+              extra_args+=(--set-string)
+              extra_args+=("ingress.hosts[0].paths[0].service=gateway")
+              ;;
+            *)
+              ;;
+          esac
+
+          echo "Rendering manifest '$manifest_rel' to $output"
+          if [ "${#extra_args[@]}" -gt 0 ]; then
+            echo "Applying Helm overrides:"
+            printf '  %s\n' "${extra_args[@]}"
+          fi
+
+          helm template oss-ai-agent-tool "$chart_root" --show-only "$manifest_rel" "${extra_args[@]}" > "$output"
+          echo "Successfully rendered manifest: $output"
+
           echo "rendered_path=$output" >> "$GITHUB_OUTPUT"
           echo "sarif_name=kubesec-results-${sanitized_name}.sarif" >> "$GITHUB_OUTPUT"
 
