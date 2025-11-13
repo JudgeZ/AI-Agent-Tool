@@ -8,6 +8,7 @@ type EgressMetadata = {
 
 type NormalizedTarget = {
   hostname?: string;
+  port?: string;
   candidates: Set<string>;
 };
 
@@ -20,14 +21,24 @@ const DEFAULT_PORTS: Record<string, string> = {
 
 function tryParseUrl(value: string): URL | undefined {
   try {
-    return new URL(value);
-  } catch {
-    try {
-      return new URL(`https://${value}`);
-    } catch {
-      return undefined;
+    const parsed = new URL(value);
+    if (parsed.hostname) {
+      return parsed;
     }
+  } catch {
+    // ignore and fall back to HTTPS-prefixed parsing
   }
+
+  try {
+    const parsed = new URL(`https://${value}`);
+    if (parsed.hostname) {
+      return parsed;
+    }
+  } catch {
+    // ignore and fall through
+  }
+
+  return undefined;
 }
 
 function detectExplicitPort(value: string): string | undefined {
@@ -83,7 +94,7 @@ function buildTargetCandidates(target: string): NormalizedTarget {
     if (port) {
       candidates.add(`${hostname}:${port}`);
     }
-    return { hostname, candidates };
+    return { hostname, port, candidates };
   }
 
   const hostCandidate = normalized.split("/")[0];
@@ -97,7 +108,7 @@ function buildTargetCandidates(target: string): NormalizedTarget {
       if (withoutPort) {
         candidates.add(withoutPort);
       }
-      return { hostname: withoutPort, candidates };
+      return { hostname: withoutPort, port: explicitPort, candidates };
     }
     return { hostname: hostCandidate, candidates };
   }
@@ -105,7 +116,12 @@ function buildTargetCandidates(target: string): NormalizedTarget {
   return { candidates };
 }
 
-function tryParseAllowEntry(entry: string): { hostname?: string; candidates: Set<string>; suffix?: string } {
+function tryParseAllowEntry(entry: string): {
+  hostname?: string;
+  candidates: Set<string>;
+  suffix?: string;
+  suffixPort?: string;
+} {
   const normalized = entry.trim().toLowerCase();
   const candidates = new Set<string>();
   if (normalized) {
@@ -118,6 +134,12 @@ function tryParseAllowEntry(entry: string): { hostname?: string; candidates: Set
 
   if (normalized.startsWith("*")) {
     const suffix = normalized.slice(1);
+    const explicitPort = detectExplicitPort(suffix);
+    if (explicitPort) {
+      const portSeparatorIndex = suffix.lastIndexOf(`:${explicitPort}`);
+      const withoutPort = portSeparatorIndex >= 0 ? suffix.slice(0, portSeparatorIndex) : suffix;
+      return { candidates, suffix: withoutPort, suffixPort: explicitPort };
+    }
     return { candidates, suffix };
   }
 
@@ -168,7 +190,16 @@ function isAllowedTarget(target: NormalizedTarget, config: NetworkEgressConfig):
       return true;
     }
     if (parsedEntry.suffix && target.hostname?.endsWith(parsedEntry.suffix)) {
-      return true;
+      if (!parsedEntry.suffixPort) {
+        return true;
+      }
+      if (target.port === parsedEntry.suffixPort) {
+        return true;
+      }
+      const host = target.hostname;
+      if (host && target.candidates.has(`${host}:${parsedEntry.suffixPort}`)) {
+        return true;
+      }
     }
   }
   return false;

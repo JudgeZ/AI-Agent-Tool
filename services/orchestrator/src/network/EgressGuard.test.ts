@@ -146,6 +146,21 @@ describe("ensureEgressAllowed", () => {
     );
   });
 
+  it("allows wildcard entries that include a port", () => {
+    loadConfigMock.mockReturnValue(
+      buildConfig({ mode: "enforce", allow: ["*.svc:8200"] })
+    );
+
+    expect(() => ensureEgressAllowed("https://vault.svc:8200/v1"))
+      .not.toThrow();
+
+    expect(() => ensureEgressAllowed("vault.svc:8200"))
+      .not.toThrow();
+
+    expect(() => ensureEgressAllowed("https://vault.svc:443/v1"))
+      .toThrow("Egress to 'https://vault.svc:443/v1' is not permitted by network policy");
+  });
+
   it("treats explicit default ports as port-qualified entries", () => {
     loadConfigMock.mockReturnValue(
       buildConfig({ mode: "enforce", allow: ["https://vault.example.com:443"] })
