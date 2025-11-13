@@ -10,6 +10,7 @@
     "declaration": true,
     "declarationMap": true,
     "types": ["node", "vitest"],
+    "typeRoots": ["./src/types", "./node_modules/@types"],
     "rootDir": "src",
     "outDir": "dist"
   },
