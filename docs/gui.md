@@ -8,6 +8,27 @@ The desktop GUI (`apps/gui`) packages a SvelteKit frontend with a Tauri shell. I
 * Rust toolchain (for the Tauri host)
 * `npm` or `pnpm`
 
+### Linux packages (Tauri host)
+
+Tauri's Linux bundle relies on several GTK/GNOME libraries in addition to the Rust toolchain. Install the packages before running `cargo test --workspace` or launching the shell:
+
+```bash
+sudo apt-get update
+sudo apt-get install -y \
+  pkg-config \
+  libgtk-3-dev \
+  libglib2.0-dev \
+  libatk1.0-dev \
+  libgdk-pixbuf-2.0-dev \
+  libcairo2-dev \
+  libpango1.0-dev \
+  libsoup-3.0-dev \
+  libwebkit2gtk-4.0-dev \
+  libappindicator3-dev
+```
+
+These dependencies match the guidance in [`apps/gui/src-tauri/README.md`](../apps/gui/src-tauri/README.md). If you cannot install desktop libraries on your workstation, run `cargo test --workspace --exclude orchestrator-gui` to focus on the headless crates.
+
 ## Local development
 
 ```bash
@@ -22,7 +43,7 @@ By default the UI connects to `http://127.0.0.1:4000`. Override the orchestrator
 VITE_ORCHESTRATOR_URL=http://localhost:4010 npm run dev
 ```
 
-> **Security defaults:** The bundled Tauri shell enforces a restrictive Content Security Policy (CSP) and HTTP allowlist. Only the local orchestrator endpoints (`http://127.0.0.1:4000`, `http://localhost:4000`, and `https://localhost:4000`) are permitted for API traffic. If you need to target a different host, update `apps/gui/src-tauri/tauri.conf.json` to add the destination to both the CSP `connect-src` directive and the `allowlist.http.scope` array.
+> **Security defaults:** The bundled Tauri shell enforces a restrictive Content Security Policy (CSP) and capability guard. Only the local orchestrator endpoints (`http://127.0.0.1:4000`, `http://localhost:4000`, and `https://localhost:4000`) are permitted for API traffic. If you need to target a different host, update the CSP `connect-src` directive in `apps/gui/src-tauri/tauri.conf.json` and extend the capability manifest in `apps/gui/src-tauri/capabilities/main.json`.
 
 The timeline page accepts a `plan` query parameter to start streaming immediately:
 

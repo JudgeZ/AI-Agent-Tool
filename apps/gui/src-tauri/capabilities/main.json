@@ -1,0 +1,14 @@
+{
+  "$schema": "https://schema.tauri.app/capabilities.json",
+  "identifier": "main",
+  "description": "Allows the main window to reach the local orchestrator endpoints exposed during development.",
+  "windows": ["main"],
+  "permissions": ["core:default"],
+  "remote": {
+    "urls": [
+      "http://127.0.0.1:4000/*",
+      "http://localhost:4000/*",
+      "https://localhost:4000/*"
+    ]
+  }
+}
