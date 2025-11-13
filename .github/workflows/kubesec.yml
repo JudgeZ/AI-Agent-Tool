@@ -70,15 +70,18 @@ jobs:
           input: ${{ steps.render.outputs.rendered_path }}
           format: template
           template: template/sarif.tpl
-          output: ${{ steps.render.outputs.sarif_name }}
+          output: rendered/${{ steps.render.outputs.sarif_name }}
           exit-code: "0"
 
       - name: Verify SARIF exists (and debug)
+        id: verify
         run: |
-          sarif="${{ steps.render.outputs.sarif_name }}"
+          sarif="rendered/${{ steps.render.outputs.sarif_name }}"
           echo "Looking for SARIF file: $sarif"
           echo "Workspace listing:"
           ls -la .
+          echo "rendered/ listing:"
+          ls -la rendered/ || true
           if [ -f "$sarif" ]; then
             echo "Found $sarif"
             ls -l "$sarif"
@@ -89,14 +92,16 @@ jobs:
             echo "File type and first lines:"
             file "$sarif" || true
             head -n 50 "$sarif" || true
+            echo "sarif_exists=true" >> "$GITHUB_OUTPUT"
           else
             echo "Expected SARIF output '$sarif' but the file is missing." >&2
             exit 1
           fi
 
       - name: Upload Kubesec scan results to GitHub Security tab
+        if: success() && steps.verify.outputs.sarif_exists == 'true'
         uses: github/codeql-action/upload-sarif@v3
         with:
-          sarif_file: ${{ steps.render.outputs.sarif_name }}
+          sarif_file: rendered/${{ steps.render.outputs.sarif_name }}
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
