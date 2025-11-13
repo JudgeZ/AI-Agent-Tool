@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { ApprovalDecision } from "../queue/PlanQueueRuntime.js";
 
 const MAX_GOAL_LENGTH = 2048;
 const MAX_RATIONALE_LENGTH = 2000;
@@ -50,9 +51,14 @@ const RawPlanApprovalSchema = z.object({
     .optional(),
 });
 
+const PlanApprovalDecisionMap: Record<"approve" | "reject", ApprovalDecision> = {
+  approve: "approved",
+  reject: "rejected",
+};
+
 export const PlanApprovalSchema = RawPlanApprovalSchema.transform(
   ({ decision, rationale }) => ({
-    decision: decision === "reject" ? "rejected" : "approved",
+    decision: PlanApprovalDecisionMap[decision],
     rationale: rationale && rationale.length > 0 ? rationale : undefined,
   }),
 );
