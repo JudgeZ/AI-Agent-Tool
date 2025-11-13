@@ -17,10 +17,10 @@ type dependencyResult struct {
 }
 
 type healthResponse struct {
-	Status        string                       `json:"status"`
-	UptimeSeconds float64                      `json:"uptime_seconds"`
-	Timestamp     time.Time                    `json:"timestamp"`
-	Details       map[string]dependencyResult  `json:"details"`
+	Status        string                      `json:"status"`
+	UptimeSeconds float64                     `json:"uptime_seconds"`
+	Timestamp     time.Time                   `json:"timestamp"`
+	Details       map[string]dependencyResult `json:"details"`
 }
 
 const (
@@ -30,7 +30,7 @@ const (
 )
 
 var (
-	indexerClient     = &http.Client{Timeout: 5 * time.Second}
+	indexerClient      = &http.Client{Timeout: 5 * time.Second}
 	healthDependencies = []string{"gateway-api"}
 )
 
