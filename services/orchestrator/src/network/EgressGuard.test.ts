@@ -115,5 +115,35 @@ describe("ensureEgressAllowed", () => {
       "egress policy disabled",
     );
   });
+
+  it("requires the target port to match when the allow entry specifies one", () => {
+    loadConfigMock.mockReturnValue(
+      buildConfig({ mode: "enforce", allow: ["https://vault.example.com:8200"] })
+    );
+
+    expect(() => ensureEgressAllowed("https://vault.example.com:8200/api"))
+      .not.toThrow();
+
+    expect(appLogger.debug).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "egress.guard",
+        target: "https://vault.example.com:8200/api",
+        mode: "enforce",
+      }),
+      "egress allowed",
+    );
+
+    expect(() => ensureEgressAllowed("https://vault.example.com:9443/api"))
+      .toThrow("Egress to 'https://vault.example.com:9443/api' is not permitted by network policy");
+
+    expect(appLogger.error).toHaveBeenCalledWith(
+      expect.objectContaining({
+        event: "egress.guard",
+        target: "https://vault.example.com:9443/api",
+        mode: "enforce",
+      }),
+      "egress blocked by policy",
+    );
+  });
 });
 

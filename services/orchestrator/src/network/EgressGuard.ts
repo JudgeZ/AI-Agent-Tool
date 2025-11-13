@@ -80,10 +80,12 @@ function tryParseAllowEntry(entry: string): { hostname?: string; candidates: Set
     const hostname = parsed.hostname.toLowerCase();
     const parsedHost = parsed.host.toLowerCase();
     const hostWithPort = parsed.port ? `${hostname}:${parsed.port}` : undefined;
-    candidates.add(hostname);
-    candidates.add(parsedHost);
     if (hostWithPort) {
+      candidates.add(parsedHost);
       candidates.add(hostWithPort);
+    } else {
+      candidates.add(hostname);
+      candidates.add(parsedHost);
     }
     return { hostname, candidates };
   }
