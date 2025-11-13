@@ -82,6 +82,10 @@ jobs:
           if [ -f "$sarif" ]; then
             echo "Found $sarif"
             ls -l "$sarif"
+            if [ ! -s "$sarif" ]; then
+              echo "File $sarif exists but is empty." >&2
+              exit 1
+            fi
             echo "File type and first lines:"
             file "$sarif" || true
             head -n 50 "$sarif" || true
