@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::env;
 use std::path::{Component, Path, PathBuf};
 
@@ -22,8 +24,7 @@ const DEFAULT_DLP_PATTERNS: [&str; 7] = [
 ];
 
 const CREDIT_CARD_PATTERN_LABEL: &str = "credit-card-luhn";
-const CREDIT_CARD_PATTERN: &str =
-    r"(?xi)
+const CREDIT_CARD_PATTERN: &str = r"(?xi)
         \b
         (?:
             4\d{3}(?:[\s-]?\d{4}){2}[\s-]?\d{1,4}|
@@ -120,7 +121,7 @@ impl SecurityConfig {
                     .collect::<Vec<_>>()
             })
             .filter(|entries| !entries.is_empty())
-            .unwrap_or_else(Vec::new);
+            .unwrap_or_default();
 
         let run_mode = env::var("RUN_MODE")
             .map(|value| value.to_lowercase())

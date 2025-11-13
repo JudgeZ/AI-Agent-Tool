@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::{HashMap, VecDeque};
 use std::env;
 use std::mem::size_of;
@@ -11,7 +13,7 @@ use twox_hash::xxh3::hash64_with_seed;
 use uuid::Uuid;
 
 const EMBEDDING_DIM: usize = 256;
-const HASH_SEED: u64 = 0xA11CE_D00D_F005u64;
+const HASH_SEED: u64 = 0x000A_11CE_D00D_F005_u64;
 const DEFAULT_MAX_DOCUMENTS: usize = 10_000;
 
 #[derive(Clone, Debug)]

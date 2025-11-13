@@ -6,7 +6,7 @@ use serde::Deserialize;
 const MAX_PATH_LENGTH: usize = 4 * 1024;
 const MAX_QUERY_LENGTH: usize = 8 * 1024;
 
-fn ensure_not_blank<'a, T, E>(value: &'a str, field: T) -> Result<&'a str, E>
+fn ensure_not_blank<T, E>(value: &str, field: T) -> Result<&str, E>
 where
     T: Display,
     E: de::Error,
@@ -122,6 +122,7 @@ mod tests {
         let input: DocumentInput =
             serde_json::from_str(r#"{"path": " src/lib.rs ", "content": "fn main(){}"}"#).unwrap();
         assert_eq!(input.path, "src/lib.rs");
+        assert_eq!(input.content, "fn main(){}");
     }
 
     #[test]

@@ -1,10 +1,12 @@
+#![allow(dead_code)]
+
 use std::cell::RefCell;
 use std::net::IpAddr;
 
 use uuid::Uuid;
 
 std::thread_local! {
-    static CONTEXT: RefCell<Option<RequestContext>> = RefCell::new(None);
+    static CONTEXT: RefCell<Option<RequestContext>> = const { RefCell::new(None) };
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

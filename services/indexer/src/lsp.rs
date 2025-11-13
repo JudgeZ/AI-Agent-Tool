@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
@@ -449,7 +451,7 @@ async fn run_lsp_server(addr: String) -> std::io::Result<()> {
 
 async fn handle_client(stream: TcpStream) {
     let (read, write) = stream.into_split();
-    let (service, socket) = LspService::new(|client| Backend::new(client));
+    let (service, socket) = LspService::new(Backend::new);
     let server = Server::new(read, write, socket);
     server.serve(service).await;
 }
