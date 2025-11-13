@@ -39,6 +39,10 @@ function downloadToBuffer(url, logger, redirectCount = 0) {
 
       const chunks = [];
       res.on("data", (chunk) => chunks.push(chunk));
+      res.on("error", (error) => {
+        reject(error);
+        res.destroy(error);
+      });
       res.on("end", () => resolve(Buffer.concat(chunks)));
     });
 
