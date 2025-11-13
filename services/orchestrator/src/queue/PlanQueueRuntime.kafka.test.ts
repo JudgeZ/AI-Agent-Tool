@@ -35,10 +35,22 @@ describe("PlanQueueRuntime (Kafka integration)", () => {
   let planStateDir: string | undefined;
   let previousEnv: Record<string, string | undefined> = {};
   let publishSpy: MockInstance<(event: PlanStepEvent) => void> | undefined;
+  let bootstrapServers: string | undefined;
 
   beforeAll(async () => {
+    const brokersOverride = process.env.CI_KAFKA_BROKERS?.trim();
+    if (brokersOverride) {
+      bootstrapServers = brokersOverride;
+      return;
+    }
+
     try {
       container = await new KafkaContainer("confluentinc/cp-kafka:7.6.1").start();
+      const brokersFn = (container as unknown as { getBootstrapServers?: () => string }).getBootstrapServers;
+      bootstrapServers =
+        typeof brokersFn === "function"
+          ? brokersFn.call(container)
+          : `${container.getHost()}:${container.getMappedPort(9093)}`;
     } catch (error) {
       skipSuite = true;
       appLogger.warn(
@@ -63,6 +75,10 @@ describe("PlanQueueRuntime (Kafka integration)", () => {
       return;
     }
 
+    if (!bootstrapServers) {
+      throw new Error("Kafka bootstrap servers were not configured for the test");
+    }
+
     planStateDir = await fs.mkdtemp(path.join(os.tmpdir(), "plan-state-kafka-"));
 
     previousEnv = {
@@ -75,14 +91,9 @@ describe("PlanQueueRuntime (Kafka integration)", () => {
       KAFKA_RETRY_DELAY_MS: process.env.KAFKA_RETRY_DELAY_MS
     };
 
-    const brokersFn = (container as unknown as { getBootstrapServers?: () => string }).getBootstrapServers;
-    const brokers =
-      typeof brokersFn === "function"
-        ? brokersFn.call(container)
-        : `${container!.getHost()}:${container!.getMappedPort(9093)}`;
     process.env.PLAN_STATE_PATH = path.join(planStateDir, "state.json");
     process.env.MESSAGING_TYPE = "kafka";
-    process.env.KAFKA_BROKERS = brokers;
+    process.env.KAFKA_BROKERS = bootstrapServers;
     process.env.KAFKA_CLIENT_ID = `orchestrator-test-${Date.now()}`;
     process.env.KAFKA_GROUP_ID = `plan-runtime-${Date.now()}`;
     process.env.KAFKA_CONSUME_FROM_BEGINNING = "false";

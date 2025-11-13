@@ -70,10 +70,20 @@ describe("PlanQueueRuntime (RabbitMQ integration)", () => {
     publishSpy.mockClear();
 
     let container: Awaited<ReturnType<GenericContainer["start"]>> | undefined;
+    const rabbitUrlOverride = process.env.CI_RABBITMQ_URL?.trim();
+    const prefetchOverride = process.env.CI_RABBITMQ_PREFETCH?.trim();
+    let rabbitUrl: string | undefined;
     try {
-      container = await new GenericContainer("rabbitmq:3.13-management")
-        .withExposedPorts(5672)
-        .start();
+      if (!rabbitUrlOverride) {
+        container = await new GenericContainer("rabbitmq:3.13-management")
+          .withExposedPorts(5672)
+          .start();
+        const mappedPort = container.getMappedPort(5672);
+        const host = container.getHost();
+        rabbitUrl = `amqp://guest:guest@${host}:${mappedPort}`;
+      } else {
+        rabbitUrl = rabbitUrlOverride;
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("Could not find a working container runtime")) {
@@ -86,15 +96,17 @@ describe("PlanQueueRuntime (RabbitMQ integration)", () => {
       throw error;
     }
 
-    const mappedPort = container.getMappedPort(5672);
-    const host = container.getHost();
+    if (!rabbitUrl) {
+      throw new Error("RabbitMQ URL was not configured for the test");
+    }
+
     const previousUrl = process.env.RABBITMQ_URL;
     const previousPrefetch = process.env.RABBITMQ_PREFETCH;
     let tempDir: string | undefined;
 
     try {
-      process.env.RABBITMQ_URL = `amqp://guest:guest@${host}:${mappedPort}`;
-      process.env.RABBITMQ_PREFETCH = "1";
+      process.env.RABBITMQ_URL = rabbitUrl;
+      process.env.RABBITMQ_PREFETCH = prefetchOverride ?? "1";
 
       tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "plan-state-rmq-"));
       process.env.PLAN_STATE_PATH = path.join(tempDir, "state.json");
@@ -164,10 +176,20 @@ describe("PlanQueueRuntime (RabbitMQ integration)", () => {
     publishSpy.mockClear();
 
     let container: Awaited<ReturnType<GenericContainer["start"]>> | undefined;
+    const rabbitUrlOverride = process.env.CI_RABBITMQ_URL?.trim();
+    const prefetchOverride = process.env.CI_RABBITMQ_PREFETCH?.trim();
+    let rabbitUrl: string | undefined;
     try {
-      container = await new GenericContainer("rabbitmq:3.13-management")
-        .withExposedPorts(5672)
-        .start();
+      if (!rabbitUrlOverride) {
+        container = await new GenericContainer("rabbitmq:3.13-management")
+          .withExposedPorts(5672)
+          .start();
+        const mappedPort = container.getMappedPort(5672);
+        const host = container.getHost();
+        rabbitUrl = `amqp://guest:guest@${host}:${mappedPort}`;
+      } else {
+        rabbitUrl = rabbitUrlOverride;
+      }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
       if (message.includes("Could not find a working container runtime")) {
@@ -180,15 +202,17 @@ describe("PlanQueueRuntime (RabbitMQ integration)", () => {
       throw error;
     }
 
-    const mappedPort = container.getMappedPort(5672);
-    const host = container.getHost();
+    if (!rabbitUrl) {
+      throw new Error("RabbitMQ URL was not configured for the test");
+    }
+
     const previousUrl = process.env.RABBITMQ_URL;
     const previousPrefetch = process.env.RABBITMQ_PREFETCH;
     let tempDir: string | undefined;
 
     try {
-      process.env.RABBITMQ_URL = `amqp://guest:guest@${host}:${mappedPort}`;
-      process.env.RABBITMQ_PREFETCH = "1";
+      process.env.RABBITMQ_URL = rabbitUrl;
+      process.env.RABBITMQ_PREFETCH = prefetchOverride ?? "1";
 
       tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "plan-state-rmq-"));
       process.env.PLAN_STATE_PATH = path.join(tempDir, "state.json");

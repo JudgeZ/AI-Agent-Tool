@@ -159,6 +159,35 @@ jobs:
   typescript:
     name: TypeScript lint, test & build (${{ matrix.project.name }})
     runs-on: ubuntu-latest
+    services:
+      zookeeper:
+        image: bitnami/zookeeper:3.8.0
+        ports:
+          - 2181:2181
+        env:
+          ALLOW_ANONYMOUS_LOGIN: "yes"
+      kafka:
+        image: bitnami/kafka:3.5.0
+        ports:
+          - 9092:9092
+        env:
+          KAFKA_CFG_BROKER_ID: 1
+          KAFKA_CFG_ZOOKEEPER_CONNECT: zookeeper:2181
+          KAFKA_CFG_LISTENERS: PLAINTEXT://0.0.0.0:9092
+          KAFKA_CFG_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
+          KAFKA_CFG_AUTO_CREATE_TOPICS_ENABLE: "true"
+          KAFKA_CFG_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_CFG_TRANSACTION_STATE_LOG_MIN_ISR: 1
+          KAFKA_CFG_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+          ALLOW_PLAINTEXT_LISTENER: "yes"
+        options: >-
+          --health-cmd="bash -c 'kafka-topics.sh --bootstrap-server localhost:9092 --list'" --health-interval=10s --health-timeout=5s --health-retries=6
+      rabbitmq:
+        image: rabbitmq:3.13-management
+        ports:
+          - 5672:5672
+        options: >-
+          --health-cmd="rabbitmq-diagnostics -q ping" --health-interval=10s --health-timeout=5s --health-retries=6
     strategy:
       fail-fast: false
       matrix:
@@ -206,6 +235,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Wait for RabbitMQ and Kafka
+        if: matrix.project.name == 'orchestrator'
+        run: |
+          for i in {1..20}; do
+            nc -z localhost 5672 && nc -z localhost 9092 && exit 0
+            echo "Waiting for RabbitMQ and Kafka to become available..."
+            sleep 5
+          done
+          echo "RabbitMQ or Kafka did not become ready in time" >&2
+          exit 1
+
       - name: Lint (if configured)
         run: npm run lint --if-present
 
@@ -224,6 +264,8 @@ jobs:
         if: matrix.project.name == 'orchestrator'
         env:
           TESTCONTAINERS_RYUK_DISABLED: true
+          CI_RABBITMQ_URL: amqp://guest:guest@localhost:5672
+          CI_KAFKA_BROKERS: localhost:9092
         run: npm run test -- PlanQueueRuntime.rabbitmq PlanQueueRuntime.kafka
 
       - name: Run Vault integration tests
