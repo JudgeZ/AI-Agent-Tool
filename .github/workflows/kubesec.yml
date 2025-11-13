@@ -89,6 +89,25 @@ jobs:
               echo "File $sarif exists but is empty." >&2
               exit 1
             fi
+            if ! run_count=$(python3 - "$sarif" <<'PY'
+import json
+import sys
+
+path = sys.argv[1]
+with open(path, 'r', encoding='utf-8') as handle:
+    data = json.load(handle)
+
+runs = data.get("runs", [])
+if not runs:
+    sys.exit(1)
+
+print(len(runs))
+PY
+); then
+              echo "File $sarif contains no SARIF runs." >&2
+              exit 1
+            fi
+            echo "SARIF run count: $run_count"
             echo "File type and first lines:"
             file "$sarif" || true
             head -n 50 "$sarif" || true
