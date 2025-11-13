@@ -203,7 +203,7 @@ orchestrator:
     type: ClusterIP
     port: 4000
   serviceAccount:
-    create: false
+    create: true
     name: ""
     annotations: {}
   podSecurityContext:
@@ -305,7 +305,7 @@ indexer:
   requestLimitBytes: 1048576
   env: {}
   serviceAccount:
-    create: false
+    create: true
     name: ""
     annotations: {}
   auth:
