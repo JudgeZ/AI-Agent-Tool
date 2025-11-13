@@ -399,6 +399,7 @@ jobs:
       - go
       - typescript
       - rust
+    if: ${{ needs.typescript.result == 'success' && (needs.go.result == 'success' || needs.go.result == 'skipped') && (needs.rust.result == 'success' || needs.rust.result == 'skipped') }}
     defaults:
       run:
         working-directory: services/orchestrator
