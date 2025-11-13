@@ -134,9 +134,7 @@ function mergePolicyData(base: unknown, runtime: PolicyRuntimeData): unknown {
   }
 
   if (runtime.capabilities.tenant_role_bindings) {
-    const existingTenantMappings = isRecord(
-      baseCapabilities.tenant_role_bindings,
-    )
+    const existingTenantMappings = isRecord(baseCapabilities.tenant_role_bindings)
       ? (baseCapabilities.tenant_role_bindings as Record<
           string,
           Record<string, string[]>
@@ -362,6 +360,7 @@ export class PolicyEnforcer {
         roles,
         scopes,
         session_id: sessionId,
+        capabilities: this.runtimePolicyData.capabilities ?? {},
       },
     };
 
@@ -446,6 +445,7 @@ export class PolicyEnforcer {
         roles,
         scopes,
         session_id: sessionId,
+        capabilities: this.runtimePolicyData.capabilities ?? {},
       },
     };
 
