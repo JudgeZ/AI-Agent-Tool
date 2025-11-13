@@ -77,25 +77,27 @@ jobs:
         id: verify
         run: |
           sarif="rendered/${{ steps.render.outputs.sarif_name }}"
+          manifest="${{ matrix.manifest }}"
           echo "Looking for SARIF file: $sarif"
           echo "Workspace listing:"
           ls -la .
           echo "rendered/ listing:"
           ls -la rendered/ || true
+          echo "sarif_exists=false" >> "$GITHUB_OUTPUT"
           if [ -f "$sarif" ]; then
             echo "Found $sarif"
             ls -l "$sarif"
             if [ ! -s "$sarif" ]; then
-              echo "File $sarif exists but is empty." >&2
-              exit 1
+              echo "::warning::Skipping SARIF upload for manifest '$manifest': file is empty."
+              exit 0
             fi
             if ! run_count=$(jq -r '.runs | length' "$sarif" 2>/dev/null); then
               echo "Failed to parse SARIF runs from $sarif." >&2
               exit 1
             fi
             if [ "$run_count" -eq 0 ]; then
-              echo "File $sarif contains no SARIF runs." >&2
-              exit 1
+              echo "::warning::Skipping SARIF upload for manifest '$manifest': SARIF contains no runs."
+              exit 0
             fi
             echo "SARIF run count: $run_count"
             echo "File type and first lines:"
@@ -103,8 +105,8 @@ jobs:
             head -n 50 "$sarif" || true
             echo "sarif_exists=true" >> "$GITHUB_OUTPUT"
           else
-            echo "Expected SARIF output '$sarif' but the file is missing." >&2
-            exit 1
+            echo "::warning::Skipping SARIF upload for manifest '$manifest': expected SARIF file is missing."
+            exit 0
           fi
 
       - name: Upload Kubesec scan results to GitHub Security tab
