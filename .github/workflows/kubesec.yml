@@ -71,7 +71,17 @@ jobs:
           output: ${{ steps.render.outputs.sarif_name }}
           exit-code: "0"
 
+      - name: Verify SARIF exists
+        run: |
+          sarif="${{ steps.render.outputs.sarif_name }}"
+          if [ ! -s "$sarif" ]; then
+            echo "Expected SARIF output '$sarif' but the file is missing or empty." >&2
+            exit 1
+          fi
+
       - name: Upload Kubesec scan results to GitHub Security tab
         uses: github/codeql-action/upload-sarif@v3
         with:
           sarif_file: ${{ steps.render.outputs.sarif_name }}
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
