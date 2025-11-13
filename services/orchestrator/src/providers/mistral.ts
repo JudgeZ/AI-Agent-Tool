@@ -1,6 +1,6 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
-import { callWithRetry, ProviderError, requireSecret } from "./utils.js";
+import { callWithRetry, ProviderError, requireSecret, disposeClient } from "./utils.js";
 
 interface MistralChatResponse {
   choices: Array<{ message?: { content?: string } } | null>;
@@ -36,20 +36,73 @@ async function defaultClientFactory({ apiKey }: { apiKey: string }): Promise<Mis
 export class MistralProvider implements ModelProvider {
   name = "mistral";
   private clientPromise?: Promise<MistralApiClient>;
+  private clientCredentials?: { apiKey: string };
 
   constructor(private readonly secrets: SecretsStore, private readonly options: MistralProviderOptions = {}) {}
 
   private async getClient(): Promise<MistralApiClient> {
-    if (!this.clientPromise) {
-      const apiKey = await requireSecret(this.secrets, this.name, {
-        key: "provider:mistral:apiKey",
-        env: "MISTRAL_API_KEY",
-        description: "API key"
-      });
-      const factory = this.options.clientFactory ?? defaultClientFactory;
-      this.clientPromise = Promise.resolve(factory({ apiKey }));
+    const credentials = await this.resolveCredentials();
+    const currentPromise = this.clientPromise;
+
+    if (currentPromise && this.areCredentialsEqual(this.clientCredentials, credentials)) {
+      return currentPromise;
     }
-    return this.clientPromise;
+
+    const factory = this.options.clientFactory ?? defaultClientFactory;
+    const nextPromise = Promise.resolve(factory(credentials));
+    const wrappedPromise = nextPromise.then(
+      client => client,
+      error => {
+        if (this.clientPromise === wrappedPromise) {
+          this.clientPromise = undefined;
+          this.clientCredentials = undefined;
+        }
+        throw error;
+      }
+    );
+
+    this.clientPromise = wrappedPromise;
+    this.clientCredentials = credentials;
+    void this.disposeExistingClient(currentPromise);
+    return wrappedPromise;
+  }
+
+  /** @internal */
+  async resetClientForTests(): Promise<void> {
+    await this.disposeExistingClient(this.clientPromise);
+  }
+
+  private async resolveCredentials(): Promise<{ apiKey: string }> {
+    const apiKey = await requireSecret(this.secrets, this.name, {
+      key: "provider:mistral:apiKey",
+      env: "MISTRAL_API_KEY",
+      description: "API key"
+    });
+    return { apiKey };
+  }
+
+  private areCredentialsEqual(
+    previous?: { apiKey: string },
+    next?: { apiKey: string }
+  ): previous is { apiKey: string } {
+    return Boolean(previous && next && previous.apiKey === next.apiKey);
+  }
+
+  private async disposeExistingClient(promise?: Promise<MistralApiClient>): Promise<void> {
+    if (!promise) return;
+    try {
+      const client = await promise.catch(() => undefined);
+      if (client) {
+        await disposeClient(client);
+      }
+    } catch {
+      // ignore disposal errors
+    } finally {
+      if (this.clientPromise === promise) {
+        this.clientPromise = undefined;
+        this.clientCredentials = undefined;
+      }
+    }
   }
 
   async chat(req: ChatRequest): Promise<ChatResponse> {

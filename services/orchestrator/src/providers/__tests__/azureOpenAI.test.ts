@@ -95,4 +95,50 @@ describe("AzureOpenAIProvider", () => {
     });
     expect(getChatCompletions).toHaveBeenCalledTimes(1);
   });
+
+  it("recreates the client when credentials change", async () => {
+    const secrets = new StubSecretsStore({
+      "provider:azureopenai:apiKey": "sk-old",
+      "provider:azureopenai:endpoint": "https://first.example.com"
+    });
+    const firstCall = vi.fn().mockResolvedValue({ choices: [{ message: { content: "first" } }] });
+    const secondCall = vi.fn().mockResolvedValue({ choices: [{ message: { content: "second" } }] });
+    const firstClient = { getChatCompletions: firstCall, close: vi.fn() };
+    const secondClient = { getChatCompletions: secondCall };
+    const clientFactory = vi
+      .fn()
+      .mockResolvedValueOnce(firstClient)
+      .mockResolvedValueOnce(secondClient);
+    const provider = new AzureOpenAIProvider(secrets, {
+      clientFactory,
+      defaultDeployment: "dep",
+      retryAttempts: 1
+    });
+
+    const firstResponse = await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(firstResponse.output).toBe("first");
+
+    await secrets.set("provider:azureopenai:apiKey", "sk-new");
+    await secrets.set("provider:azureopenai:endpoint", "https://second.example.com");
+
+    const secondResponse = await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(secondResponse.output).toBe("second");
+
+    await Promise.resolve();
+
+    expect(clientFactory).toHaveBeenCalledTimes(2);
+    expect(clientFactory).toHaveBeenNthCalledWith(1, {
+      apiKey: "sk-old",
+      endpoint: "https://first.example.com",
+      apiVersion: undefined
+    });
+    expect(clientFactory).toHaveBeenNthCalledWith(2, {
+      apiKey: "sk-new",
+      endpoint: "https://second.example.com",
+      apiVersion: undefined
+    });
+    expect(firstClient.close).toHaveBeenCalledTimes(1);
+    expect(firstCall).toHaveBeenCalledTimes(1);
+    expect(secondCall).toHaveBeenCalledTimes(1);
+  });
 });

@@ -111,4 +111,52 @@ describe("BedrockProvider", () => {
     });
     expect(invokeModel).toHaveBeenCalledTimes(1);
   });
+
+  it("recreates the client when access keys rotate", async () => {
+    const secrets = new StubSecretsStore({
+      "provider:bedrock:accessKeyId": "AKIAOLD",
+      "provider:bedrock:secretAccessKey": "SECRETOLD"
+    });
+    const firstInvoke = vi.fn().mockResolvedValue({
+      body: Buffer.from(JSON.stringify({ outputText: "first" }), "utf-8")
+    });
+    const secondInvoke = vi.fn().mockResolvedValue({
+      body: Buffer.from(JSON.stringify({ outputText: "second" }), "utf-8")
+    });
+    const firstClient = { invokeModel: firstInvoke, destroy: vi.fn() };
+    const secondClient = { invokeModel: secondInvoke };
+    const clientFactory = vi
+      .fn()
+      .mockResolvedValueOnce(firstClient)
+      .mockResolvedValueOnce(secondClient);
+    const provider = new BedrockProvider(secrets, {
+      clientFactory,
+      defaultModel: "model",
+      region: "us-east-2"
+    });
+
+    const firstResponse = await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(firstResponse.output).toBe("first");
+
+    await secrets.set("provider:bedrock:accessKeyId", "AKIANEW");
+    await secrets.set("provider:bedrock:secretAccessKey", "SECRETNEW");
+
+    const secondResponse = await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(secondResponse.output).toBe("second");
+
+    await Promise.resolve();
+
+    expect(clientFactory).toHaveBeenCalledTimes(2);
+    expect(clientFactory).toHaveBeenNthCalledWith(1, {
+      region: "us-east-2",
+      credentials: { accessKeyId: "AKIAOLD", secretAccessKey: "SECRETOLD", sessionToken: undefined }
+    });
+    expect(clientFactory).toHaveBeenNthCalledWith(2, {
+      region: "us-east-2",
+      credentials: { accessKeyId: "AKIANEW", secretAccessKey: "SECRETNEW", sessionToken: undefined }
+    });
+    expect(firstClient.destroy).toHaveBeenCalledTimes(1);
+    expect(firstInvoke).toHaveBeenCalledTimes(1);
+    expect(secondInvoke).toHaveBeenCalledTimes(1);
+  });
 });

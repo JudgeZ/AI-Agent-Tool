@@ -112,4 +112,34 @@ describe("AnthropicProvider", () => {
       provider.chat({ messages: [{ role: "user", content: "ping" }] })
     ).rejects.toBe(wrapped);
   });
+
+  it("recreates the client when the API key rotates", async () => {
+    const secrets = new StubSecretsStore({ "provider:anthropic:apiKey": "sk-ant" });
+    const firstCreate = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "first" }] });
+    const secondCreate = vi.fn().mockResolvedValue({ content: [{ type: "text", text: "second" }] });
+    const firstClient = { messages: { create: firstCreate }, close: vi.fn() };
+    const secondClient = { messages: { create: secondCreate } };
+    const clientFactory = vi
+      .fn()
+      .mockResolvedValueOnce(firstClient)
+      .mockResolvedValueOnce(secondClient);
+    const provider = new AnthropicProvider(secrets, { clientFactory, defaultModel: "claude" });
+
+    const firstResponse = await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(firstResponse.output).toBe("first");
+
+    await secrets.set("provider:anthropic:apiKey", "sk-ant-2");
+
+    const secondResponse = await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(secondResponse.output).toBe("second");
+
+    await Promise.resolve();
+
+    expect(clientFactory).toHaveBeenCalledTimes(2);
+    expect(clientFactory).toHaveBeenNthCalledWith(1, { apiKey: "sk-ant" });
+    expect(clientFactory).toHaveBeenNthCalledWith(2, { apiKey: "sk-ant-2" });
+    expect(firstClient.close).toHaveBeenCalledTimes(1);
+    expect(firstCreate).toHaveBeenCalledTimes(1);
+    expect(secondCreate).toHaveBeenCalledTimes(1);
+  });
 });

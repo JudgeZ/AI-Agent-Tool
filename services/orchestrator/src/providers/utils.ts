@@ -101,3 +101,21 @@ export async function decodeBedrockBody(body: BedrockBody): Promise<string> {
   }
   return String(body);
 }
+
+export async function disposeClient(client: unknown): Promise<void> {
+  if (!client || typeof client !== "object") {
+    return;
+  }
+  const candidate = client as Record<string, unknown>;
+  for (const method of ["close", "dispose", "destroy"]) {
+    const fn = candidate[method];
+    if (typeof fn === "function") {
+      try {
+        await Promise.resolve(fn.call(client));
+      } catch {
+        // ignore disposal errors; best-effort cleanup only
+      }
+      break;
+    }
+  }
+}
