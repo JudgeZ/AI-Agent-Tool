@@ -48,6 +48,8 @@ jobs:
 
       - name: Install Helm
         uses: azure/setup-helm@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Render Helm manifest
         id: render
@@ -71,11 +73,20 @@ jobs:
           output: ${{ steps.render.outputs.sarif_name }}
           exit-code: "0"
 
-      - name: Verify SARIF exists
+      - name: Verify SARIF exists (and debug)
         run: |
           sarif="${{ steps.render.outputs.sarif_name }}"
-          if [ ! -s "$sarif" ]; then
-            echo "Expected SARIF output '$sarif' but the file is missing or empty." >&2
+          echo "Looking for SARIF file: $sarif"
+          echo "Workspace listing:"
+          ls -la .
+          if [ -f "$sarif" ]; then
+            echo "Found $sarif"
+            ls -l "$sarif"
+            echo "File type and first lines:"
+            file "$sarif" || true
+            head -n 50 "$sarif" || true
+          else
+            echo "Expected SARIF output '$sarif' but the file is missing." >&2
             exit 1
           fi
 
@@ -84,4 +95,4 @@ jobs:
         with:
           sarif_file: ${{ steps.render.outputs.sarif_name }}
         env:
-          GITHUB_TOKEN: ${{ secrets.OSSAAT }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
