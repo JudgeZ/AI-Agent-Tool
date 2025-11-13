@@ -200,7 +200,7 @@ orchestrator:
     type: ClusterIP
     port: 4000
   serviceAccount:
-    create: true
+    create: false
     name: ""
   env:
     LOCAL_SECRETS_PATH: /app/config/secrets/local/secrets.json
@@ -288,7 +288,7 @@ indexer:
   requestLimitBytes: 1048576
   env: {}
   serviceAccount:
-    create: true
+    create: false
     name: ""
   auth:
     disabled: true
