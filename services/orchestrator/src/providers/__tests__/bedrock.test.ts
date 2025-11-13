@@ -4,9 +4,18 @@ import type { SecretsStore } from "../../auth/SecretsStore.js";
 import { BedrockProvider } from "../bedrock.js";
 
 class StubSecretsStore implements SecretsStore {
+  private failure?: Error;
+
   constructor(private readonly values: Record<string, string> = {}) {}
 
+  setFailure(error: Error | undefined) {
+    this.failure = error;
+  }
+
   async get(key: string) {
+    if (this.failure) {
+      throw this.failure;
+    }
     return this.values[key];
   }
 
@@ -110,5 +119,81 @@ describe("BedrockProvider", () => {
       retryable: false
     });
     expect(invokeModel).toHaveBeenCalledTimes(1);
+  });
+
+  it("recreates the client when access keys rotate", async () => {
+    const secrets = new StubSecretsStore({
+      "provider:bedrock:accessKeyId": "AKIAOLD",
+      "provider:bedrock:secretAccessKey": "SECRETOLD"
+    });
+    const firstInvoke = vi.fn().mockResolvedValue({
+      body: Buffer.from(JSON.stringify({ outputText: "first" }), "utf-8")
+    });
+    const secondInvoke = vi.fn().mockResolvedValue({
+      body: Buffer.from(JSON.stringify({ outputText: "second" }), "utf-8")
+    });
+    const firstClient = { invokeModel: firstInvoke, destroy: vi.fn() };
+    const secondClient = { invokeModel: secondInvoke };
+    const clientFactory = vi
+      .fn()
+      .mockResolvedValueOnce(firstClient)
+      .mockResolvedValueOnce(secondClient);
+    const provider = new BedrockProvider(secrets, {
+      clientFactory,
+      defaultModel: "model",
+      region: "us-east-2"
+    });
+
+    const firstResponse = await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(firstResponse.output).toBe("first");
+
+    await secrets.set("provider:bedrock:accessKeyId", "AKIANEW");
+    await secrets.set("provider:bedrock:secretAccessKey", "SECRETNEW");
+
+    const secondResponse = await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(secondResponse.output).toBe("second");
+
+    await Promise.resolve();
+
+    expect(clientFactory).toHaveBeenCalledTimes(2);
+    expect(clientFactory).toHaveBeenNthCalledWith(1, {
+      region: "us-east-2",
+      credentials: { accessKeyId: "AKIAOLD", secretAccessKey: "SECRETOLD", sessionToken: undefined }
+    });
+    expect(clientFactory).toHaveBeenNthCalledWith(2, {
+      region: "us-east-2",
+      credentials: { accessKeyId: "AKIANEW", secretAccessKey: "SECRETNEW", sessionToken: undefined }
+    });
+    expect(firstClient.destroy).toHaveBeenCalledTimes(1);
+    expect(firstInvoke).toHaveBeenCalledTimes(1);
+    expect(secondInvoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses the cached client when secret resolution fails", async () => {
+    const secrets = new StubSecretsStore({
+      "provider:bedrock:accessKeyId": "AKIA",
+      "provider:bedrock:secretAccessKey": "SECRET"
+    });
+    const invokeModel = vi.fn().mockResolvedValue({
+      body: Buffer.from(JSON.stringify({ outputText: "ok" }), "utf-8")
+    });
+    const client = { invokeModel };
+    const clientFactory = vi.fn().mockResolvedValue(client);
+    const provider = new BedrockProvider(secrets, {
+      clientFactory,
+      defaultModel: "model",
+      region: "us-east-1"
+    });
+
+    const first = await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(first.output).toBe("ok");
+    expect(clientFactory).toHaveBeenCalledTimes(1);
+
+    secrets.setFailure(new Error("vault unavailable"));
+
+    const second = await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(second.output).toBe("ok");
+    expect(clientFactory).toHaveBeenCalledTimes(1);
+    expect(invokeModel).toHaveBeenCalledTimes(2);
   });
 });

@@ -1,6 +1,6 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatMessage, ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
-import { callWithRetry, decodeBedrockBody, ProviderError, requireSecret } from "./utils.js";
+import { callWithRetry, decodeBedrockBody, ProviderError, requireSecret, disposeClient } from "./utils.js";
 
 interface BedrockInvokeResult {
   body?: unknown;
@@ -13,6 +13,7 @@ interface BedrockClient {
     contentType: string;
     accept: string;
   }) => Promise<BedrockInvokeResult>;
+  destroy?: () => void | Promise<void>;
 }
 
 export type BedrockProviderOptions = {
@@ -22,8 +23,8 @@ export type BedrockProviderOptions = {
   retryAttempts?: number;
   clientFactory?: (config: {
     region: string;
-    credentials: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
-  }) => Promise<BedrockClient> | BedrockClient;
+  credentials: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
+}) => Promise<BedrockClient> | BedrockClient;
 };
 
 async function defaultClientFactory({
@@ -36,7 +37,8 @@ async function defaultClientFactory({
   const { BedrockRuntimeClient, InvokeModelCommand } = await import("@aws-sdk/client-bedrock-runtime");
   const client = new BedrockRuntimeClient({ region, credentials });
   return {
-    invokeModel: async input => client.send(new InvokeModelCommand(input))
+    invokeModel: async input => client.send(new InvokeModelCommand(input)),
+    destroy: () => client.destroy()
   };
 }
 
@@ -82,34 +84,133 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 export class BedrockProvider implements ModelProvider {
   name = "bedrock";
   private clientPromise?: Promise<BedrockClient>;
+  private clientCredentials?: {
+    region: string;
+    accessKeyId: string;
+    secretAccessKey: string;
+    sessionToken?: string;
+  };
 
   constructor(private readonly secrets: SecretsStore, private readonly options: BedrockProviderOptions = {}) {}
 
   private async getClient(): Promise<BedrockClient> {
-    if (!this.clientPromise) {
-      const region =
-        this.options.region ??
-        (await this.secrets.get("provider:bedrock:region")) ??
-        process.env.AWS_REGION ??
-        "us-east-1";
-      const accessKeyId = await requireSecret(this.secrets, this.name, {
-        key: "provider:bedrock:accessKeyId",
-        env: "AWS_ACCESS_KEY_ID",
-        description: "access key"
-      });
-      const secretAccessKey = await requireSecret(this.secrets, this.name, {
-        key: "provider:bedrock:secretAccessKey",
-        env: "AWS_SECRET_ACCESS_KEY",
-        description: "secret access key"
-      });
-      const sessionToken =
-        (await this.secrets.get("provider:bedrock:sessionToken")) ?? process.env.AWS_SESSION_TOKEN;
-      const factory = this.options.clientFactory ?? defaultClientFactory;
-      this.clientPromise = Promise.resolve(
-        factory({ region, credentials: { accessKeyId, secretAccessKey, sessionToken } })
-      );
+    const currentPromise = this.clientPromise;
+    let credentials!: {
+      region: string;
+      accessKeyId: string;
+      secretAccessKey: string;
+      sessionToken?: string;
+    };
+    try {
+      credentials = await this.resolveCredentials();
+    } catch (error) {
+      if (currentPromise && this.clientCredentials) {
+        return currentPromise;
+      }
+      throw error;
     }
-    return this.clientPromise;
+
+    if (currentPromise && this.areCredentialsEqual(this.clientCredentials, credentials)) {
+      return currentPromise;
+    }
+
+    const factory = this.options.clientFactory ?? defaultClientFactory;
+    const { region, accessKeyId, secretAccessKey, sessionToken } = credentials;
+    const nextPromise = Promise.resolve(
+      factory({ region, credentials: { accessKeyId, secretAccessKey, sessionToken } })
+    );
+    const wrappedPromise = nextPromise.then(
+      client => client,
+      error => {
+        if (this.clientPromise === wrappedPromise) {
+          this.clientPromise = undefined;
+          this.clientCredentials = undefined;
+        }
+        throw error;
+      }
+    );
+
+    this.clientPromise = wrappedPromise;
+    this.clientCredentials = credentials;
+    void this.disposeExistingClient(currentPromise);
+    return wrappedPromise;
+  }
+
+  /** @internal */
+  async resetClientForTests(): Promise<void> {
+    await this.disposeExistingClient(this.clientPromise);
+  }
+
+  private async resolveCredentials(): Promise<{
+    region: string;
+    accessKeyId: string;
+    secretAccessKey: string;
+    sessionToken?: string;
+  }> {
+    const region =
+      this.options.region ??
+      (await this.secrets.get("provider:bedrock:region")) ??
+      process.env.AWS_REGION ??
+      "us-east-1";
+    const accessKeyId = await requireSecret(this.secrets, this.name, {
+      key: "provider:bedrock:accessKeyId",
+      env: "AWS_ACCESS_KEY_ID",
+      description: "access key"
+    });
+    const secretAccessKey = await requireSecret(this.secrets, this.name, {
+      key: "provider:bedrock:secretAccessKey",
+      env: "AWS_SECRET_ACCESS_KEY",
+      description: "secret access key"
+    });
+    const sessionToken =
+      (await this.secrets.get("provider:bedrock:sessionToken")) ?? process.env.AWS_SESSION_TOKEN;
+    return { region, accessKeyId, secretAccessKey, sessionToken: sessionToken ?? undefined };
+  }
+
+  private areCredentialsEqual(
+    previous?: {
+      region: string;
+      accessKeyId: string;
+      secretAccessKey: string;
+      sessionToken?: string;
+    },
+    next?: {
+      region: string;
+      accessKeyId: string;
+      secretAccessKey: string;
+      sessionToken?: string;
+    }
+  ): previous is {
+    region: string;
+    accessKeyId: string;
+    secretAccessKey: string;
+    sessionToken?: string;
+  } {
+    return Boolean(
+      previous &&
+        next &&
+        previous.region === next.region &&
+        previous.accessKeyId === next.accessKeyId &&
+        previous.secretAccessKey === next.secretAccessKey &&
+        (previous.sessionToken ?? "") === (next.sessionToken ?? "")
+    );
+  }
+
+  private async disposeExistingClient(promise?: Promise<BedrockClient>): Promise<void> {
+    if (!promise) return;
+    try {
+      const client = await promise.catch(() => undefined);
+      if (client) {
+        await disposeClient(client);
+      }
+    } catch {
+      // ignore disposal errors
+    } finally {
+      if (this.clientPromise === promise) {
+        this.clientPromise = undefined;
+        this.clientCredentials = undefined;
+      }
+    }
   }
 
   async chat(req: ChatRequest): Promise<ChatResponse> {

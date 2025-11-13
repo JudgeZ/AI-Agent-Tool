@@ -1,6 +1,6 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatMessage, ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
-import { callWithRetry, coalesceText, ProviderError, requireSecret } from "./utils.js";
+import { callWithRetry, coalesceText, ProviderError, requireSecret, disposeClient } from "./utils.js";
 
 interface AnthropicUsage {
   input_tokens?: number;
@@ -59,20 +59,81 @@ function toAnthropicMessages(messages: ChatMessage[]): Array<{
 export class AnthropicProvider implements ModelProvider {
   name = "anthropic";
   private clientPromise?: Promise<AnthropicClient>;
+  private clientCredentials?: { apiKey: string };
 
   constructor(private readonly secrets: SecretsStore, private readonly options: AnthropicProviderOptions = {}) {}
 
   private async getClient(): Promise<AnthropicClient> {
-    if (!this.clientPromise) {
-      const apiKey = await requireSecret(this.secrets, this.name, {
-        key: "provider:anthropic:apiKey",
-        env: "ANTHROPIC_API_KEY",
-        description: "API key"
-      });
-      const factory = this.options.clientFactory ?? defaultClientFactory;
-      this.clientPromise = Promise.resolve(factory({ apiKey }));
+    const currentPromise = this.clientPromise;
+    let credentials!: { apiKey: string };
+    try {
+      credentials = await this.resolveCredentials();
+    } catch (error) {
+      if (currentPromise && this.clientCredentials) {
+        return currentPromise;
+      }
+      throw error;
     }
-    return this.clientPromise;
+
+    if (currentPromise && this.areCredentialsEqual(this.clientCredentials, credentials)) {
+      return currentPromise;
+    }
+
+    const factory = this.options.clientFactory ?? defaultClientFactory;
+    const nextPromise = Promise.resolve(factory(credentials));
+    const wrappedPromise = nextPromise.then(
+      client => client,
+      error => {
+        if (this.clientPromise === wrappedPromise) {
+          this.clientPromise = undefined;
+          this.clientCredentials = undefined;
+        }
+        throw error;
+      }
+    );
+
+    this.clientPromise = wrappedPromise;
+    this.clientCredentials = credentials;
+    void this.disposeExistingClient(currentPromise);
+    return wrappedPromise;
+  }
+
+  /** @internal */
+  async resetClientForTests(): Promise<void> {
+    await this.disposeExistingClient(this.clientPromise);
+  }
+
+  private async resolveCredentials(): Promise<{ apiKey: string }> {
+    const apiKey = await requireSecret(this.secrets, this.name, {
+      key: "provider:anthropic:apiKey",
+      env: "ANTHROPIC_API_KEY",
+      description: "API key"
+    });
+    return { apiKey };
+  }
+
+  private areCredentialsEqual(
+    previous?: { apiKey: string },
+    next?: { apiKey: string }
+  ): previous is { apiKey: string } {
+    return Boolean(previous && next && previous.apiKey === next.apiKey);
+  }
+
+  private async disposeExistingClient(promise?: Promise<AnthropicClient>): Promise<void> {
+    if (!promise) return;
+    try {
+      const client = await promise.catch(() => undefined);
+      if (client) {
+        await disposeClient(client);
+      }
+    } catch {
+      // ignore disposal errors
+    } finally {
+      if (this.clientPromise === promise) {
+        this.clientPromise = undefined;
+        this.clientCredentials = undefined;
+      }
+    }
   }
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
