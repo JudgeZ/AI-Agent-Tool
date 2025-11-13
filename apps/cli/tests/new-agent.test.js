@@ -10,6 +10,17 @@ const execFileAsync = promisify(execFile);
 const cliRoot = path.resolve(__dirname, "..");
 const repoRoot = path.resolve(cliRoot, "..", "..");
 const agentsDir = path.join(repoRoot, "agents");
+const tsNodeRegister = require.resolve("ts-node/register/transpile-only", { paths: [cliRoot] });
+const CLI_ENTRY = path.join(cliRoot, "src/index.ts");
+const CLI_ARGS = ["-r", tsNodeRegister, CLI_ENTRY];
+
+function makeEnv(extra = {}) {
+  return {
+    ...process.env,
+    TS_NODE_PROJECT: path.join(cliRoot, "tsconfig.json"),
+    ...extra
+  };
+}
 
 function cleanupAgent(name) {
   const targetDir = path.join(agentsDir, name);
@@ -23,7 +34,10 @@ test("aidt new-agent scaffolds an agent profile", async () => {
   const agentName = "sample-agent";
   cleanupAgent(agentName);
 
-  await execFileAsync("node", ["apps/cli/dist/index.js", "new-agent", agentName], { cwd: repoRoot });
+  await execFileAsync("node", [...CLI_ARGS, "new-agent", agentName], {
+    cwd: repoRoot,
+    env: makeEnv()
+  });
 
   const agentPath = path.join(agentsDir, agentName, "agent.md");
   assert.ok(fs.existsSync(agentPath), `expected agent profile at ${agentPath}`);
@@ -39,7 +53,10 @@ test("aidt new-agent rejects traversal attempts", async () => {
   fs.rmSync(escapeDir, { recursive: true, force: true });
 
   await assert.rejects(
-    execFileAsync("node", ["apps/cli/dist/index.js", "new-agent", traversalName], { cwd: repoRoot }),
+    execFileAsync("node", [...CLI_ARGS, "new-agent", traversalName], {
+      cwd: repoRoot,
+      env: makeEnv()
+    }),
     err => {
       assert.strictEqual(err.code, 1);
       assert.match(err.stderr, /Agent name must not contain/);
@@ -59,7 +76,10 @@ test("aidt new-agent rejects unsafe agent names", async () => {
 
   for (const badName of badNames) {
     await assert.rejects(
-      execFileAsync("node", ["apps/cli/dist/index.js", "new-agent", badName], { cwd: repoRoot }),
+      execFileAsync("node", [...CLI_ARGS, "new-agent", badName], {
+        cwd: repoRoot,
+        env: makeEnv()
+      }),
       err => {
         assert.strictEqual(err.code, 1);
         assert.ok(
@@ -83,7 +103,10 @@ test("aidt new-agent fails when agent.md already exists", async () => {
   fs.writeFileSync(agentPath, originalContent, "utf8");
 
   await assert.rejects(
-    execFileAsync("node", ["apps/cli/dist/index.js", "new-agent", agentName], { cwd: repoRoot }),
+    execFileAsync("node", [...CLI_ARGS, "new-agent", agentName], {
+      cwd: repoRoot,
+      env: makeEnv()
+    }),
     err => {
       assert.strictEqual(err.code, 1);
       assert.match(err.stderr, /agent\.md already exists/);

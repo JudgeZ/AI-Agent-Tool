@@ -11,9 +11,25 @@ const execFileAsync = promisify(execFile);
 
 const cliRoot = path.resolve(__dirname, "..");
 const plansDir = path.join(cliRoot, ".plans");
+const tsNodeRegister = require.resolve("ts-node/register/transpile-only", { paths: [cliRoot] });
+const CLI_ENTRY = path.join(cliRoot, "src/index.ts");
+const CLI_ARGS = ["-r", tsNodeRegister, CLI_ENTRY];
 
 function resetPlansDir() {
   fs.rmSync(plansDir, { recursive: true, force: true });
+}
+
+async function startServer(handler) {
+  const server = http.createServer(handler);
+  server.listen(0, "127.0.0.1");
+  await once(server, "listening");
+  return server;
+}
+
+function getPort(server) {
+  const address = server.address();
+  assert.ok(address && typeof address === "object", "server should provide a port");
+  return address.port;
 }
 
 test("aidt plan requests plan from gateway", async () => {
@@ -39,7 +55,7 @@ test("aidt plan requests plan from gateway", async () => {
   /** @type {{ headers: http.IncomingHttpHeaders, body: any } | undefined} */
   let requestLog;
 
-  const server = http.createServer((req, res) => {
+  const server = await startServer((req, res) => {
     if (req.method === "POST" && req.url === "/plan") {
       let body = "";
       req.setEncoding("utf8");
@@ -61,19 +77,16 @@ test("aidt plan requests plan from gateway", async () => {
     res.end();
   });
 
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const { port } = server.address();
-  assert.ok(port, "server should provide a port");
-
   const env = {
     ...process.env,
-    AIDT_GATEWAY_URL: `http://127.0.0.1:${port}`,
-    AIDT_AUTH_TOKEN: "test-token"
+    TS_NODE_PROJECT: path.join(cliRoot, "tsconfig.json"),
+    AIDT_GATEWAY_URL: `http://127.0.0.1:${getPort(server)}`,
+    AIDT_AUTH_TOKEN: "test-token",
+    AIDT_GATEWAY_TIMEOUT_MS: "1500"
   };
 
   try {
-    const { stdout } = await execFileAsync("node", ["dist/index.js", "plan", goal], {
+    const { stdout } = await execFileAsync("node", [...CLI_ARGS, "plan", goal], {
       cwd: cliRoot,
       env
     });
@@ -97,6 +110,51 @@ test("aidt plan requests plan from gateway", async () => {
   }
 });
 
+test("aidt plan surfaces gateway authentication failures", async () => {
+  resetPlansDir();
+  const goal = "Surface auth failure";
+  let requestCount = 0;
+
+  const server = await startServer((req, res) => {
+    if (req.method === "POST" && req.url === "/plan") {
+      requestCount += 1;
+      res.statusCode = 401;
+      res.setHeader("content-type", "application/json");
+      res.setHeader("x-request-id", "req-123");
+      res.end(JSON.stringify({ message: "token invalid" }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+
+  const env = {
+    ...process.env,
+    TS_NODE_PROJECT: path.join(cliRoot, "tsconfig.json"),
+    AIDT_GATEWAY_URL: `http://127.0.0.1:${getPort(server)}`,
+    AIDT_AUTH_TOKEN: "bad-token"
+  };
+
+  try {
+    await assert.rejects(
+      execFileAsync("node", [...CLI_ARGS, "plan", goal], {
+        cwd: cliRoot,
+        env
+      }),
+      error => {
+        assert.match(String(error), /Command failed/);
+        assert.match(error.stderr, /Authentication failed: token invalid/);
+        assert.match(error.stderr, /Error:/);
+        return true;
+      }
+    );
+    assert.equal(requestCount, 1, "gateway should handle exactly one request");
+    assert.ok(!fs.existsSync(plansDir), "should not persist plan artifacts on failure");
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
 test("aidt plan rejects invalid plan id from gateway", async () => {
   resetPlansDir();
   const goal = "Handle invalid plan id";
@@ -107,7 +165,7 @@ test("aidt plan rejects invalid plan id from gateway", async () => {
     successCriteria: []
   };
 
-  const server = http.createServer((req, res) => {
+  const server = await startServer((req, res) => {
     if (req.method === "POST" && req.url === "/plan") {
       res.statusCode = 200;
       res.setHeader("content-type", "application/json");
@@ -118,19 +176,15 @@ test("aidt plan rejects invalid plan id from gateway", async () => {
     res.end();
   });
 
-  server.listen(0, "127.0.0.1");
-  await once(server, "listening");
-  const { port } = server.address();
-  assert.ok(port, "server should provide a port");
-
   const env = {
     ...process.env,
-    AIDT_GATEWAY_URL: `http://127.0.0.1:${port}`
+    TS_NODE_PROJECT: path.join(cliRoot, "tsconfig.json"),
+    AIDT_GATEWAY_URL: `http://127.0.0.1:${getPort(server)}`
   };
 
   try {
     await assert.rejects(
-      execFileAsync("node", ["dist/index.js", "plan", goal], {
+      execFileAsync("node", [...CLI_ARGS, "plan", goal], {
         cwd: cliRoot,
         env
       }),
@@ -143,4 +197,134 @@ test("aidt plan rejects invalid plan id from gateway", async () => {
   } finally {
     await new Promise(resolve => server.close(resolve));
   }
+});
+
+test("aidt plan rejects invalid gateway URL configuration", async () => {
+  resetPlansDir();
+  const goal = "Invalid gateway URL";
+  const env = {
+    ...process.env,
+    TS_NODE_PROJECT: path.join(cliRoot, "tsconfig.json"),
+    AIDT_GATEWAY_URL: "not-a-valid-url"
+  };
+
+  await assert.rejects(
+    execFileAsync("node", [...CLI_ARGS, "plan", goal], {
+      cwd: cliRoot,
+      env
+    }),
+    error => {
+      assert.match(error.stderr, /Invalid gateway URL/);
+      assert.match(error.stderr, /Error:/);
+      assert.ok(!fs.existsSync(plansDir), "should not create .plans for invalid configuration");
+      return true;
+    }
+  );
+});
+
+test("aidt plan reports gateway rate limiting detail", async () => {
+  resetPlansDir();
+  const goal = "Handle rate limiting";
+  let requestCount = 0;
+
+  const server = await startServer((req, res) => {
+    if (req.method === "POST" && req.url === "/plan") {
+      requestCount += 1;
+      res.statusCode = 429;
+      res.setHeader("content-type", "application/json");
+      res.end(JSON.stringify({ error: "Too many requests" }));
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+
+  const env = {
+    ...process.env,
+    TS_NODE_PROJECT: path.join(cliRoot, "tsconfig.json"),
+    AIDT_GATEWAY_URL: `http://127.0.0.1:${getPort(server)}`,
+    AIDT_AUTH_TOKEN: "rate-limit-token"
+  };
+
+  try {
+    await assert.rejects(
+      execFileAsync("node", [...CLI_ARGS, "plan", goal], {
+        cwd: cliRoot,
+        env
+      }),
+      error => {
+        assert.match(error.stderr, /Gateway rate limited the request: Too many requests/);
+        return true;
+      }
+    );
+    assert.equal(requestCount, 1);
+    assert.ok(!fs.existsSync(plansDir), "should not create artifacts when rate limited");
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("aidt plan surfaces server errors with request id context", async () => {
+  resetPlansDir();
+  const goal = "Handle server error";
+
+  const server = await startServer((req, res) => {
+    if (req.method === "POST" && req.url === "/plan") {
+      res.statusCode = 503;
+      res.statusMessage = "Service Unavailable";
+      res.setHeader("x-request-id", "req-789");
+      res.end("backend offline");
+      return;
+    }
+    res.statusCode = 404;
+    res.end();
+  });
+
+  const env = {
+    ...process.env,
+    TS_NODE_PROJECT: path.join(cliRoot, "tsconfig.json"),
+    AIDT_GATEWAY_URL: `http://127.0.0.1:${getPort(server)}`
+  };
+
+  try {
+    await assert.rejects(
+      execFileAsync("node", [...CLI_ARGS, "plan", goal], {
+        cwd: cliRoot,
+        env
+      }),
+      error => {
+        assert.match(
+          error.stderr,
+          /Gateway request failed \(request id req-789\) - Service Unavailable: backend offline/
+        );
+        return true;
+      }
+    );
+    assert.ok(!fs.existsSync(plansDir), "should not persist plan artifacts for server errors");
+  } finally {
+    await new Promise(resolve => server.close(resolve));
+  }
+});
+
+test("aidt plan rejects invalid gateway timeout configuration", async () => {
+  resetPlansDir();
+  const goal = "Invalid timeout";
+  const env = {
+    ...process.env,
+    TS_NODE_PROJECT: path.join(cliRoot, "tsconfig.json"),
+    AIDT_GATEWAY_URL: "http://127.0.0.1:65534",
+    AIDT_GATEWAY_TIMEOUT_MS: "not-a-number"
+  };
+
+  await assert.rejects(
+    execFileAsync("node", [...CLI_ARGS, "plan", goal], {
+      cwd: cliRoot,
+      env
+    }),
+    error => {
+      assert.match(error.stderr, /Invalid gateway timeout/);
+      return true;
+    }
+  );
+  assert.ok(!fs.existsSync(plansDir), "should not create plan artifacts when timeout config is invalid");
 });
