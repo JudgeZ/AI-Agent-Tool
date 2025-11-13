@@ -13,7 +13,9 @@
 {{- $postgresUrlSecretName := $postgresValues.urlSecretName | default "" -}}
 {{- $postgresUrlSecretKey := $postgresValues.urlSecretKey | default "url" -}}
 {{- $postgresUrlValue := $postgresValues.url | default "" -}}
-{{- $postgresPasswordValue := $postgresValues.password | default "" -}}
+{{- $explicitPostgresPassword := $postgresValues.password | default "" -}}
+{{- $usingBundledPostgres := and ($postgresValues.enabled | default true) (eq $postgresUrlSecretName "") (eq $postgresUrlValue "") -}}
+{{- $postgresPasswordValue := ternary "ossaat" $explicitPostgresPassword (and $usingBundledPostgres (eq $explicitPostgresPassword "")) -}}
 {{- $defaultOrchestratorEnv := dict }}
 {{- $orchestratorValueFromEnv := dict }}
 {{- $kafkaRuntime := dict }}
@@ -46,7 +48,7 @@
   {{- $_ := set $defaultOrchestratorEnv "POSTGRES_URL" (printf "%v" $postgresUrlValue) -}}
 {{- else -}}
   {{- if not $postgresPasswordValue -}}
-    {{- fail "postgres.password (or postgres.url / postgres.urlSecretName) must be provided" -}}
+    {{- fail "postgres.password (or postgres.url / postgres.urlSecretName) must be provided when not using the bundled Postgres instance" -}}
   {{- end -}}
   {{- $postgresHost := printf "%s-postgres" $fullname -}}
   {{- $_ := set $defaultOrchestratorEnv "POSTGRES_URL" (printf "postgres://%s:%s@%s:5432/%s" $postgresUser $postgresPasswordValue $postgresHost $postgresDatabase) -}}
@@ -55,13 +57,23 @@
   {{- $rabbit := default (dict) $root.Values.rabbitmq -}}
   {{- $rabbitUrlSecretName := $rabbit.urlSecretName | default "" -}}
   {{- $rabbitUrl := $rabbit.url | default "" -}}
+  {{- $rabbitEnabled := $rabbit.enabled | default true -}}
+  {{- $explicitRabbitUser := $rabbit.username | default "" -}}
+  {{- $explicitRabbitPassword := $rabbit.password | default "" -}}
+  {{- $usingBundledRabbit := and $rabbitEnabled (eq $rabbitUrlSecretName "") (eq $rabbitUrl "") -}}
+  {{- $rabbitUser := ternary "guest" $explicitRabbitUser (and $usingBundledRabbit (eq $explicitRabbitUser "")) -}}
+  {{- $rabbitPassword := ternary "guest" $explicitRabbitPassword (and $usingBundledRabbit (eq $explicitRabbitPassword "")) -}}
   {{- if $rabbitUrlSecretName -}}
     {{- $_ := set $orchestratorValueFromEnv "RABBITMQ_URL" (dict "secretName" $rabbitUrlSecretName "secretKey" ($rabbit.urlSecretKey | default "url")) -}}
   {{- else if $rabbitUrl -}}
     {{- $_ := set $defaultOrchestratorEnv "RABBITMQ_URL" $rabbitUrl -}}
   {{- else -}}
-    {{- $rabbitUser := required "rabbitmq.username must be provided when rabbitmq.url is unset" ($rabbit.username | default "") -}}
-    {{- $rabbitPassword := required "rabbitmq.password must be provided when rabbitmq.url is unset" ($rabbit.password | default "") -}}
+    {{- if not $rabbitUser -}}
+      {{- fail "rabbitmq.username must be provided when rabbitmq.url is unset and the bundled RabbitMQ is disabled" -}}
+    {{- end -}}
+    {{- if not $rabbitPassword -}}
+      {{- fail "rabbitmq.password must be provided when rabbitmq.url is unset and the bundled RabbitMQ is disabled" -}}
+    {{- end -}}
     {{- $rabbitHost := $rabbit.host | default (printf "%s-rabbitmq" $fullname) -}}
     {{- $rabbitPort := $rabbit.port | default 5672 -}}
     {{- $rabbitScheme := $rabbit.scheme | default "amqp" -}}

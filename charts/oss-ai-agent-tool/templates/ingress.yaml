@@ -24,7 +24,8 @@ spec:
             pathType: {{ .pathType }}
             backend:
               service:
-                name: {{ include "oss-ai-agent-tool.fullname" $root }}-{{- if eq .service "orchestrator" -}}orchestrator{{- else -}}gateway-api{{- end -}}
+                {{ $serviceSuffix := ternary "orchestrator" "gateway-api" (eq .service "orchestrator") -}}
+                name: {{ printf "%s-%s" (include "oss-ai-agent-tool.fullname" $root) $serviceSuffix }}
                 port:
                   name: http
           {{- end }}

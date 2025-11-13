@@ -199,6 +199,9 @@ orchestrator:
   service:
     type: ClusterIP
     port: 4000
+  serviceAccount:
+    create: true
+    name: ""
   env:
     LOCAL_SECRETS_PATH: /app/config/secrets/local/secrets.json
   localSecrets:
@@ -284,8 +287,11 @@ indexer:
   logLevel: info
   requestLimitBytes: 1048576
   env: {}
+  serviceAccount:
+    create: true
+    name: ""
   auth:
-    disabled: false
+    disabled: true
     jwt:
       secret: ""
       secretSecretName: ""
@@ -337,6 +343,8 @@ postgres:
   image: postgres:15-alpine
   database: ossaat
   username: ossaat
+  # When left empty and postgres.enabled=true, the orchestrator falls back to the bundled Secret's password (default "ossaat").
+  # Override this with a strong value for real deployments.
   password: ""
   url: ""
   urlSecretName: ""
@@ -379,7 +387,7 @@ jaeger:
   resources: {}
 
 langfuse:
-  enabled: true
+  enabled: false
   replicas: 1
   image: langfuse/langfuse:2.14.1
   publicUrl: http://localhost:3000
