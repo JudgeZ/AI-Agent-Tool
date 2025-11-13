@@ -2,6 +2,8 @@
 
 This document summarizes the findings of the comprehensive code review for the Gateway API module.
 
+> **Canonical module path:** `github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api`
+
 ## Summary
 
 The Gateway API is a well-structured Go application that serves as a secure proxy for SSE events and handles OAuth 2.1 + PKCE authentication flows. The code demonstrates strong security practices in authentication handling, proper SSE streaming semantics, and mTLS support. However, critical gaps exist in observability (no OTel tracing), input validation, rate limiting, and production-grade security headers.
