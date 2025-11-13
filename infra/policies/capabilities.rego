@@ -1,4 +1,4 @@
-package capabilities
+package orchestrator.capabilities
 
 # Capability-based authorization rules for orchestrator actions.
 #
@@ -28,64 +28,45 @@ requires_approval[capability] {
   }[_]
 }
 
-subject_capabilities[cap] {
-  capabilities := object.get(input.subject, "capabilities", [])
-  cap := capabilities[_]
-}
+policy_capabilities := object.get(object.get(input, "context", {}), "capabilities", {})
 
-subject_roles[role] {
-  roles := object.get(input.subject, "roles", [])
-  role := roles[_]
-}
+role_bindings := object.get(policy_capabilities, "role_bindings", {})
 
-role_capabilities[cap] {
-  role := subject_roles[_]
-  bindings := object.get(object.get(data, "capabilities", {}), "role_bindings", {})
-  caps := object.get(bindings, role, [])
-  cap := caps[_]
-}
+tenant_role_bindings := object.get(policy_capabilities, "tenant_role_bindings", {})
 
-tenant_role_capabilities[cap] {
-  tenant := object.get(input.subject, "tenant_id", "")
-  tenant != ""
-  role := subject_roles[_]
-  tenants := object.get(object.get(data, "capabilities", {}), "tenant_role_bindings", {})
-  tenant_bindings := object.get(tenants, tenant, {})
-  caps := object.get(tenant_bindings, role, [])
-  cap := caps[_]
-}
+subject_capabilities := object.get(input.subject, "capabilities", [])
 
-effective_capabilities[cap] {
-  subject_capabilities[cap]
-}
+subject_roles := object.get(input.subject, "roles", [])
 
-effective_capabilities[cap] {
-  role_capabilities[cap]
-}
+tenant_id := object.get(input.subject, "tenant_id", "")
 
-effective_capabilities[cap] {
-  tenant_role_capabilities[cap]
-}
+action_capabilities := object.get(input.action, "capabilities", [])
 
-action_capabilities[cap] {
-  capabilities := object.get(input.action, "capabilities", [])
-  cap := capabilities[_]
-}
-
-subject_approvals[cap] {
-  approvals := object.get(input.subject, "approvals", {})
-  object.get(approvals, cap, false) == true
-}
+subject_approvals := object.get(input.subject, "approvals", {})
 
 missing_capability[cap] {
-  action_capabilities[cap]
-  not effective_capabilities[cap]
+  cap := action_capabilities[_]
+  subject_count := count([1 | subject_capabilities[_] == cap])
+  role_count := count([
+    1 |
+    role := subject_roles[_]
+    caps := object.get(role_bindings, role, [])
+    caps[_] == cap
+  ])
+  tenant_count := count([
+    1 |
+    tenant_id != ""
+    role := subject_roles[_]
+    tenant_caps := object.get(object.get(tenant_role_bindings, tenant_id, {}), role, [])
+    tenant_caps[_] == cap
+  ])
+  subject_count + role_count + tenant_count == 0
 }
 
 missing_approval[cap] {
-  action_capabilities[cap]
+  cap := action_capabilities[_]
   requires_approval[cap]
-  not subject_approvals[cap]
+  object.get(subject_approvals, cap, false) != true
 }
 
 run_mode_mismatch {
@@ -115,6 +96,8 @@ deny[{"reason": "run_mode_mismatch"}] {
 }
 
 allow {
-  count(deny) == 0
+  count({cap | missing_capability[cap]}) == 0
+  count({cap | missing_approval[cap]}) == 0
+  not run_mode_mismatch
 }
 

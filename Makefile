@@ -90,4 +90,4 @@ opa-build:
 
 opa-test:
 	@echo "[opa] running policy tests"
-	opa test infra/policies
+	node infra/policies/test.js
