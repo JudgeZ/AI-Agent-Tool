@@ -309,7 +309,7 @@ indexer:
     name: ""
     annotations: {}
   auth:
-    disabled: true
+    disabled: false
     jwt:
       secret: ""
       secretSecretName: ""
