@@ -11,6 +11,13 @@ type NormalizedTarget = {
   candidates: Set<string>;
 };
 
+const DEFAULT_PORTS: Record<string, string> = {
+  "http:": "80",
+  "https:": "443",
+  "ws:": "80",
+  "wss:": "443",
+};
+
 function tryParseUrl(value: string): URL | undefined {
   try {
     return new URL(value);
@@ -21,6 +28,40 @@ function tryParseUrl(value: string): URL | undefined {
       return undefined;
     }
   }
+}
+
+function detectExplicitPort(value: string): string | undefined {
+  const trimmed = value.trim().toLowerCase();
+  if (!trimmed) {
+    return undefined;
+  }
+
+  const withoutScheme = trimmed.replace(/^[a-z0-9+.-]+:\/\//, "");
+  const hostSegment = withoutScheme.split("/")[0];
+  if (!hostSegment) {
+    return undefined;
+  }
+
+  if (hostSegment.startsWith("[") && hostSegment.includes("]")) {
+    const closingIndex = hostSegment.indexOf("]");
+    const remainder = hostSegment.slice(closingIndex + 1);
+    if (remainder.startsWith(":")) {
+      const portCandidate = remainder.slice(1);
+      if (/^\d+$/.test(portCandidate)) {
+        return portCandidate;
+      }
+    }
+  }
+
+  const colonIndex = hostSegment.lastIndexOf(":");
+  if (colonIndex > 0) {
+    const portCandidate = hostSegment.slice(colonIndex + 1);
+    if (/^\d+$/.test(portCandidate)) {
+      return portCandidate;
+    }
+  }
+
+  return undefined;
 }
 
 function buildTargetCandidates(target: string): NormalizedTarget {
@@ -34,12 +75,13 @@ function buildTargetCandidates(target: string): NormalizedTarget {
   const parsed = tryParseUrl(trimmed);
   if (parsed) {
     const hostname = parsed.hostname.toLowerCase();
-    const hostWithPort = parsed.port ? `${hostname}:${parsed.port}` : undefined;
-    candidates.add(hostname);
     const parsedHost = parsed.host.toLowerCase();
+    const explicitPort = detectExplicitPort(trimmed);
+    const port = parsed.port || explicitPort || DEFAULT_PORTS[parsed.protocol];
+    candidates.add(hostname);
     candidates.add(parsedHost);
-    if (hostWithPort) {
-      candidates.add(hostWithPort);
+    if (port) {
+      candidates.add(`${hostname}:${port}`);
     }
     return { hostname, candidates };
   }
@@ -47,10 +89,14 @@ function buildTargetCandidates(target: string): NormalizedTarget {
   const hostCandidate = normalized.split("/")[0];
   if (hostCandidate) {
     candidates.add(hostCandidate);
-    const colonIndex = hostCandidate.lastIndexOf(":");
-    if (colonIndex > 0 && /^\d+$/.test(hostCandidate.slice(colonIndex + 1))) {
-      const withoutPort = hostCandidate.slice(0, colonIndex);
-      candidates.add(withoutPort);
+    const explicitPort = detectExplicitPort(hostCandidate);
+    if (explicitPort) {
+      const portSeparatorIndex = hostCandidate.lastIndexOf(`:${explicitPort}`);
+      const withoutPort = portSeparatorIndex >= 0 ? hostCandidate.slice(0, portSeparatorIndex) : hostCandidate;
+      candidates.add(`${withoutPort}:${explicitPort}`);
+      if (withoutPort) {
+        candidates.add(withoutPort);
+      }
       return { hostname: withoutPort, candidates };
     }
     return { hostname: hostCandidate, candidates };
@@ -79,13 +125,19 @@ function tryParseAllowEntry(entry: string): { hostname?: string; candidates: Set
   if (parsed) {
     const hostname = parsed.hostname.toLowerCase();
     const parsedHost = parsed.host.toLowerCase();
-    const hostWithPort = parsed.port ? `${hostname}:${parsed.port}` : undefined;
-    if (hostWithPort) {
-      candidates.add(parsedHost);
+    const explicitPort = detectExplicitPort(normalized);
+    const port = parsed.port || explicitPort;
+    if (port) {
+      const hostWithPort = `${hostname}:${port}`;
       candidates.add(hostWithPort);
+      if (parsedHost.includes(":")) {
+        candidates.add(parsedHost);
+      }
     } else {
       candidates.add(hostname);
-      candidates.add(parsedHost);
+      if (parsedHost !== hostname) {
+        candidates.add(parsedHost);
+      }
     }
     return { hostname, candidates };
   }
@@ -93,6 +145,13 @@ function tryParseAllowEntry(entry: string): { hostname?: string; candidates: Set
   const hostCandidate = normalized.split("/")[0];
   if (hostCandidate) {
     candidates.add(hostCandidate);
+    const explicitPort = detectExplicitPort(hostCandidate);
+    if (explicitPort) {
+      const portSeparatorIndex = hostCandidate.lastIndexOf(`:${explicitPort}`);
+      const withoutPort = portSeparatorIndex >= 0 ? hostCandidate.slice(0, portSeparatorIndex) : hostCandidate;
+      candidates.add(`${withoutPort}:${explicitPort}`);
+      return { hostname: withoutPort, candidates };
+    }
   }
   return { hostname: hostCandidate, candidates };
 }

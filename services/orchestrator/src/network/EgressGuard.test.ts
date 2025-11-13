@@ -145,5 +145,23 @@ describe("ensureEgressAllowed", () => {
       "egress blocked by policy",
     );
   });
+
+  it("treats explicit default ports as port-qualified entries", () => {
+    loadConfigMock.mockReturnValue(
+      buildConfig({ mode: "enforce", allow: ["https://vault.example.com:443"] })
+    );
+
+    expect(() => ensureEgressAllowed("https://vault.example.com/path"))
+      .not.toThrow();
+
+    expect(() => ensureEgressAllowed("https://vault.example.com:443/path"))
+      .not.toThrow();
+
+    expect(() => ensureEgressAllowed("https://vault.example.com:444/path"))
+      .toThrow("Egress to 'https://vault.example.com:444/path' is not permitted by network policy");
+
+    expect(() => ensureEgressAllowed("http://vault.example.com/path"))
+      .toThrow("Egress to 'http://vault.example.com/path' is not permitted by network policy");
+  });
 });
 
