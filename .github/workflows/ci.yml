@@ -124,6 +124,7 @@ jobs:
             ${{ runner.os }}-go-
 
       - name: Go fmt (verify)
+        working-directory: apps/gateway-api
         run: |
           files=$(find . -name '*.go' -not -path "*/vendor/*")
           if [ -z "$files" ]; then
@@ -137,15 +138,19 @@ jobs:
           fi
 
       - name: Verify gateway module path
+        working-directory: apps/gateway-api
         run: go list github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/...
 
       - name: Go vet
+        working-directory: apps/gateway-api
         run: go vet ./...
 
       - name: Go test with coverage
+        working-directory: apps/gateway-api
         run: go test ./... -coverpkg=./... -coverprofile=coverage.out
 
       - name: Enforce Go coverage minimum
+        working-directory: apps/gateway-api
         run: |
           coverage=$(go tool cover -func=coverage.out | awk '/total:/ { gsub("%","",$3); print $3 }')
           echo "Go coverage: ${coverage}%"

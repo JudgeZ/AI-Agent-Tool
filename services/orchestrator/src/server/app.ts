@@ -1060,7 +1060,7 @@ export function createServer(config?: AppConfig): Express {
         requestId,
         traceId,
         details: {
-          mode: parsed.data.mode,
+          model: parsed.data.model,
           messageCount: Array.isArray(parsed.data.messages) ? parsed.data.messages.length : undefined,
         },
       });
@@ -1373,7 +1373,7 @@ export function createServer(config?: AppConfig): Express {
         subject,
         requestId,
         traceId,
-        details: { key: keyResult.data, versions: versions.items?.length },
+        details: { key: keyResult.data, versions: versions.versions.length },
       });
     } catch (error) {
       respondWithUnexpectedError(res, error);
