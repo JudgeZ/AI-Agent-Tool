@@ -149,7 +149,7 @@ Relevant environment overrides:
 | `ORCHESTRATOR_TLS_SERVER_NAME` | Overrides the server name (SNI) used by the gateway when connecting to the orchestrator over TLS. |
 | `mtls.*` (Helm values) | `mtls.enabled=true` provisions orchestrator and gateway certificates via cert-manager. Configure `mtls.certManager.issuerRef` and optional SAN overrides. |
 
-Egress enforcement defaults to `enforce` with loopback addresses, `*.svc`, `*.svc.cluster.local`, and `*.example.com` already whitelisted so local dev, Kubernetes service discovery, and test fixtures continue working. Extend `network.egress.allow` (or `NETWORK_EGRESS_ALLOW`) with any additional destinations such as Vault, OIDC providers, or outbound model APIs.
+Egress enforcement defaults to `enforce` with loopback addresses, `oauth2.googleapis.com`, `*.svc`, `*.svc.cluster.local`, and `*.example.com` already whitelisted so local dev, Google OAuth token exchanges, Kubernetes service discovery, and test fixtures continue working. Extend `network.egress.allow` (or `NETWORK_EGRESS_ALLOW`) with any additional destinations such as Vault, OIDC providers, or outbound model APIs.
 
 For any variable documented above you can also supply a corresponding `*_FILE` variant (for example `OIDC_CLIENT_SECRET_FILE` or `VAULT_TOKEN_FILE`). When present, the orchestrator reads the secret value from the referenced file path—ideal for Docker or Kubernetes secret mounts. File-based values take precedence over the plain environment variable.
 

@@ -93,7 +93,7 @@ function buildConfig() {
     network: {
       egress: {
         mode: "enforce",
-        allow: ["localhost", "127.0.0.1", "::1", "*.example.com"],
+        allow: ["localhost", "127.0.0.1", "::1", "oauth2.googleapis.com", "*.example.com"],
       },
     },
   };
