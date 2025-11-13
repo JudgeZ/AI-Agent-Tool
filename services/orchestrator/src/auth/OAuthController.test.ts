@@ -41,7 +41,14 @@ vi.mock("../config.js", () => {
       network: {
         egress: {
           mode: "enforce",
-          allow: ["localhost", "127.0.0.1", "::1", "*.example.com"]
+          allow: [
+            "localhost",
+            "127.0.0.1",
+            "::1",
+            "*.example.com",
+            "oauth2.googleapis.com",
+            "openrouter.ai"
+          ]
         }
       }
     })

@@ -667,6 +667,8 @@ export const DEFAULT_CONFIG: AppConfig = {
         "localhost",
         "127.0.0.1",
         "::1",
+        "oauth2.googleapis.com",
+        "openrouter.ai",
         "*.example.com",
         "*.svc",
         "*.svc.cluster.local",
