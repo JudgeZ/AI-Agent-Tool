@@ -22,10 +22,10 @@ package orchestrator.capabilities
 default allow := false
 
 requires_approval[capability] {
-  capability := {
+  capability := [
     "repo.write",
     "network.egress"
-  }[_]
+  ][_]
 }
 
 policy_capabilities := object.get(object.get(input, "context", {}), "capabilities", {})
