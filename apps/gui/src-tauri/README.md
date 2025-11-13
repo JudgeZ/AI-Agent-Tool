@@ -17,7 +17,7 @@ sudo apt-get install -y \
   libcairo2-dev \
   libpango1.0-dev \
   libsoup2.4-dev \
-  libwebkit2gtk-4.1-dev \
+  libwebkit2gtk-4.0-dev \
   libappindicator3-dev
 ```
 
@@ -28,7 +28,7 @@ These packages align with the upstream [Tauri Linux prerequisites](https://tauri
 When you cannot install the GUI toolchain (for example, inside a minimal container), skip the desktop crate during Rust workflows:
 
 ```bash
-cargo test --workspace --exclude apps/gui/src-tauri
+cargo test --workspace --exclude orchestrator-gui
 ```
 
 The rest of the workspace (including `services/indexer`) continues to compile and test normally.

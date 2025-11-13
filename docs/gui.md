@@ -23,11 +23,11 @@ sudo apt-get install -y \
   libcairo2-dev \
   libpango1.0-dev \
   libsoup2.4-dev \
-  libwebkit2gtk-4.1-dev \
+  libwebkit2gtk-4.0-dev \
   libappindicator3-dev
 ```
 
-These dependencies match the guidance in [`apps/gui/src-tauri/README.md`](../apps/gui/src-tauri/README.md). If you cannot install desktop libraries on your workstation, run `cargo test --workspace --exclude apps/gui/src-tauri` to focus on the headless crates.
+These dependencies match the guidance in [`apps/gui/src-tauri/README.md`](../apps/gui/src-tauri/README.md). If you cannot install desktop libraries on your workstation, run `cargo test --workspace --exclude orchestrator-gui` to focus on the headless crates.
 
 ## Local development
 
