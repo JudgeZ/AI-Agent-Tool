@@ -22,7 +22,7 @@ sudo apt-get install -y \
   libgdk-pixbuf-2.0-dev \
   libcairo2-dev \
   libpango1.0-dev \
-  libsoup2.4-dev \
+  libsoup-3.0-dev \
   libwebkit2gtk-4.0-dev \
   libappindicator3-dev
 ```
