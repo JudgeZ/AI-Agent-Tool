@@ -136,7 +136,7 @@ Relevant environment overrides:
 | `POSTGRES_QUERY_TIMEOUT_MS` | Client-side query timeout enforced by the Node.js driver (defaults to `5000`). Set to `0` to disable. |
 | `INDEXER_MAX_REQUEST_BODY_BYTES` | Maximum HTTP request body size (bytes) accepted by the indexer service. Defaults to `1048576`. |
 | `INDEXER_AUTH_DISABLED` | Set to `1` to bypass JWT authentication (intended only for local development). When unset or `0`, the indexer requires a valid bearer token. |
-| `INDEXER_JWT_HS256_SECRET` / `INDEXER_JWT_HS256_SECRET_FILE` | HMAC-SHA256 signing secret or a path to a file containing the secret. One of these is required unless `INDEXER_AUTH_DISABLED=1`. |
+| `INDEXER_JWT_HS256_SECRET` / `INDEXER_JWT_HS256_SECRET_FILE` | HMAC-SHA256 signing secret or a path to a file containing the secret. One of these is required unless `INDEXER_AUTH_DISABLED=1`. The Helm chart provisions a Kubernetes secret named `<release>-indexer-jwt` automatically when neither value is supplied. |
 | `INDEXER_JWT_ISSUER` | Expected JWT `iss` claim. Defaults to the orchestrator internal URL when omitted. |
 | `INDEXER_JWT_AUDIENCE` | Expected JWT `aud` claim. Defaults to `oss-ai-indexer`. |
 | `SERVER_TLS_ENABLED` | Enable TLS for the orchestrator HTTP server. When `true`, `SERVER_TLS_CERT_PATH` and `SERVER_TLS_KEY_PATH` must also be set (or mounted via Helm secrets). |

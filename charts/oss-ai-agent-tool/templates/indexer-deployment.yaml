@@ -40,6 +40,10 @@
   {{- $jwtSecretName := $jwtConfig.secretSecretName | default "" -}}
   {{- $jwtSecretKey := $jwtConfig.secretSecretKey | default "secret" -}}
   {{- $jwtSecretValue := $jwtConfig.secret | default "" -}}
+  {{- $defaultJwtSecretName := printf "%s-indexer-jwt" $fullname -}}
+  {{- if and (not $jwtSecretName) (not $jwtSecretValue) }}
+    {{- $jwtSecretName = $defaultJwtSecretName -}}
+  {{- end }}
   {{- if $jwtSecretName }}
     {{- $_ := set $indexerValueFromEnv "INDEXER_JWT_HS256_SECRET" (dict "secretName" $jwtSecretName "secretKey" $jwtSecretKey) -}}
   {{- else if $jwtSecretValue }}
