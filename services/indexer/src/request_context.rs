@@ -6,7 +6,8 @@ use std::net::IpAddr;
 use uuid::Uuid;
 
 std::thread_local! {
-    static CONTEXT: RefCell<Option<RequestContext>> = const { RefCell::new(None) };
+    #[allow(clippy::missing_const_for_thread_local)]
+    static CONTEXT: RefCell<Option<RequestContext>> = RefCell::new(None);
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
