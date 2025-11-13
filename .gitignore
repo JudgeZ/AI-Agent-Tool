@@ -4,3 +4,4 @@ target/
 **/config/secrets/
 .cursor/
 infra/policies/dist/
+infra/policies/.cache/
