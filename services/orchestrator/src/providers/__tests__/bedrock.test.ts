@@ -4,9 +4,18 @@ import type { SecretsStore } from "../../auth/SecretsStore.js";
 import { BedrockProvider } from "../bedrock.js";
 
 class StubSecretsStore implements SecretsStore {
+  private failure?: Error;
+
   constructor(private readonly values: Record<string, string> = {}) {}
 
+  setFailure(error: Error | undefined) {
+    this.failure = error;
+  }
+
   async get(key: string) {
+    if (this.failure) {
+      throw this.failure;
+    }
     return this.values[key];
   }
 
@@ -158,5 +167,33 @@ describe("BedrockProvider", () => {
     expect(firstClient.destroy).toHaveBeenCalledTimes(1);
     expect(firstInvoke).toHaveBeenCalledTimes(1);
     expect(secondInvoke).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses the cached client when secret resolution fails", async () => {
+    const secrets = new StubSecretsStore({
+      "provider:bedrock:accessKeyId": "AKIA",
+      "provider:bedrock:secretAccessKey": "SECRET"
+    });
+    const invokeModel = vi.fn().mockResolvedValue({
+      body: Buffer.from(JSON.stringify({ outputText: "ok" }), "utf-8")
+    });
+    const client = { invokeModel };
+    const clientFactory = vi.fn().mockResolvedValue(client);
+    const provider = new BedrockProvider(secrets, {
+      clientFactory,
+      defaultModel: "model",
+      region: "us-east-1"
+    });
+
+    const first = await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(first.output).toBe("ok");
+    expect(clientFactory).toHaveBeenCalledTimes(1);
+
+    secrets.setFailure(new Error("vault unavailable"));
+
+    const second = await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(second.output).toBe("ok");
+    expect(clientFactory).toHaveBeenCalledTimes(1);
+    expect(invokeModel).toHaveBeenCalledTimes(2);
   });
 });

@@ -64,8 +64,16 @@ export class AzureOpenAIProvider implements ModelProvider {
   constructor(private readonly secrets: SecretsStore, private readonly options: AzureOpenAIProviderOptions = {}) {}
 
   private async getClient(): Promise<AzureOpenAIClient> {
-    const credentials = await this.resolveCredentials();
     const currentPromise = this.clientPromise;
+    let credentials!: { apiKey: string; endpoint: string };
+    try {
+      credentials = await this.resolveCredentials();
+    } catch (error) {
+      if (currentPromise && this.clientCredentials) {
+        return currentPromise;
+      }
+      throw error;
+    }
 
     if (currentPromise && this.areCredentialsEqual(this.clientCredentials, credentials)) {
       return currentPromise;

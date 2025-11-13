@@ -64,8 +64,16 @@ export class AnthropicProvider implements ModelProvider {
   constructor(private readonly secrets: SecretsStore, private readonly options: AnthropicProviderOptions = {}) {}
 
   private async getClient(): Promise<AnthropicClient> {
-    const credentials = await this.resolveCredentials();
     const currentPromise = this.clientPromise;
+    let credentials!: { apiKey: string };
+    try {
+      credentials = await this.resolveCredentials();
+    } catch (error) {
+      if (currentPromise && this.clientCredentials) {
+        return currentPromise;
+      }
+      throw error;
+    }
 
     if (currentPromise && this.areCredentialsEqual(this.clientCredentials, credentials)) {
       return currentPromise;

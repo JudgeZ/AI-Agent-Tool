@@ -4,9 +4,18 @@ import type { SecretsStore } from "../../auth/SecretsStore.js";
 import { OpenAIProvider } from "../openai.js";
 
 class StubSecretsStore implements SecretsStore {
+  private failure?: Error;
+
   constructor(private readonly values: Record<string, string> = {}) {}
 
+  setFailure(error: Error | undefined) {
+    this.failure = error;
+  }
+
   async get(key: string) {
+    if (this.failure) {
+      throw this.failure;
+    }
     return this.values[key];
   }
 
@@ -63,5 +72,24 @@ describe("OpenAIProvider", () => {
     expect(firstClient.close).toHaveBeenCalledTimes(1);
     expect(firstCreate).toHaveBeenCalledTimes(1);
     expect(secondCreate).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses the cached client when secret resolution fails", async () => {
+    const secrets = new StubSecretsStore({ "provider:openai:apiKey": "sk-stable" });
+    const create = vi.fn().mockResolvedValue({ choices: [{ message: { content: "ok" } }] });
+    const client = { chat: { completions: { create } } };
+    const clientFactory = vi.fn().mockResolvedValue(client);
+    const provider = new OpenAIProvider(secrets, { clientFactory, defaultModel: "gpt" });
+
+    const firstResponse = await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(firstResponse.output).toBe("ok");
+    expect(clientFactory).toHaveBeenCalledTimes(1);
+
+    secrets.setFailure(new Error("vault unavailable"));
+
+    const secondResponse = await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(secondResponse.output).toBe("ok");
+    expect(clientFactory).toHaveBeenCalledTimes(1);
+    expect(create).toHaveBeenCalledTimes(2);
   });
 });

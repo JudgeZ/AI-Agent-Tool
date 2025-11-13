@@ -94,8 +94,21 @@ export class BedrockProvider implements ModelProvider {
   constructor(private readonly secrets: SecretsStore, private readonly options: BedrockProviderOptions = {}) {}
 
   private async getClient(): Promise<BedrockClient> {
-    const credentials = await this.resolveCredentials();
     const currentPromise = this.clientPromise;
+    let credentials!: {
+      region: string;
+      accessKeyId: string;
+      secretAccessKey: string;
+      sessionToken?: string;
+    };
+    try {
+      credentials = await this.resolveCredentials();
+    } catch (error) {
+      if (currentPromise && this.clientCredentials) {
+        return currentPromise;
+      }
+      throw error;
+    }
 
     if (currentPromise && this.areCredentialsEqual(this.clientCredentials, credentials)) {
       return currentPromise;

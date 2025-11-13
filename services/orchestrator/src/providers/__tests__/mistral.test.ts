@@ -4,9 +4,18 @@ import type { SecretsStore } from "../../auth/SecretsStore.js";
 import { MistralProvider } from "../mistral.js";
 
 class StubSecretsStore implements SecretsStore {
+  private failure?: Error;
+
   constructor(private readonly values: Record<string, string> = {}) {}
 
+  setFailure(error: Error | undefined) {
+    this.failure = error;
+  }
+
   async get(key: string) {
+    if (this.failure) {
+      throw this.failure;
+    }
     return this.values[key];
   }
 
@@ -48,5 +57,24 @@ describe("MistralProvider", () => {
     expect(firstClient.close).toHaveBeenCalledTimes(1);
     expect(firstChat).toHaveBeenCalledTimes(1);
     expect(secondChat).toHaveBeenCalledTimes(1);
+  });
+
+  it("reuses the cached client when secret resolution fails", async () => {
+    const secrets = new StubSecretsStore({ "provider:mistral:apiKey": "sk-stable" });
+    const chat = vi.fn().mockResolvedValue({ choices: [{ message: { content: "ok" } }] });
+    const client = { chat };
+    const clientFactory = vi.fn().mockResolvedValue(client);
+    const provider = new MistralProvider(secrets, { clientFactory, defaultModel: "model" });
+
+    const first = await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(first.output).toBe("ok");
+    expect(clientFactory).toHaveBeenCalledTimes(1);
+
+    secrets.setFailure(new Error("vault unavailable"));
+
+    const second = await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(second.output).toBe("ok");
+    expect(clientFactory).toHaveBeenCalledTimes(1);
+    expect(chat).toHaveBeenCalledTimes(2);
   });
 });
