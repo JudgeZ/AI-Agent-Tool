@@ -9,11 +9,23 @@
     "skipLibCheck": true,
     "declaration": true,
     "declarationMap": true,
-    "types": ["node", "vitest"],
-    "typeRoots": ["./src/types", "./node_modules/@types"],
+    "types": [
+      "node",
+      "vitest"
+    ],
+    "typeRoots": [
+      "./src/types",
+      "./node_modules/@types",
+      "./node_modules"
+    ],
     "rootDir": "src",
     "outDir": "dist"
   },
-  "include": ["src/**/*"],
-  "exclude": ["dist", "node_modules"]
+  "include": [
+    "src/**/*"
+  ],
+  "exclude": [
+    "dist",
+    "node_modules"
+  ]
 }
