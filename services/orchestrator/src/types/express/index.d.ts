@@ -1,4 +1,4 @@
-import type { SessionRecord } from "../auth/SessionStore.js";
+import type { SessionRecord } from "../../auth/SessionStore.js";
 
 declare global {
   namespace Express {
