@@ -231,16 +231,16 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*
 		return
 	}
 	redirectURI := params.RedirectURI
-	if err := validateClientRedirect(redirectURI); err != nil {
+	if redirectErr := validateClientRedirect(redirectURI); redirectErr != nil {
 		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, map[string]any{
 			"provider":           provider,
-			"reason":             err.Error(),
+			"reason":             redirectErr.Error(),
 			"redirect_uri_hash":  redirectHash(redirectURI),
 			"redirect_uri_host":  redirectHost(redirectURI),
 			"validation_failure": true,
 		})
 		writeValidationError(w, r, []validationError{
-			{Field: "redirect_uri", Message: err.Error()},
+			{Field: "redirect_uri", Message: redirectErr.Error()},
 		})
 		return
 	}
@@ -264,7 +264,7 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*
 		State:        state,
 	}
 
-	if err := setStateCookie(w, r, trustedProxies, allowInsecureStateCookie, data); err != nil {
+	if stateErr := setStateCookie(w, r, trustedProxies, allowInsecureStateCookie, data); stateErr != nil {
 		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, map[string]any{
 			"provider":          provider,
 			"reason":            "state_persistence_failed",
