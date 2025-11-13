@@ -6,7 +6,7 @@
     "aidt": "dist/index.js"
   },
   "scripts": {
-    "build": "tsc --project tsconfig.json",
+    "build": "esbuild src/index.ts --bundle --platform=node --format=cjs --sourcemap --outfile=dist/index.js --banner:js=\"#!/usr/bin/env node\"",
     "dev": "ts-node src/index.ts",
     "test": "npm run build && node --test tests/*.test.js",
     "test:coverage": "npm run build && c8 --check-coverage --branches 60 --functions 60 --lines 60 --statements 60 node --test tests/*.test.js"
