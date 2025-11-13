@@ -16,6 +16,7 @@ export const PlanStepSchema = z.object({
   timeoutSeconds: z.number().int().nonnegative().default(0),
   approvalRequired: z.boolean().default(false),
   input: z.record(z.any()).default({}),
+  summary: z.string().optional(),
   metadata: z.record(z.any()).default({})
 });
 

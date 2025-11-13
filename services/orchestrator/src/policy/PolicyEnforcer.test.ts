@@ -364,7 +364,7 @@ describe("PolicyEnforcer", () => {
       body: ""
     });
 
-    const cacheStore: { value?: PolicyDecision } = {};
+    const cacheStore: { value: PolicyDecision | null } = { value: null };
     const cache: PolicyDecisionCache = {
       get: vi.fn(async () => cacheStore.value),
       set: vi.fn(async (_key: string, decision: PolicyDecision) => {

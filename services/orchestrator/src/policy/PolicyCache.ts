@@ -1,4 +1,4 @@
-import { createClient, type RedisClientType } from "redis";
+import { createClient } from "redis";
 
 import type { AppConfig } from "../config.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
@@ -96,13 +96,15 @@ type RedisCacheOptions = {
   maxEntries: number;
 };
 
+type RedisClient = ReturnType<typeof createClient>;
+
 class RedisPolicyDecisionCache implements PolicyDecisionCache {
   private readonly redisUrl: string;
   private readonly keyPrefix: string;
   private readonly ttlSeconds: number;
   private readonly memory: MemoryPolicyDecisionCache;
-  private client: RedisClientType | null = null;
-  private connecting: Promise<RedisClientType> | null = null;
+  private client: RedisClient | null = null;
+  private connecting: Promise<RedisClient> | null = null;
   private closed = false;
 
   constructor(options: RedisCacheOptions) {
@@ -122,7 +124,7 @@ class RedisPolicyDecisionCache implements PolicyDecisionCache {
     return `${this.keyPrefix}:${key}`;
   }
 
-  private async getClient(): Promise<RedisClientType | null> {
+  private async getClient(): Promise<RedisClient | null> {
     if (this.closed) {
       return null;
     }
