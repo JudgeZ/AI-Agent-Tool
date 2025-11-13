@@ -60,7 +60,7 @@ async function newAgent(name: string) {
 
   const templatePath = path.resolve(repoRoot, "docs", "agents", "templates", "agent.md");
   if (!fs.existsSync(templatePath)) {
-    logger.error("Template not found for agent creation", { templatePath });
+    logger.error({ templatePath }, "Template not found for agent creation");
     printErrorLine("Template not found:", templatePath);
     process.exit(1);
   }

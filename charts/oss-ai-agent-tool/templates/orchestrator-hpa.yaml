@@ -21,6 +21,6 @@ spec:
           name: {{ .metricName | default "queue_depth" }}
         target:
           type: AverageValue
-          averageValue: {{ printf "%d" (.targetQueueDepth | default 5) }}
+          averageValue: {{ int (.targetQueueDepth | default 5) }}
 {{- end }}
 {{- end }}

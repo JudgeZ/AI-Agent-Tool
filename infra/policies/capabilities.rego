@@ -57,9 +57,13 @@ tenant_role_capabilities[cap] {
 
 effective_capabilities[cap] {
   subject_capabilities[cap]
-} else {
+}
+
+effective_capabilities[cap] {
   role_capabilities[cap]
-} else {
+}
+
+effective_capabilities[cap] {
   tenant_role_capabilities[cap]
 }
 

@@ -173,6 +173,18 @@ spec:
                   name: {{ $root.Values.auth.oidc.clientSecretSecretName | quote }}
                   key: {{ ($root.Values.auth.oidc.clientSecretKey | default "client-secret") | quote }}
           {{- end }}
+          {{- with .Values.gatewayApi.envFrom }}
+          envFrom:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.gatewayApi.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.gatewayApi.resources }}
+          resources:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- if $gatewayTlsEnabled }}
           volumeMounts:
             - name: orchestrator-client-tls

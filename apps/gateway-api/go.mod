@@ -1,8 +1,8 @@
 module github.com/JudgeZ/OSS-AI-Agent-Tool/apps/gateway-api
 
-go 1.24.0
+go 1.22
 
-toolchain go1.24.3
+toolchain go1.22.6
 
 require (
 	github.com/go-playground/validator/v10 v10.22.0

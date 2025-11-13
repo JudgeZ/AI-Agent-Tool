@@ -15,6 +15,36 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  detect:
+    name: Detect language components
+    runs-on: ubuntu-latest
+    outputs:
+      has_go: ${{ steps.detect-go.outputs.present }}
+      has_rust: ${{ steps.detect-rust.outputs.present }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Detect Go modules
+        id: detect-go
+        shell: bash
+        run: |
+          if git ls-files '**/go.mod' | grep -q .; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Detect Cargo manifests
+        id: detect-rust
+        shell: bash
+        run: |
+          if git ls-files '**/Cargo.toml' | grep -q .; then
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
+
   opa:
     name: OPA policy build & tests
     runs-on: ubuntu-latest
@@ -41,7 +71,9 @@ jobs:
   go:
     name: Go lint, test & coverage
     runs-on: ubuntu-latest
-    if: ${{ hashFiles('**/go.mod') != '' }}
+    needs:
+      - detect
+    if: ${{ needs.detect.outputs.has_go == 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -52,13 +84,42 @@ jobs:
           go-version: '1.22'
           check-latest: true
 
+      - name: Compute Go dependency hash
+        id: go-deps-hash
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import hashlib
+          import os
+          import subprocess
+
+          result = subprocess.run(
+              ['git', 'ls-files', '**/go.sum'],
+              check=True,
+              capture_output=True,
+              text=True,
+          )
+          paths = [p for p in result.stdout.splitlines() if p]
+          if not paths:
+              digest = 'none'
+          else:
+              hasher = hashlib.sha256()
+              for rel in sorted(paths):
+                  with open(rel, 'rb') as fh:
+                      hasher.update(fh.read())
+              digest = hasher.hexdigest()
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as fh:
+              fh.write(f"hash={digest}\n")
+          PY
+
       - name: Cache Go modules
         uses: actions/cache@v4
         with:
           path: |
             ~/go/pkg/mod
             ~/.cache/go-build
-          key: ${{ runner.os }}-go-${{ hashFiles('**/go.sum') }}
+          key: ${{ runner.os }}-go-${{ steps.go-deps-hash.outputs.hash }}
           restore-keys: |
             ${{ runner.os }}-go-
 
@@ -190,11 +251,21 @@ jobs:
           cache: 'npm'
           cache-dependency-path: apps/gui/package-lock.json
 
+      - name: Compute Playwright cache key
+        id: gui-cache-key
+        run: |
+          if [ -f package-lock.json ]; then
+            hash=$(sha256sum package-lock.json | cut -d' ' -f1)
+          else
+            hash=none
+          fi
+          echo "hash=$hash" >> "$GITHUB_OUTPUT"
+
       - name: Cache Playwright browsers
         uses: actions/cache@v4
         with:
           path: ~/.cache/ms-playwright
-          key: ${{ runner.os }}-playwright-${{ hashFiles('apps/gui/package-lock.json') }}
+          key: ${{ runner.os }}-playwright-${{ steps.gui-cache-key.outputs.hash }}
           restore-keys: |
             ${{ runner.os }}-playwright-
 
@@ -232,7 +303,9 @@ jobs:
   rust:
     name: Rust fmt, lint & coverage
     runs-on: ubuntu-latest
-    if: ${{ hashFiles('**/Cargo.toml') != '' }}
+    needs:
+      - detect
+    if: ${{ needs.detect.outputs.has_rust == 'true' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -249,14 +322,45 @@ jobs:
             libcairo2-dev \
             libpango1.0-dev \
             libsoup-3.0-dev \
-            libwebkit2gtk-4.0-dev \
             libappindicator3-dev
+          if ! sudo apt-get install -y libwebkit2gtk-4.1-dev; then
+            sudo apt-get install -y libwebkit2gtk-4.0-dev
+          fi
 
       - name: Set up Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           toolchain: stable
           components: clippy rustfmt
+
+      - name: Compute Cargo dependency hash
+        id: cargo-lock-hash
+        shell: bash
+        run: |
+          python3 <<'PY'
+          import hashlib
+          import os
+          import subprocess
+
+          result = subprocess.run(
+              ['git', 'ls-files', '**/Cargo.lock'],
+              check=True,
+              capture_output=True,
+              text=True,
+          )
+          paths = [p for p in result.stdout.splitlines() if p]
+          if not paths:
+              digest = 'none'
+          else:
+              hasher = hashlib.sha256()
+              for rel in sorted(paths):
+                  with open(rel, 'rb') as fh:
+                      hasher.update(fh.read())
+              digest = hasher.hexdigest()
+
+          with open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8') as fh:
+              fh.write(f"hash={digest}\n")
+          PY
 
       - name: Cache Cargo registry
         uses: actions/cache@v4
@@ -267,7 +371,7 @@ jobs:
             ~/.cargo/registry/cache
             ~/.cargo/git/db
             target
-          key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ steps.cargo-lock-hash.outputs.hash }}
           restore-keys: |
             ${{ runner.os }}-cargo-
 
@@ -295,6 +399,7 @@ jobs:
       - go
       - typescript
       - rust
+    if: ${{ needs.typescript.result == 'success' && (needs.go.result == 'success' || needs.go.result == 'skipped') && (needs.rust.result == 'success' || needs.rust.result == 'skipped') }}
     defaults:
       run:
         working-directory: services/orchestrator
