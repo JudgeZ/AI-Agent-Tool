@@ -2,7 +2,7 @@
 
 use std::env;
 use std::path::{Component, Path, PathBuf};
-use num::Integer
+use num::Integer;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use thiserror::Error;
@@ -326,7 +326,6 @@ fn luhn_check(digits: &str) -> bool {
         sum += value;
         double = !double;
     }
-
     sum.is_multiple_of(10)
 }
 
