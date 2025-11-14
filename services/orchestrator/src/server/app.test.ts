@@ -138,6 +138,33 @@ describe("POST /plan security", () => {
     expect(submitPlanStepsMock).not.toHaveBeenCalled();
   });
 
+  it("returns 401 with invalid session details when the session id fails validation", async () => {
+    const config = buildConfig({
+      auth: {
+        oidc: {
+          enabled: true,
+        },
+      },
+    });
+
+    const app = await createServer(config);
+
+    const response = await request(app)
+      .post("/plan")
+      .set("Cookie", "oss_session=bad-token")
+      .send({ goal: "Ship it" })
+      .expect(401);
+
+    expect(response.body).toMatchObject({
+      code: "unauthorized",
+      message: "invalid session",
+      details: { source: "cookie" },
+    });
+    expect(policyMock.enforceHttpAction).not.toHaveBeenCalled();
+    expect(createPlanMock).not.toHaveBeenCalled();
+    expect(submitPlanStepsMock).not.toHaveBeenCalled();
+  });
+
   it("returns 403 and deny details when policy rejects plan creation", async () => {
     const denyDetails = [
       { reason: "agent_profile_missing", capability: "plan.create" },

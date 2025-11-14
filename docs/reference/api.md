@@ -12,6 +12,14 @@ This reference covers the HTTP surfaces exposed by the orchestrator service. All
 
 Rate limiting is enforced per endpoint using the defaults from `config.server.rateLimits.*` (plan: 60 req/min, chat: 120 req/min unless overridden). All responses include an `X-Trace-Id` header when tracing is enabled.
 
+## Authentication
+
+Enterprise deployments enable OIDC SSO. The orchestrator issues an `oss_session` cookie whose value is a UUIDv4. Clients must
+forward this cookie on subsequent requests (or send the same value in an `Authorization: Bearer <session-id>` header). Any
+session identifier that is missing, blank, longer than 64 characters, or not a valid UUID is rejected with a `400 Invalid
+Request` response and logged as an audit failure. Ensure HTTP clients preserve the exact cookie value without applying
+additional encoding.
+
 ## Common Errors
 
 | Status | Meaning | Notes |
