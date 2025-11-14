@@ -40,17 +40,17 @@ function resolveGatewayConfig(): GatewayConfig {
     const parsed = new URL(rawBaseUrl);
     if (!parsed.hostname) {
       throw new Error(
-        `Invalid gateway URL: ${rawBaseUrl}. Gateway URL must include a hostname.`,
+        "Invalid gateway URL. Gateway URL must include a hostname.",
       );
     }
     if (parsed.username || parsed.password) {
       throw new Error(
-        `Invalid gateway URL: ${rawBaseUrl}. Credentials in URLs are not supported.`,
+        "Invalid gateway URL. Credentials in URLs are not supported.",
       );
     }
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
       throw new Error(
-        `Invalid gateway URL: ${rawBaseUrl}. Gateway URL must use http or https.`,
+        "Invalid gateway URL. Gateway URL must use http or https.",
       );
     }
     baseUrl = parsed.toString().replace(/\/$/, "");
@@ -58,7 +58,7 @@ function resolveGatewayConfig(): GatewayConfig {
     throw new Error(
       error instanceof Error && error.message.includes("Invalid gateway URL")
         ? error.message
-        : `Invalid gateway URL: ${rawBaseUrl}. Set AIDT_GATEWAY_URL or GATEWAY_URL to a valid HTTP(S) URL.`,
+        : "Invalid gateway URL. Set AIDT_GATEWAY_URL or GATEWAY_URL to a valid HTTP(S) URL.",
     );
   }
 

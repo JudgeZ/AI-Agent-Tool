@@ -213,8 +213,9 @@ test("aidt plan enforces secure gateway url schemes", async () => {
       env
     }),
     error => {
-      assert.match(String(error), /Invalid gateway URL: ftp:\/\/127\.0\.0\.1:8080/);
+      assert.match(String(error), /Invalid gateway URL\./);
       assert.match(String(error), /Gateway URL must use http or https\./);
+      assert.doesNotMatch(String(error), /ftp:\/\//);
       return true;
     }
   );
