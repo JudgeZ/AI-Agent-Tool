@@ -277,6 +277,7 @@ describe("OidcController", () => {
       email: "user@example.com",
       roles: ["admin", "default-role"],
     });
+    expect(response.body).not.toHaveProperty("tokens");
     const cookies = response.headers["set-cookie"];
     expect(Array.isArray(cookies)).toBe(true);
     const sessionCookieList = Array.isArray(cookies) ? cookies : [];
@@ -298,6 +299,11 @@ describe("OidcController", () => {
       subject: "user-123",
       tenantId: "tenant-1",
     });
+    expect(sessionCheck.body.session).not.toHaveProperty("tokens");
+
+    const storedSession = sessionStore.getSession(response.body.sessionId);
+    expect(storedSession).toBeDefined();
+    expect(storedSession).not.toHaveProperty("tokens");
 
     const logoutResponse = await request(app)
       .post("/auth/logout")
@@ -364,6 +370,7 @@ describe("OidcController", () => {
 
     expect(response.status, JSON.stringify(response.body)).toBe(200);
     expect(response.body).toMatchObject({ tenantId: "nested-tenant" });
+    expect(response.body).not.toHaveProperty("tokens");
 
     const nestedCookies = response.headers["set-cookie"];
     const nestedCookieList = Array.isArray(nestedCookies)
@@ -383,6 +390,7 @@ describe("OidcController", () => {
     expect(sessionCheck.body.session).toMatchObject({
       tenantId: "nested-tenant",
     });
+    expect(sessionCheck.body.session).not.toHaveProperty("tokens");
 
     const auditCall = auditSpy.mock.calls.find(
       ([event]) =>
@@ -718,7 +726,6 @@ describe("OidcController", () => {
         roles: ["viewer"],
         scopes: ["openid"],
         claims: {},
-        tokens: {},
       },
       3600,
       Date.now() - 60_000,
