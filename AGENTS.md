@@ -1,386 +1,297 @@
-1) Agent roster & responsibilities
+# OSS-AI-Agent-Tool – Agents & Engineering Guidelines
 
-Each agent is a modular capability. The Orchestrator composes them into plans and enforces guardrails.
-
-Agent	Core responsibilities	Key outputs
-Orchestrator (system)	Plan workflows, choose tools/providers, enforce approvals, stream SSE events, propagate trace IDs.	plan.json, SSE events, job state, audit trail
-Architect	Architecture & ADRs, diagrams, component boundaries, technology selection.	/docs/architecture/*, /docs/architecture/adr/*
-Code Writer	Minimal, testable diffs, multi‑file edits, refactors; follows language standards.	PRs with code + tests
-Indexer	Hybrid context (symbolic/LSP + semantic + temporal); answers structural/semantic queries.	Symbol graph, embeddings, temporal deltas
-Test Runner	Unit/integration/property tests; artifact capture; flake control.	Test reports, coverage
-Security Auditor	STRIDE, OWASP checks; least‑privilege enforcement; sandbox/egress policy; vuln triage.	Security review notes, policy decisions
-Compliance Advisor	DPIA, data taxonomy, retention, model/system cards; AI Act readiness.	/docs/compliance/*
-Performance Engineer	TTFT/latency budgets, caching, routing strategies; load tests & dashboards.	Perf dashboards, findings
-Docs & UX Writer	Diátaxis docs, CLI & GUI guides, accessibility, screenshots & examples.	/docs/*
-Release Manager	SemVer, release notes, cosign signing, CycloneDX SBOMs, Helm packaging, canary & rollback.	Tags, releases, sboms, charts
-Evaluator	Golden tasks, regression suites, automatic scoring & quality gates.	Eval reports, gating decisions
-2) Architectural doctrine (do not violate)
-
-Dual‑loop orchestration
-
-Inner loop: low‑latency, typed calls (gRPC/HTTP) between orchestrator and tools/agents.
-
-Outer loop: durable jobs & events via RabbitMQ (task routing) or Kafka (event backbone).
-
-Streaming to UI: SSE by default; only use WebSockets for truly bidirectional/voice scenarios.
-
-Hybrid context engine: symbolic (AST/LSP) + semantic (vectors) + temporal (diffs/CI).
-
-Security by default: OAuth 2.1 + PKCE; mTLS; least‑privilege capabilities; OPA/Rego policy gates; sandbox (container/WASM), runAsNonRoot, read‑only root; default‑deny egress.
-
-Data minimization & privacy: ACL checks before retrieval; DLP + secret scanning; content capture OFF by default; retention ≤ 30 days unless configured; tenant keys (CMEK) in enterprise.
-
-Observability first: OpenTelemetry traces for every step; cost & token usage tracked; Jaeger & Langfuse.
-
-Consumer ↔ Enterprise: One codebase; RUN_MODE toggles secrets backend, OAuth callback style, message bus, and policies.
-
-3) Components & languages (binding)
-Component	Language / Tech	Reasoning
-Gateway API (apps/gateway-api)	Go (net/http)	Fast SSE, small static binary, simple ops
-Orchestrator (services/orchestrator)	TypeScript/Node 20 (Express + OTel)	Velocity, rich provider SDKs, JSON schemas
-Queue adapters	TypeScript (amqplib for RabbitMQ; kafkajs for Kafka)	Pluggable under a single interface
-Provider registry (src/providers/*)	TypeScript	SDK ecosystem, shared config & auth
-Indexer (services/indexer)	Rust (tree‑sitter/LSP)	Performance, memory safety, AST precision
-Memory/Cache glue (integrated)	TypeScript (future)	Currently handled inside orchestrator; dedicated service deferred
-GUI (apps/gui)	Tauri (Rust) + SvelteKit (TS)	Desktop + modern reactive UI; SSE‑friendly
-CLI (apps/cli)	TypeScript (esbuild)	Cross‑platform scripting
-Policies (infra/policies/*.rego)	Rego (OPA)	Declarative, auditable authorization
-K8s packaging (charts/*)	Helm YAML	Enterprise standard
-RPC contracts (*.proto)	Protobuf	Typed, multi‑language stubs
-4) Knowledge & retrieval rules (what agents must know)
-
-Repo sources: code, docs, ADRs, Helm, workflows, agent profiles.
-
-Operational signals: queue depth, p95 latencies, cache hit rate, error budgets.
-
-Rules:
-
-Enforce ACL before reading; DLP+secret scan before embedding or displaying.
-
-Annotate citations as path@sha and quote minimally.
-
-Limit context to relevant chunks; prefer references over bulk paste.
-
-Memory model: working (per run), episodic (session), semantic (long‑term vectors), with clear expiry & privacy settings.
-
-5) Planning & execution policy
-
-Plan‑then‑execute: every operation starts with a minimal, verifiable plan.
-
-Label steps by capability: {repo.read, repo.write, test.run, network.egress, policy.enforce}.
-
-Approvals required for repo.write and network.egress in consumer mode; enterprise policies may allow automation within guarded scopes.
-
-All steps are idempotent and time‑bounded; retries use exponential backoff; circuit breakers on external calls.
-
-Stream progress to the UI (SSE) with state transitions: waiting_approval → approved → queued → running → completed|failed (non-approval steps start directly at `queued`).
-
-Plan JSON (canonical excerpt)
-
-{
-  "id": "plan-<uuid>",
-  "goal": "Upgrade framework and fix failing tests",
-  "steps": [
-    {
-      "id": "s1",
-      "action": "index_repo",
-      "tool": "repo_indexer",
-      "capability": "repo.read",
-      "capabilityLabel": "Read repository",
-      "timeoutSeconds": 300,
-      "approvalRequired": false,
-      "labels": ["repo", "automation"]
-    },
-    {
-      "id": "s2",
-      "action": "apply_changes",
-      "tool": "code_writer",
-      "capability": "repo.write",
-      "capabilityLabel": "Apply repository changes",
-      "timeoutSeconds": 900,
-      "approvalRequired": true,
-      "labels": ["repo", "automation", "approval"]
-    },
-    {
-      "id": "s3",
-      "action": "run_tests",
-      "tool": "test_runner",
-      "capability": "test.run",
-      "capabilityLabel": "Execute tests",
-      "timeoutSeconds": 900,
-      "approvalRequired": false,
-      "labels": ["repo", "automation"]
-    },
-    {
-      "id": "s4",
-      "action": "open_pr",
-      "tool": "github_client",
-      "capability": "github.write",
-      "capabilityLabel": "Open pull request",
-      "timeoutSeconds": 300,
-      "approvalRequired": true,
-      "labels": ["automation", "approval"]
-    }
-  ],
-  "successCriteria": ["All tests pass","CI green","Docs updated"]
-}
-
-
-SSE event (AG‑UI‑style)
-
-{
-  "event":"plan.step",
-  "trace_id":"<trace>",
-  "plan_id":"<id>",
-  "step":{"id":"s2","state":"waiting_approval","capability":"repo.write","summary":"Apply edits to 4 files"}
-}
-
-6) Security posture (operationalized) — STRIDE mapping
-Threat	Primary risks	Controls (where)
-S – Spoofing	Forged agent/service identity	OAuth 2.1 + PKCE for clients, OIDC for enterprise; mTLS between services; short‑lived JWTs with audience/tenant claims
-T – Tampering	Prompt/plan or diff manipulation	Signed prompts for privileged flows; append‑only audit; signed commits/tags; OPA policy gates; read‑only FS; non‑root
-R – Repudiation	“I didn’t run that tool/commit that change”	OTel traces (prompt/tool IO metadata); trace‑id ↔ commit‑id ↔ CI; Langfuse lineage
-I – Information disclosure	RAG leaks; PII/secret exposure	Source ACL checks; DLP & secret scanning; DP on vectors (when required); per‑tenant encryption (CMEK)
-D – DoS	Token floods, queue saturation	Rate limits; circuit breakers; queue‑based autoscaling; prompt caching; timeouts & step caps
-E – Elevation of privilege	Over‑privileged tools/agents	Capability‑scoped tools; human approvals; OPA checks; egress allow‑lists; sandbox (container/WASM)
-
-Secrets: never in code; stored in secrets backends; masked in logs; rotated; least scope.
-Content capture: OFF by default; enable only for debugging in non‑prod with approvals.
-
-7) Compliance & privacy
-
-DPIA template and data inventory under docs/compliance/.
-
-EU AI Act readiness: define intended use, datasets, risks, mitigations; system/model cards.
-
-Data subject rights: document export & deletion procedures.
-
-Data retention: logs/traces ≤ 30 days by default (configurable per tenant).
-
-Regionalization (if needed): keep data in region; document endpoints & data flows.
-
-8) GitHub standards & features
-
-Branching: trunk‑based, short‑lived feature branches.
-
-Commit messages: Conventional Commits (signed; DCO on).
-
-CODEOWNERS: ownership for key paths (apps/, services/, charts/, docs/).
-
-Templates: PULL_REQUEST_TEMPLATE.md and .github/ISSUE_TEMPLATE/* (feature/bug/security).
-
-Labels & projects: type:*, priority:P0‑P3, deps, security, breaking, etc.
-
-Release Drafter: auto‑draft release notes from PR titles & labels.
-
-GHCR: images published as ghcr.io/<owner>/oss-ai-agent-tool/<service>.
-
-Pages & OCI: Helm chart published to GitHub Pages AND oci://ghcr.io/<owner>/oss-ai-agent-tool/charts.
-
-Renovate: automated dependency PRs (minor/patch auto‑merge; major grouped).
-
-9) Documentation (Diátaxis) & UX
-
-Tutorials (“Hello world”, “Upgrade a dependency safely”)
-
-How‑to (“Add a provider with OAuth”, “Switch RabbitMQ→Kafka”, “Add a new MCP tool”)
-
-Reference (APIs, event schemas, plan schema, CLI flags, Helm values)
-
-Explanation (architecture, ADRs, tradeoffs, performance rationale)
-
-Accessibility: keyboard navigation, ARIA labels, color contrast; basic screen reader flows.
-Screenshots: sanitized, small diffs; include CLI samples and SSE traces where relevant.
-
-10) CI/CD & supply chain (authoritative)
-
-Workflows (names may already exist; otherwise agents must create them):
-
-ci.yml: on PR & main — build & unit tests for Go/Node/Rust; docker build smoke.
-
-security.yml: Trivy (FS/config + images), CodeQL (Go & JS/TS), Semgrep (SAST), gitleaks (secrets).
-
-release-images.yml: on tags v* — build + push images to GHCR, cosign keyless sign, CycloneDX SBOM generation & attach to release.
-
-release-charts.yml: on v*/chart-* — lint, package, publish to Pages + GHCR (OCI).
-
-release-drafter.yml: auto‑draft release notes.
-
-renovate.json: automated dependency updates.
-
-Gates
-
-PRs block on tests, code scanning (HIGH/CRITICAL, secrets), and policy checks.
-
-Releases require passing evals (if applicable), signatures, SBOMs, and environment approvals (enterprise).
-
-11) ALM: releases, incidents, ownership
-
-Versioning: SemVer; tag vX.Y.Z.
-
-Channels: alpha, beta, stable; use feature flags.
-
-Release checklist: images built, signed, SBOMs attached; chart released; notes published; docs updated.
-
-Incident mgmt: severity levels, on‑call rotations, runbooks, postmortems within 5 business days.
-
-RACI: ensure each epic has accountable A and responsible R roles; list in issue/PR description.
-
-12) Performance & cost engineering
-
-Budgets (defaults): p95 TTFT ≤ 300 ms (LAN), p95 orchestrator RPC < 50 ms, cache hit rate ≥ 40% after 30 days.
-
-Practices: prompt + retrieval caching; model routing to smallest model meeting eval thresholds; batching where safe; incremental indexing; queue‑based autoscaling (HPA on lag/depth).
-
-Dashboards: latency, TTFT, token/cost, cache hit, queue depth, error rate, eval pass rate.
-
-Load tests: periodic synthetic workloads; alert on SLO burn.
-
-13) Consumer vs enterprise behaviors
-Aspect	Consumer	Enterprise
-Secrets	Local encrypted keystore	Vault or cloud secrets manager; rotation
-Auth to providers	API keys; OAuth loopback where supported	OIDC/OAuth; service principals; SSO
-Message bus	RabbitMQ default	Kafka backbone (RabbitMQ optional)
-Deploy	Desktop + Docker Compose	Kubernetes + Helm; namespaces per env
-Data	Local‑first; minimal retention	Retention policies, CMEK per tenant
-Governance	Manual approvals more frequent	Policy‑driven approvals; audit automation
-14) Agent profiles (agents/<name>/agent.md)
-
-Agent files use YAML front‑matter + narrative guidance.
+> This document defines how humans and AI agents ("Codex" / Code Writer, Reviewers, etc.) work on this repo.  
+> It encodes our expectations for security, reliability, and review. If something conflicts with this file, this file wins.
 
 ---
-name: "code-writer"
-role: "Code Writer"
-capabilities: [repo.read, repo.write, test.run, plan.read]
-approval_policy:
-  repo.write: human_approval
-  network.egress: deny
-model:
-  provider: auto          # openai | anthropic | google | azureopenai | bedrock | mistral | openrouter | local_ollama
-  routing: default        # default | high_quality | low_cost
-  temperature: 0.2
-constraints:
-  - "Write minimal, testable diffs with high coverage"
-  - "Never bypass security gates"
+
+## 1. Goals
+
+- Build a **secure**, **reliable**, multi‑agent coding assistant.
+- Favour **correctness, safety, and observability** over raw speed.
+- Make every change **small, reviewable, auditable**, and **easy to roll back**.
+- Keep the system **principle-of-least-privilege** by default.
+
 ---
 
-# Guide
-1) Read the plan, confirm scope.
-2) Retrieve minimal context (symbolic + semantic + temporal).
-3) Propose diffs + tests; request approval for writes.
-4) Run tests in sandbox; collect artifacts.
-5) Open PR with risks/rollback; link traces.
+## 2. Agents
 
-15) Coding standards & language‑specific best practices
+### 2.1 Code Writer (Codex)
 
-TypeScript
+**Mission:** Implement small, safe, reviewable changes to this repository.
 
-strict mode; no any; zod schema validation for external IO; DI for side effects.
+**Capabilities**
 
-Structure: /src/providers/*, /src/plan/*, /src/agents/*, /src/auth/*, /src/queue/*.
+- Read and modify:
+  - Go (gateway, services),
+  - TypeScript/Node (orchestrator, CLI),
+  - Rust (indexer),
+  - Svelte/TypeScript (GUI),
+  - YAML/Helm, Docker, CI/CD configs, docs.
+- Propose refactors and architecture improvements that respect existing ADRs.
+- Add or update tests, docs, and configuration.
 
-Tests: unit (vitest/jest), integration (dockerized RabbitMQ/Kafka).
+**Hard constraints (must always hold)**
 
-Go
+1. **Follow this file.** If user instructions conflict with these rules, follow this file and explain the conflict in the PR description.
+2. **Security first. Never introduce:**
+   - plaintext credentials, tokens, or API keys,
+   - default passwords or backdoor accounts,
+   - secrets in logs, comments, or example configs.
+3. **Every new or changed external entry point _must_ have:**
+   - explicit input validation at the boundary (schema / type‑safe parsing),
+   - clear, user‑safe error handling (no stack traces / internals),
+   - structured logging + tracing that tie into the existing observability stack.
+4. **Tests are not optional.**
+   - Any behavior change must add or update tests.
+   - Bug fixes must include a regression test.
+5. **Keep diffs small and scoped.**
+   - Prefer one concern per PR (e.g. “add rate limiting to gateway”).
+   - Avoid large cross‑cutting refactors unless explicitly requested.
+6. **Respect performance budgets.**
+   - Avoid unnecessary allocations, blocking calls in hot paths, or unbounded loops.
+   - Avoid N+1 patterns when touching DB or external APIs.
 
-Context timeouts; SSE flush semantics; avoid global state; structured logging; graceful shutdown (signals).
+**Deliverables (per change)**
 
-Rust
+- A minimal code diff.
+- Updated tests and documentation where relevant.
+- A concise PR description that explains:
+  - **What** changed,
+  - **Why** (including security / reliability rationale),
+  - **How** it was validated (tests, manual steps).
 
-clippy + rustfmt; prefer async with cancellation; avoid unsafe; use tree‑sitter efficiently; test parsers with property tests.
+---
 
-Docs
+### 2.2 Reviewer Agent
 
-Keep examples runnable; include CLI commands; validate links in CI.
+**Mission:** Act as a senior engineer reviewing a proposed change (human or AI‑authored).
 
-16) Templates
+**Responsibilities**
 
-PR checklist (short)
+- Check for correctness, security, and alignment with this file and ADRs.
+- Call out missing:
+  - input validation,
+  - audit logging,
+  - rate limiting / resource protection,
+  - observability (logs, metrics, traces),
+  - tests and documentation.
+- Suggest simpler alternatives when the implementation is more complex than needed.
 
- Problem & approach described
+**Expected output**
 
- Tests added/updated; coverage acceptable
+- A list of **blocking issues** (must fix before merge).
+- A list of **non‑blocking suggestions** (nice to have).
+- Quick **risk assessment**: impact on security, performance, and operability.
 
- Docs updated (Diátaxis section)
+---
 
- Security impact (caps/egress/sandbox) assessed
+### 2.3 Security Reviewer Agent
 
- Performance impact (latency/cache) noted
+**Mission:** Look only through a security lens.
 
- Rollback plan included
+**Checklist**
 
-Issue (feature)
+For the code under review, explicitly check:
 
-**Problem**
-<what pain?>
+- Authentication & authorization are enforced where required.
+- **Input validation** is present at all external boundaries.
+- **Rate limiting / quotas** exist for public and long‑lived endpoints (HTTP, SSE, queues).
+- **Secrets handling**:
+  - no secrets in code, logs, or sample configs,
+  - no default credentials,
+  - production secrets flow from secret stores, not env defaults.
+- **Audit logging** exists for:
+  - auth events,
+  - policy decisions,
+  - privileged operations and tool invocations.
+- **Transport security** and headers:
+  - HTTPS / TLS assumptions are respected,
+  - security headers (CSP, HSTS, X‑Frame‑Options, X‑Content‑Type-Options) are configured where applicable.
+- **Session management**:
+  - session IDs are regenerated on login,
+  - cookies are `Secure`, `HttpOnly`, and `SameSite` where possible.
 
-**Proposal**
-<how to solve?>
+---
 
-**Acceptance Criteria**
-- [ ] measurable outcome 1
-- [ ] measurable outcome 2
+## 3. Engineering Standards
 
-**Notes/Refs**
-<links, ADRs>
+### 3.1 General
 
+- Prefer **readability** over cleverness.
+- Avoid magic numbers; name important constants.
+- Fail **fast and loudly** on misconfiguration.
+- Avoid global mutable state; prefer dependency injection or context objects.
+- Keep public interfaces small; prefer internal helper functions and modules.
 
-Capability token (example)
+### 3.2 Go (Gateway / services)
 
-{"tool":"repo","capabilities":["read","diff","apply(write:approved)"]}
+- Use `context.Context` everywhere and respect timeouts / cancellation.
+- Return structured errors; don’t panic in request handlers.
+- Use structured logging (e.g. `log/slog`) with fields: `trace_id`, `request_id`, `user_id` when available.
+- Don’t share mutable state across goroutines without synchronization.
+- Don’t expose unbounded concurrency (e.g. goroutines in loops) without limits.
 
-17) Anti‑patterns (“don’t” list)
+### 3.3 TypeScript / Node (Orchestrator / CLI)
 
-Don’t apply multi‑file changes without a plan + tests + PR.
+- Enable `strict` mode and **no `any`** unless justified and documented.
+- Use Zod (or equivalent) schemas at process boundaries:
+  - HTTP request bodies & query params,
+  - messages from queues,
+  - configuration objects.
+- Prefer async/await with proper error handling; no unhandled promise rejections.
+- Keep controllers thin; move logic into services / domain modules.
 
-Don’t include large, irrelevant context; minimize.
+### 3.4 Rust (Indexer)
 
-Don’t bypass sandbox, egress allow‑lists, or approvals “just this once.”
+- No `unsafe` unless absolutely required; justify in comments when used.
+- Enable Clippy and fix warnings unless there is a clear justification.
+- Propagate errors with context; avoid silently swallowing them.
+- Consider back‑pressure and bounded queues for concurrent workers.
 
-Don’t merge without updating user‑facing docs and release notes (if visible).
+### 3.5 GUI (Svelte/Tauri) & Frontend
 
-Don’t store secrets in code or logs.
+- No direct access to secrets or long‑lived tokens in the UI.
+- Implement **accessibility**:
+  - ARIA roles and labels,
+  - keyboard navigation,
+  - readable contrast ratios.
+- Handle network failures gracefully with retries and exponential backoff.
+- Never rely on client‑side checks for security decisions.
 
-Don’t skip tracing; every step must have a span.
+### 3.6 YAML / Helm / Infra
 
-18) Readiness checklists
+- Separate dev and prod settings; prod config must be secure by default.
+- Never hard‑code secrets or passwords.
+- Use resource limits and pod security settings where applicable.
+- Make feature flags explicit and documented.
 
-Before merge
+---
 
- Minimal relevant context retrieved; DLP & secret scan passed
+## 4. Security Requirements
 
- JSON plan approved for privileged steps
+For any new feature or change, explicitly consider:
 
- OTel traces & SSE events emitted
+1. **Authentication & Authorization**
+   - Is this endpoint/action public? If not, how is access controlled?
+   - Are capabilities and policies enforced at the right layer?
 
- Tests executed and passing before advancing; if a valid bypass is required, document the rationale and obtain approval prior to proceeding
+2. **Input Validation & Sanitisation**
+   - Validate all external inputs (HTTP, CLI, env, queues) using schemas.
+   - Enforce bounds on size, format, and rate.
+   - Reject on validation failure with safe error messages.
 
- Tests pass; artifacts captured
+3. **Audit Logging**
+   - Log security‑relevant events:
+     - logins, logouts, failed auth,
+     - policy allow/deny decisions,
+     - access to sensitive operations,
+     - tool invocations with side effects.
+   - Do **not** log secrets, tokens, or full payloads containing sensitive data.
 
- PR includes risks/rollback; docs updated
+4. **Rate Limiting & Resource Protection**
+   - Apply per‑user and/or per‑IP limits for:
+     - HTTP endpoints,
+     - SSE / WebSocket connections,
+     - queue‑driven workflows that can be spammed.
+   - Consider global limits or back‑pressure to protect shared resources.
 
- Security & compliance checks passed
+5. **Secrets & Configuration**
+   - No default passwords.
+   - Never print secrets to logs or error messages.
+   - Prefer secret managers, Docker/Kubernetes secrets, or mounted files.
+   - Configuration should have safe defaults and clear override mechanisms.
 
- Performance budgets OK; cache impact measured
+6. **Transport & Session Security**
+   - Assume TLS termination; do not downgrade.
+   - Regenerate session identifiers after login.
+   - Use `Secure`, `HttpOnly`, `SameSite` cookies where applicable.
+   - Enforce security headers on HTTP responses (CSP, HSTS, XFO, XCTO, etc.).
 
-Before release
+---
 
- Images built & cosign signed
+## 5. Observability & Logging
 
- CycloneDX SBOMs attached to Release
+- Every request path should be traceable end‑to‑end:
+  - propagate trace / correlation IDs across services,
+  - emit spans for significant operations.
+- Logs:
+  - structured (JSON) when possible,
+  - include `trace_id`, `request_id`, and relevant resource identifiers,
+  - avoid logging high‑volume noise that obscures important events.
+- Metrics:
+  - basic SLIs (latency, error rate, throughput),
+  - per‑provider and per‑agent metrics where useful.
+- Never disable tracing or logging around security‑critical logic.
 
- Helm chart packaged & published (Pages + OCI)
+---
 
- Release notes drafted (Release Drafter) and finalized
+## 6. Testing & Quality
 
- Canary deploy plan and rollback verified
+- Prefer **fast, deterministic** tests.
+- Types of tests:
+  - unit tests for core logic,
+  - integration tests for service boundaries and policies,
+  - end‑to‑end tests for critical flows.
+- Any bug fix must include a test that fails before the fix and passes after.
+- Avoid relying on real external services in CI; use fakes / mocks.
 
-19) Future work (out of scope for now)
+Target coverage is a guide, not a religion, but as a rule of thumb:
 
-Voice/WS collaboration, plugin marketplace, multi‑region active/active, fine‑tuning/training pipelines.
+- Core services (gateway, orchestrator, indexer): aim for **≥ 80%**.
+- CLI and GUI: aim for **≥ 60%** with emphasis on critical paths.
 
-Advanced dynamic policy learning for approvals.
+---
 
-GPU scheduling & model‑side batching for local acceleration.
+## 7. Anti‑Patterns (don’t do this)
 
-End of AGENTS.md
+The following are **never acceptable**:
+
+- Storing or logging secrets, tokens, passwords, API keys, or private data.
+- Skipping input validation on external boundaries.
+- Shipping code without at least basic audit logging and observability.
+- Adding TODOs for security‑critical work instead of implementing it.
+- Hiding errors instead of handling them or surfacing them appropriately.
+- Introducing global mutable state that is accessed from multiple goroutines/threads without clear synchronization.
+- Writing huge PRs that mix refactors, features, and fixes in one change.
+
+If you must violate a guideline, call it out explicitly with rationale in the PR description and in a comment near the code.
+
+---
+
+## 8. PR Checklist
+
+For every PR, the author (human or agent) should verify:
+
+- [ ] **Scope:** PR is focused on one logical change.
+- [ ] **Security:** Authentication, authorization, validation, and rate limiting are considered and implemented where needed.
+- [ ] **Secrets:** No secrets or default credentials are added or exposed.
+- [ ] **Audit & Observability:** Relevant actions are logged and traced; new endpoints emit metrics as needed.
+- [ ] **Testing:** New / changed behavior is covered by tests; test suite passes locally or in CI.
+- [ ] **Docs:** Documentation updated (README, ADRs, API docs, or comments) where behavior or assumptions changed.
+- [ ] **Roll‑back:** The change can be reverted cleanly if needed.
+
+Reviewers should block the PR if any of the above are clearly missing for a non‑trivial change.
+
+---
+
+## 9. Working with Agents
+
+When you ask an agent (Codex, Reviewer, Security Reviewer) to do work:
+
+1. **State the goal clearly.**  
+   Example: “Add rate limiting to all gateway SSE endpoints with 100 connections per user.”
+
+2. **Provide context.**  
+   Point at relevant files, ADRs, and previous PRs when possible.
+
+3. **Ask for a plan first.**  
+   The agent should respond with a short plan before proposing a diff.
+
+4. **Insist on tests and docs.**  
+   If the agent’s proposal doesn’t include tests or docs, ask it to add them.
+
+5. **Keep iterations small.**  
+   Prefer a series of small, safe PRs over one giant PR that is hard to review.
+
+This file is the contract between humans and agents. Keep it up to date as the system evolves.
