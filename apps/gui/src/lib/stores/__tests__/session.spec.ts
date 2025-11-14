@@ -3,6 +3,14 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 type MessageListener = (event: MessageEvent) => void;
 
+const jsonResponse = (body: unknown, init?: ResponseInit): Response => {
+  const headers = new Headers(init?.headers);
+  if (!headers.has('content-type')) {
+    headers.set('content-type', 'application/json');
+  }
+  return new Response(JSON.stringify(body), { ...init, headers });
+};
+
 const authorizeUrlMock = vi.fn((redirectUri: string) =>
   `https://gateway.example.test/authorize?redirect_uri=${encodeURIComponent(redirectUri)}`
 );
@@ -26,8 +34,8 @@ declare global {
 }
 
 describe('session store', () => {
-  const listeners = new Map<string, MessageListener[]>();
-  const fetchMock = vi.fn<Parameters<typeof fetch>, ReturnType<typeof fetch>>();
+  const listeners: Map<string, MessageListener[]> = new Map();
+  const fetchMock = vi.fn<typeof fetch>();
   let initializeSession: () => void;
   let fetchSession: () => Promise<void>;
   let login: () => void;
@@ -86,9 +94,8 @@ describe('session store', () => {
   });
 
   it('initializes by installing listeners and loading the current session', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
         session: {
           id: 'abc',
           subject: 'user',
@@ -98,7 +105,7 @@ describe('session store', () => {
           expiresAt: 'later'
         }
       })
-    } as Response);
+    );
 
     initializeSession();
     expect(window.addEventListener).toHaveBeenCalledWith('message', expect.any(Function));
@@ -107,15 +114,15 @@ describe('session store', () => {
       method: 'GET',
       credentials: 'include'
     });
+    await vi.waitUntil(() => (get(session as never) as Record<string, unknown>).authenticated === true);
     const state = get(session as never) as Record<string, unknown>;
     expect(state.authenticated).toBe(true);
     expect(state.loading).toBe(false);
     expect(state.error).toBeNull();
 
     fetchMock.mockClear();
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
         session: {
           id: 'abc',
           subject: 'user',
@@ -125,7 +132,7 @@ describe('session store', () => {
           expiresAt: 'later'
         }
       })
-    } as Response);
+    );
 
     (window as typeof window & { dispatchMessage: (data: unknown, origin?: string) => void }).dispatchMessage(
       {
@@ -139,9 +146,8 @@ describe('session store', () => {
   });
 
   it('ignores oidc completion messages from untrusted origins', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
         session: {
           id: 'abc',
           subject: 'user',
@@ -151,7 +157,7 @@ describe('session store', () => {
           expiresAt: 'later'
         }
       })
-    } as Response);
+    );
 
     initializeSession();
     await flushAsync();
@@ -170,9 +176,8 @@ describe('session store', () => {
   });
 
   it('updates state with session info when fetchSession succeeds', async () => {
-    fetchMock.mockResolvedValueOnce({
-      ok: true,
-      json: async () => ({
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
         session: {
           id: 'sess-1',
           subject: 'subject-1',
@@ -182,7 +187,7 @@ describe('session store', () => {
           expiresAt: 'later'
         }
       })
-    } as Response);
+    );
 
     await fetchSession();
     const state = get(session as never) as Record<string, unknown>;
@@ -221,7 +226,7 @@ describe('session store', () => {
   });
 
   it('resets the session state when logout succeeds', async () => {
-    fetchMock.mockResolvedValueOnce({ ok: true } as Response);
+    fetchMock.mockResolvedValueOnce(new Response(null, { status: 200 }));
 
     await logout();
     const state = get(session as never) as Record<string, unknown>;
