@@ -2,7 +2,7 @@
 
 use std::env;
 use std::path::{Component, Path, PathBuf};
-
+use num::Integer;
 use once_cell::sync::Lazy;
 use regex::Regex;
 use thiserror::Error;
@@ -323,9 +323,7 @@ fn luhn_check(digits: &str) -> bool {
         sum += value;
         double = !double;
     }
-
-    // Use modulo for divisibility to avoid relying on external traits not implemented for `u32`.
-    sum % 10 == 0
+    sum.is_multiple_of(10)
 }
 
 #[cfg(test)]
