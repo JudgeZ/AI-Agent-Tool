@@ -57,7 +57,11 @@ import {
   resolvePlanStepApproval,
   submitPlanSteps,
 } from "../queue/PlanQueueRuntime.js";
-import { getPolicyEnforcer, type DenyReason } from "../policy/PolicyEnforcer.js";
+import {
+  getPolicyEnforcer,
+  PolicyViolationError,
+  type DenyReason,
+} from "../policy/PolicyEnforcer.js";
 import { SseQuotaManager } from "./SseQuotaManager.js";
 import { sessionStore, type SessionRecord } from "../auth/SessionStore.js";
 import { routeChat } from "../providers/ProviderRegistry.js";
@@ -471,6 +475,7 @@ export function createServer(config?: AppConfig): Express {
 
     const planSubject = session ? toPlanSubject(session) : undefined;
     const identity = createRequestIdentity(req, appConfig, planSubject);
+    const requestAgent = identity.agentName ?? agent;
     const rateLimitBuckets = buildRateLimitBuckets("plan", appConfig.server.rateLimits.plan);
     const rateDecision = await enforceRateLimit(rateLimiter, "plan", identity, rateLimitBuckets);
     if (!rateDecision.allowed) {
@@ -481,7 +486,7 @@ export function createServer(config?: AppConfig): Express {
       logAuditEvent({
         action: "plan.create",
         outcome: "denied",
-        agent: identity.agentName,
+        agent: requestAgent,
         details: { reason: "rate_limited" },
         subject: auditSubject,
       });
@@ -494,21 +499,44 @@ export function createServer(config?: AppConfig): Express {
       logAuditEvent({
         action: "plan.create",
         outcome: "failure",
-        agent: identity.agentName,
+        agent: requestAgent,
         subject: auditSubject,
         details: { reason: "invalid_request" },
       });
       return;
     }
 
-    const policyDecision = await policy.enforceHttpAction({
-      action: "http.post.plan",
-      requiredCapabilities: ["plan.create"],
-      agent: identity.agentName,
-      traceId: getRequestContext()?.traceId,
-      subject: toPolicySubject(session),
-      runMode: appConfig.runMode,
-    });
+    let policyDecision: Awaited<ReturnType<typeof policy.enforceHttpAction>>;
+    try {
+      policyDecision = await policy.enforceHttpAction({
+        action: "http.post.plan",
+        requiredCapabilities: ["plan.create"],
+        agent: requestAgent,
+        traceId: getRequestContext()?.traceId,
+        subject: toPolicySubject(session),
+        runMode: appConfig.runMode,
+      });
+    } catch (error) {
+      if (error instanceof PolicyViolationError) {
+        const { requestId, traceId } = getRequestIds(res);
+        respondWithError(res, error.status ?? 403, {
+          code: "forbidden",
+          message: buildPolicyErrorMessage(error.details),
+          details: error.details,
+        });
+        logAuditEvent({
+          action: "plan.create",
+          outcome: "denied",
+          agent: requestAgent,
+          requestId,
+          traceId,
+          subject: auditSubject,
+          details: { deny: error.details, error: error.message },
+        });
+        return;
+      }
+      throw error;
+    }
     if (!policyDecision.allow) {
       respondWithError(res, 403, {
         code: "forbidden",
@@ -519,7 +547,7 @@ export function createServer(config?: AppConfig): Express {
       logAuditEvent({
         action: "plan.create",
         outcome: "denied",
-        agent: identity.agentName,
+        agent: requestAgent,
         requestId,
         traceId,
         subject: auditSubject,
@@ -542,7 +570,7 @@ export function createServer(config?: AppConfig): Express {
       logAuditEvent({
         action: "plan.create",
         outcome: "success",
-        agent: identity.agentName,
+        agent: requestAgent,
         requestId,
         traceId,
         subject: auditSubject,
@@ -554,7 +582,7 @@ export function createServer(config?: AppConfig): Express {
       logAuditEvent({
         action: "plan.create",
         outcome: "failure",
-        agent: identity.agentName,
+        agent: requestAgent,
         subject: auditSubject,
         details: { reason: "exception" },
         error: error instanceof Error ? error.message : String(error),
