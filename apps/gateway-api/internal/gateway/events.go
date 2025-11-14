@@ -15,11 +15,16 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/audit"
 )
 
 const (
 	defaultHeartbeatInterval = 30 * time.Second
 	heartbeatPayload         = ": ping\n\n"
+	auditEventPlanEvents     = "plan.events.subscribe"
+	auditTargetPlanEvents    = "plan.events"
+	auditCapabilityPlan      = "plan.events"
 )
 
 var forwardedSSEHeaders = []string{
@@ -101,6 +106,9 @@ type EventsHandler struct {
 	heartbeatInterval time.Duration
 	limiter           *connectionLimiter
 	trustedProxies    []*net.IPNet
+	attemptLimiter    *rateLimiter
+	attemptBucket     rateLimitBucket
+	auditLogger       *audit.Logger
 }
 
 // NewEventsHandler constructs an SSE proxy handler that forwards requests to the orchestrator.
@@ -118,6 +126,7 @@ func NewEventsHandler(client *http.Client, orchestratorURL string, heartbeat tim
 		heartbeatInterval: heartbeat,
 		limiter:           limiter,
 		trustedProxies:    trustedProxies,
+		auditLogger:       audit.Default(),
 	}
 }
 
@@ -134,27 +143,82 @@ func RegisterEventRoutes(mux *http.ServeMux, cfg EventRouteConfig) {
 		panic(fmt.Sprintf("invalid trusted proxy configuration: %v", err))
 	}
 	handler := NewEventsHandler(client, orchestratorURL, 0, newConnectionLimiter(maxConnections), trustedProxies)
+	handler.attemptLimiter = newRateLimiter()
+	handler.attemptBucket = rateLimitBucket{
+		Endpoint:     "events.connect",
+		IdentityType: "ip",
+		Limit:        resolveLimit([]string{"GATEWAY_SSE_CONNECT_LIMIT"}, 12),
+		Window:       resolveDuration([]string{"GATEWAY_SSE_CONNECT_WINDOW"}, time.Minute),
+	}
 	mux.Handle("/events", handler)
 }
 
 // ServeHTTP implements http.Handler for the EventsHandler.
 func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	planID := r.URL.Query().Get("plan_id")
-	planID = strings.TrimSpace(planID)
+	baseCtx := r.Context()
+	auditLogger := h.getAuditLogger()
+	planID := strings.TrimSpace(r.URL.Query().Get("plan_id"))
+	clientAddr := clientIP(r, h.trustedProxies)
+	planHash := ""
+	clientHash := ""
+
+	if clientAddr != "" {
+		clientHash = auditLogger.HashIdentity(clientAddr)
+	}
+
 	if planID == "" {
+		h.recordAudit(baseCtx, auditOutcomeDenied, map[string]any{
+			"reason":         "missing_plan_id",
+			"client_ip_hash": clientHash,
+		})
 		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "plan_id is required", nil)
 		return
 	}
 	if !planIDPattern.MatchString(planID) {
+		planHash = auditLogger.HashIdentity(planID)
+		h.recordAudit(baseCtx, auditOutcomeDenied, map[string]any{
+			"reason":         "invalid_plan_id",
+			"plan_id_hash":   planHash,
+			"client_ip_hash": clientHash,
+		})
 		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "plan_id is invalid", nil)
 		return
 	}
 
-	clientAddr := clientIP(r, h.trustedProxies)
+	planHash = auditLogger.HashIdentity(planID)
+
+	if h.attemptLimiter != nil && h.attemptBucket.Limit > 0 && h.attemptBucket.Window > 0 {
+		identity := clientAddr
+		if identity == "" {
+			identity = "unknown"
+		}
+		allowed, retryAfter, err := h.attemptLimiter.Allow(baseCtx, h.attemptBucket, identity)
+		if err != nil {
+			slog.WarnContext(baseCtx, "gateway.events.rate_limiter_error",
+				slog.String("plan_id", planID),
+				slog.String("error", err.Error()),
+			)
+		} else if !allowed {
+			h.recordAudit(baseCtx, auditOutcomeDenied, map[string]any{
+				"reason":              "rate_limited",
+				"plan_id_hash":        planHash,
+				"client_ip_hash":      clientHash,
+				"retry_after_seconds": retryAfterToSeconds(retryAfter),
+			})
+			respondTooManyRequests(w, r, retryAfter)
+			return
+		}
+	}
+
 	if h.limiter != nil {
 		if !h.limiter.Acquire(clientAddr) {
 			writeErrorResponse(w, r, http.StatusTooManyRequests, "too_many_requests", "too many concurrent event streams", map[string]any{
 				"clientIp": clientAddr,
+			})
+			h.recordAudit(baseCtx, auditOutcomeDenied, map[string]any{
+				"reason":         "concurrent_limit",
+				"plan_id_hash":   planHash,
+				"client_ip_hash": clientHash,
 			})
 			return
 		}
@@ -162,11 +226,16 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	upstreamURL := fmt.Sprintf("%s/plan/%s/events", h.orchestratorURL, url.PathEscape(planID))
-	ctx, cancel := context.WithCancel(r.Context())
+	ctx, cancel := context.WithCancel(baseCtx)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, upstreamURL, nil)
 	if err != nil {
+		h.recordAudit(baseCtx, auditOutcomeFailure, map[string]any{
+			"reason":         "upstream_request_failed",
+			"plan_id_hash":   planHash,
+			"client_ip_hash": clientHash,
+		})
 		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "failed to create upstream request", nil)
 		return
 	}
@@ -195,6 +264,11 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	resp, err := h.client.Do(req)
 	if err != nil {
+		h.recordAudit(baseCtx, auditOutcomeFailure, map[string]any{
+			"reason":         "upstream_unreachable",
+			"plan_id_hash":   planHash,
+			"client_ip_hash": clientHash,
+		})
 		writeErrorResponse(w, r, http.StatusBadGateway, "upstream_error", "failed to contact orchestrator", nil)
 		return
 	}
@@ -211,22 +285,31 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 	if resp.StatusCode >= 400 {
 		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
+		h.recordAudit(baseCtx, auditOutcomeFailure, map[string]any{
+			"reason":         "upstream_error",
+			"status_code":    resp.StatusCode,
+			"plan_id_hash":   planHash,
+			"client_ip_hash": clientHash,
+		})
 		if len(body) == 0 {
 			writeErrorResponse(w, r, resp.StatusCode, "upstream_error", http.StatusText(resp.StatusCode), nil)
 			return
 		}
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(resp.StatusCode)
-		if len(body) > 0 {
-			if err := writeUpstreamError(w, body); err != nil {
-				logger.WarnContext(ctx, "gateway.events.error_template_render", slog.String("plan_id", planID), slog.String("error", err.Error()))
-			}
+		if err := writeUpstreamError(w, body); err != nil {
+			logger.WarnContext(ctx, "gateway.events.error_template_render", slog.String("plan_id", planID), slog.String("error", err.Error()))
 		}
 		return
 	}
 
 	flusher, ok := w.(http.Flusher)
 	if !ok {
+		h.recordAudit(baseCtx, auditOutcomeFailure, map[string]any{
+			"reason":         "streaming_unsupported",
+			"plan_id_hash":   planHash,
+			"client_ip_hash": clientHash,
+		})
 		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "streaming unsupported", nil)
 		return
 	}
@@ -240,6 +323,12 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Accel-Buffering", "no")
 	}
 	flusher.Flush()
+
+	h.recordAudit(baseCtx, auditOutcomeSuccess, map[string]any{
+		"plan_id_hash":   planHash,
+		"client_ip_hash": clientHash,
+		"status_code":    resp.StatusCode,
+	})
 
 	writer := &flushingWriter{w: w, flusher: flusher}
 	errCh := make(chan error, 1)
@@ -266,6 +355,12 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 						slog.String("plan_id", planID),
 						slog.String("error", err.Error()),
 					)
+					h.recordAudit(baseCtx, auditOutcomeFailure, map[string]any{
+						"reason":         "stream_error",
+						"plan_id_hash":   planHash,
+						"client_ip_hash": clientHash,
+						"error":          err.Error(),
+					})
 					if writeErr := emitSSEErrorEvent(writer, err); writeErr != nil && !errors.Is(writeErr, context.Canceled) && !errors.Is(writeErr, io.EOF) {
 						logger.WarnContext(ctx, "gateway.events.error_event_failed",
 							slog.String("plan_id", planID),
@@ -283,6 +378,43 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 	}
+}
+
+func (h *EventsHandler) getAuditLogger() *audit.Logger {
+	if h.auditLogger == nil {
+		h.auditLogger = audit.Default()
+	}
+	return h.auditLogger
+}
+
+func (h *EventsHandler) recordAudit(ctx context.Context, outcome string, details map[string]any) {
+	logger := h.getAuditLogger()
+	event := audit.Event{
+		Name:       auditEventPlanEvents,
+		Outcome:    outcome,
+		Target:     auditTargetPlanEvents,
+		Capability: auditCapabilityPlan,
+		Details:    audit.SanitizeDetails(details),
+	}
+	switch outcome {
+	case auditOutcomeSuccess:
+		logger.Info(ctx, event)
+	case auditOutcomeDenied:
+		logger.Security(ctx, event)
+	default:
+		logger.Error(ctx, event)
+	}
+}
+
+func retryAfterToSeconds(d time.Duration) int {
+	if d <= 0 {
+		return 0
+	}
+	seconds := int((d + time.Second - 1) / time.Second)
+	if seconds < 0 {
+		return 0
+	}
+	return seconds
 }
 
 func emitSSEErrorEvent(w io.Writer, upstreamErr error) error {

@@ -1,13 +1,21 @@
 import express from "express";
 import request from "supertest";
-import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import {
+  afterAll,
+  afterEach,
+  beforeEach,
+  describe,
+  expect,
+  it,
+  vi,
+} from "vitest";
 
 import { sessionStore } from "./SessionStore.js";
 import {
   getOidcConfiguration,
   handleOidcCallback,
   getSession as getSessionHandler,
-  logout as logoutHandler
+  logout as logoutHandler,
 } from "./OidcController.js";
 import * as OidcClient from "./OidcClient.js";
 import * as Audit from "../observability/audit.js";
@@ -20,8 +28,37 @@ const authorizationEndpoint = "https://accounts.example.com/oauth/authorize";
 function buildConfig() {
   return {
     runMode: "enterprise" as const,
-    messaging: { type: "kafka", kafka: { brokers: [], clientId: "", consumerGroup: "", consumeFromBeginning: false, retryDelayMs: 1000, topics: { planSteps: "", planCompletions: "", planEvents: "", planState: "", deadLetterSuffix: ".dead" }, tls: { enabled: false, caPaths: [], certPath: undefined, keyPath: undefined, rejectUnauthorized: true }, sasl: undefined } },
-    providers: { defaultRoute: "balanced", enabled: [], rateLimit: { windowMs: 60000, maxRequests: 120 }, circuitBreaker: { failureThreshold: 5, resetTimeoutMs: 30000 } },
+    messaging: {
+      type: "kafka",
+      kafka: {
+        brokers: [],
+        clientId: "",
+        consumerGroup: "",
+        consumeFromBeginning: false,
+        retryDelayMs: 1000,
+        topics: {
+          planSteps: "",
+          planCompletions: "",
+          planEvents: "",
+          planState: "",
+          deadLetterSuffix: ".dead",
+        },
+        tls: {
+          enabled: false,
+          caPaths: [],
+          certPath: undefined,
+          keyPath: undefined,
+          rejectUnauthorized: true,
+        },
+        sasl: undefined,
+      },
+    },
+    providers: {
+      defaultRoute: "balanced",
+      enabled: [],
+      rateLimit: { windowMs: 60000, maxRequests: 120 },
+      circuitBreaker: { failureThreshold: 5, resetTimeoutMs: 30000 },
+    },
     auth: {
       oauth: { redirectBaseUrl: "http://127.0.0.1:8080" },
       oidc: {
@@ -39,30 +76,35 @@ function buildConfig() {
           claim: "roles",
           fallback: ["default-role"],
           mappings: {},
-          tenantMappings: {}
+          tenantMappings: {},
         },
         session: {
           cookieName: "oss_session",
-          ttlSeconds: 3600
-        }
-      }
+          ttlSeconds: 3600,
+        },
+      },
     },
     secrets: { backend: "vault" },
     tooling: {
       agentEndpoint: "127.0.0.1:50051",
       retryAttempts: 3,
-      defaultTimeoutMs: 10000
+      defaultTimeoutMs: 10000,
     },
     server: {
       sseKeepAliveMs: 25000,
-    sseSendTimeoutMs: 5000,
-    sseMaxBufferEvents: 100,
-    sseMaxBufferBytes: 64 * 1024,
+      sseSendTimeoutMs: 5000,
+      sseMaxBufferEvents: 100,
+      sseMaxBufferBytes: 64 * 1024,
       rateLimits: {
         backend: { provider: "memory" as const },
         plan: { windowMs: 60000, maxRequests: 60 },
         chat: { windowMs: 60000, maxRequests: 600 },
-        auth: { windowMs: 60000, maxRequests: 120, identityWindowMs: 60000, identityMaxRequests: 20 }
+        auth: {
+          windowMs: 60000,
+          maxRequests: 120,
+          identityWindowMs: 60000,
+          identityMaxRequests: 20,
+        },
       },
       sseQuotas: {
         perIp: 4,
@@ -73,12 +115,12 @@ function buildConfig() {
         keyPath: undefined,
         certPath: undefined,
         caPaths: [],
-        requestClientCert: true
+        requestClientCert: true,
       },
       trustedProxyCidrs: [],
       cors: {
         allowedOrigins: [],
-      }
+      },
     },
     observability: {
       tracing: {
@@ -87,8 +129,8 @@ function buildConfig() {
         environment: "test",
         exporterEndpoint: "http://localhost:4318/v1/traces",
         exporterHeaders: {},
-        sampleRatio: 1
-      }
+        sampleRatio: 1,
+      },
     },
     network: {
       egress: {
@@ -99,7 +141,7 @@ function buildConfig() {
           "::1",
           "oauth2.googleapis.com",
           "openrouter.ai",
-          "*.example.com"
+          "*.example.com",
         ],
       },
     },
@@ -130,7 +172,7 @@ const metadataResponse = JSON.stringify({
   issuer,
   authorization_endpoint: authorizationEndpoint,
   token_endpoint: tokenEndpoint,
-  jwks_uri: jwksUri
+  jwks_uri: jwksUri,
 });
 
 const originalFetch = globalThis.fetch;
@@ -140,36 +182,40 @@ const fetchMock = vi.fn<typeof fetch>();
 beforeEach(() => {
   testConfig = buildConfig();
   sessionStore.clear();
-  fetchMock.mockImplementation(async (input: RequestInfo | URL, init?: RequestInit) => {
-    const url = typeof input === "string" ? input : input.toString();
-    if (url.endsWith("/.well-known/openid-configuration")) {
-      return new Response(metadataResponse, {
-        status: 200,
-        headers: { "Content-Type": "application/json" }
-      });
-    }
-    if (url.endsWith("/oauth/token")) {
-      const tokenPayload = {
-        access_token: "access-token",
-        refresh_token: "refresh-token",
-        id_token: "test-id-token",
-        expires_in: 3600,
-        token_type: "Bearer",
-        scope: "openid profile email"
-      };
-      return new Response(JSON.stringify(tokenPayload), {
-        status: 200,
-        headers: { "Content-Type": "application/json" }
-      });
-    }
-    if (url.endsWith("/.well-known/jwks.json")) {
-      return new Response(JSON.stringify({ keys: [] }), {
-        status: 200,
-        headers: { "Content-Type": "application/json" }
-      });
-    }
-    throw new Error(`unexpected fetch to ${url} with method ${(init?.method) ?? "GET"}`);
-  });
+  fetchMock.mockImplementation(
+    async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = typeof input === "string" ? input : input.toString();
+      if (url.endsWith("/.well-known/openid-configuration")) {
+        return new Response(metadataResponse, {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.endsWith("/oauth/token")) {
+        const tokenPayload = {
+          access_token: "access-token",
+          refresh_token: "refresh-token",
+          id_token: "test-id-token",
+          expires_in: 3600,
+          token_type: "Bearer",
+          scope: "openid profile email",
+        };
+        return new Response(JSON.stringify(tokenPayload), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      if (url.endsWith("/.well-known/jwks.json")) {
+        return new Response(JSON.stringify({ keys: [] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+      throw new Error(
+        `unexpected fetch to ${url} with method ${init?.method ?? "GET"}`,
+      );
+    },
+  );
   vi.stubGlobal("fetch", fetchMock as unknown as typeof fetch);
   vi.spyOn(OidcClient, "verifyIdToken").mockResolvedValue({
     payload: {
@@ -178,8 +224,8 @@ beforeEach(() => {
       name: "Test User",
       tid: "tenant-1",
       roles: ["admin"],
-      exp: Math.floor(Date.now() / 1000) + 3600
-    }
+      exp: Math.floor(Date.now() / 1000) + 3600,
+    },
   } as any);
 });
 
@@ -210,7 +256,7 @@ describe("OidcController", () => {
       tokenEndpoint,
       jwksUri,
       clientId: "client-id",
-      redirectUri: "http://127.0.0.1:8080/auth/oidc/callback"
+      redirectUri: "http://127.0.0.1:8080/auth/oidc/callback",
     });
   });
 
@@ -221,7 +267,7 @@ describe("OidcController", () => {
       .send({
         code: "auth-code",
         code_verifier: "v".repeat(64),
-        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback"
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback",
       });
 
     expect(response.status, JSON.stringify(response.body)).toBe(200);
@@ -229,7 +275,7 @@ describe("OidcController", () => {
       sessionId: expect.any(String),
       subject: "user-123",
       email: "user@example.com",
-      roles: ["admin", "default-role"]
+      roles: ["admin", "default-role"],
     });
     const cookies = response.headers["set-cookie"];
     expect(Array.isArray(cookies)).toBe(true);
@@ -239,6 +285,9 @@ describe("OidcController", () => {
     );
     expect(sessionCookie).toBeDefined();
     const sessionCookieValue = sessionCookie!;
+    expect(sessionCookieValue).toContain("Secure");
+    expect(sessionCookieValue).toContain("HttpOnly");
+    expect(sessionCookieValue).toContain("SameSite=Lax");
 
     const sessionCheck = await request(app)
       .get("/auth/session")
@@ -247,13 +296,24 @@ describe("OidcController", () => {
     expect(sessionCheck.body.session).toMatchObject({
       id: response.body.sessionId,
       subject: "user-123",
-      tenantId: "tenant-1"
+      tenantId: "tenant-1",
     });
 
     const logoutResponse = await request(app)
       .post("/auth/logout")
       .set("Cookie", sessionCookieValue);
     expect(logoutResponse.status).toBe(204);
+    const clearedCookies = logoutResponse.headers["set-cookie"];
+    expect(clearedCookies).toBeDefined();
+    expect(
+      Array.isArray(clearedCookies) ? clearedCookies.join(";") : clearedCookies,
+    ).toMatch(/Secure/);
+    expect(
+      Array.isArray(clearedCookies) ? clearedCookies.join(";") : clearedCookies,
+    ).toMatch(/HttpOnly/);
+    expect(
+      Array.isArray(clearedCookies) ? clearedCookies.join(";") : clearedCookies,
+    ).toMatch(/SameSite=Lax/);
 
     const postLogout = await request(app)
       .get("/auth/session")
@@ -267,14 +327,14 @@ describe("OidcController", () => {
       .post("/auth/oidc/callback")
       .send({
         code_verifier: "v".repeat(64),
-        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback"
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback",
       });
 
     expect(response.status).toBe(400);
     expect(response.body).toMatchObject({
       code: "invalid_request",
       message: "Request validation failed",
-      details: [{ path: "code", message: "code is required" }]
+      details: [{ path: "code", message: "code is required" }],
     });
   });
 
@@ -288,8 +348,8 @@ describe("OidcController", () => {
         name: "Nested User",
         realm: { tenant: "nested-tenant" },
         roles: ["analyst"],
-        exp: Math.floor(Date.now() / 1000) + 3600
-      }
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      },
     } as any);
     const auditSpy = vi.spyOn(Audit, "logAuditEvent");
 
@@ -299,7 +359,7 @@ describe("OidcController", () => {
       .send({
         code: "auth-code",
         code_verifier: "v".repeat(64),
-        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback"
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback",
       });
 
     expect(response.status, JSON.stringify(response.body)).toBe(200);
@@ -320,10 +380,13 @@ describe("OidcController", () => {
       .get("/auth/session")
       .set("Cookie", sessionCookie as string);
     expect(sessionCheck.status).toBe(200);
-    expect(sessionCheck.body.session).toMatchObject({ tenantId: "nested-tenant" });
+    expect(sessionCheck.body.session).toMatchObject({
+      tenantId: "nested-tenant",
+    });
 
     const auditCall = auditSpy.mock.calls.find(
-      ([event]) => event.action === "auth.oidc.callback" && event.outcome === "success",
+      ([event]) =>
+        event.action === "auth.oidc.callback" && event.outcome === "success",
     );
     expect(auditCall).toBeDefined();
     expect(auditCall?.[0].details?.tenantId).toBe("nested-tenant");
@@ -339,8 +402,8 @@ describe("OidcController", () => {
         name: "Test User",
         tid: "tenant-1",
         roles: ["admin"],
-        exp: Math.floor((Date.now() - 30_000) / 1000)
-      }
+        exp: Math.floor((Date.now() - 30_000) / 1000),
+      },
     } as any);
 
     const app = createApp();
@@ -349,13 +412,13 @@ describe("OidcController", () => {
       .send({
         code: "auth-code",
         code_verifier: "v".repeat(64),
-        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback"
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback",
       });
 
     expect(response.status, JSON.stringify(response.body)).toBe(502);
     expect(response.body).toMatchObject({
       code: "upstream_error",
-      message: "token expiry too soon"
+      message: "token expiry too soon",
     });
     const cookies = response.headers["set-cookie"];
     expect(cookies).toBeUndefined();
@@ -373,7 +436,7 @@ describe("OidcController", () => {
       .send({
         code: "auth-code",
         code_verifier: "v".repeat(64),
-        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback"
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback",
       });
     expect(callbackResponse.status).toBe(404);
   });
@@ -385,14 +448,14 @@ describe("OidcController", () => {
       .send({
         code: "auth-code",
         code_verifier: "v".repeat(64),
-        redirect_uri: "https://app.example.com/oidc"
+        redirect_uri: "https://app.example.com/oidc",
       });
 
     expect(response.status).toBe(400);
     expect(response.body).toMatchObject({
       code: "invalid_request",
       message: "Request validation failed",
-      details: [{ path: "redirect_uri", message: "redirect_uri mismatch" }]
+      details: [{ path: "redirect_uri", message: "redirect_uri mismatch" }],
     });
   });
 
@@ -405,14 +468,14 @@ describe("OidcController", () => {
         code: "auth-code",
         code_verifier: "v".repeat(64),
         redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback",
-        state: "different"
+        state: "different",
       });
 
     expect(response.status).toBe(400);
     expect(response.body).toMatchObject({
       code: "invalid_request",
       message: "Request validation failed",
-      details: [{ path: "state", message: "state verification failed" }]
+      details: [{ path: "state", message: "state verification failed" }],
     });
   });
 
@@ -421,7 +484,7 @@ describe("OidcController", () => {
       access_token: "access-token",
       refresh_token: "refresh-token",
       scope: "openid",
-      token_type: "Bearer"
+      token_type: "Bearer",
     } as any);
 
     const app = createApp();
@@ -430,13 +493,13 @@ describe("OidcController", () => {
       .send({
         code: "auth-code",
         code_verifier: "v".repeat(64),
-        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback"
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback",
       });
 
     expect(response.status).toBe(502);
     expect(response.body).toMatchObject({
       code: "upstream_error",
-      message: "id_token missing in response"
+      message: "id_token missing in response",
     });
   });
 
@@ -446,8 +509,8 @@ describe("OidcController", () => {
         email: "user@example.com",
         name: "Test User",
         roles: ["admin"],
-        exp: Math.floor(Date.now() / 1000) + 3600
-      }
+        exp: Math.floor(Date.now() / 1000) + 3600,
+      },
     } as any);
 
     const app = createApp();
@@ -456,19 +519,19 @@ describe("OidcController", () => {
       .send({
         code: "auth-code",
         code_verifier: "v".repeat(64),
-        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback"
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback",
       });
 
     expect(response.status).toBe(502);
     expect(response.body).toMatchObject({
       code: "upstream_error",
-      message: "id_token missing subject"
+      message: "id_token missing subject",
     });
   });
 
   it("treats exchange timeouts as gateway errors", async () => {
     vi.spyOn(OidcClient, "exchangeCodeForTokens").mockRejectedValueOnce(
-      new Error("request timed out after 1000ms")
+      new Error("request timed out after 1000ms"),
     );
 
     const app = createApp();
@@ -477,13 +540,13 @@ describe("OidcController", () => {
       .send({
         code: "auth-code",
         code_verifier: "v".repeat(64),
-        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback"
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback",
       });
 
     expect(response.status).toBe(504);
     expect(response.body).toMatchObject({
       code: "upstream_error",
-      message: "request timed out after 1000ms"
+      message: "request timed out after 1000ms",
     });
   });
 
@@ -495,13 +558,13 @@ describe("OidcController", () => {
       .send({
         code: "auth-code",
         code_verifier: "v".repeat(64),
-        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback"
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback",
       });
 
     expect(response.status).toBe(500);
     expect(response.body).toMatchObject({
       code: "configuration_error",
-      message: "secure cookies must be enabled when run mode is enterprise"
+      message: "secure cookies must be enabled when run mode is enterprise",
     });
   });
 
@@ -511,7 +574,7 @@ describe("OidcController", () => {
     expect(response.status).toBe(401);
     expect(response.body).toMatchObject({
       code: "unauthorized",
-      message: "session not found"
+      message: "session not found",
     });
   });
 
@@ -526,7 +589,7 @@ describe("OidcController", () => {
 
   it("logs metadata retrieval failures and surfaces upstream errors", async () => {
     vi.spyOn(OidcClient, "fetchOidcMetadata").mockRejectedValueOnce(
-      new Error("metadata unavailable")
+      new Error("metadata unavailable"),
     );
 
     const app = createApp();
@@ -534,7 +597,7 @@ describe("OidcController", () => {
     expect(response.status).toBe(502);
     expect(response.body).toMatchObject({
       code: "upstream_error",
-      message: "metadata unavailable"
+      message: "metadata unavailable",
     });
   });
 });

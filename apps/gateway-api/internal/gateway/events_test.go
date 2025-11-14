@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -321,6 +322,98 @@ func TestEventsHandlerForwardsCookieHeaders(t *testing.T) {
 		}
 	default:
 		t.Fatal("expected orchestrator to receive cookie header")
+	}
+}
+
+func TestEventsHandlerRateLimitsConnectionAttempts(t *testing.T) {
+	orchestrator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("upstream recorder missing flusher")
+		}
+		if _, err := io.WriteString(w, "data: ok\n\n"); err != nil {
+			t.Fatalf("failed to write upstream event: %v", err)
+		}
+		flusher.Flush()
+	}))
+	defer orchestrator.Close()
+
+	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 0, nil, nil)
+	handler.attemptLimiter = newRateLimiter()
+	now := time.Unix(0, 0)
+	handler.attemptLimiter.now = func() time.Time { return now }
+	handler.attemptBucket = rateLimitBucket{Endpoint: "events.connect", IdentityType: "ip", Limit: 1, Window: time.Minute}
+
+	req := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil)
+	req.RemoteAddr = "203.0.113.5:9000"
+	rec := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected first attempt to succeed, got %d", rec.Code)
+	}
+
+	req2 := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil)
+	req2.RemoteAddr = "203.0.113.5:9001"
+	rec2 := httptest.NewRecorder()
+
+	handler.ServeHTTP(rec2, req2)
+	if rec2.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected second attempt to be rate limited, got %d", rec2.Code)
+	}
+	if retryAfter := rec2.Header().Get("Retry-After"); retryAfter == "" {
+		t.Fatal("expected Retry-After header when rate limited")
+	}
+}
+
+func TestEventsHandlerEmitsAuditLogs(t *testing.T) {
+	orchestrator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("upstream recorder missing flusher")
+		}
+		if _, err := io.WriteString(w, "data: ok\n\n"); err != nil {
+			t.Fatalf("failed to write upstream event: %v", err)
+		}
+		flusher.Flush()
+	}))
+	defer orchestrator.Close()
+
+	var buf bytes.Buffer
+	original := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{})))
+	defer slog.SetDefault(original)
+
+	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 0, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil)
+	req.RemoteAddr = "203.0.113.5:4000"
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected success status, got %d", rec.Code)
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "\"event\":\"plan.events.subscribe\"") {
+		t.Fatalf("expected audit event in logs, got %q", logs)
+	}
+	if !strings.Contains(logs, "\"outcome\":\"success\"") {
+		t.Fatalf("expected success outcome in logs, got %q", logs)
+	}
+
+	buf.Reset()
+	invalid := httptest.NewRequest(http.MethodGet, "/events?plan_id=plan-invalid", nil)
+	invalid.RemoteAddr = "203.0.113.5:5000"
+	recInvalid := httptest.NewRecorder()
+	handler.ServeHTTP(recInvalid, invalid)
+	if recInvalid.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid plan to return 400, got %d", recInvalid.Code)
+	}
+	deniedLogs := buf.String()
+	if !strings.Contains(deniedLogs, "\"outcome\":\"denied\"") {
+		t.Fatalf("expected denied audit event, got %q", deniedLogs)
 	}
 }
 

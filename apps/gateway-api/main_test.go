@@ -8,6 +8,59 @@ import (
 	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/gateway"
 )
 
+func TestNormalizeServiceURL(t *testing.T) {
+	cases := []struct {
+		name      string
+		input     string
+		want      string
+		wantError bool
+	}{
+		{name: "http", input: "http://example.com/path", want: "http://example.com/path"},
+		{name: "https", input: "https://example.com", want: "https://example.com"},
+		{name: "trailing slash trimmed", input: "https://example.com/path/", want: "https://example.com/path"},
+		{name: "reject credentials", input: "https://user:pass@example.com", wantError: true},
+		{name: "reject query", input: "https://example.com/path?token=secret", wantError: true},
+		{name: "reject fragment", input: "https://example.com/path#frag", wantError: true},
+		{name: "reject ftp", input: "ftp://example.com", wantError: true},
+		{name: "require host", input: "https:///path", wantError: true},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := normalizeServiceURL(tc.input)
+			if tc.wantError {
+				if err == nil {
+					t.Fatalf("normalizeServiceURL(%q) expected error", tc.input)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("normalizeServiceURL(%q) unexpected error: %v", tc.input, err)
+			}
+			if got != tc.want {
+				t.Fatalf("normalizeServiceURL(%q) = %q, want %q", tc.input, got, tc.want)
+			}
+		})
+	}
+}
+
+func TestValidateServiceURL(t *testing.T) {
+	t.Setenv("ORCHESTRATOR_URL", "https://example.com/api/")
+	got, err := validateServiceURL("ORCHESTRATOR_URL", "http://default")
+	if err != nil {
+		t.Fatalf("validateServiceURL unexpected error: %v", err)
+	}
+	if got != "https://example.com/api" {
+		t.Fatalf("validateServiceURL normalized = %q, want %q", got, "https://example.com/api")
+	}
+
+	t.Setenv("INDEXER_URL", "ftp://example.com")
+	if _, err := validateServiceURL("INDEXER_URL", "http://default"); err == nil {
+		t.Fatalf("expected validation error for unsupported scheme")
+	}
+}
+
 func TestTrustedProxyCIDRsFromEnv(t *testing.T) {
 	cases := []struct {
 		name string

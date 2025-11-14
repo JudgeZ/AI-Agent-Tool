@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"os/signal"
 	"strconv"
@@ -38,6 +39,13 @@ func main() {
 
 	mux := http.NewServeMux()
 	startTime := time.Now()
+	if _, err := validateServiceURL("ORCHESTRATOR_URL", "http://127.0.0.1:4000"); err != nil {
+		log.Fatalf("invalid ORCHESTRATOR_URL: %v", err)
+	}
+	if _, err := validateServiceURL("INDEXER_URL", "http://127.0.0.1:7070"); err != nil {
+		log.Fatalf("invalid INDEXER_URL: %v", err)
+	}
+
 	trustedProxyCIDRs := trustedProxyCIDRsFromEnv()
 	allowInsecureStateCookie := allowInsecureStateCookieFromEnv()
 	if err := validateStateCookieConfig(allowInsecureStateCookie); err != nil {
@@ -153,4 +161,57 @@ func validateStateCookieConfig(allowInsecure bool) error {
 		return fmt.Errorf("OAUTH_ALLOW_INSECURE_STATE_COOKIE cannot be true when RUN_MODE=enterprise")
 	}
 	return nil
+}
+
+func validateServiceURL(key, fallback string) (string, error) {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		raw = fallback
+	}
+	normalized, err := normalizeServiceURL(raw)
+	if err != nil {
+		return "", err
+	}
+	if normalized != raw {
+		if err := os.Setenv(key, normalized); err != nil {
+			log.Printf("warning: failed to normalise %s: %v", key, err)
+		}
+	}
+	return normalized, nil
+}
+
+func normalizeServiceURL(raw string) (string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return "", fmt.Errorf("url must not be empty")
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse url: %w", err)
+	}
+	switch parsed.Scheme {
+	case "http", "https":
+	default:
+		return "", fmt.Errorf("unsupported scheme %q", parsed.Scheme)
+	}
+	if parsed.Host == "" {
+		return "", fmt.Errorf("host is required")
+	}
+	if parsed.User != nil {
+		return "", fmt.Errorf("credentials are not allowed in service URLs")
+	}
+	if parsed.RawQuery != "" {
+		return "", fmt.Errorf("query parameters are not permitted")
+	}
+	if parsed.Fragment != "" {
+		return "", fmt.Errorf("fragments are not permitted")
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/")
+	parsed.RawPath = ""
+	parsed.ForceQuery = false
+	sanitized := parsed.String()
+	sanitized = strings.TrimRight(sanitized, "/")
+	if sanitized == "" {
+		return "", fmt.Errorf("url must not be empty")
+	}
+	return sanitized, nil
 }

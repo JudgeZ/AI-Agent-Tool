@@ -3,7 +3,12 @@ import { once } from "node:events";
 import type { ServerResponse } from "node:http";
 
 import cors, { type CorsOptions } from "cors";
-import express, { type Express, type NextFunction, type Request, type Response } from "express";
+import express, {
+  type Express,
+  type NextFunction,
+  type Request,
+  type Response,
+} from "express";
 
 import { loadConfig, type AppConfig } from "../config.js";
 import { createPlan, type PlanSubject } from "../plan/index.js";
@@ -88,7 +93,9 @@ type ExtendedRequest = Request & {
   };
 };
 
-type RateLimitResult = { allowed: true } | { allowed: false; retryAfterMs?: number };
+type RateLimitResult =
+  | { allowed: true }
+  | { allowed: false; retryAfterMs?: number };
 
 class HttpRateLimiter {
   private readonly hits = new Map<string, number[]>();
@@ -126,7 +133,9 @@ function toPlanSubject(session: SessionRecord): PlanSubject {
   };
 }
 
-function toAuditSubject(session: SessionRecord | undefined): AuditSubject | undefined {
+function toAuditSubject(
+  session: SessionRecord | undefined,
+): AuditSubject | undefined {
   if (!session) {
     return undefined;
   }
@@ -158,17 +167,26 @@ function toPolicySubject(session: SessionRecord | undefined) {
   };
 }
 
-function subjectsMatch(owner: PlanSubject | undefined, candidate: PlanSubject | undefined): boolean {
+function subjectsMatch(
+  owner: PlanSubject | undefined,
+  candidate: PlanSubject | undefined,
+): boolean {
   if (!owner) {
     return true;
   }
   if (!candidate) {
     return false;
   }
-  if (owner.sessionId && candidate.sessionId && owner.sessionId === candidate.sessionId) {
+  if (
+    owner.sessionId &&
+    candidate.sessionId &&
+    owner.sessionId === candidate.sessionId
+  ) {
     return true;
   }
-  const tenantAligned = owner.tenantId ? owner.tenantId === candidate.tenantId : true;
+  const tenantAligned = owner.tenantId
+    ? owner.tenantId === candidate.tenantId
+    : true;
   if (owner.userId && candidate.userId && owner.userId === candidate.userId) {
     return tenantAligned;
   }
@@ -183,7 +201,9 @@ function subjectsMatch(owner: PlanSubject | undefined, candidate: PlanSubject | 
 
 function determineCorsOptions(config: AppConfig): CorsOptions {
   const allowedOrigins = new Set(
-    (config.server.cors.allowedOrigins ?? []).map((origin) => origin.trim()).filter(Boolean),
+    (config.server.cors.allowedOrigins ?? [])
+      .map((origin) => origin.trim())
+      .filter(Boolean),
   );
 
   return {
@@ -198,10 +218,35 @@ function determineCorsOptions(config: AppConfig): CorsOptions {
   };
 }
 
+function securityHeadersMiddleware(
+  _req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  res.setHeader(
+    "Content-Security-Policy",
+    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+  );
+  res.setHeader(
+    "Strict-Transport-Security",
+    "max-age=63072000; includeSubDomains",
+  );
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("Referrer-Policy", "no-referrer");
+  res.setHeader(
+    "Permissions-Policy",
+    "camera=(), microphone=(), geolocation=()",
+  );
+  next();
+}
+
 function getRequestIds(res: Response): { requestId: string; traceId: string } {
   const context = getRequestContext();
-  const requestId = context?.requestId ?? String(res.locals.requestId ?? randomUUID());
-  const traceId = context?.traceId ?? String(res.locals.traceId ?? randomUUID());
+  const requestId =
+    context?.requestId ?? String(res.locals.requestId ?? randomUUID());
+  const traceId =
+    context?.traceId ?? String(res.locals.traceId ?? randomUUID());
   updateContextIdentifiers({ requestId, traceId });
   return { requestId, traceId };
 }
@@ -239,7 +284,10 @@ async function waitForDrain(stream: ServerResponse): Promise<void> {
   await once(stream, "drain");
 }
 
-function extractSessionId(req: Request, cookieName: string): string | undefined {
+function extractSessionId(
+  req: Request,
+  cookieName: string,
+): string | undefined {
   const authHeader = req.header("authorization");
   if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
     const token = authHeader.slice(7).trim();
@@ -273,7 +321,10 @@ function extractSessionId(req: Request, cookieName: string): string | undefined 
   return undefined;
 }
 
-function attachSession(req: ExtendedRequest, config: AppConfig): SessionRecord | undefined {
+function attachSession(
+  req: ExtendedRequest,
+  config: AppConfig,
+): SessionRecord | undefined {
   const oidcConfig = config.auth.oidc;
   if (!oidcConfig.enabled) {
     return undefined;
@@ -299,7 +350,7 @@ async function enforceRateLimit(
   for (const bucket of buckets) {
     const key = `${endpoint}:${bucket.identityType}:$${
       bucket.identityType === "identity"
-        ? identity.subjectId ?? identity.agentName ?? identity.ip
+        ? (identity.subjectId ?? identity.agentName ?? identity.ip)
         : identity.ip
     }`;
     const result = limiter.allow(key, bucket.windowMs, bucket.maxRequests);
@@ -316,7 +367,9 @@ function shouldStream(req: Request): boolean {
   if (!accept) {
     return false;
   }
-  return accept.split(",").some((entry) => entry.trim().toLowerCase() === "text/event-stream");
+  return accept
+    .split(",")
+    .some((entry) => entry.trim().toLowerCase() === "text/event-stream");
 }
 
 function sanitizePlanEvent(event: PlanStepEvent): PlanStepEvent {
@@ -336,6 +389,57 @@ export function createServer(config?: AppConfig): Express {
   const policy = getPolicyEnforcer();
   const rateLimiter = new HttpRateLimiter();
   const quotaManager = new SseQuotaManager(appConfig.server.sseQuotas);
+  const oauthRateLimitBuckets = buildRateLimitBuckets(
+    "oauth",
+    appConfig.server.rateLimits.auth,
+  );
+
+  const applyOauthRateLimit = (
+    action: string,
+    handler: (req: ExtendedRequest, res: Response) => Promise<void> | void,
+  ) => {
+    return async (req: ExtendedRequest, res: Response, next: NextFunction) => {
+      const identity = createRequestIdentity(req, appConfig);
+      const agent = identity.agentName ?? extractAgent(req);
+      const rateDecision = await enforceRateLimit(
+        rateLimiter,
+        "oauth",
+        identity,
+        oauthRateLimitBuckets,
+      );
+      if (!rateDecision.allowed) {
+        const { requestId, traceId } = getRequestIds(res);
+        respondWithError(
+          res,
+          429,
+          {
+            code: "too_many_requests",
+            message: "oauth rate limit exceeded",
+          },
+          rateDecision.retryAfterMs
+            ? { retryAfterMs: rateDecision.retryAfterMs }
+            : undefined,
+        );
+        logAuditEvent({
+          action,
+          outcome: "denied",
+          agent,
+          requestId,
+          traceId,
+          details: {
+            reason: "rate_limited",
+            retryAfterMs: rateDecision.retryAfterMs ?? undefined,
+          },
+        });
+        return;
+      }
+      try {
+        await handler(req, res);
+      } catch (error) {
+        next(error);
+      }
+    };
+  };
 
   if (appConfig.server.trustedProxyCidrs.length > 0) {
     app.set("trust proxy", (ip: string) =>
@@ -346,8 +450,12 @@ export function createServer(config?: AppConfig): Express {
   app.use((req: ExtendedRequest, res: Response, next: NextFunction) => {
     const headerRequestId = req.header("x-request-id")?.trim();
     const headerTraceId = req.header("x-trace-id")?.trim();
-    const requestId = headerRequestId && headerRequestId.length > 0 ? headerRequestId : randomUUID();
-    const traceId = headerTraceId && headerTraceId.length > 0 ? headerTraceId : randomUUID();
+    const requestId =
+      headerRequestId && headerRequestId.length > 0
+        ? headerRequestId
+        : randomUUID();
+    const traceId =
+      headerTraceId && headerTraceId.length > 0 ? headerTraceId : randomUUID();
     res.locals.requestId = requestId;
     res.locals.traceId = traceId;
     res.setHeader("x-request-id", requestId);
@@ -385,6 +493,8 @@ export function createServer(config?: AppConfig): Express {
       });
     });
   });
+
+  app.use(securityHeadersMiddleware);
 
   app.use(cors(determineCorsOptions(appConfig)));
   app.use(express.json({ limit: appConfig.server.requestLimits.jsonBytes }));
@@ -445,7 +555,10 @@ export function createServer(config?: AppConfig): Express {
       res.setHeader("Content-Type", getMetricsContentType());
       res.send(snapshot);
     } catch (error) {
-      appLogger.error({ err: normalizeError(error) }, "failed to collect metrics");
+      appLogger.error(
+        { err: normalizeError(error) },
+        "failed to collect metrics",
+      );
       respondWithUnexpectedError(res, error);
     }
   });
@@ -476,13 +589,28 @@ export function createServer(config?: AppConfig): Express {
     const planSubject = session ? toPlanSubject(session) : undefined;
     const identity = createRequestIdentity(req, appConfig, planSubject);
     const requestAgent = identity.agentName ?? agent;
-    const rateLimitBuckets = buildRateLimitBuckets("plan", appConfig.server.rateLimits.plan);
-    const rateDecision = await enforceRateLimit(rateLimiter, "plan", identity, rateLimitBuckets);
+    const rateLimitBuckets = buildRateLimitBuckets(
+      "plan",
+      appConfig.server.rateLimits.plan,
+    );
+    const rateDecision = await enforceRateLimit(
+      rateLimiter,
+      "plan",
+      identity,
+      rateLimitBuckets,
+    );
     if (!rateDecision.allowed) {
-      respondWithError(res, 429, {
-        code: "too_many_requests",
-        message: "plan creation rate limit exceeded",
-      }, rateDecision.retryAfterMs ? { retryAfterMs: rateDecision.retryAfterMs } : undefined);
+      respondWithError(
+        res,
+        429,
+        {
+          code: "too_many_requests",
+          message: "plan creation rate limit exceeded",
+        },
+        rateDecision.retryAfterMs
+          ? { retryAfterMs: rateDecision.retryAfterMs }
+          : undefined,
+      );
       logAuditEvent({
         action: "plan.create",
         outcome: "denied",
@@ -495,7 +623,10 @@ export function createServer(config?: AppConfig): Express {
 
     const parsed = PlanRequestSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
-      respondWithValidationError(res, formatValidationIssues(parsed.error.issues));
+      respondWithValidationError(
+        res,
+        formatValidationIssues(parsed.error.issues),
+      );
       logAuditEvent({
         action: "plan.create",
         outcome: "failure",
@@ -593,12 +724,19 @@ export function createServer(config?: AppConfig): Express {
   app.get("/plan/:id/events", async (req: ExtendedRequest, res) => {
     const planIdResult = PlanIdSchema.safeParse(req.params.id);
     if (!planIdResult.success) {
-      respondWithValidationError(res, formatValidationIssues(planIdResult.error.issues));
+      respondWithValidationError(
+        res,
+        formatValidationIssues(planIdResult.error.issues),
+      );
       return;
     }
     const planId = planIdResult.data;
     const wantsStream = shouldStream(req);
-    const identity = createRequestIdentity(req, appConfig, req.auth?.session ? toPlanSubject(req.auth.session) : undefined);
+    const identity = createRequestIdentity(
+      req,
+      appConfig,
+      req.auth?.session ? toPlanSubject(req.auth.session) : undefined,
+    );
     const rateDecision = await enforceRateLimit(
       rateLimiter,
       "plan-events",
@@ -606,10 +744,19 @@ export function createServer(config?: AppConfig): Express {
       buildRateLimitBuckets("plan-events", appConfig.server.rateLimits.plan),
     );
     if (!rateDecision.allowed) {
-      respondWithError(res, 429, {
-        code: "too_many_requests",
-        message: wantsStream ? "too many concurrent event streams" : "plan events rate limit exceeded",
-      }, rateDecision.retryAfterMs ? { retryAfterMs: rateDecision.retryAfterMs } : undefined);
+      respondWithError(
+        res,
+        429,
+        {
+          code: "too_many_requests",
+          message: wantsStream
+            ? "too many concurrent event streams"
+            : "plan events rate limit exceeded",
+        },
+        rateDecision.retryAfterMs
+          ? { retryAfterMs: rateDecision.retryAfterMs }
+          : undefined,
+      );
       const { requestId, traceId } = getRequestIds(res);
       logAuditEvent({
         action: wantsStream ? "plan.events.stream" : "plan.events.history",
@@ -625,7 +772,9 @@ export function createServer(config?: AppConfig): Express {
 
     const agent = identity.agentName;
     const owner = await getPlanSubject(planId);
-    const requesterSubject = req.auth?.session ? toPlanSubject(req.auth.session) : undefined;
+    const requesterSubject = req.auth?.session
+      ? toPlanSubject(req.auth.session)
+      : undefined;
 
     const baseDecision = await policy.enforceHttpAction({
       action: "http.get.plan.events",
@@ -657,7 +806,9 @@ export function createServer(config?: AppConfig): Express {
     if (owner && !subjectsMatch(owner, requesterSubject)) {
       respondWithError(res, 403, {
         code: "forbidden",
-        message: wantsStream ? "subject does not match plan owner" : "subject does not match plan owner",
+        message: wantsStream
+          ? "subject does not match plan owner"
+          : "subject does not match plan owner",
       });
       logAuditEvent({
         action: wantsStream ? "plan.events.stream" : "plan.events.history",
@@ -818,13 +969,18 @@ export function createServer(config?: AppConfig): Express {
     const history = getPlanHistory(planId).map(sanitizePlanEvent);
     try {
       for (const event of history) {
-        await enqueue(`event: plan.step\n` + `data: ${JSON.stringify(event)}\n\n`);
+        await enqueue(
+          `event: plan.step\n` + `data: ${JSON.stringify(event)}\n\n`,
+        );
       }
     } catch (error) {
       clearInterval(keepAlive);
       responder.destroy();
       releaseResources();
-      appLogger.warn({ err: normalizeError(error) }, "failed to replay plan history");
+      appLogger.warn(
+        { err: normalizeError(error) },
+        "failed to replay plan history",
+      );
       logAuditEvent({
         action: "plan.events.stream",
         outcome: "failure",
@@ -838,14 +994,19 @@ export function createServer(config?: AppConfig): Express {
       return;
     }
 
-    const unsubscribe = subscribeToPlanSteps(planId, (event: StoredPlanStepEvent) => {
-      void enqueue(`event: plan.step\n` + `data: ${JSON.stringify(event)}\n\n`).catch(() => {
-        unsubscribe();
-        clearInterval(keepAlive);
-        responder.destroy();
-        releaseResources();
-      });
-    });
+    const unsubscribe = subscribeToPlanSteps(
+      planId,
+      (event: StoredPlanStepEvent) => {
+        void enqueue(
+          `event: plan.step\n` + `data: ${JSON.stringify(event)}\n\n`,
+        ).catch(() => {
+          unsubscribe();
+          clearInterval(keepAlive);
+          responder.destroy();
+          releaseResources();
+        });
+      },
+    );
 
     const close = () => {
       unsubscribe();
@@ -884,7 +1045,11 @@ export function createServer(config?: AppConfig): Express {
         subject: subjectForAudit,
         requestId,
         traceId,
-        details: { reason: "invalid_params", planId: rawPlanId, stepId: rawStepId },
+        details: {
+          reason: "invalid_params",
+          planId: rawPlanId,
+          stepId: rawStepId,
+        },
       });
       return;
     }
@@ -914,7 +1079,10 @@ export function createServer(config?: AppConfig): Express {
 
     const bodyResult = PlanApprovalSchema.safeParse(req.body ?? {});
     if (!bodyResult.success) {
-      respondWithValidationError(res, formatValidationIssues(bodyResult.error.issues));
+      respondWithValidationError(
+        res,
+        formatValidationIssues(bodyResult.error.issues),
+      );
       const { requestId, traceId } = getRequestIds(res);
       logAuditEvent({
         action: actionName,
@@ -930,7 +1098,9 @@ export function createServer(config?: AppConfig): Express {
     const payload: PlanApprovalPayload = bodyResult.data;
     const decision = overrideDecision ?? payload.decision;
 
-    const subject = req.auth?.session ? toPlanSubject(req.auth.session) : undefined;
+    const subject = req.auth?.session
+      ? toPlanSubject(req.auth.session)
+      : undefined;
     const owner = await getPlanSubject(planId);
     if (owner && !subjectsMatch(owner, subject)) {
       respondWithError(res, 403, {
@@ -951,7 +1121,10 @@ export function createServer(config?: AppConfig): Express {
     }
 
     const policyDecision = await policy.enforceHttpAction({
-      action: decision === "approved" ? "http.post.plan.steps.approve" : "http.post.plan.steps.reject",
+      action:
+        decision === "approved"
+          ? "http.post.plan.steps.approve"
+          : "http.post.plan.steps.reject",
       requiredCapabilities: ["plan.approve"],
       agent: extractAgent(req),
       traceId: getRequestContext()?.traceId,
@@ -1021,7 +1194,11 @@ export function createServer(config?: AppConfig): Express {
       return;
     }
 
-    const finalSummary = formatApprovalSummary(decision, payload.rationale, summary);
+    const finalSummary = formatApprovalSummary(
+      decision,
+      payload.rationale,
+      summary,
+    );
     await resolvePlanStepApproval({
       planId,
       stepId,
@@ -1084,7 +1261,11 @@ export function createServer(config?: AppConfig): Express {
   });
 
   app.post("/chat", async (req, res) => {
-    const identity = createRequestIdentity(req, appConfig, req.auth?.session ? toPlanSubject(req.auth.session) : undefined);
+    const identity = createRequestIdentity(
+      req,
+      appConfig,
+      req.auth?.session ? toPlanSubject(req.auth.session) : undefined,
+    );
     const rateDecision = await enforceRateLimit(
       rateLimiter,
       "chat",
@@ -1092,10 +1273,17 @@ export function createServer(config?: AppConfig): Express {
       buildRateLimitBuckets("chat", appConfig.server.rateLimits.chat),
     );
     if (!rateDecision.allowed) {
-      respondWithError(res, 429, {
-        code: "too_many_requests",
-        message: "chat rate limit exceeded",
-      }, rateDecision.retryAfterMs ? { retryAfterMs: rateDecision.retryAfterMs } : undefined);
+      respondWithError(
+        res,
+        429,
+        {
+          code: "too_many_requests",
+          message: "chat rate limit exceeded",
+        },
+        rateDecision.retryAfterMs
+          ? { retryAfterMs: rateDecision.retryAfterMs }
+          : undefined,
+      );
       const { requestId, traceId } = getRequestIds(res);
       logAuditEvent({
         action: "chat.route",
@@ -1111,7 +1299,10 @@ export function createServer(config?: AppConfig): Express {
 
     const parsed = ChatRequestSchema.safeParse(req.body ?? {});
     if (!parsed.success) {
-      respondWithValidationError(res, formatValidationIssues(parsed.error.issues));
+      respondWithValidationError(
+        res,
+        formatValidationIssues(parsed.error.issues),
+      );
       const { requestId, traceId } = getRequestIds(res);
       logAuditEvent({
         action: "chat.route",
@@ -1126,7 +1317,9 @@ export function createServer(config?: AppConfig): Express {
     }
 
     try {
-      const responsePayload = await routeChat(parsed.data as ChatRequestPayload);
+      const responsePayload = await routeChat(
+        parsed.data as ChatRequestPayload,
+      );
       const { requestId, traceId } = getRequestIds(res);
       res.json({ response: responsePayload, requestId, traceId });
       logAuditEvent({
@@ -1138,7 +1331,9 @@ export function createServer(config?: AppConfig): Express {
         traceId,
         details: {
           model: parsed.data.model,
-          messageCount: Array.isArray(parsed.data.messages) ? parsed.data.messages.length : undefined,
+          messageCount: Array.isArray(parsed.data.messages)
+            ? parsed.data.messages.length
+            : undefined,
         },
       });
     } catch (error) {
@@ -1161,7 +1356,10 @@ export function createServer(config?: AppConfig): Express {
     const subject = toAuditSubject(req.auth?.session);
     const keyResult = SecretKeySchema.safeParse(req.params.key);
     if (!keyResult.success) {
-      respondWithValidationError(res, formatValidationIssues(keyResult.error.issues));
+      respondWithValidationError(
+        res,
+        formatValidationIssues(keyResult.error.issues),
+      );
       const { requestId, traceId } = getRequestIds(res);
       logAuditEvent({
         action: "secrets.rotate",
@@ -1187,13 +1385,19 @@ export function createServer(config?: AppConfig): Express {
         subject,
         requestId,
         traceId,
-        details: { key: keyResult.success ? keyResult.data : req.params.key, reason: "authentication_required" },
+        details: {
+          key: keyResult.success ? keyResult.data : req.params.key,
+          reason: "authentication_required",
+        },
       });
       return;
     }
     const bodyResult = SecretRotateSchema.safeParse(req.body ?? {});
     if (!bodyResult.success) {
-      respondWithValidationError(res, formatValidationIssues(bodyResult.error.issues));
+      respondWithValidationError(
+        res,
+        formatValidationIssues(bodyResult.error.issues),
+      );
       const { requestId, traceId } = getRequestIds(res);
       logAuditEvent({
         action: "secrets.rotate",
@@ -1236,10 +1440,14 @@ export function createServer(config?: AppConfig): Express {
 
     const manager = getVersionedSecretsManager();
     try {
-      const version = await manager.rotate(keyResult.data, bodyResult.data.value, {
-        retain: bodyResult.data.retain,
-        labels: bodyResult.data.labels,
-      });
+      const version = await manager.rotate(
+        keyResult.data,
+        bodyResult.data.value,
+        {
+          retain: bodyResult.data.retain,
+          labels: bodyResult.data.labels,
+        },
+      );
       const { requestId, traceId } = getRequestIds(res);
       res.json({ version, requestId, traceId });
       logAuditEvent({
@@ -1272,7 +1480,10 @@ export function createServer(config?: AppConfig): Express {
     const subject = toAuditSubject(req.auth?.session);
     const keyResult = SecretKeySchema.safeParse(req.params.key);
     if (!keyResult.success) {
-      respondWithValidationError(res, formatValidationIssues(keyResult.error.issues));
+      respondWithValidationError(
+        res,
+        formatValidationIssues(keyResult.error.issues),
+      );
       const { requestId, traceId } = getRequestIds(res);
       logAuditEvent({
         action: "secrets.promote",
@@ -1298,13 +1509,19 @@ export function createServer(config?: AppConfig): Express {
         subject,
         requestId,
         traceId,
-        details: { key: keyResult.success ? keyResult.data : req.params.key, reason: "authentication_required" },
+        details: {
+          key: keyResult.success ? keyResult.data : req.params.key,
+          reason: "authentication_required",
+        },
       });
       return;
     }
     const bodyResult = SecretPromoteSchema.safeParse(req.body ?? {});
     if (!bodyResult.success) {
-      respondWithValidationError(res, formatValidationIssues(bodyResult.error.issues));
+      respondWithValidationError(
+        res,
+        formatValidationIssues(bodyResult.error.issues),
+      );
       const { requestId, traceId } = getRequestIds(res);
       logAuditEvent({
         action: "secrets.promote",
@@ -1347,7 +1564,10 @@ export function createServer(config?: AppConfig): Express {
 
     const manager = getVersionedSecretsManager();
     try {
-      const version = await manager.promote(keyResult.data, bodyResult.data.versionId);
+      const version = await manager.promote(
+        keyResult.data,
+        bodyResult.data.versionId,
+      );
       const { requestId, traceId } = getRequestIds(res);
       res.json({ version, requestId, traceId });
       logAuditEvent({
@@ -1369,7 +1589,10 @@ export function createServer(config?: AppConfig): Express {
         subject,
         requestId,
         traceId,
-        details: { key: keyResult.data, versionId: bodyResult.success ? bodyResult.data.versionId : undefined },
+        details: {
+          key: keyResult.data,
+          versionId: bodyResult.success ? bodyResult.data.versionId : undefined,
+        },
         error: error instanceof Error ? error.message : String(error),
       });
     }
@@ -1380,7 +1603,10 @@ export function createServer(config?: AppConfig): Express {
     const subject = toAuditSubject(req.auth?.session);
     const keyResult = SecretKeySchema.safeParse(req.params.key);
     if (!keyResult.success) {
-      respondWithValidationError(res, formatValidationIssues(keyResult.error.issues));
+      respondWithValidationError(
+        res,
+        formatValidationIssues(keyResult.error.issues),
+      );
       const { requestId, traceId } = getRequestIds(res);
       logAuditEvent({
         action: "secrets.versions",
@@ -1406,7 +1632,10 @@ export function createServer(config?: AppConfig): Express {
         subject,
         requestId,
         traceId,
-        details: { key: keyResult.success ? keyResult.data : req.params.key, reason: "authentication_required" },
+        details: {
+          key: keyResult.success ? keyResult.data : req.params.key,
+          reason: "authentication_required",
+        },
       });
       return;
     }
@@ -1468,8 +1697,14 @@ export function createServer(config?: AppConfig): Express {
     }
   });
 
-  app.get("/auth/oauth/:provider/authorize", oauthAuthorize);
-  app.post("/auth/oauth/:provider/callback", oauthCallback);
+  app.get(
+    "/auth/oauth/:provider/authorize",
+    applyOauthRateLimit("auth.oauth.authorize", oauthAuthorize),
+  );
+  app.post(
+    "/auth/oauth/:provider/callback",
+    applyOauthRateLimit("auth.oauth.callback", oauthCallback),
+  );
 
   app.get("/auth/oidc/config", getOidcConfiguration);
   app.post("/auth/oidc/callback", handleOidcCallback);
@@ -1483,4 +1718,3 @@ export function createServer(config?: AppConfig): Express {
 
   return app;
 }
-

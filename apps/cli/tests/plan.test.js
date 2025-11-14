@@ -199,6 +199,27 @@ test("aidt plan rejects invalid plan id from gateway", async () => {
   }
 });
 
+test("aidt plan enforces secure gateway url schemes", async () => {
+  resetPlansDir();
+  const env = {
+    ...process.env,
+    TS_NODE_PROJECT: path.join(cliRoot, "tsconfig.json"),
+    AIDT_GATEWAY_URL: "ftp://127.0.0.1:8080"
+  };
+
+  await assert.rejects(
+    execFileAsync("node", [...CLI_ARGS, "plan", "goal"], {
+      cwd: cliRoot,
+      env
+    }),
+    error => {
+      assert.match(String(error), /Invalid gateway URL: ftp:\/\/127\.0\.0\.1:8080/);
+      assert.match(String(error), /Gateway URL must use http or https\./);
+      return true;
+    }
+  );
+});
+
 test("aidt plan rejects invalid gateway URL configuration", async () => {
   resetPlansDir();
   const goal = "Invalid gateway URL";
