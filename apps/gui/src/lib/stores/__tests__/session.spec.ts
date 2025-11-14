@@ -114,6 +114,7 @@ describe('session store', () => {
       method: 'GET',
       credentials: 'include'
     });
+    // Wait for async fetchSession to complete and update the store state before asserting.
     await vi.waitUntil(() => (get(session as never) as Record<string, unknown>).authenticated === true);
     const state = get(session as never) as Record<string, unknown>;
     expect(state.authenticated).toBe(true);
