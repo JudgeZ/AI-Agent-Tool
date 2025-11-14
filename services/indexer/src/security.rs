@@ -2,7 +2,7 @@
 
 use std::env;
 use std::path::{Component, Path, PathBuf};
-use num::Integer;
+
 use once_cell::sync::Lazy;
 use regex::Regex;
 use thiserror::Error;
@@ -45,6 +45,49 @@ static CREDIT_CARD_REGEX: Lazy<Regex> = Lazy::new(|| {
         )
     })
 });
+
+#[derive(Copy, Clone)]
+enum PatternSource<'a> {
+    Default,
+    EnvVar(&'a str),
+}
+
+fn compile_pattern(pattern: &str, strict_dlp: bool, source: PatternSource<'_>) -> Option<Regex> {
+    match Regex::new(pattern) {
+        Ok(regex) => Some(regex),
+        Err(error) => {
+            match source {
+                PatternSource::Default => {
+                    if strict_dlp {
+                        panic!("Failed to compile built-in DLP pattern '{pattern}': {error}");
+                    } else {
+                        warn!(
+                            pattern = pattern,
+                            error = %error,
+                            "Failed to compile built-in DLP pattern; skipping"
+                        );
+                    }
+                }
+                PatternSource::EnvVar(env_var) => {
+                    if strict_dlp {
+                        panic!(
+                            "Failed to compile DLP pattern from {env_var} ('{pattern}'): {error}"
+                        );
+                    } else {
+                        warn!(
+                            pattern = pattern,
+                            error = %error,
+                            env_var = env_var,
+                            "Failed to compile custom DLP pattern from {env}; skipping",
+                            env = env_var,
+                        );
+                    }
+                }
+            }
+            None
+        }
+    }
+}
 
 #[derive(Debug, Error)]
 pub enum SecurityError {
@@ -133,43 +176,22 @@ impl SecurityConfig {
             .unwrap_or_else(|_| "consumer".to_string());
         let strict_dlp = run_mode == "enterprise";
 
-        let mut patterns: Vec<Regex> = Vec::new();
-        for pattern in DEFAULT_DLP_PATTERNS {
-            match Regex::new(pattern) {
-                Ok(regex) => patterns.push(regex),
-                Err(error) => {
-                    if strict_dlp {
-                        panic!("Failed to compile built-in DLP pattern '{pattern}': {error}");
-                    } else {
-                        warn!(
-                            pattern = pattern,
-                            error = %error,
-                            "Failed to compile built-in DLP pattern; skipping"
-                        );
-                    }
-                }
-            }
-        }
+        let mut patterns: Vec<Regex> = DEFAULT_DLP_PATTERNS
+            .iter()
+            .filter_map(|pattern| compile_pattern(pattern, strict_dlp, PatternSource::Default))
+            .collect();
 
         if let Ok(extra) = env::var("INDEXER_DLP_BLOCK_PATTERNS") {
             let fallback_patterns: Vec<Regex> = extra
                 .split(',')
                 .map(|entry| entry.trim())
                 .filter(|entry| !entry.is_empty())
-                .filter_map(|pattern| match Regex::new(pattern) {
-                    Ok(regex) => Some(regex),
-                    Err(error) => {
-                        if strict_dlp {
-                            panic!("Failed to compile DLP pattern from INDEXER_DLP_BLOCK_PATTERNS ('{pattern}'): {error}");
-                        } else {
-                            warn!(
-                                pattern = pattern,
-                                error = %error,
-                                "Failed to compile custom DLP pattern from INDEXER_DLP_BLOCK_PATTERNS; skipping"
-                            );
-                            None
-                        }
-                    }
+                .filter_map(|pattern| {
+                    compile_pattern(
+                        pattern,
+                        strict_dlp,
+                        PatternSource::EnvVar("INDEXER_DLP_BLOCK_PATTERNS"),
+                    )
                 })
                 .collect();
 
@@ -323,7 +345,7 @@ fn luhn_check(digits: &str) -> bool {
         sum += value;
         double = !double;
     }
-    sum.is_multiple_of(10)
+    sum % 10 == 0
 }
 
 #[cfg(test)]
