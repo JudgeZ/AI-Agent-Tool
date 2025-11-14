@@ -2,7 +2,7 @@
 name: "testTool"
 role: "Test Tool"
 capabilities:
-  - tool.execute
+  - test.run
   - plan.read
 model:
   provider: auto
