@@ -273,25 +273,4 @@ For every PR, the author (human or agent) should verify:
 
 Reviewers should block the PR if any of the above are clearly missing for a non‑trivial change.
 
----
-
-## 9. Working with Agents
-
-When you ask an agent (Codex, Reviewer, Security Reviewer) to do work:
-
-1. **State the goal clearly.**  
-   Example: “Add rate limiting to all gateway SSE endpoints with 100 connections per user.”
-
-2. **Provide context.**  
-   Point at relevant files, ADRs, and previous PRs when possible.
-
-3. **Ask for a plan first.**  
-   The agent should respond with a short plan before proposing a diff.
-
-4. **Insist on tests and docs.**  
-   If the agent’s proposal doesn’t include tests or docs, ask it to add them.
-
-5. **Keep iterations small.**  
-   Prefer a series of small, safe PRs over one giant PR that is hard to review.
-
 This file is the contract between humans and agents. Keep it up to date as the system evolves.
