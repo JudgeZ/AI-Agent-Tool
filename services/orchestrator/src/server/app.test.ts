@@ -11,6 +11,11 @@ const policyMock = {
   enforceHttpAction: vi.fn(),
 };
 
+const getOidcConfigurationMock = vi.fn();
+const handleOidcCallbackMock = vi.fn();
+const getOidcSessionMock = vi.fn();
+const oidcLogoutMock = vi.fn();
+
 vi.mock("../plan/index.js", () => ({
   createPlan: (...args: unknown[]) => createPlanMock(...args),
 }));
@@ -24,6 +29,15 @@ vi.mock("../queue/PlanQueueRuntime.js", () => ({
 
 vi.mock("../policy/PolicyEnforcer.js", () => ({
   getPolicyEnforcer: () => policyMock,
+}));
+
+vi.mock("../auth/OidcController.js", () => ({
+  getOidcConfiguration: (...args: unknown[]) =>
+    getOidcConfigurationMock(...args),
+  handleOidcCallback: (...args: unknown[]) =>
+    handleOidcCallbackMock(...args),
+  getSession: (...args: unknown[]) => getOidcSessionMock(...args),
+  logout: (...args: unknown[]) => oidcLogoutMock(...args),
 }));
 
 async function createServer(config?: AppConfig) {
@@ -54,6 +68,16 @@ function buildConfig(overrides: Partial<AppConfig> = {}): AppConfig {
     },
   } satisfies AppConfig;
 }
+
+beforeEach(() => {
+  getOidcConfigurationMock.mockReset();
+  getOidcConfigurationMock.mockImplementation((_req, res) => {
+    res.json({ ok: true });
+  });
+  handleOidcCallbackMock.mockReset();
+  getOidcSessionMock.mockReset();
+  oidcLogoutMock.mockReset();
+});
 
 describe("POST /plan security", () => {
   beforeEach(() => {
@@ -195,5 +219,41 @@ describe("security headers and oauth rate limiting", () => {
       message: "oauth rate limit exceeded",
     });
     expect(limited.headers["retry-after"]).toBeDefined();
+  });
+
+  it("rate limits oidc configuration requests", async () => {
+    const config = buildConfig({
+      auth: {
+        oidc: {
+          enabled: true,
+        },
+      },
+      server: {
+        rateLimits: {
+          ...buildConfig().server.rateLimits,
+          auth: {
+            windowMs: 60_000,
+            maxRequests: 1,
+            identityWindowMs: null,
+            identityMaxRequests: null,
+          },
+        },
+      },
+    });
+
+    const app = await createServer(config);
+
+    const success = await request(app).get("/auth/oidc/config").expect(200);
+    expect(success.body).toEqual({ ok: true });
+
+    const limited = await request(app)
+      .get("/auth/oidc/config")
+      .expect(429);
+    expect(limited.body).toMatchObject({
+      code: "too_many_requests",
+      message: "oidc rate limit exceeded",
+    });
+    expect(limited.headers["retry-after"]).toBeDefined();
+    expect(getOidcConfigurationMock).toHaveBeenCalledTimes(1);
   });
 });

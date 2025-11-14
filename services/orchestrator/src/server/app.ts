@@ -393,6 +393,10 @@ export function createServer(config?: AppConfig): Express {
     "oauth",
     appConfig.server.rateLimits.auth,
   );
+  const oidcRateLimitBuckets = buildRateLimitBuckets(
+    "oidc",
+    appConfig.server.rateLimits.auth,
+  );
 
   const applyOauthRateLimit = (
     action: string,
@@ -424,6 +428,55 @@ export function createServer(config?: AppConfig): Express {
           action,
           outcome: "denied",
           agent,
+          requestId,
+          traceId,
+          details: {
+            reason: "rate_limited",
+            retryAfterMs: rateDecision.retryAfterMs ?? undefined,
+          },
+        });
+        return;
+      }
+      try {
+        await handler(req, res);
+      } catch (error) {
+        next(error);
+      }
+    };
+  };
+
+  const applyOidcRateLimit = (
+    action: string,
+    handler: (req: ExtendedRequest, res: Response) => Promise<void> | void,
+  ) => {
+    return async (req: ExtendedRequest, res: Response, next: NextFunction) => {
+      const identity = createRequestIdentity(req, appConfig);
+      const agent = identity.agentName ?? extractAgent(req);
+      const subject = toAuditSubject(req.auth?.session);
+      const rateDecision = await enforceRateLimit(
+        rateLimiter,
+        "oidc",
+        identity,
+        oidcRateLimitBuckets,
+      );
+      if (!rateDecision.allowed) {
+        const { requestId, traceId } = getRequestIds(res);
+        respondWithError(
+          res,
+          429,
+          {
+            code: "too_many_requests",
+            message: "oidc rate limit exceeded",
+          },
+          rateDecision.retryAfterMs
+            ? { retryAfterMs: rateDecision.retryAfterMs }
+            : undefined,
+        );
+        logAuditEvent({
+          action,
+          outcome: "denied",
+          agent,
+          subject,
           requestId,
           traceId,
           details: {
@@ -1706,10 +1759,22 @@ export function createServer(config?: AppConfig): Express {
     applyOauthRateLimit("auth.oauth.callback", oauthCallback),
   );
 
-  app.get("/auth/oidc/config", getOidcConfiguration);
-  app.post("/auth/oidc/callback", handleOidcCallback);
-  app.get("/auth/session", getOidcSession);
-  app.delete("/auth/session", oidcLogout);
+  app.get(
+    "/auth/oidc/config",
+    applyOidcRateLimit("auth.oidc.config", getOidcConfiguration),
+  );
+  app.post(
+    "/auth/oidc/callback",
+    applyOidcRateLimit("auth.oidc.callback", handleOidcCallback),
+  );
+  app.get(
+    "/auth/session",
+    applyOidcRateLimit("auth.oidc.session.get", getOidcSession),
+  );
+  app.delete(
+    "/auth/session",
+    applyOidcRateLimit("auth.oidc.session.delete", oidcLogout),
+  );
 
   app.use((err: unknown, _req: Request, res: Response, _next: NextFunction) => {
     appLogger.error({ err: normalizeError(err) }, "unhandled error");
