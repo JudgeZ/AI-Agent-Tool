@@ -38,7 +38,7 @@ vi.mock("../grpc/AgentClient.js", () => {
   };
 });
 
-async function waitForCondition(condition: () => boolean, timeoutMs = 5000, intervalMs = 50): Promise<void> {
+async function waitForCondition(condition: () => boolean, timeoutMs = 15000, intervalMs = 50): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const check = () => {
@@ -169,7 +169,7 @@ describe("PlanQueueRuntime (RabbitMQ integration)", () => {
         await container.stop();
       }
     }
-  });
+  }, 60000);
 
   it("dead-letters forged completion messages", async () => {
     executeTool.mockReset();
@@ -264,6 +264,6 @@ describe("PlanQueueRuntime (RabbitMQ integration)", () => {
         await container.stop();
       }
     }
-  });
+  }, 60000);
 });
 
