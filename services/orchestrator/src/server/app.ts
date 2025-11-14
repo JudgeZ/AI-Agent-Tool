@@ -23,7 +23,6 @@ import {
   PlanApprovalSchema,
   PlanIdSchema,
   PlanRequestSchema,
-  SessionIdSchema,
   SecretKeySchema,
   SecretPromoteSchema,
   SecretRotateSchema,
@@ -82,6 +81,7 @@ import {
   getSession as getOidcSession,
   logout as oidcLogout,
 } from "../auth/OidcController.js";
+import { extractSessionId } from "../auth/sessionValidation.js";
 import type { PlanStepState } from "../plan/validation.js";
 import type { ApprovalDecision } from "../queue/PlanQueueRuntime.js";
 import type { PlanStepEvent as StoredPlanStepEvent } from "../plan/events.js";
@@ -100,15 +100,6 @@ type ExtendedRequest = Request & {
     error?: AuthError;
   };
 };
-
-type SessionExtractionResult =
-  | { status: "missing" }
-  | { status: "valid"; sessionId: string; source: "authorization" | "cookie" }
-  | {
-      status: "invalid";
-      source: "authorization" | "cookie";
-      issues: Array<{ path: string; message: string }>;
-    };
 
 type RateLimitResult =
   | { allowed: true }
@@ -299,60 +290,6 @@ async function waitForDrain(stream: ServerResponse): Promise<void> {
     return;
   }
   await once(stream, "drain");
-}
-
-function validateSessionId(
-  value: string,
-  source: "authorization" | "cookie",
-): SessionExtractionResult {
-  const result = SessionIdSchema.safeParse(value);
-  if (!result.success) {
-    return {
-      status: "invalid",
-      source,
-      issues: formatValidationIssues(result.error.issues),
-    };
-  }
-  return { status: "valid", sessionId: result.data, source };
-}
-
-function extractSessionId(
-  req: Request,
-  cookieName: string,
-): SessionExtractionResult {
-  const authHeader = req.header("authorization");
-  if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
-    const token = authHeader.slice(7).trim();
-    if (token.length > 0) {
-      return validateSessionId(token, "authorization");
-    }
-  }
-  const cookieHeader = req.headers.cookie;
-  if (!cookieHeader) {
-    return { status: "missing" };
-  }
-  for (const part of cookieHeader.split(";")) {
-    const [rawName, ...rest] = part.split("=");
-    if (!rawName) {
-      continue;
-    }
-    const name = rawName.trim();
-    if (name !== cookieName) {
-      continue;
-    }
-    const value = rest.join("=").trim();
-    if (!value) {
-      return validateSessionId(value, "cookie");
-    }
-    let decoded = value;
-    try {
-      decoded = decodeURIComponent(value);
-    } catch {
-      // Fall back to the raw value so validation can report a useful error
-    }
-    return validateSessionId(decoded, "cookie");
-  }
-  return { status: "missing" };
 }
 
 function attachSession(

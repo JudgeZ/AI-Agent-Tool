@@ -8,38 +8,11 @@ import {
 } from "./OidcClient.js";
 import { sessionStore } from "./SessionStore.js";
 import { logAuditEvent, type AuditSubject } from "../observability/audit.js";
-import {
-  OidcCallbackSchema,
-  SessionIdSchema,
-  formatValidationIssues,
-} from "../http/validation.js";
+import { OidcCallbackSchema, formatValidationIssues } from "../http/validation.js";
 import { respondWithError, respondWithValidationError } from "../http/errors.js";
+import { extractSessionId } from "./sessionValidation.js";
 
 const MINIMUM_SESSION_EXPIRY_BUFFER_MS = 5_000;
-
-type SessionExtractionResult =
-  | { status: "missing" }
-  | { status: "valid"; sessionId: string; source: "authorization" | "cookie" }
-  | {
-      status: "invalid";
-      source: "authorization" | "cookie";
-      issues: Array<{ path: string; message: string }>;
-    };
-
-function validateSessionId(
-  value: string,
-  source: "authorization" | "cookie",
-): SessionExtractionResult {
-  const result = SessionIdSchema.safeParse(value);
-  if (!result.success) {
-    return {
-      status: "invalid",
-      source,
-      issues: formatValidationIssues(result.error.issues),
-    };
-  }
-  return { status: "valid", sessionId: result.data, source };
-}
 
 function parseTokensScope(
   scope: string | undefined,
@@ -59,46 +32,6 @@ function parseTokensScope(
     }
   }
   return Array.from(combined);
-}
-
-function extractSessionId(
-  req: Request,
-  cookieName: string,
-): SessionExtractionResult {
-  const authHeader = req.header("authorization");
-  if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
-    const token = authHeader.slice(7).trim();
-    if (token.length > 0) {
-      return validateSessionId(token, "authorization");
-    }
-  }
-  const cookieHeader = req.headers.cookie;
-  if (!cookieHeader) {
-    return { status: "missing" };
-  }
-  const parts = cookieHeader.split(";");
-  for (const part of parts) {
-    const [rawName, ...rest] = part.split("=");
-    if (!rawName) {
-      continue;
-    }
-    const name = rawName.trim();
-    if (name !== cookieName) {
-      continue;
-    }
-    const value = rest.join("=").trim();
-    if (!value) {
-      return validateSessionId(value, "cookie");
-    }
-    let decoded = value;
-    try {
-      decoded = decodeURIComponent(value);
-    } catch {
-      // Fall back to the raw value so validation can surface a useful error
-    }
-    return validateSessionId(decoded, "cookie");
-  }
-  return { status: "missing" };
 }
 
 function determineSecureCookieFlag(tlsEnabled: boolean): boolean {
