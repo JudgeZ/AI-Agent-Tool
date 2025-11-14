@@ -4,6 +4,7 @@ use std::env;
 
 use chrono::Utc;
 use once_cell::sync::Lazy;
+use regex::Regex;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use tracing::{event, Level};
@@ -36,16 +37,25 @@ static HASH_SALT: Lazy<String> = Lazy::new(|| {
     }
 });
 
-static SECRET_KEY_PATTERNS: Lazy<Vec<regex::Regex>> = Lazy::new(|| {
-    vec![
-        regex::Regex::new("(?i)token").unwrap(),
-        regex::Regex::new("(?i)secret").unwrap(),
-        regex::Regex::new("(?i)password").unwrap(),
-        regex::Regex::new("(?i)credential").unwrap(),
-        regex::Regex::new("(?i)authorization").unwrap(),
-        regex::Regex::new("(?i)api[_-]?key").unwrap(),
-        regex::Regex::new("(?i)client[_-]?secret").unwrap(),
-    ]
+const SECRET_KEY_PATTERN_STRINGS: [&str; 7] = [
+    "(?i)token",
+    "(?i)secret",
+    "(?i)password",
+    "(?i)credential",
+    "(?i)authorization",
+    "(?i)api[_-]?key",
+    "(?i)client[_-]?secret",
+];
+
+static SECRET_KEY_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
+    SECRET_KEY_PATTERN_STRINGS
+        .iter()
+        .map(|pattern| {
+            Regex::new(pattern).unwrap_or_else(|error| {
+                panic!("failed to compile built-in audit redaction pattern '{pattern}': {error}")
+            })
+        })
+        .collect()
 });
 
 fn hash_identity(value: &str) -> String {
@@ -225,14 +235,23 @@ mod tests {
             "allowed": true
         })));
 
-        let map = redacted.unwrap().as_object().unwrap().clone();
-        assert_eq!(map.get("token").unwrap(), "[redacted]");
+        let map = match redacted {
+            Some(Value::Object(map)) => map,
+            other => panic!("expected object value, got {other:?}"),
+        };
+
+        assert_eq!(map.get("token").and_then(Value::as_str), Some("[redacted]"));
+
         let nested = map
             .get("nested")
-            .and_then(|value| value.as_object())
-            .unwrap();
-        assert_eq!(nested.get("refresh_token").unwrap(), "[redacted]");
-        assert_eq!(map.get("allowed").unwrap(), &json!(true));
+            .and_then(Value::as_object)
+            .unwrap_or_else(|| panic!("expected nested object: {map:?}"));
+
+        assert_eq!(
+            nested.get("refresh_token").and_then(Value::as_str),
+            Some("[redacted]")
+        );
+        assert_eq!(map.get("allowed"), Some(&json!(true)));
     }
 
     #[test]

@@ -120,7 +120,10 @@ mod tests {
     #[test]
     fn trims_document_path() {
         let input: DocumentInput =
-            serde_json::from_str(r#"{"path": " src/lib.rs ", "content": "fn main(){}"}"#).unwrap();
+            match serde_json::from_str(r#"{"path": " src/lib.rs ", "content": "fn main(){}"}"#) {
+                Ok(value) => value,
+                Err(error) => panic!("failed to parse document input: {error}"),
+            };
         assert_eq!(input.path, "src/lib.rs");
         assert_eq!(input.content, "fn main(){}");
     }
@@ -134,9 +137,12 @@ mod tests {
 
     #[test]
     fn optional_commit_id_filters_empty() {
-        let input: DocumentInput =
-            serde_json::from_str(r#"{"path": "src/lib.rs", "content": "ok", "commit_id": "   "}"#)
-                .unwrap();
+        let input: DocumentInput = match serde_json::from_str(
+            r#"{"path": "src/lib.rs", "content": "ok", "commit_id": "   "}"#,
+        ) {
+            Ok(value) => value,
+            Err(error) => panic!("failed to parse document input: {error}"),
+        };
         assert!(input.commit_id.is_none());
     }
 }
