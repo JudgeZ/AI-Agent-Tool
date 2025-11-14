@@ -327,8 +327,7 @@ fn luhn_check(digits: &str) -> bool {
         double = !double;
     }
 
-    // Use the standard library helper to express the divisibility check clearly.
-    sum.is_multiple_of(10)
+    sum % 10 == 0
 }
 
 #[cfg(test)]
