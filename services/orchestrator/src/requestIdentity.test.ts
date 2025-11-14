@@ -185,6 +185,16 @@ describe("extractAgent", () => {
 
     expect(extractAgent(req)).toBeUndefined();
   });
+
+  it("returns the first string entry when multiple agent headers are provided", () => {
+    const req = {
+      headers: { "x-agent": [" primary-agent ", 123, "secondary"] },
+      header: (_name: string) => undefined,
+      body: {},
+    } as unknown as Request;
+
+    expect(extractAgent(req)).toBe("primary-agent");
+  });
 });
 
 describe("normalizeRedirectIdentity", () => {

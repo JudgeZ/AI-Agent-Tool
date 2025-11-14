@@ -81,15 +81,23 @@ import {
   getSession as getOidcSession,
   logout as oidcLogout,
 } from "../auth/OidcController.js";
+import { extractSessionId } from "../auth/sessionValidation.js";
 import type { PlanStepState } from "../plan/validation.js";
 import type { ApprovalDecision } from "../queue/PlanQueueRuntime.js";
 import type { PlanStepEvent as StoredPlanStepEvent } from "../plan/events.js";
 
 type Mutable<T> = { -readonly [K in keyof T]: T[K] };
 
+type AuthError = {
+  code: "invalid_session";
+  source: "authorization" | "cookie";
+  issues: Array<{ path: string; message: string }>;
+};
+
 type ExtendedRequest = Request & {
   auth?: {
     session?: SessionRecord;
+    error?: AuthError;
   };
 };
 
@@ -284,61 +292,89 @@ async function waitForDrain(stream: ServerResponse): Promise<void> {
   await once(stream, "drain");
 }
 
-function extractSessionId(
-  req: Request,
-  cookieName: string,
-): string | undefined {
-  const authHeader = req.header("authorization");
-  if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
-    const token = authHeader.slice(7).trim();
-    if (token.length > 0) {
-      return token;
-    }
-  }
-  const cookieHeader = req.headers.cookie;
-  if (!cookieHeader) {
-    return undefined;
-  }
-  for (const part of cookieHeader.split(";")) {
-    const [rawName, ...rest] = part.split("=");
-    if (!rawName) {
-      continue;
-    }
-    const name = rawName.trim();
-    if (name !== cookieName) {
-      continue;
-    }
-    const value = rest.join("=").trim();
-    if (!value) {
-      continue;
-    }
-    try {
-      return decodeURIComponent(value);
-    } catch {
-      return value;
-    }
-  }
-  return undefined;
-}
-
 function attachSession(
   req: ExtendedRequest,
   config: AppConfig,
 ): SessionRecord | undefined {
   const oidcConfig = config.auth.oidc;
   if (!oidcConfig.enabled) {
+    req.auth = undefined;
     return undefined;
   }
   sessionStore.cleanupExpired();
-  const sessionId = extractSessionId(req, oidcConfig.session.cookieName);
-  if (!sessionId) {
+  const sessionResult = extractSessionId(req, oidcConfig.session.cookieName);
+  if (sessionResult.status === "invalid") {
+    req.auth = {
+      error: {
+        code: "invalid_session",
+        source: sessionResult.source,
+        issues: sessionResult.issues,
+      },
+    };
+    const requestId = req.header("x-request-id") ?? undefined;
+    const traceId = req.header("x-trace-id") ?? undefined;
+    logAuditEvent({
+      action: "auth.session.attach",
+      outcome: "failure",
+      requestId,
+      traceId,
+      resource: "auth.session",
+      details: {
+        reason: "invalid session id",
+        source: sessionResult.source,
+        issues: sessionResult.issues,
+        path: req.originalUrl,
+      },
+    });
     return undefined;
   }
-  const session = sessionStore.getSession(sessionId);
+  if (sessionResult.status === "missing") {
+    req.auth = undefined;
+    return undefined;
+  }
+  const session = sessionStore.getSession(sessionResult.sessionId);
   if (session) {
     req.auth = { session };
+    return session;
   }
-  return session;
+  req.auth = undefined;
+  return undefined;
+}
+
+function resolveAuthFailure(
+  req: ExtendedRequest,
+): {
+  status: number;
+  code: "unauthorized" | "invalid_request";
+  message: string;
+  reason: string;
+  details?: Record<string, unknown>;
+} {
+  const error = req.auth?.error;
+  if (error?.code === "invalid_session") {
+    return {
+      status: 400,
+      code: "invalid_request",
+      message: "invalid session",
+      reason: "invalid_session",
+      details: { source: error.source, issues: error.issues },
+    };
+  }
+  return {
+    status: 401,
+    code: "unauthorized",
+    message: "authentication required",
+    reason: "authentication_required",
+  };
+}
+
+function buildAuthFailureAuditDetails(
+  failure: ReturnType<typeof resolveAuthFailure>,
+): Record<string, unknown> {
+  if (failure.details) {
+    return { reason: failure.reason, ...failure.details };
+  }
+  return { reason: failure.reason };
 }
 
 async function enforceRateLimit(
@@ -348,7 +384,7 @@ async function enforceRateLimit(
   buckets: ReturnType<typeof buildRateLimitBuckets>,
 ): Promise<RateLimitResult> {
   for (const bucket of buckets) {
-    const key = `${endpoint}:${bucket.identityType}:$${
+    const key = `${endpoint}:${bucket.identityType}:${
       bucket.identityType === "identity"
         ? (identity.subjectId ?? identity.agentName ?? identity.ip)
         : identity.ip
@@ -622,9 +658,11 @@ export function createServer(config?: AppConfig): Express {
     const auditSubject = toAuditSubject(session);
 
     if (appConfig.auth.oidc.enabled && !session) {
-      respondWithError(res, 401, {
-        code: "unauthorized",
-        message: "authentication required",
+      const failure = resolveAuthFailure(req);
+      respondWithError(res, failure.status, {
+        code: failure.code,
+        message: failure.message,
+        details: failure.details,
       });
       const { requestId, traceId } = getRequestIds(res);
       logAuditEvent({
@@ -634,7 +672,7 @@ export function createServer(config?: AppConfig): Express {
         requestId,
         traceId,
         subject: auditSubject,
-        details: { reason: "authentication_required" },
+        details: buildAuthFailureAuditDetails(failure),
       });
       return;
     }
@@ -1112,9 +1150,11 @@ export function createServer(config?: AppConfig): Express {
     if (appConfig.auth.oidc.enabled) {
       const session = req.auth?.session;
       if (!session) {
-        respondWithError(res, 401, {
-          code: "unauthorized",
-          message: "authentication required",
+        const failure = resolveAuthFailure(req);
+        respondWithError(res, failure.status, {
+          code: failure.code,
+          message: failure.message,
+          details: failure.details,
         });
         const { requestId, traceId } = getRequestIds(res);
         logAuditEvent({
@@ -1124,7 +1164,11 @@ export function createServer(config?: AppConfig): Express {
           subject: subjectForAudit,
           requestId,
           traceId,
-          details: { planId, stepId, reason: "authentication_required" },
+          details: {
+            planId,
+            stepId,
+            ...buildAuthFailureAuditDetails(failure),
+          },
         });
         return;
       }
@@ -1426,9 +1470,11 @@ export function createServer(config?: AppConfig): Express {
       return;
     }
     if (appConfig.auth.oidc.enabled && !req.auth?.session) {
-      respondWithError(res, 401, {
-        code: "unauthorized",
-        message: "authentication required",
+      const failure = resolveAuthFailure(req);
+      respondWithError(res, failure.status, {
+        code: failure.code,
+        message: failure.message,
+        details: failure.details,
       });
       const { requestId, traceId } = getRequestIds(res);
       logAuditEvent({
@@ -1440,7 +1486,7 @@ export function createServer(config?: AppConfig): Express {
         traceId,
         details: {
           key: keyResult.success ? keyResult.data : req.params.key,
-          reason: "authentication_required",
+          ...buildAuthFailureAuditDetails(failure),
         },
       });
       return;
@@ -1550,9 +1596,11 @@ export function createServer(config?: AppConfig): Express {
       return;
     }
     if (appConfig.auth.oidc.enabled && !req.auth?.session) {
-      respondWithError(res, 401, {
-        code: "unauthorized",
-        message: "authentication required",
+      const failure = resolveAuthFailure(req);
+      respondWithError(res, failure.status, {
+        code: failure.code,
+        message: failure.message,
+        details: failure.details,
       });
       const { requestId, traceId } = getRequestIds(res);
       logAuditEvent({
@@ -1564,7 +1612,7 @@ export function createServer(config?: AppConfig): Express {
         traceId,
         details: {
           key: keyResult.success ? keyResult.data : req.params.key,
-          reason: "authentication_required",
+          ...buildAuthFailureAuditDetails(failure),
         },
       });
       return;
@@ -1673,9 +1721,11 @@ export function createServer(config?: AppConfig): Express {
       return;
     }
     if (appConfig.auth.oidc.enabled && !req.auth?.session) {
-      respondWithError(res, 401, {
-        code: "unauthorized",
-        message: "authentication required",
+      const failure = resolveAuthFailure(req);
+      respondWithError(res, failure.status, {
+        code: failure.code,
+        message: failure.message,
+        details: failure.details,
       });
       const { requestId, traceId } = getRequestIds(res);
       logAuditEvent({
@@ -1687,7 +1737,7 @@ export function createServer(config?: AppConfig): Express {
         traceId,
         details: {
           key: keyResult.success ? keyResult.data : req.params.key,
-          reason: "authentication_required",
+          ...buildAuthFailureAuditDetails(failure),
         },
       });
       return;

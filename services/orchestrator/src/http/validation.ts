@@ -11,6 +11,7 @@ const MAX_CODE_VERIFIER_LENGTH = 128;
 const MAX_SECRET_KEY_LENGTH = 128;
 const MAX_SECRET_LABEL_KEY_LENGTH = 64;
 const MAX_SECRET_LABEL_VALUE_LENGTH = 256;
+const MAX_SESSION_ID_LENGTH = 64;
 const MAX_SECRET_LABEL_ENTRIES = 20;
 const MAX_SECRET_VALUE_LENGTH = 8192;
 
@@ -24,6 +25,15 @@ export const PlanIdSchema = z
   .refine((value) => LEGACY_PLAN_ID_REGEX.test(value) || UUID_PLAN_ID_REGEX.test(value), {
     message: "plan id is invalid",
   });
+
+export const SessionIdSchema = z
+  .string({ required_error: "session id is required" })
+  .trim()
+  .min(1, { message: "session id is required" })
+  .max(MAX_SESSION_ID_LENGTH, {
+    message: `session id must not exceed ${MAX_SESSION_ID_LENGTH} characters`,
+  })
+  .uuid({ message: "session id must be a valid uuid" });
 
 export const PlanRequestSchema = z.object({
   goal: z

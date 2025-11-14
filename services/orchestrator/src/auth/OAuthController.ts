@@ -18,7 +18,7 @@ import { resolveEnv } from "../utils/env.js";
 import { ensureEgressAllowed } from "../network/EgressGuard.js";
 import { logAuditEvent } from "../observability/audit.js";
 import { getRequestContext } from "../observability/requestContext.js";
-import { extractAgent } from "../http/requestIdentity.js";
+import { extractAgent, readHeaderValue } from "../http/requestIdentity.js";
 
 class HttpError extends Error {
   constructor(
@@ -101,24 +101,6 @@ function hashErrorMessage(message: string | undefined): string | undefined {
   const hash = crypto.createHash("sha256");
   hash.update(message);
   return hash.digest("hex");
-}
-
-function readHeaderValue(req: Request, name: string): string | undefined {
-  if (typeof req.header === "function") {
-    const value = req.header(name);
-    if (typeof value === "string") {
-      return value;
-    }
-  }
-  const headers = (req as Record<string, unknown>).headers;
-  if (headers && typeof headers === "object") {
-    const record = headers as Record<string, unknown>;
-    const direct = record[name] ?? record[name.toLowerCase()];
-    if (typeof direct === "string") {
-      return direct;
-    }
-  }
-  return undefined;
 }
 
 function responseMessageForStatus(status: number): {

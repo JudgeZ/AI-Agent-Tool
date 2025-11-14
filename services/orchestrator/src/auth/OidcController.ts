@@ -10,6 +10,7 @@ import { sessionStore } from "./SessionStore.js";
 import { logAuditEvent, type AuditSubject } from "../observability/audit.js";
 import { OidcCallbackSchema, formatValidationIssues } from "../http/validation.js";
 import { respondWithError, respondWithValidationError } from "../http/errors.js";
+import { extractSessionId } from "./sessionValidation.js";
 
 const MINIMUM_SESSION_EXPIRY_BUFFER_MS = 5_000;
 
@@ -31,44 +32,6 @@ function parseTokensScope(
     }
   }
   return Array.from(combined);
-}
-
-function extractSessionId(
-  req: Request,
-  cookieName: string,
-): string | undefined {
-  const authHeader = req.header("authorization");
-  if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
-    const token = authHeader.slice(7).trim();
-    if (token.length > 0) {
-      return token;
-    }
-  }
-  const cookieHeader = req.headers.cookie;
-  if (!cookieHeader) {
-    return undefined;
-  }
-  const parts = cookieHeader.split(";");
-  for (const part of parts) {
-    const [rawName, ...rest] = part.split("=");
-    if (!rawName) {
-      continue;
-    }
-    const name = rawName.trim();
-    if (name !== cookieName) {
-      continue;
-    }
-    const value = rest.join("=").trim();
-    if (!value) {
-      continue;
-    }
-    try {
-      return decodeURIComponent(value);
-    } catch {
-      return value;
-    }
-  }
-  return undefined;
 }
 
 function determineSecureCookieFlag(tlsEnabled: boolean): boolean {
@@ -485,10 +448,26 @@ export async function handleOidcCallback(req: Request, res: Response) {
 export async function getSession(req: Request, res: Response) {
   const config = loadConfig();
   const cookieName = config.auth.oidc.session.cookieName;
-  const sessionId = extractSessionId(req, cookieName);
+  const sessionResult = extractSessionId(req, cookieName);
   const requestId = req.header("x-request-id") ?? undefined;
   const traceId = req.header("x-trace-id") ?? undefined;
-  if (!sessionId) {
+  if (sessionResult.status === "invalid") {
+    logAuditEvent({
+      action: "auth.session.get",
+      outcome: "failure",
+      requestId,
+      traceId,
+      resource: "auth.session",
+      details: {
+        reason: "invalid session id",
+        source: sessionResult.source,
+        issues: sessionResult.issues,
+      },
+    });
+    respondWithValidationError(res, sessionResult.issues);
+    return;
+  }
+  if (sessionResult.status === "missing") {
     logAuditEvent({
       action: "auth.session.get",
       outcome: "failure",
@@ -504,7 +483,7 @@ export async function getSession(req: Request, res: Response) {
     return;
   }
   sessionStore.cleanupExpired();
-  const session = sessionStore.getSession(sessionId);
+  const session = sessionStore.getSession(sessionResult.sessionId);
   if (!session) {
     logAuditEvent({
       action: "auth.session.get",
@@ -556,12 +535,35 @@ export async function getSession(req: Request, res: Response) {
 export async function logout(req: Request, res: Response) {
   const config = loadConfig();
   const cookieName = config.auth.oidc.session.cookieName;
-  const sessionId = extractSessionId(req, cookieName);
+  const sessionResult = extractSessionId(req, cookieName);
   const requestId = req.header("x-request-id") ?? undefined;
   const traceId = req.header("x-trace-id") ?? undefined;
-  if (sessionId) {
-    const session = sessionStore.getSession(sessionId);
-    sessionStore.revokeSession(sessionId);
+  const cookieOptions = computeCookieOptions(
+    0,
+    determineSecureCookieFlag(config.server.tls.enabled),
+  );
+
+  if (sessionResult.status === "invalid") {
+    logAuditEvent({
+      action: "auth.logout",
+      outcome: "failure",
+      requestId,
+      traceId,
+      resource: "auth.session",
+      details: {
+        reason: "invalid session id",
+        source: sessionResult.source,
+        issues: sessionResult.issues,
+      },
+    });
+    res.clearCookie(cookieName, { ...cookieOptions, maxAge: 0 });
+    respondWithValidationError(res, sessionResult.issues);
+    return;
+  }
+
+  if (sessionResult.status === "valid") {
+    const session = sessionStore.getSession(sessionResult.sessionId);
+    sessionStore.revokeSession(sessionResult.sessionId);
     const outcome = session ? "success" : "failure";
     logAuditEvent({
       action: "auth.logout",
@@ -592,10 +594,6 @@ export async function logout(req: Request, res: Response) {
       details: { reason: "session cookie missing" },
     });
   }
-  const cookieOptions = computeCookieOptions(
-    0,
-    determineSecureCookieFlag(config.server.tls.enabled),
-  );
   res.clearCookie(cookieName, { ...cookieOptions, maxAge: 0 });
   res.status(204).end();
 }

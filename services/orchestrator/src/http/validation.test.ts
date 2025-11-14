@@ -6,6 +6,7 @@ import {
   PlanApprovalSchema,
   PlanIdSchema,
   PlanRequestSchema,
+  SessionIdSchema,
   StepIdSchema,
   formatValidationIssues,
 } from "./validation.js";
@@ -38,6 +39,25 @@ describe("PlanIdSchema", () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error.issues[0]?.message).toBe("plan id is invalid");
+    }
+  });
+});
+
+describe("SessionIdSchema", () => {
+  it("accepts valid uuids", () => {
+    const value = "123e4567-e89b-12d3-a456-426614174000";
+    expect(SessionIdSchema.parse(value)).toBe(value);
+  });
+
+  it.each([
+    { name: "blank", value: "" },
+    { name: "too long", value: `${"a".repeat(65)}` },
+    { name: "invalid format", value: "not-a-uuid" },
+  ])("rejects invalid session ids: $name", ({ value }) => {
+    const result = SessionIdSchema.safeParse(value);
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toMatch(/session id/i);
     }
   });
 });

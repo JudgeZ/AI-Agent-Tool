@@ -587,12 +587,37 @@ describe("OidcController", () => {
     });
   });
 
+  it("rejects session retrieval when the session id is invalid", async () => {
+    const auditSpy = vi.spyOn(Audit, "logAuditEvent");
+    const app = createApp();
+    const response = await request(app)
+      .get("/auth/session")
+      .set("Cookie", "oss_session=invalid-token");
+
+    expect(response.status).toBe(400);
+    expect(response.body).toMatchObject({
+      code: "invalid_request",
+      message: "Request validation failed",
+    });
+    expect(response.body.details?.[0]?.message).toMatch(/session id/i);
+
+    const auditCall = auditSpy.mock.calls.find(
+      ([event]) =>
+        event.action === "auth.session.get" && event.outcome === "failure",
+    );
+    expect(auditCall).toBeDefined();
+    expect(auditCall?.[0].details).toMatchObject({
+      reason: "invalid session id",
+      source: "cookie",
+    });
+  });
+
   it("clears the session cookie during logout even when the session does not exist", async () => {
     const auditSpy = vi.spyOn(Audit, "logAuditEvent");
     const app = createApp();
     const response = await request(app)
       .post("/auth/logout")
-      .set("Cookie", "oss_session=unknown-session");
+      .set("Cookie", "oss_session=123e4567-e89b-12d3-a456-426614174000");
     expect(response.status).toBe(204);
     expect(response.headers["set-cookie"] ?? []).toBeDefined();
     const auditCall = auditSpy.mock.calls.find(
@@ -602,6 +627,32 @@ describe("OidcController", () => {
     expect(auditCall).toBeDefined();
     expect(auditCall?.[0].details).toMatchObject({
       reason: "session not found",
+    });
+  });
+
+  it("rejects logout when the session id is invalid", async () => {
+    const auditSpy = vi.spyOn(Audit, "logAuditEvent");
+    const app = createApp();
+    const response = await request(app)
+      .post("/auth/logout")
+      .set("Cookie", "oss_session=not-a-uuid");
+
+    expect(response.status).toBe(400);
+    expect(response.headers["set-cookie"] ?? []).toBeDefined();
+    expect(response.body).toMatchObject({
+      code: "invalid_request",
+      message: "Request validation failed",
+    });
+    expect(response.body.details?.[0]?.message).toMatch(/session id/i);
+
+    const auditCall = auditSpy.mock.calls.find(
+      ([event]) =>
+        event.action === "auth.logout" && event.outcome === "failure",
+    );
+    expect(auditCall).toBeDefined();
+    expect(auditCall?.[0].details).toMatchObject({
+      reason: "invalid session id",
+      source: "cookie",
     });
   });
 
