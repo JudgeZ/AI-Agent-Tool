@@ -486,7 +486,17 @@ export async function getSession(req: Request, res: Response) {
   const config = loadConfig();
   const cookieName = config.auth.oidc.session.cookieName;
   const sessionId = extractSessionId(req, cookieName);
+  const requestId = req.header("x-request-id") ?? undefined;
+  const traceId = req.header("x-trace-id") ?? undefined;
   if (!sessionId) {
+    logAuditEvent({
+      action: "auth.session.get",
+      outcome: "failure",
+      requestId,
+      traceId,
+      resource: "auth.session",
+      details: { reason: "session cookie missing" },
+    });
     respondWithError(res, 401, {
       code: "unauthorized",
       message: "session not found",
@@ -496,12 +506,38 @@ export async function getSession(req: Request, res: Response) {
   sessionStore.cleanupExpired();
   const session = sessionStore.getSession(sessionId);
   if (!session) {
+    logAuditEvent({
+      action: "auth.session.get",
+      outcome: "failure",
+      requestId,
+      traceId,
+      resource: "auth.session",
+      details: { reason: "session expired or missing" },
+    });
     respondWithError(res, 401, {
       code: "unauthorized",
       message: "session expired",
     });
     return;
   }
+  const auditSubject: AuditSubject = {
+    sessionId: session.id,
+    userId: session.subject,
+    tenantId: session.tenantId ?? undefined,
+    email: session.email ?? null,
+    name: session.name ?? null,
+    roles: session.roles.length > 0 ? [...session.roles] : undefined,
+    scopes: session.scopes.length > 0 ? [...session.scopes] : undefined,
+  };
+  logAuditEvent({
+    action: "auth.session.get",
+    outcome: "success",
+    requestId,
+    traceId,
+    resource: "auth.session",
+    subject: auditSubject,
+    details: { tenantId: session.tenantId ?? undefined },
+  });
   res.json({
     session: {
       id: session.id,
@@ -521,14 +557,17 @@ export async function logout(req: Request, res: Response) {
   const config = loadConfig();
   const cookieName = config.auth.oidc.session.cookieName;
   const sessionId = extractSessionId(req, cookieName);
+  const requestId = req.header("x-request-id") ?? undefined;
+  const traceId = req.header("x-trace-id") ?? undefined;
   if (sessionId) {
     const session = sessionStore.getSession(sessionId);
     sessionStore.revokeSession(sessionId);
+    const outcome = session ? "success" : "failure";
     logAuditEvent({
       action: "auth.logout",
-      outcome: "success",
-      requestId: req.header("x-request-id") ?? undefined,
-      traceId: req.header("x-trace-id") ?? undefined,
+      outcome,
+      requestId,
+      traceId,
       resource: "auth.session",
       subject: session
         ? {
@@ -539,6 +578,18 @@ export async function logout(req: Request, res: Response) {
             name: session.name ?? null,
           }
         : undefined,
+      details: session
+        ? { tenantId: session.tenantId ?? undefined }
+        : { reason: "session not found" },
+    });
+  } else {
+    logAuditEvent({
+      action: "auth.logout",
+      outcome: "failure",
+      requestId,
+      traceId,
+      resource: "auth.session",
+      details: { reason: "session cookie missing" },
     });
   }
   const cookieOptions = computeCookieOptions(

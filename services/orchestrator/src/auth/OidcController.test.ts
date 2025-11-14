@@ -569,6 +569,7 @@ describe("OidcController", () => {
   });
 
   it("returns unauthorized when no session cookie is provided", async () => {
+    const auditSpy = vi.spyOn(Audit, "logAuditEvent");
     const app = createApp();
     const response = await request(app).get("/auth/session");
     expect(response.status).toBe(401);
@@ -576,15 +577,120 @@ describe("OidcController", () => {
       code: "unauthorized",
       message: "session not found",
     });
+    const auditCall = auditSpy.mock.calls.find(
+      ([event]) =>
+        event.action === "auth.session.get" && event.outcome === "failure",
+    );
+    expect(auditCall).toBeDefined();
+    expect(auditCall?.[0].details).toMatchObject({
+      reason: "session cookie missing",
+    });
   });
 
   it("clears the session cookie during logout even when the session does not exist", async () => {
+    const auditSpy = vi.spyOn(Audit, "logAuditEvent");
     const app = createApp();
     const response = await request(app)
       .post("/auth/logout")
       .set("Cookie", "oss_session=unknown-session");
     expect(response.status).toBe(204);
     expect(response.headers["set-cookie"] ?? []).toBeDefined();
+    const auditCall = auditSpy.mock.calls.find(
+      ([event]) =>
+        event.action === "auth.logout" && event.outcome === "failure",
+    );
+    expect(auditCall).toBeDefined();
+    expect(auditCall?.[0].details).toMatchObject({
+      reason: "session not found",
+    });
+  });
+
+  it("logs an audit failure when logout is called without a session", async () => {
+    const auditSpy = vi.spyOn(Audit, "logAuditEvent");
+    const app = createApp();
+    const response = await request(app).post("/auth/logout");
+    expect(response.status).toBe(204);
+    const auditCall = auditSpy.mock.calls.find(
+      ([event]) =>
+        event.action === "auth.logout" && event.outcome === "failure",
+    );
+    expect(auditCall).toBeDefined();
+    expect(auditCall?.[0].details).toMatchObject({
+      reason: "session cookie missing",
+    });
+  });
+
+  it("logs an audit event when fetching a session succeeds", async () => {
+    const auditSpy = vi.spyOn(Audit, "logAuditEvent");
+    const app = createApp();
+    const callbackResponse = await request(app)
+      .post("/auth/oidc/callback")
+      .send({
+        code: "auth-code",
+        code_verifier: "v".repeat(64),
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback",
+      });
+    expect(callbackResponse.status).toBe(200);
+    const cookies = callbackResponse.headers["set-cookie"] ?? [];
+    const sessionCookie = (Array.isArray(cookies) ? cookies : [cookies]).find(
+      (cookie) => cookie.startsWith("oss_session="),
+    );
+    expect(sessionCookie).toBeDefined();
+
+    auditSpy.mockClear();
+    const sessionResponse = await request(app)
+      .get("/auth/session")
+      .set("Cookie", sessionCookie as string);
+
+    expect(sessionResponse.status).toBe(200);
+    const auditCall = auditSpy.mock.calls.find(
+      ([event]) =>
+        event.action === "auth.session.get" && event.outcome === "success",
+    );
+    expect(auditCall).toBeDefined();
+    expect(auditCall?.[0].subject).toMatchObject({
+      sessionId: expect.any(String),
+      userId: "user-123",
+    });
+    expect(auditCall?.[0].details).toMatchObject({ tenantId: "tenant-1" });
+  });
+
+  it("logs an audit event when the session has expired", async () => {
+    const auditSpy = vi.spyOn(Audit, "logAuditEvent");
+    const app = createApp();
+    const expiredSession = sessionStore.createSession(
+      {
+        subject: "user-expired",
+        email: "expired@example.com",
+        name: "Expired User",
+        tenantId: "tenant-expired",
+        roles: ["viewer"],
+        scopes: ["openid"],
+        claims: {},
+        tokens: {},
+      },
+      3600,
+      Date.now() - 60_000,
+    );
+    const cookieName = testConfig.auth.oidc.session.cookieName;
+    auditSpy.mockClear();
+    const response = await request(app)
+      .get("/auth/session")
+      .set("Cookie", `${cookieName}=${expiredSession.id}`);
+
+    expect(response.status).toBe(401);
+    expect(response.body).toMatchObject({
+      code: "unauthorized",
+      message: "session expired",
+    });
+    const auditCall = auditSpy.mock.calls.find(
+      ([event]) =>
+        event.action === "auth.session.get" && event.outcome === "failure",
+    );
+    expect(auditCall).toBeDefined();
+    expect(auditCall?.[0].details).toMatchObject({
+      reason: "session expired or missing",
+    });
   });
 
   it("logs metadata retrieval failures and surfaces upstream errors", async () => {
