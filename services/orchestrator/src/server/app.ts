@@ -384,7 +384,7 @@ async function enforceRateLimit(
   buckets: ReturnType<typeof buildRateLimitBuckets>,
 ): Promise<RateLimitResult> {
   for (const bucket of buckets) {
-    const key = `${endpoint}:${bucket.identityType}:$${
+    const key = `${endpoint}:${bucket.identityType}:${
       bucket.identityType === "identity"
         ? (identity.subjectId ?? identity.agentName ?? identity.ip)
         : identity.ip
