@@ -66,6 +66,9 @@ describe("sessionValidation", () => {
   it("reuses validation logic across helpers", () => {
     const result = validateSessionId("invalid", "authorization");
     expect(result.status).toBe("invalid");
+    if (result.status !== "invalid") {
+      throw new Error("expected invalid session result");
+    }
     expect(result.source).toBe("authorization");
     expect(result.issues.length).toBeGreaterThan(0);
   });

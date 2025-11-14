@@ -53,26 +53,83 @@ type DeepPartial<T> = {
 
 function buildConfig(overrides: DeepPartial<AppConfig> = {}): AppConfig {
   const base = loadConfig();
-  return {
+  const config: AppConfig = {
     ...base,
-    ...overrides,
     auth: {
       ...base.auth,
-      ...overrides.auth,
+      oauth: { ...base.auth.oauth },
       oidc: {
         ...base.auth.oidc,
-        ...overrides.auth?.oidc,
+        roles: { ...base.auth.oidc.roles },
+        session: { ...base.auth.oidc.session },
       },
     },
     server: {
       ...base.server,
-      ...overrides.server,
       rateLimits: {
-        ...base.server.rateLimits,
-        ...overrides.server?.rateLimits,
+        backend: { ...base.server.rateLimits.backend },
+        plan: { ...base.server.rateLimits.plan },
+        chat: { ...base.server.rateLimits.chat },
+        auth: { ...base.server.rateLimits.auth },
       },
     },
-  } satisfies AppConfig;
+  };
+
+  const { auth: authOverrides, server: serverOverrides, ...rest } = overrides;
+  Object.assign(config, rest);
+
+  if (authOverrides) {
+    const { oidc: oidcOverrides, oauth: oauthOverrides, ...authRest } =
+      authOverrides;
+    Object.assign(config.auth, authRest);
+    if (oauthOverrides) {
+      Object.assign(config.auth.oauth, oauthOverrides);
+    }
+    if (oidcOverrides) {
+      const { roles: roleOverrides, session: sessionOverrides, ...oidcRest } =
+        oidcOverrides;
+      Object.assign(config.auth.oidc, oidcRest);
+      if (roleOverrides) {
+        Object.assign(config.auth.oidc.roles, roleOverrides);
+      }
+      if (sessionOverrides) {
+        Object.assign(config.auth.oidc.session, sessionOverrides);
+      }
+    }
+  }
+
+  if (serverOverrides) {
+    const { rateLimits: rateLimitOverrides, ...serverRest } = serverOverrides;
+    Object.assign(config.server, serverRest);
+    if (rateLimitOverrides) {
+      if (rateLimitOverrides.backend) {
+        Object.assign(
+          config.server.rateLimits.backend,
+          rateLimitOverrides.backend,
+        );
+      }
+      if (rateLimitOverrides.plan) {
+        Object.assign(
+          config.server.rateLimits.plan,
+          rateLimitOverrides.plan,
+        );
+      }
+      if (rateLimitOverrides.chat) {
+        Object.assign(
+          config.server.rateLimits.chat,
+          rateLimitOverrides.chat,
+        );
+      }
+      if (rateLimitOverrides.auth) {
+        Object.assign(
+          config.server.rateLimits.auth,
+          rateLimitOverrides.auth,
+        );
+      }
+    }
+  }
+
+  return config;
 }
 
 beforeEach(() => {

@@ -68,7 +68,7 @@ export function buildRateLimitBuckets(
 }
 
 export function extractAgent(req: Request): string | undefined {
-  const headerValue = readHeader(req, "x-agent") ?? readHeader(req, "X-Agent");
+  const headerValue = readHeaderValue(req, "X-Agent");
   const candidate = headerValue ?? readAgentFromBody(req.body);
   if (!candidate) {
     return undefined;
@@ -94,7 +94,7 @@ export function normalizeRedirectIdentity(value: string | undefined | null): str
   }
 }
 
-function readHeader(req: Request, name: string): string | undefined {
+export function readHeaderValue(req: Request, name: string): string | undefined {
   if (typeof req.header === "function") {
     const value = req.header(name);
     if (typeof value === "string") {
@@ -105,8 +105,20 @@ function readHeader(req: Request, name: string): string | undefined {
   if (!headers) {
     return undefined;
   }
-  const raw = headers[name] ?? headers[name.toLowerCase()];
-  return typeof raw === "string" ? raw : undefined;
+  const normalizedName = name.toLowerCase();
+  const candidates = [headers[name], headers[normalizedName]];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string") {
+      return candidate;
+    }
+    if (Array.isArray(candidate) && candidate.length > 0) {
+      const first = candidate.find((entry) => typeof entry === "string");
+      if (typeof first === "string") {
+        return first;
+      }
+    }
+  }
+  return undefined;
 }
 
 function readAgentFromBody(body: unknown): string | undefined {
