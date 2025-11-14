@@ -447,7 +447,30 @@ export function createServer(config?: AppConfig): Express {
   });
 
   app.post("/plan", async (req: ExtendedRequest, res) => {
-    const identity = createRequestIdentity(req, appConfig, req.auth?.session ? toPlanSubject(req.auth.session) : undefined);
+    const agent = extractAgent(req);
+    const session = req.auth?.session;
+    const auditSubject = toAuditSubject(session);
+
+    if (appConfig.auth.oidc.enabled && !session) {
+      respondWithError(res, 401, {
+        code: "unauthorized",
+        message: "authentication required",
+      });
+      const { requestId, traceId } = getRequestIds(res);
+      logAuditEvent({
+        action: "plan.create",
+        outcome: "denied",
+        agent,
+        requestId,
+        traceId,
+        subject: auditSubject,
+        details: { reason: "authentication_required" },
+      });
+      return;
+    }
+
+    const planSubject = session ? toPlanSubject(session) : undefined;
+    const identity = createRequestIdentity(req, appConfig, planSubject);
     const rateLimitBuckets = buildRateLimitBuckets("plan", appConfig.server.rateLimits.plan);
     const rateDecision = await enforceRateLimit(rateLimiter, "plan", identity, rateLimitBuckets);
     if (!rateDecision.allowed) {
@@ -460,7 +483,7 @@ export function createServer(config?: AppConfig): Express {
         outcome: "denied",
         agent: identity.agentName,
         details: { reason: "rate_limited" },
-        subject: toAuditSubject(req.auth?.session),
+        subject: auditSubject,
       });
       return;
     }
@@ -472,8 +495,35 @@ export function createServer(config?: AppConfig): Express {
         action: "plan.create",
         outcome: "failure",
         agent: identity.agentName,
-        subject: toAuditSubject(req.auth?.session),
+        subject: auditSubject,
         details: { reason: "invalid_request" },
+      });
+      return;
+    }
+
+    const policyDecision = await policy.enforceHttpAction({
+      action: "http.post.plan",
+      requiredCapabilities: ["plan.create"],
+      agent: identity.agentName,
+      traceId: getRequestContext()?.traceId,
+      subject: toPolicySubject(session),
+      runMode: appConfig.runMode,
+    });
+    if (!policyDecision.allow) {
+      respondWithError(res, 403, {
+        code: "forbidden",
+        message: buildPolicyErrorMessage(policyDecision.deny),
+        details: policyDecision.deny,
+      });
+      const { requestId, traceId } = getRequestIds(res);
+      logAuditEvent({
+        action: "plan.create",
+        outcome: "denied",
+        agent: identity.agentName,
+        requestId,
+        traceId,
+        subject: auditSubject,
+        details: { deny: policyDecision.deny },
       });
       return;
     }
@@ -483,9 +533,8 @@ export function createServer(config?: AppConfig): Express {
         retentionDays: appConfig.retention.planArtifactsDays,
       });
       const { requestId, traceId } = getRequestIds(res);
-      const subject = req.auth?.session ? toPlanSubject(req.auth.session) : undefined;
-      if (subject) {
-        await submitPlanSteps(plan, traceId, requestId, subject);
+      if (planSubject) {
+        await submitPlanSteps(plan, traceId, requestId, planSubject);
       } else {
         await submitPlanSteps(plan, traceId, requestId);
       }
@@ -496,7 +545,7 @@ export function createServer(config?: AppConfig): Express {
         agent: identity.agentName,
         requestId,
         traceId,
-        subject: toAuditSubject(req.auth?.session),
+        subject: auditSubject,
         details: { planId: plan.id },
       });
     } catch (error) {
@@ -506,7 +555,7 @@ export function createServer(config?: AppConfig): Express {
         action: "plan.create",
         outcome: "failure",
         agent: identity.agentName,
-        subject: toAuditSubject(req.auth?.session),
+        subject: auditSubject,
         details: { reason: "exception" },
         error: error instanceof Error ? error.message : String(error),
       });
