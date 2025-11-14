@@ -327,8 +327,8 @@ fn luhn_check(digits: &str) -> bool {
         double = !double;
     }
 
-    // Use modulo for divisibility to avoid relying on external traits not implemented for `u32`.
-    sum % 10 == 0
+    // Use the standard library helper to express the divisibility check clearly.
+    sum.is_multiple_of(10)
 }
 
 #[cfg(test)]
