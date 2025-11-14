@@ -6,7 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use thiserror::Error;
-use tracing::{error, info, warn};
+use tracing::{info, warn};
 
 const DEFAULT_DLP_PATTERNS: [&str; 7] = [
     // Private keys
@@ -38,18 +38,13 @@ const CREDIT_CARD_PATTERN: &str = r"(?xi)
         \b
     ";
 
-static CREDIT_CARD_REGEX: Lazy<Option<Regex>> =
-    Lazy::new(|| match Regex::new(CREDIT_CARD_PATTERN) {
-        Ok(regex) => Some(regex),
-        Err(error) => {
-            error!(
-                pattern = CREDIT_CARD_PATTERN_LABEL,
-                %error,
-                "Failed to compile credit card candidate regex; credit card scanning disabled"
-            );
-            None
-        }
-    });
+static CREDIT_CARD_REGEX: Lazy<Regex> = Lazy::new(|| {
+    Regex::new(CREDIT_CARD_PATTERN).unwrap_or_else(|error| {
+        panic!(
+            "failed to compile credit card candidate regex '{CREDIT_CARD_PATTERN_LABEL}': {error}"
+        )
+    })
+});
 
 #[derive(Debug, Error)]
 pub enum SecurityError {
@@ -302,11 +297,7 @@ impl SecurityConfig {
 }
 
 fn contains_credit_card_candidate(content: &str) -> bool {
-    let Some(regex) = CREDIT_CARD_REGEX.as_ref() else {
-        return false;
-    };
-
-    regex.find_iter(content).any(|m| {
+    CREDIT_CARD_REGEX.find_iter(content).any(|m| {
         let digits: String = m
             .as_str()
             .chars()
@@ -453,7 +444,11 @@ mod tests {
             vec!["/".into()],
             DEFAULT_DLP_PATTERNS
                 .iter()
-                .filter_map(|pattern| Regex::new(pattern).ok())
+                .map(|pattern| {
+                    Regex::new(pattern).unwrap_or_else(|error| {
+                        panic!("failed to compile default DLP pattern '{pattern}': {error}")
+                    })
+                })
                 .collect(),
         );
         let err = expect_err(config.scan_content("-----BEGIN RSA PRIVATE KEY-----"));
@@ -466,7 +461,11 @@ mod tests {
             vec!["/".into()],
             DEFAULT_DLP_PATTERNS
                 .iter()
-                .filter_map(|pattern| Regex::new(pattern).ok())
+                .map(|pattern| {
+                    Regex::new(pattern).unwrap_or_else(|error| {
+                        panic!("failed to compile default DLP pattern '{pattern}': {error}")
+                    })
+                })
                 .collect(),
         );
 
@@ -489,7 +488,11 @@ mod tests {
             vec!["/".into()],
             DEFAULT_DLP_PATTERNS
                 .iter()
-                .filter_map(|pattern| Regex::new(pattern).ok())
+                .map(|pattern| {
+                    Regex::new(pattern).unwrap_or_else(|error| {
+                        panic!("failed to compile default DLP pattern '{pattern}': {error}")
+                    })
+                })
                 .collect(),
         );
 
@@ -503,9 +506,7 @@ mod tests {
 
     #[test]
     fn luhn_helper_detects_known_card() {
-        let regex = CREDIT_CARD_REGEX
-            .as_ref()
-            .unwrap_or_else(|| panic!("credit card regex should compile"));
+        let regex = &*CREDIT_CARD_REGEX;
         assert!(regex.is_match("4242 4242 4242 4242"));
         assert!(luhn_check("4242424242424242"));
         assert!(contains_credit_card_candidate("4242 4242 4242 4242"));
@@ -513,9 +514,7 @@ mod tests {
 
     #[test]
     fn issuer_prefix_filter_reduces_false_matches() {
-        let regex = CREDIT_CARD_REGEX
-            .as_ref()
-            .unwrap_or_else(|| panic!("credit card regex should compile"));
+        let regex = &*CREDIT_CARD_REGEX;
         assert!(!regex.is_match("Order ID: 1111-2222-3333-4445"));
         assert!(regex.is_match("Valid Visa: 4242-4242-4242-4242"));
     }

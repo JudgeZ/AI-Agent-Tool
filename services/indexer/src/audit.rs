@@ -50,18 +50,10 @@ const SECRET_KEY_PATTERN_STRINGS: [&str; 7] = [
 static SECRET_KEY_PATTERNS: Lazy<Vec<Regex>> = Lazy::new(|| {
     SECRET_KEY_PATTERN_STRINGS
         .iter()
-        .filter_map(|pattern| match Regex::new(pattern) {
-            Ok(regex) => Some(regex),
-            Err(error) => {
-                tracing::error!(
-                    target: "audit",
-                    service = SERVICE_NAME,
-                    pattern = *pattern,
-                    %error,
-                    "Failed to compile audit redaction pattern; skipping"
-                );
-                None
-            }
+        .map(|pattern| {
+            Regex::new(pattern).unwrap_or_else(|error| {
+                panic!("failed to compile built-in audit redaction pattern '{pattern}': {error}")
+            })
         })
         .collect()
 });
