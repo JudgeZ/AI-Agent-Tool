@@ -35,9 +35,7 @@ export function extractSessionId(
   const authHeader = req.header("authorization");
   if (authHeader && authHeader.toLowerCase().startsWith("bearer ")) {
     const token = authHeader.slice(7).trim();
-    if (token.length > 0) {
-      return validateSessionId(token, "authorization");
-    }
+    return validateSessionId(token, "authorization");
   }
   const cookieHeader = req.headers.cookie;
   if (!cookieHeader) {

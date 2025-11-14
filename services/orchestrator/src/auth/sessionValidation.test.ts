@@ -37,6 +37,19 @@ describe("sessionValidation", () => {
     });
   });
 
+  it("flags blank bearer tokens as invalid", () => {
+    const result = extractSessionId(
+      buildRequest({ authorization: "Bearer   " }),
+      "oss_session",
+    );
+    expect(result.status).toBe("invalid");
+    if (result.status !== "invalid") {
+      throw new Error("expected invalid session result");
+    }
+    expect(result.source).toBe("authorization");
+    expect(result.issues.length).toBeGreaterThan(0);
+  });
+
   it("flags blank session cookie values as invalid", () => {
     const result = extractSessionId(
       buildRequest({ cookie: "oss_session=; other=value" }),
