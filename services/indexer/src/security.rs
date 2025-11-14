@@ -6,7 +6,7 @@ use std::path::{Component, Path, PathBuf};
 use once_cell::sync::Lazy;
 use regex::Regex;
 use thiserror::Error;
-use tracing::{info, warn};
+use tracing::{error, info, warn};
 
 const DEFAULT_DLP_PATTERNS: [&str; 7] = [
     // Private keys
@@ -38,8 +38,18 @@ const CREDIT_CARD_PATTERN: &str = r"(?xi)
         \b
     ";
 
-static CREDIT_CARD_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(CREDIT_CARD_PATTERN).expect("valid credit card candidate pattern"));
+static CREDIT_CARD_REGEX: Lazy<Option<Regex>> =
+    Lazy::new(|| match Regex::new(CREDIT_CARD_PATTERN) {
+        Ok(regex) => Some(regex),
+        Err(error) => {
+            error!(
+                pattern = CREDIT_CARD_PATTERN_LABEL,
+                %error,
+                "Failed to compile credit card candidate regex; credit card scanning disabled"
+            );
+            None
+        }
+    });
 
 #[derive(Debug, Error)]
 pub enum SecurityError {
@@ -292,23 +302,19 @@ impl SecurityConfig {
 }
 
 fn contains_credit_card_candidate(content: &str) -> bool {
-    CREDIT_CARD_REGEX
-        .find_iter(content)
-        .filter_map(|m| {
-            let digits: String = m
-                .as_str()
-                .chars()
-                .filter(|ch| ch.is_ascii_digit())
-                .collect();
+    let Some(regex) = CREDIT_CARD_REGEX.as_ref() else {
+        return false;
+    };
 
-            if (13..=19).contains(&digits.len()) && luhn_check(&digits) {
-                Some(())
-            } else {
-                None
-            }
-        })
-        .next()
-        .is_some()
+    regex.find_iter(content).any(|m| {
+        let digits: String = m
+            .as_str()
+            .chars()
+            .filter(|ch| ch.is_ascii_digit())
+            .collect();
+
+        (13..=19).contains(&digits.len()) && luhn_check(&digits)
+    })
 }
 
 fn luhn_check(digits: &str) -> bool {
@@ -338,6 +344,13 @@ mod tests {
     use std::panic::{self, AssertUnwindSafe};
 
     static ENV_LOCK: Lazy<std::sync::Mutex<()>> = Lazy::new(|| std::sync::Mutex::new(()));
+
+    fn expect_err<T, E>(result: Result<T, E>) -> E {
+        match result {
+            Ok(_) => panic!("expected error result"),
+            Err(err) => err,
+        }
+    }
 
     fn lock_env() -> std::sync::MutexGuard<'static, ()> {
         ENV_LOCK
@@ -399,7 +412,7 @@ mod tests {
         assert!(!config.is_allowed("src/../secrets.txt"));
         assert!(config.is_allowed("src/module/lib.rs"));
 
-        let err = config.check_path("src/../../etc/passwd").unwrap_err();
+        let err = expect_err(config.check_path("src/../../etc/passwd"));
         assert!(matches!(err, SecurityError::AclViolation(_)));
     }
 
@@ -443,9 +456,7 @@ mod tests {
                 .filter_map(|pattern| Regex::new(pattern).ok())
                 .collect(),
         );
-        let err = config
-            .scan_content("-----BEGIN RSA PRIVATE KEY-----")
-            .unwrap_err();
+        let err = expect_err(config.scan_content("-----BEGIN RSA PRIVATE KEY-----"));
         assert!(matches!(err, SecurityError::DlpMatch { .. }));
     }
 
@@ -464,7 +475,7 @@ mod tests {
             "Card number 4242 4242 4242 4242 exp 10/30",
             "Authorization: Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.abc.def",
         ] {
-            let err = config.scan_content(sample).unwrap_err();
+            let err = expect_err(config.scan_content(sample));
             assert!(
                 matches!(err, SecurityError::DlpMatch { .. }),
                 "expected DLP match for sample {sample}"
@@ -486,21 +497,27 @@ mod tests {
         assert!(config.scan_content(benign_sample).is_ok());
 
         let valid_card = "Refund to 3782-822463-10005"; // American Express test number
-        let err = config.scan_content(valid_card).unwrap_err();
+        let err = expect_err(config.scan_content(valid_card));
         assert!(matches!(err, SecurityError::DlpMatch { .. }));
     }
 
     #[test]
     fn luhn_helper_detects_known_card() {
-        assert!(CREDIT_CARD_REGEX.is_match("4242 4242 4242 4242"));
+        let regex = CREDIT_CARD_REGEX
+            .as_ref()
+            .unwrap_or_else(|| panic!("credit card regex should compile"));
+        assert!(regex.is_match("4242 4242 4242 4242"));
         assert!(luhn_check("4242424242424242"));
         assert!(contains_credit_card_candidate("4242 4242 4242 4242"));
     }
 
     #[test]
     fn issuer_prefix_filter_reduces_false_matches() {
-        assert!(!CREDIT_CARD_REGEX.is_match("Order ID: 1111-2222-3333-4445"));
-        assert!(CREDIT_CARD_REGEX.is_match("Valid Visa: 4242-4242-4242-4242"));
+        let regex = CREDIT_CARD_REGEX
+            .as_ref()
+            .unwrap_or_else(|| panic!("credit card regex should compile"));
+        assert!(!regex.is_match("Order ID: 1111-2222-3333-4445"));
+        assert!(regex.is_match("Valid Visa: 4242-4242-4242-4242"));
     }
 
     #[test]
@@ -514,9 +531,7 @@ mod tests {
         );
 
         let config = SecurityConfig::from_env();
-        let err = config
-            .scan_content("-----BEGIN RSA PRIVATE KEY-----")
-            .unwrap_err();
+        let err = expect_err(config.scan_content("-----BEGIN RSA PRIVATE KEY-----"));
         assert!(matches!(err, SecurityError::DlpMatch { .. }));
     }
 

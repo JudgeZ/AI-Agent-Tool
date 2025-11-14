@@ -196,7 +196,7 @@ mod tests {
     #[test]
     fn parses_typescript_ast() {
         let source = "const answer = 42;";
-        let response = build_ast(
+        let response = match build_ast(
             "typescript",
             source,
             AstOptions {
@@ -204,8 +204,10 @@ mod tests {
                 max_nodes: 32,
                 include_snippet: true,
             },
-        )
-        .expect("ast generation");
+        ) {
+            Ok(response) => response,
+            Err(error) => panic!("expected AST generation to succeed: {error}"),
+        };
 
         assert_eq!(response.language, "typescript");
         assert_eq!(response.root.kind, "program");
@@ -214,7 +216,10 @@ mod tests {
 
     #[test]
     fn rejects_unknown_language() {
-        let err = build_ast("unknown", "", AstOptions::default()).unwrap_err();
+        let err = match build_ast("unknown", "", AstOptions::default()) {
+            Ok(_) => panic!("expected unsupported language error"),
+            Err(err) => err,
+        };
         assert!(matches!(err, AstError::UnsupportedLanguage(_)));
     }
 }

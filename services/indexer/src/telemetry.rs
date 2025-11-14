@@ -27,7 +27,7 @@ mod tests {
 
     #[test]
     fn init_tracing_is_idempotent() {
-        init_tracing().expect("first init should succeed");
-        init_tracing().expect("second init should be a no-op");
+        assert!(init_tracing().is_ok(), "first init should succeed");
+        assert!(init_tracing().is_ok(), "second init should be a no-op");
     }
 }

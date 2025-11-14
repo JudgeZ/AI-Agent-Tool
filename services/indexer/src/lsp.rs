@@ -463,7 +463,10 @@ mod tests {
     #[test]
     fn identifier_detection() {
         let code = "const answer = 42;";
-        let tree = parse_document("typescript", code).expect("tree");
+        let tree = match parse_document("typescript", code) {
+            Ok(tree) => tree,
+            Err(error) => panic!("failed to parse document: {error}"),
+        };
         let document = Document {
             language_id: "typescript".into(),
             text: code.into(),
@@ -476,7 +479,7 @@ mod tests {
                 character: 6,
             },
         )
-        .expect("node at position");
+        .unwrap_or_else(|| panic!("expected node at position"));
 
         assert_eq!(node.kind(), "identifier");
     }

@@ -82,15 +82,24 @@ mod tests {
     #[tokio::test]
     async fn resolves_default_addr() {
         with_env_var(None, || {
-            let addr = resolve_listen_addr().expect("should default");
-            assert_eq!(addr, DEFAULT_LISTEN_ADDR.parse().unwrap());
+            let addr = match resolve_listen_addr() {
+                Ok(addr) => addr,
+                Err(error) => panic!("expected default address to resolve, got {error}"),
+            };
+            let expected = DEFAULT_LISTEN_ADDR
+                .parse()
+                .unwrap_or_else(|error| panic!("invalid default listen address: {error}"));
+            assert_eq!(addr, expected);
         });
     }
 
     #[tokio::test]
     async fn rejects_invalid_addr() {
         with_env_var(Some("not-an-addr"), || {
-            let err = resolve_listen_addr().unwrap_err();
+            let err = match resolve_listen_addr() {
+                Ok(_) => panic!("expected invalid listen addr to fail"),
+                Err(err) => err,
+            };
             assert!(matches!(err, IndexerError::InvalidListenAddr(_, _)));
         });
     }

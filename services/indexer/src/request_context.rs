@@ -78,7 +78,10 @@ mod tests {
             .with_client_ip(IpAddr::V4(Ipv4Addr::LOCALHOST));
         set_request_context(ctx.clone());
 
-        let retrieved = current_request_context().expect("context should exist");
+        let retrieved = match current_request_context() {
+            Some(value) => value,
+            None => panic!("expected request context to be set"),
+        };
         assert_eq!(retrieved, ctx);
     }
 
