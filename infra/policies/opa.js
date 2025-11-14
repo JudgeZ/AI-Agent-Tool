@@ -51,7 +51,7 @@ function downloadToBuffer(url, logger, redirectCount = 0) {
 }
 
 async function ensureOpaBinary(options = {}) {
-  const { logger, version = "0.63.0", cacheDir } = options;
+  const { logger, version = "1.1.0", cacheDir } = options;
   const log = logger ?? { info() {}, error() {}, warn() {} };
 
   const envBin = process.env.OPA_BIN?.trim();

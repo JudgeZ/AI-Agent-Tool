@@ -15,12 +15,12 @@ type ResponseMocks = {
 };
 
 function createResponseMocks(): ResponseMocks {
-  const json = vi.fn();
-  const setHeader = vi.fn();
   const response = {} as Response;
   const status = vi
-    .fn<Parameters<Response["status"]>, Response>()
-    .mockImplementation(() => response);
+    .fn<Response["status"]>((_code) => response)
+    .mockName("status");
+  const json = vi.fn<Response["json"]>().mockName("json");
+  const setHeader = vi.fn<Response["setHeader"]>().mockName("setHeader");
 
   response.status = status as unknown as Response["status"];
   response.json = json as unknown as Response["json"];
@@ -29,8 +29,8 @@ function createResponseMocks(): ResponseMocks {
   return {
     response,
     status: status as unknown as ReturnType<typeof vi.fn>,
-    json,
-    setHeader,
+    json: json as unknown as ReturnType<typeof vi.fn>,
+    setHeader: setHeader as unknown as ReturnType<typeof vi.fn>,
   };
 }
 

@@ -327,6 +327,7 @@ fn luhn_check(digits: &str) -> bool {
         double = !double;
     }
 
+    // Use modulo for divisibility to avoid relying on external traits not implemented for `u32`.
     sum % 10 == 0
 }
 
