@@ -154,7 +154,17 @@ jobs:
         run: |
           coverage=$(go tool cover -func=coverage.out | awk '/total:/ { gsub("%","",$3); print $3 }')
           echo "Go coverage: ${coverage}%"
-          python3 -c "import sys; coverage=float(sys.argv[1]); threshold=60.0; raise SystemExit(f'Coverage {coverage:.2f}% is below threshold {threshold:.2f}%') if coverage < threshold else print(f'Coverage {coverage:.2f}% meets threshold {threshold:.2f}%')" "$coverage"
+          python3 - "$coverage" <<'PY'
+import sys
+
+coverage = float(sys.argv[1])
+threshold = 60.0
+
+if coverage < threshold:
+    raise SystemExit(f'Coverage {coverage:.2f}% is below threshold {threshold:.2f}%')
+
+print(f'Coverage {coverage:.2f}% meets threshold {threshold:.2f}%')
+PY
 
   typescript:
     name: TypeScript lint, test & build (${{ matrix.project.name }})
