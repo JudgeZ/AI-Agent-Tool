@@ -32,14 +32,33 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 
 function resolveGatewayConfig(): GatewayConfig {
   const rawBaseUrl =
-    process.env.AIDT_GATEWAY_URL ?? process.env.GATEWAY_URL ?? DEFAULT_GATEWAY_URL;
+    process.env.AIDT_GATEWAY_URL ??
+    process.env.GATEWAY_URL ??
+    DEFAULT_GATEWAY_URL;
   let baseUrl: string;
   try {
     const parsed = new URL(rawBaseUrl);
+    if (!parsed.hostname) {
+      throw new Error(
+        "Invalid gateway URL. Gateway URL must include a hostname.",
+      );
+    }
+    if (parsed.username || parsed.password) {
+      throw new Error(
+        "Invalid gateway URL. Credentials in URLs are not supported.",
+      );
+    }
+    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+      throw new Error(
+        "Invalid gateway URL. Gateway URL must use http or https.",
+      );
+    }
     baseUrl = parsed.toString().replace(/\/$/, "");
   } catch (error) {
     throw new Error(
-      `Invalid gateway URL: ${rawBaseUrl}. Set AIDT_GATEWAY_URL or GATEWAY_URL to a valid HTTP(S) URL.`
+      error instanceof Error && error.message.includes("Invalid gateway URL")
+        ? error.message
+        : "Invalid gateway URL. Set AIDT_GATEWAY_URL or GATEWAY_URL to a valid HTTP(S) URL.",
     );
   }
 
@@ -52,7 +71,7 @@ function resolveGatewayConfig(): GatewayConfig {
     const parsed = Number.parseInt(rawTimeout, 10);
     if (!Number.isFinite(parsed) || parsed <= 0) {
       throw new Error(
-        `Invalid gateway timeout: ${rawTimeout}. Provide a positive integer number of milliseconds.`
+        `Invalid gateway timeout: ${rawTimeout}. Provide a positive integer number of milliseconds.`,
       );
     }
     timeoutMs = parsed;
@@ -63,11 +82,15 @@ function resolveGatewayConfig(): GatewayConfig {
 
 function joinUrl(baseUrl: string, pathname: string): string {
   const normalizedBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
-  const normalizedPath = pathname.startsWith("/") ? pathname.slice(1) : pathname;
+  const normalizedPath = pathname.startsWith("/")
+    ? pathname.slice(1)
+    : pathname;
   return new URL(normalizedPath, normalizedBase).toString();
 }
 
-async function readErrorMessage(response: Response): Promise<string | undefined> {
+async function readErrorMessage(
+  response: Response,
+): Promise<string | undefined> {
   const contentType = response.headers.get("content-type") ?? "";
   const bodyText = await response.text();
   if (!bodyText) {
@@ -101,7 +124,7 @@ async function readErrorMessage(response: Response): Promise<string | undefined>
         }
 
         if (Array.isArray(topLevel.errors) && topLevel.errors.length > 0) {
-          return topLevel.errors.map(err => String(err)).join(", ");
+          return topLevel.errors.map((err) => String(err)).join(", ");
         }
       }
     } catch {
@@ -119,7 +142,7 @@ async function requestPlan(goal: string, config: GatewayConfig): Promise<Plan> {
 
   try {
     const headers: Record<string, string> = {
-      "content-type": "application/json"
+      "content-type": "application/json",
     };
     if (config.token) {
       headers.authorization = `Bearer ${config.token}`;
@@ -129,7 +152,7 @@ async function requestPlan(goal: string, config: GatewayConfig): Promise<Plan> {
       method: "POST",
       headers,
       body: JSON.stringify({ goal }),
-      signal: controller.signal
+      signal: controller.signal,
     });
 
     if (!response.ok) {
@@ -143,32 +166,32 @@ async function requestPlan(goal: string, config: GatewayConfig): Promise<Plan> {
           throw new Error(
             message
               ? `Gateway rejected plan input: ${message}`
-              : "Gateway rejected plan input with validation error."
+              : "Gateway rejected plan input with validation error.",
           );
         case 401:
         case 403:
           throw new Error(
             message
               ? `Authentication failed: ${message}`
-              : "Authentication failed. Provide a valid token via AIDT_AUTH_TOKEN or AUTH_TOKEN."
+              : "Authentication failed. Provide a valid token via AIDT_AUTH_TOKEN or AUTH_TOKEN.",
           );
         case 404:
           throw new Error(
             message
               ? `Gateway endpoint not found: ${message}`
-              : "Gateway endpoint not found. Verify your gateway URL."
+              : "Gateway endpoint not found. Verify your gateway URL.",
           );
         case 429:
           throw new Error(
             message
               ? `Gateway rate limited the request: ${message}`
-              : "Gateway rate limited the request. Please retry shortly."
+              : "Gateway rate limited the request. Please retry shortly.",
           );
         default: {
           const statusText = response.statusText || `HTTP ${response.status}`;
           const detail = message ? `: ${message}` : ".";
           throw new Error(
-            `Gateway request failed${suffix} - ${statusText}${detail}`
+            `Gateway request failed${suffix} - ${statusText}${detail}`,
           );
         }
       }
@@ -178,7 +201,7 @@ async function requestPlan(goal: string, config: GatewayConfig): Promise<Plan> {
   } catch (error) {
     if (error instanceof Error && error.name === "AbortError") {
       throw new Error(
-        `Gateway request timed out after ${config.timeoutMs}ms. Adjust AIDT_GATEWAY_TIMEOUT_MS if needed.`
+        `Gateway request timed out after ${config.timeoutMs}ms. Adjust AIDT_GATEWAY_TIMEOUT_MS if needed.`,
       );
     }
     if (error instanceof Error) {
@@ -196,7 +219,7 @@ function ensureSafePlanId(planId: string | undefined): string {
   const trimmed = planId?.trim() ?? "";
   if (!PLAN_ID_PATTERN.test(trimmed)) {
     throw new Error(
-      `Gateway returned invalid plan id \"${planId ?? ""}\". Plan ids must match ${PLAN_ID_PATTERN}.`
+      `Gateway returned invalid plan id \"${planId ?? ""}\". Plan ids must match ${PLAN_ID_PATTERN}.`,
     );
   }
   return trimmed;
@@ -210,8 +233,10 @@ async function persistPlanArtifacts(plan: Plan): Promise<void> {
   const planMdPath = path.join(plansRoot, "plan.md");
 
   const markdownSteps = plan.steps
-    .map(step => {
-      const labelsText = step.labels?.length ? ` labels: ${step.labels.join(", ")}` : "";
+    .map((step) => {
+      const labelsText = step.labels?.length
+        ? ` labels: ${step.labels.join(", ")}`
+        : "";
       const approvalText = step.approvalRequired ? "approval required" : "auto";
       return `- **${step.action}** (${step.capabilityLabel}) — tool: ${step.tool}, timeout: ${step.timeoutSeconds}s, approval: ${approvalText}${labelsText}`;
     })
@@ -221,7 +246,7 @@ async function persistPlanArtifacts(plan: Plan): Promise<void> {
 
   await Promise.all([
     fs.writeFile(planJsonPath, JSON.stringify(plan, null, 2), "utf8"),
-    fs.writeFile(planMdPath, markdown, "utf8")
+    fs.writeFile(planMdPath, markdown, "utf8"),
   ]);
 }
 
@@ -233,14 +258,14 @@ export async function createPlan(goal: string): Promise<Plan> {
 }
 
 function formatSteps(plan: Plan): string[] {
-  return plan.steps.map(step => {
+  return plan.steps.map((step) => {
     const approvalText = step.approvalRequired ? "requires approval" : "auto";
     return `  • ${step.action} (${step.capabilityLabel}) [tool=${step.tool}, timeout=${step.timeoutSeconds}s, ${approvalText}]`;
   });
 }
 
 function formatSuccessCriteria(plan: Plan): string[] {
-  return (plan.successCriteria ?? []).map(criteria => `  - ${criteria}`);
+  return (plan.successCriteria ?? []).map((criteria) => `  - ${criteria}`);
 }
 
 export async function runPlan(goal: string): Promise<Plan> {

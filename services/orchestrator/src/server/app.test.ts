@@ -115,8 +115,13 @@ describe("POST /plan security", () => {
   });
 
   it("returns 403 and deny details when policy rejects plan creation", async () => {
-    const denyDetails = [{ reason: "agent_profile_missing", capability: "plan.create" }];
-    policyMock.enforceHttpAction.mockResolvedValueOnce({ allow: false, deny: denyDetails });
+    const denyDetails = [
+      { reason: "agent_profile_missing", capability: "plan.create" },
+    ];
+    policyMock.enforceHttpAction.mockResolvedValueOnce({
+      allow: false,
+      deny: denyDetails,
+    });
 
     const app = await createServer(buildConfig());
 
@@ -141,3 +146,54 @@ describe("POST /plan security", () => {
   });
 });
 
+describe("security headers and oauth rate limiting", () => {
+  it("applies security headers to responses", async () => {
+    const app = await createServer(buildConfig());
+
+    const response = await request(app)
+      .get("/auth/oauth/unknown/authorize")
+      .expect(404);
+
+    expect(response.headers["content-security-policy"]).toContain("default-src 'none'");
+    expect(response.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
+    expect(response.headers["content-security-policy"]).toContain("base-uri 'none'");
+    expect(response.headers["content-security-policy"]).toContain("form-action 'self'");
+    expect(response.headers["strict-transport-security"]).toBe(
+      "max-age=63072000; includeSubDomains",
+    );
+    expect(response.headers["x-frame-options"]).toBe("DENY");
+    expect(response.headers["x-content-type-options"]).toBe("nosniff");
+    expect(response.headers["referrer-policy"]).toBe("no-referrer");
+    expect(response.headers["permissions-policy"]).toBe(
+      "camera=(), microphone=(), geolocation=()",
+    );
+  });
+
+  it("rate limits oauth authorization attempts", async () => {
+    const config = buildConfig({
+      server: {
+        rateLimits: {
+          ...buildConfig().server.rateLimits,
+          auth: {
+            windowMs: 60_000,
+            maxRequests: 1,
+            identityWindowMs: null,
+            identityMaxRequests: null,
+          },
+        },
+      },
+    });
+
+    const app = await createServer(config);
+
+    await request(app).get("/auth/oauth/unknown/authorize").expect(404);
+    const limited = await request(app)
+      .get("/auth/oauth/unknown/authorize")
+      .expect(429);
+    expect(limited.body).toMatchObject({
+      code: "too_many_requests",
+      message: "oauth rate limit exceeded",
+    });
+    expect(limited.headers["retry-after"]).toBeDefined();
+  });
+});
