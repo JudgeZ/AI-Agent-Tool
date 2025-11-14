@@ -343,16 +343,29 @@ function attachSession(
 
 function resolveAuthFailure(
   req: ExtendedRequest,
-): { message: string; reason: string; details?: Record<string, unknown> } {
+): {
+  status: number;
+  code: "unauthorized" | "invalid_request";
+  message: string;
+  reason: string;
+  details?: Record<string, unknown>;
+} {
   const error = req.auth?.error;
   if (error?.code === "invalid_session") {
     return {
+      status: 400,
+      code: "invalid_request",
       message: "invalid session",
       reason: "invalid_session",
       details: { source: error.source, issues: error.issues },
     };
   }
-  return { message: "authentication required", reason: "authentication_required" };
+  return {
+    status: 401,
+    code: "unauthorized",
+    message: "authentication required",
+    reason: "authentication_required",
+  };
 }
 
 function buildAuthFailureAuditDetails(
@@ -646,8 +659,8 @@ export function createServer(config?: AppConfig): Express {
 
     if (appConfig.auth.oidc.enabled && !session) {
       const failure = resolveAuthFailure(req);
-      respondWithError(res, 401, {
-        code: "unauthorized",
+      respondWithError(res, failure.status, {
+        code: failure.code,
         message: failure.message,
         details: failure.details,
       });
@@ -1138,8 +1151,8 @@ export function createServer(config?: AppConfig): Express {
       const session = req.auth?.session;
       if (!session) {
         const failure = resolveAuthFailure(req);
-        respondWithError(res, 401, {
-          code: "unauthorized",
+        respondWithError(res, failure.status, {
+          code: failure.code,
           message: failure.message,
           details: failure.details,
         });
@@ -1458,8 +1471,8 @@ export function createServer(config?: AppConfig): Express {
     }
     if (appConfig.auth.oidc.enabled && !req.auth?.session) {
       const failure = resolveAuthFailure(req);
-      respondWithError(res, 401, {
-        code: "unauthorized",
+      respondWithError(res, failure.status, {
+        code: failure.code,
         message: failure.message,
         details: failure.details,
       });
@@ -1584,8 +1597,8 @@ export function createServer(config?: AppConfig): Express {
     }
     if (appConfig.auth.oidc.enabled && !req.auth?.session) {
       const failure = resolveAuthFailure(req);
-      respondWithError(res, 401, {
-        code: "unauthorized",
+      respondWithError(res, failure.status, {
+        code: failure.code,
         message: failure.message,
         details: failure.details,
       });
@@ -1709,8 +1722,8 @@ export function createServer(config?: AppConfig): Express {
     }
     if (appConfig.auth.oidc.enabled && !req.auth?.session) {
       const failure = resolveAuthFailure(req);
-      respondWithError(res, 401, {
-        code: "unauthorized",
+      respondWithError(res, failure.status, {
+        code: failure.code,
         message: failure.message,
         details: failure.details,
       });

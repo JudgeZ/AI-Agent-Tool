@@ -52,13 +52,11 @@ export function extractSessionId(
     if (name !== cookieName) {
       continue;
     }
-    const value = rest.join("=").trim();
-    if (!value) {
-      return { status: "missing" };
-    }
-    let decoded = value;
+    const rawValue = rest.join("=");
+    const trimmedValue = rawValue.trim();
+    let decoded = trimmedValue;
     try {
-      decoded = decodeURIComponent(value);
+      decoded = decodeURIComponent(trimmedValue);
     } catch {
       // Preserve the raw value so validation can surface helpful errors.
     }

@@ -37,12 +37,17 @@ describe("sessionValidation", () => {
     });
   });
 
-  it("returns missing when the session cookie value is empty", () => {
+  it("flags blank session cookie values as invalid", () => {
     const result = extractSessionId(
       buildRequest({ cookie: "oss_session=; other=value" }),
       "oss_session",
     );
-    expect(result).toEqual({ status: "missing" });
+    expect(result.status).toBe("invalid");
+    if (result.status !== "invalid") {
+      throw new Error("expected invalid session result");
+    }
+    expect(result.source).toBe("cookie");
+    expect(result.issues.length).toBeGreaterThan(0);
   });
 
   it("returns validation issues for malformed cookie session ids", () => {
@@ -51,6 +56,9 @@ describe("sessionValidation", () => {
       "oss_session",
     );
     expect(result.status).toBe("invalid");
+    if (result.status !== "invalid") {
+      throw new Error("expected invalid session result");
+    }
     expect(result.source).toBe("cookie");
     expect(result.issues.length).toBeGreaterThan(0);
   });

@@ -110,12 +110,18 @@ function readHeaderValue(req: Request, name: string): string | undefined {
       return value;
     }
   }
-  const headers = (req as Record<string, unknown>).headers;
-  if (headers && typeof headers === "object") {
-    const record = headers as Record<string, unknown>;
-    const direct = record[name] ?? record[name.toLowerCase()];
-    if (typeof direct === "string") {
-      return direct;
+  const headers = req.headers;
+  const normalizedName = name.toLowerCase();
+  const candidates = [headers?.[name], headers?.[normalizedName]];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string") {
+      return candidate;
+    }
+    if (Array.isArray(candidate) && candidate.length > 0) {
+      const first = candidate.find((entry) => typeof entry === "string");
+      if (typeof first === "string") {
+        return first;
+      }
     }
   }
   return undefined;

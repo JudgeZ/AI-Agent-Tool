@@ -45,7 +45,13 @@ async function createServer(config?: AppConfig) {
   return module.createServer(config);
 }
 
-function buildConfig(overrides: Partial<AppConfig> = {}): AppConfig {
+type DeepPartial<T> = {
+  [K in keyof T]?: T[K] extends Record<string, unknown>
+    ? DeepPartial<T[K]>
+    : T[K];
+};
+
+function buildConfig(overrides: DeepPartial<AppConfig> = {}): AppConfig {
   const base = loadConfig();
   return {
     ...base,
@@ -138,7 +144,7 @@ describe("POST /plan security", () => {
     expect(submitPlanStepsMock).not.toHaveBeenCalled();
   });
 
-  it("returns 401 with invalid session details when the session id fails validation", async () => {
+  it("returns 400 with invalid session details when the session id fails validation", async () => {
     const config = buildConfig({
       auth: {
         oidc: {
@@ -153,10 +159,10 @@ describe("POST /plan security", () => {
       .post("/plan")
       .set("Cookie", "oss_session=bad-token")
       .send({ goal: "Ship it" })
-      .expect(401);
+      .expect(400);
 
     expect(response.body).toMatchObject({
-      code: "unauthorized",
+      code: "invalid_request",
       message: "invalid session",
       details: { source: "cookie" },
     });
