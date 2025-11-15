@@ -3,7 +3,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import { ensureEgressAllowed } from "../network/EgressGuard.js";
 
-// NOTE: Provider implementations must invoke `ensureEgressAllowed` with their target URL
+// NOTE: Provider implementations must invoke `ensureProviderEgress` with their target URL
 // immediately before performing any outbound request so network policy decisions are audited
 // consistently. See `../network/EgressGuard.ts` for the enforcement contract.
 
@@ -51,9 +51,7 @@ export function ensureProviderEgress(
   context: ProviderEgressContext
 ): void {
   const metadata = { ...(context.metadata ?? {}) };
-  if (!metadata.provider) {
-    metadata.provider = provider;
-  }
+  metadata.provider = provider;
   try {
     ensureEgressAllowed(target, { ...context, metadata });
   } catch (error) {
