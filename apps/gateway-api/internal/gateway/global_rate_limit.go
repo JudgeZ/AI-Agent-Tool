@@ -160,11 +160,17 @@ func newGlobalRateLimitPolicy() globalRateLimitPolicy {
 }
 
 func sanitizeAgentIdentity(raw string) string {
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
+	if raw == "" {
 		return ""
 	}
-	if !utf8.ValidString(trimmed) {
+	if !utf8.ValidString(raw) {
+		return ""
+	}
+	if hasUnsafeHeaderRunes(raw) {
+		return ""
+	}
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
 		return ""
 	}
 	if utf8.RuneCountInString(trimmed) > maxAgentIdentityLen {
