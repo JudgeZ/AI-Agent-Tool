@@ -138,10 +138,7 @@ function sanitizeAgentName(candidate: unknown): string | undefined {
     return undefined;
   }
   for (const char of trimmed) {
-    const codePoint = char.codePointAt(0);
-    if (codePoint === undefined) {
-      return undefined;
-    }
+    const codePoint = char.codePointAt(0)!;
     if (codePoint < 0x20 || codePoint > 0x7e) {
       return undefined;
     }
