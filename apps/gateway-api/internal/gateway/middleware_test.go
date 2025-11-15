@@ -122,9 +122,9 @@ func TestGlobalRateLimiterEnforcesIPLimit(t *testing.T) {
 	}
 }
 
-func TestGlobalRateLimiterEmitsAuditEventForAgentLimit(t *testing.T) {
+func TestGlobalRateLimiterIgnoresAgentHeaderWithoutTrustedSession(t *testing.T) {
+	t.Setenv("GATEWAY_HTTP_RATE_LIMIT_MAX", "0")
 	t.Setenv("GATEWAY_HTTP_IP_RATE_LIMIT_MAX", "100")
-	t.Setenv("GATEWAY_HTTP_AGENT_RATE_LIMIT_MAX", "1")
 
 	var buf bytes.Buffer
 	original := slog.Default()
@@ -155,22 +155,13 @@ func TestGlobalRateLimiterEmitsAuditEventForAgentLimit(t *testing.T) {
 	secondReq.Header.Set("X-Agent", "code-writer")
 	second := httptest.NewRecorder()
 	handler.ServeHTTP(second, secondReq)
-	if second.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected second agent request to be rate limited, got %d", second.Code)
-	}
-	if requestID := strings.TrimSpace(second.Header().Get("X-Request-Id")); requestID == "" {
-		t.Fatal("expected rate limited response to include X-Request-Id header")
+	if second.Code != http.StatusOK {
+		t.Fatalf("expected spoofed agent request to be ignored, got %d", second.Code)
 	}
 
 	logs := buf.String()
-	if !strings.Contains(logs, "gateway.http.rate_limit") {
-		t.Fatalf("expected audit log to include rate limit event, got %q", logs)
-	}
-	if !strings.Contains(logs, "\"outcome\":\"denied\"") {
-		t.Fatalf("expected denied outcome in audit log, got %q", logs)
-	}
-	if !strings.Contains(logs, "\"request_id\"") {
-		t.Fatalf("expected audit log to include request_id, got %q", logs)
+	if strings.Contains(logs, "gateway.http.rate_limit") {
+		t.Fatalf("unexpected rate limit audit log for unauthenticated agent header: %q", logs)
 	}
 }
 
@@ -217,31 +208,38 @@ func TestGlobalRateLimiterSetsRequestIDWithoutAuditMiddleware(t *testing.T) {
 	}
 }
 
-func TestGlobalRateLimiterSkipsAgentBucketWithoutHeader(t *testing.T) {
-	t.Setenv("GATEWAY_HTTP_IP_RATE_LIMIT_MAX", "100")
-	t.Setenv("GATEWAY_HTTP_AGENT_RATE_LIMIT_MAX", "1")
+func TestRateLimiterPrunesExpiredWindows(t *testing.T) {
+	limiter := newRateLimiter()
+	base := time.Now()
+	limiter.now = func() time.Time { return base }
 
-	limiter := NewGlobalRateLimiter(nil)
-	handler := limiter.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
+	bucket := rateLimitBucket{Endpoint: "test", IdentityType: "ip", Window: time.Second, Limit: 5}
 
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req.RemoteAddr = "203.0.113.12:4000"
-
-	first := httptest.NewRecorder()
-	handler.ServeHTTP(first, req)
-	if first.Code != http.StatusOK {
-		t.Fatalf("expected first anonymous agent request to succeed, got %d", first.Code)
+	allowed, _, err := limiter.Allow(context.Background(), bucket, "first")
+	if err != nil {
+		t.Fatalf("unexpected error allowing first identity: %v", err)
+	}
+	if !allowed {
+		t.Fatal("expected first identity to be allowed")
+	}
+	if len(limiter.windows) != 1 {
+		t.Fatalf("expected a single window, got %d", len(limiter.windows))
 	}
 
-	secondReq := httptest.NewRequest(http.MethodGet, "/", nil)
-	secondReq.RemoteAddr = "203.0.113.13:5000"
+	limiter.now = func() time.Time { return base.Add(time.Second + rateLimiterCleanupInterval) }
 
-	second := httptest.NewRecorder()
-	handler.ServeHTTP(second, secondReq)
-	if second.Code != http.StatusOK {
-		t.Fatalf("expected second anonymous agent request to succeed, got %d", second.Code)
+	allowed, _, err = limiter.Allow(context.Background(), bucket, "second")
+	if err != nil {
+		t.Fatalf("unexpected error allowing second identity: %v", err)
+	}
+	if !allowed {
+		t.Fatal("expected second identity to be allowed")
+	}
+	if _, ok := limiter.windows["test|ip|first"]; ok {
+		t.Fatal("expected expired window to be pruned")
+	}
+	if _, ok := limiter.windows["test|ip|second"]; !ok {
+		t.Fatal("expected active window to remain after cleanup")
 	}
 }
 
@@ -295,22 +293,5 @@ func TestGlobalRateLimiterFailsClosedOnError(t *testing.T) {
 	logs := buf.String()
 	if !strings.Contains(logs, "rate_limiter_error") {
 		t.Fatalf("expected audit log to include rate_limiter_error, got %q", logs)
-	}
-}
-
-func TestSanitizeAgentIdentityLengthAndSafety(t *testing.T) {
-	valid := strings.Repeat("a", maxAgentIdentityLen)
-	if got := sanitizeAgentIdentity(valid); got != valid {
-		t.Fatalf("expected valid identity to be preserved, got %q", got)
-	}
-
-	oversized := strings.Repeat("b", maxAgentIdentityLen+1)
-	if got := sanitizeAgentIdentity(oversized); got != "" {
-		t.Fatalf("expected oversized identity to be rejected, got %q", got)
-	}
-
-	unsafe := "agent\r\n"
-	if got := sanitizeAgentIdentity(unsafe); got != "" {
-		t.Fatalf("expected identity with control characters to be rejected, got %q", got)
 	}
 }

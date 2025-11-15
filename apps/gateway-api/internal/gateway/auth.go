@@ -1236,9 +1236,10 @@ type rateLimitBucket struct {
 }
 
 type rateLimiter struct {
-	mu      sync.Mutex
-	windows map[string]rateLimitWindow
-	now     func() time.Time
+	mu          sync.Mutex
+	windows     map[string]rateLimitWindow
+	now         func() time.Time
+	lastCleanup time.Time
 }
 
 type rateLimitWindow struct {
@@ -1283,7 +1284,25 @@ func (r *rateLimiter) Allow(ctx context.Context, bucket rateLimitBucket, identit
 
 	state.count++
 	r.windows[key] = state
+	r.maybeCleanup(now)
 	return true, 0, nil
+}
+
+const rateLimiterCleanupInterval = time.Minute
+
+func (r *rateLimiter) maybeCleanup(now time.Time) {
+	if r == nil {
+		return
+	}
+	if !r.lastCleanup.IsZero() && now.Sub(r.lastCleanup) < rateLimiterCleanupInterval {
+		return
+	}
+	for key, window := range r.windows {
+		if now.After(window.expires) {
+			delete(r.windows, key)
+		}
+	}
+	r.lastCleanup = now
 }
 
 func resolveDuration(keys []string, fallback time.Duration) time.Duration {

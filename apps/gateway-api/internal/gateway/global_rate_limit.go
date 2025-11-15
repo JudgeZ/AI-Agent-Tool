@@ -5,9 +5,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
-	"strings"
 	"time"
-	"unicode/utf8"
 
 	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/audit"
 )
@@ -17,12 +15,8 @@ const (
 	auditTargetHTTP         = "gateway.http"
 	auditCapabilityHTTP     = "gateway.http"
 
-	defaultGlobalIPWindow    = time.Minute
-	defaultGlobalIPLimit     = 120
-	defaultGlobalAgentWindow = time.Minute
-	defaultGlobalAgentLimit  = 600
-
-	maxAgentIdentityLen = 128
+	defaultGlobalIPWindow = time.Minute
+	defaultGlobalIPLimit  = 120
 )
 
 type rateLimitEvaluator interface {
@@ -63,11 +57,7 @@ func (g *GlobalRateLimiter) Middleware(next http.Handler) http.Handler {
 			r = updated
 		}
 		ctx := r.Context()
-		var (
-			ipIdentity            string
-			agentIdentity         string
-			agentIdentityResolved bool
-		)
+		var ipIdentity string
 
 		for _, bucket := range g.buckets {
 			var identity string
@@ -81,14 +71,7 @@ func (g *GlobalRateLimiter) Middleware(next http.Handler) http.Handler {
 				}
 				identity = ipIdentity
 			case "agent":
-				if !agentIdentityResolved {
-					agentIdentity = sanitizeAgentIdentity(r.Header.Get("X-Agent"))
-					agentIdentityResolved = true
-				}
-				if agentIdentity == "" {
-					continue
-				}
-				identity = agentIdentity
+				continue
 			default:
 				continue
 			}
@@ -145,41 +128,12 @@ func (g *GlobalRateLimiter) Middleware(next http.Handler) http.Handler {
 func newGlobalRateLimitPolicy() globalRateLimitPolicy {
 	ipWindow := resolveDuration([]string{"GATEWAY_HTTP_IP_RATE_LIMIT_WINDOW", "GATEWAY_HTTP_RATE_LIMIT_WINDOW"}, defaultGlobalIPWindow)
 	ipLimit := resolveLimit([]string{"GATEWAY_HTTP_IP_RATE_LIMIT_MAX", "GATEWAY_HTTP_RATE_LIMIT_MAX"}, defaultGlobalIPLimit)
-	agentWindow := resolveDuration([]string{"GATEWAY_HTTP_AGENT_RATE_LIMIT_WINDOW"}, defaultGlobalAgentWindow)
-	agentLimit := resolveLimit([]string{"GATEWAY_HTTP_AGENT_RATE_LIMIT_MAX"}, defaultGlobalAgentLimit)
-
 	buckets := []rateLimitBucket{}
 	if ipLimit > 0 && ipWindow > 0 {
 		buckets = append(buckets, rateLimitBucket{Endpoint: "http_global", IdentityType: "ip", Window: ipWindow, Limit: ipLimit})
 	}
-	if agentLimit > 0 && agentWindow > 0 {
-		buckets = append(buckets, rateLimitBucket{Endpoint: "http_global", IdentityType: "agent", Window: agentWindow, Limit: agentLimit})
-	}
 
 	return globalRateLimitPolicy{buckets: buckets}
-}
-
-func sanitizeAgentIdentity(raw string) string {
-	if raw == "" {
-		return ""
-	}
-	if !utf8.ValidString(raw) {
-		return ""
-	}
-	if hasUnsafeHeaderRunes(raw) {
-		return ""
-	}
-	trimmed := strings.TrimSpace(raw)
-	if trimmed == "" {
-		return ""
-	}
-	if utf8.RuneCountInString(trimmed) > maxAgentIdentityLen {
-		return ""
-	}
-	if hasUnsafeHeaderRunes(trimmed) {
-		return ""
-	}
-	return trimmed
 }
 
 func respondRateLimiterUnavailable(w http.ResponseWriter, r *http.Request) {
