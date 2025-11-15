@@ -1,7 +1,12 @@
-import { describe, it, expect, vi } from "vitest";
+import { describe, it, expect, vi, afterEach } from "vitest";
+
+vi.mock("../../network/EgressGuard.js", () => ({
+  ensureEgressAllowed: vi.fn()
+}));
 
 import type { SecretsStore } from "../../auth/SecretsStore.js";
 import { MistralProvider } from "../mistral.js";
+import { ensureEgressAllowed } from "../../network/EgressGuard.js";
 
 class StubSecretsStore implements SecretsStore {
   private failure?: Error;
@@ -29,6 +34,10 @@ class StubSecretsStore implements SecretsStore {
 }
 
 describe("MistralProvider", () => {
+  afterEach(() => {
+    vi.clearAllMocks();
+  });
+
   it("recreates the client when the API key rotates", async () => {
     const secrets = new StubSecretsStore({ "provider:mistral:apiKey": "sk-old" });
     const firstChat = vi.fn().mockResolvedValue({ choices: [{ message: { content: "first" } }] });
@@ -76,5 +85,31 @@ describe("MistralProvider", () => {
     expect(second.output).toBe("ok");
     expect(clientFactory).toHaveBeenCalledTimes(1);
     expect(chat).toHaveBeenCalledTimes(2);
+  });
+
+  it("enforces egress policy before invoking chat completions", async () => {
+    const secrets = new StubSecretsStore({ "provider:mistral:apiKey": "sk-egress" });
+    const chat = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "ok" } }],
+      usage: undefined
+    });
+    const client = { chat };
+    const clientFactory = vi.fn().mockResolvedValue(client);
+    const provider = new MistralProvider(secrets, { clientFactory, defaultModel: "mistral-large" });
+
+    await provider.chat({
+      model: "mistral-large",
+      messages: [{ role: "user", content: "ping" }]
+    });
+
+    const ensure = vi.mocked(ensureEgressAllowed);
+    expect(ensure).toHaveBeenCalledWith(
+      "https://api.mistral.ai/v1/chat/completions",
+      expect.objectContaining({
+        action: "provider.request",
+        metadata: expect.objectContaining({ provider: "mistral", operation: "chat", model: "mistral-large" })
+      })
+    );
+    expect(ensure.mock.invocationCallOrder[0]).toBeLessThan(chat.mock.invocationCallOrder[0]!);
   });
 });

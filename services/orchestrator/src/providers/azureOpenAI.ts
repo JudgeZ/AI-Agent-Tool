@@ -1,6 +1,6 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatMessage, ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
-import { callWithRetry, ProviderError, requireSecret, disposeClient } from "./utils.js";
+import { callWithRetry, ProviderError, requireSecret, disposeClient, ensureProviderEgress } from "./utils.js";
 
 interface AzureUsage {
   promptTokens?: number;
@@ -163,8 +163,23 @@ export class AzureOpenAIProvider implements ModelProvider {
       });
     }
 
+    const endpoint = this.clientCredentials?.endpoint;
+    if (!endpoint) {
+      throw new ProviderError("Azure OpenAI endpoint is not resolved", {
+        status: 500,
+        provider: this.name,
+        retryable: false
+      });
+    }
+    const baseUrl = endpoint.endsWith("/") ? endpoint.slice(0, -1) : endpoint;
+    const targetUrl = `${baseUrl}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions`;
+
     const response = await callWithRetry(
       async () => {
+        ensureProviderEgress(this.name, targetUrl, {
+          action: "provider.request",
+          metadata: { provider: this.name, operation: "chat.completions", model: deployment }
+        });
         try {
           return await client.getChatCompletions(deployment, toAzureMessages(req.messages), {
             temperature: 0.2

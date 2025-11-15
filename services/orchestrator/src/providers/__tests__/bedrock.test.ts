@@ -6,6 +6,7 @@ vi.mock("../../network/EgressGuard.js", () => ({
 
 import type { SecretsStore } from "../../auth/SecretsStore.js";
 import { BedrockProvider } from "../bedrock.js";
+import { ensureEgressAllowed } from "../../network/EgressGuard.js";
 
 class StubSecretsStore implements SecretsStore {
   private failure?: Error;
@@ -34,7 +35,7 @@ class StubSecretsStore implements SecretsStore {
 
 describe("BedrockProvider", () => {
   afterEach(() => {
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
   });
 
   function createProvider(invokeModel: ReturnType<typeof vi.fn>, retryAttempts = 2) {
@@ -102,6 +103,28 @@ describe("BedrockProvider", () => {
 
     expect(invokeModel).toHaveBeenCalledTimes(2);
     expect(response.output).toBe("ok");
+  });
+
+  it("enforces egress policy before invoking the Bedrock runtime", async () => {
+    const invokeModel = vi.fn().mockResolvedValue({
+      body: Buffer.from(JSON.stringify({ outputText: "ok" }), "utf-8")
+    });
+    const { provider } = createProvider(invokeModel);
+
+    await provider.chat({
+      model: "anthropic.test",
+      messages: [{ role: "user", content: "hi" }]
+    });
+
+    const ensure = vi.mocked(ensureEgressAllowed);
+    expect(ensure).toHaveBeenCalledWith(
+      "https://bedrock-runtime.us-west-2.amazonaws.com/model/anthropic.test/invoke",
+      expect.objectContaining({
+        action: "provider.request",
+        metadata: expect.objectContaining({ provider: "bedrock", operation: "invokeModel", model: "anthropic.test", region: "us-west-2" })
+      })
+    );
+    expect(ensure.mock.invocationCallOrder[0]).toBeLessThan(invokeModel.mock.invocationCallOrder[0]!);
   });
 
   it("does not retry non-retryable validation errors", async () => {

@@ -1,6 +1,11 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 
+vi.mock("../../network/EgressGuard.js", () => ({
+  ensureEgressAllowed: vi.fn()
+}));
+
 import type { SecretsStore } from "../../auth/SecretsStore.js";
+import { ensureEgressAllowed } from "../../network/EgressGuard.js";
 import { AzureOpenAIProvider } from "../azureOpenAI.js";
 
 class StubSecretsStore implements SecretsStore {
@@ -30,7 +35,7 @@ class StubSecretsStore implements SecretsStore {
 
 describe("AzureOpenAIProvider", () => {
   afterEach(() => {
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
   });
 
   function createProvider(getChatCompletions: ReturnType<typeof vi.fn>) {
@@ -86,6 +91,29 @@ describe("AzureOpenAIProvider", () => {
     expect(getChatCompletions).toHaveBeenCalledTimes(2);
     expect(result.output).toBe("ok");
     expect(result.usage).toBeUndefined();
+  });
+
+  it("enforces egress policy before sending chat completions", async () => {
+    const getChatCompletions = vi.fn().mockResolvedValue({
+      choices: [{ message: { content: "allowed" } }],
+      usage: undefined
+    });
+    const { provider } = createProvider(getChatCompletions);
+
+    await provider.chat({
+      model: "my-deployment",
+      messages: [{ role: "user", content: "ping" }]
+    });
+
+    const ensure = vi.mocked(ensureEgressAllowed);
+    expect(ensure).toHaveBeenCalledWith(
+      "https://example.openai.azure.com/openai/deployments/my-deployment/chat/completions",
+      expect.objectContaining({
+        action: "provider.request",
+        metadata: expect.objectContaining({ provider: "azureopenai", operation: "chat.completions", model: "my-deployment" })
+      })
+    );
+    expect(ensure.mock.invocationCallOrder[0]).toBeLessThan(getChatCompletions.mock.invocationCallOrder[0]!);
   });
 
   it("does not retry non-retryable errors and exposes normalized details", async () => {

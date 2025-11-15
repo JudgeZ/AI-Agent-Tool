@@ -1,9 +1,8 @@
 import { createSign } from "node:crypto";
 
-import { ensureEgressAllowed } from "../network/EgressGuard.js";
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatMessage, ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
-import { callWithRetry, coalesceText, ProviderError, requireSecret } from "./utils.js";
+import { callWithRetry, coalesceText, ProviderError, requireSecret, ensureProviderEgress } from "./utils.js";
 
 const GOOGLE_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
 const GOOGLE_SCOPE = "https://www.googleapis.com/auth/generative-language";
@@ -203,7 +202,7 @@ export class GoogleProvider implements ModelProvider {
       params.set("client_secret", clientSecret);
     }
 
-    ensureEgressAllowed(GOOGLE_TOKEN_URL, {
+    ensureProviderEgress(this.name, GOOGLE_TOKEN_URL, {
       action: "provider.request",
       metadata: { provider: this.name, operation: "oauth.refresh" }
     });
@@ -323,7 +322,7 @@ export class GoogleProvider implements ModelProvider {
     });
 
     const tokenUrl = key.token_uri ?? GOOGLE_TOKEN_URL;
-    ensureEgressAllowed(tokenUrl, {
+    ensureProviderEgress(this.name, tokenUrl, {
       action: "provider.request",
       metadata: { provider: this.name, operation: "serviceAccount.token" }
     });
@@ -395,13 +394,14 @@ export class GoogleProvider implements ModelProvider {
       };
     }
 
+    const ensureTarget = `${url.origin}${url.pathname || "/"}`;
+    ensureProviderEgress(this.name, ensureTarget, {
+      action: "provider.request",
+      metadata: { provider: this.name, operation: "models.generateContent", model: normalizedModelPath }
+    });
+
     let response: Response;
     try {
-      const ensureTarget = `${url.origin}${url.pathname}`;
-      ensureEgressAllowed(ensureTarget, {
-        action: "provider.request",
-        metadata: { provider: this.name, operation: "models.generateContent", model: normalizedModelPath }
-      });
       response = await this.fetchImpl(url.toString(), {
         method: "POST",
         headers,

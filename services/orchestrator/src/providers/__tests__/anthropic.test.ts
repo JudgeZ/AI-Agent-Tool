@@ -7,6 +7,7 @@ vi.mock("../../network/EgressGuard.js", () => ({
 import type { SecretsStore } from "../../auth/SecretsStore.js";
 import { AnthropicProvider } from "../anthropic.js";
 import { ProviderError } from "../utils.js";
+import { ensureEgressAllowed } from "../../network/EgressGuard.js";
 
 class StubSecretsStore implements SecretsStore {
   private failure?: Error;
@@ -35,7 +36,7 @@ class StubSecretsStore implements SecretsStore {
 
 describe("AnthropicProvider", () => {
   afterEach(() => {
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
   });
 
   function createProvider(createImpl: ReturnType<typeof vi.fn>, retryAttempts = 2) {
@@ -97,6 +98,29 @@ describe("AnthropicProvider", () => {
     expect(create).toHaveBeenCalledTimes(2);
     expect(result.output).toBe("ok");
     expect(result.usage).toBeUndefined();
+  });
+
+  it("enforces egress policy before invoking messages.create", async () => {
+    const create = vi.fn().mockResolvedValue({
+      content: [{ type: "text", text: "ok" }],
+      usage: undefined
+    });
+    const { provider } = createProvider(create);
+
+    await provider.chat({
+      model: "claude-3",
+      messages: [{ role: "user", content: "hi" }]
+    });
+
+    const ensure = vi.mocked(ensureEgressAllowed);
+    expect(ensure).toHaveBeenCalledWith(
+      "https://api.anthropic.com/v1/messages",
+      expect.objectContaining({
+        action: "provider.request",
+        metadata: expect.objectContaining({ provider: "anthropic", operation: "messages.create", model: "claude-3" })
+      })
+    );
+    expect(ensure.mock.invocationCallOrder[0]).toBeLessThan(create.mock.invocationCallOrder[0]!);
   });
 
   it("propagates normalized errors without retrying non-retryable ones", async () => {
