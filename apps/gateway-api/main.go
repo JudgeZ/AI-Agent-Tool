@@ -71,14 +71,9 @@ func main() {
 		port = "8080"
 	}
 
-	handler := audit.Middleware(mux)
 	globalLimiter := gateway.NewGlobalRateLimiter(trustedNetworks)
-	handler = globalLimiter.Middleware(handler)
-	if limitBytes := maxRequestBodyBytesFromEnv(); limitBytes > 0 {
-		handler = gateway.RequestBodyLimitMiddleware(handler, limitBytes)
-	}
-	handler = gateway.SecurityHeadersMiddleware(handler)
-	handler = otelhttp.NewHandler(handler, "gateway.http.request", otelhttp.WithPublicEndpoint())
+	maxBodyBytes := maxRequestBodyBytesFromEnv()
+	handler := buildHTTPHandler(mux, globalLimiter, maxBodyBytes)
 
 	server := &http.Server{
 		Addr:         ":" + port,
@@ -106,6 +101,19 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+func buildHTTPHandler(base http.Handler, limiter *gateway.GlobalRateLimiter, maxBodyBytes int64) http.Handler {
+	handler := http.Handler(base)
+	if limiter != nil {
+		handler = limiter.Middleware(handler)
+	}
+	handler = audit.Middleware(handler)
+	if maxBodyBytes > 0 {
+		handler = gateway.RequestBodyLimitMiddleware(handler, maxBodyBytes)
+	}
+	handler = gateway.SecurityHeadersMiddleware(handler)
+	return otelhttp.NewHandler(handler, "gateway.http.request", otelhttp.WithPublicEndpoint())
 }
 
 func trustedProxyCIDRsFromEnv() []string {
