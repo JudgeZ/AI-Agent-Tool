@@ -1131,6 +1131,132 @@ func TestLoadOidcMetadataCachingAndTimeout(t *testing.T) {
 	}
 }
 
+func TestNormalizeUpstreamCookies(t *testing.T) {
+	longName := strings.Repeat("x", 260)
+
+	tests := []struct {
+		name                 string
+		cookie               *http.Cookie
+		expectedSecure       bool
+		expectedHTTPOnly     bool
+		expectedSameSite     http.SameSite
+		expectedEnforcements []string
+	}{
+		{
+			name: "long cookie names are preserved",
+			cookie: &http.Cookie{
+				Name:     longName,
+				Value:    "long-token",
+				Secure:   true,
+				HttpOnly: true,
+				SameSite: http.SameSiteStrictMode,
+			},
+			expectedSecure:   true,
+			expectedHTTPOnly: true,
+			expectedSameSite: http.SameSiteStrictMode,
+		},
+		{
+			name: "punctuation in names is allowed",
+			cookie: &http.Cookie{
+				Name:     "session.id-v1",
+				Value:    "punctuated",
+				Secure:   true,
+				HttpOnly: true,
+				SameSite: http.SameSiteStrictMode,
+			},
+			expectedSecure:   true,
+			expectedHTTPOnly: true,
+			expectedSameSite: http.SameSiteStrictMode,
+		},
+		{
+			name: "security attributes are enforced",
+			cookie: &http.Cookie{
+				Name:     "insecure",
+				Value:    "needs-hardening",
+				Secure:   false,
+				HttpOnly: false,
+				SameSite: http.SameSiteLaxMode,
+			},
+			expectedSecure:       true,
+			expectedHTTPOnly:     true,
+			expectedSameSite:     http.SameSiteStrictMode,
+			expectedEnforcements: []string{"secure_enforced", "httponly_enforced", "samesite_strict_enforced"},
+		},
+	}
+
+	for _, tt := range tests {
+		tt := tt
+		t.Run(tt.name, func(t *testing.T) {
+			original := *tt.cookie
+
+			normalized, hardened, dropped := normalizeUpstreamCookies([]*http.Cookie{tt.cookie})
+
+			if len(dropped) != 0 {
+				t.Fatalf("expected no cookies to be dropped, got %d: %+v", len(dropped), dropped)
+			}
+			if len(normalized) != 1 {
+				t.Fatalf("expected one normalized cookie, got %d", len(normalized))
+			}
+
+			got := normalized[0]
+			if got == nil {
+				t.Fatal("expected normalized cookie to be non-nil")
+			}
+			if got.Name != original.Name {
+				t.Fatalf("expected cookie name %q, got %q", original.Name, got.Name)
+			}
+			if got.Value != original.Value {
+				t.Fatalf("expected cookie value %q, got %q", original.Value, got.Value)
+			}
+			if got.Secure != tt.expectedSecure {
+				t.Fatalf("expected Secure=%t, got %t", tt.expectedSecure, got.Secure)
+			}
+			if got.HttpOnly != tt.expectedHTTPOnly {
+				t.Fatalf("expected HttpOnly=%t, got %t", tt.expectedHTTPOnly, got.HttpOnly)
+			}
+			if got.SameSite != tt.expectedSameSite {
+				t.Fatalf("expected SameSite=%v, got %v", tt.expectedSameSite, got.SameSite)
+			}
+
+			if len(tt.expectedEnforcements) == 0 {
+				if len(hardened) != 0 {
+					t.Fatalf("expected no hardened metadata, got %+v", hardened)
+				}
+				return
+			}
+
+			if len(hardened) != 1 {
+				t.Fatalf("expected one hardened metadata entry, got %d", len(hardened))
+			}
+			entry := hardened[0]
+			hash, ok := entry["name_hash"].(string)
+			if !ok {
+				t.Fatalf("expected name_hash string in hardened entry, got %#v", entry["name_hash"])
+			}
+			expectedHash := gatewayAuditLogger.HashIdentity(tt.cookie.Name)
+			if hash != expectedHash {
+				t.Fatalf("expected name_hash %q, got %q", expectedHash, hash)
+			}
+			enforcements, ok := entry["enforcements"].([]string)
+			if !ok {
+				t.Fatalf("expected enforcements slice in hardened entry, got %#v", entry["enforcements"])
+			}
+			if len(enforcements) != len(tt.expectedEnforcements) {
+				t.Fatalf("expected %d enforcements, got %d", len(tt.expectedEnforcements), len(enforcements))
+			}
+			for i, enforcement := range tt.expectedEnforcements {
+				if enforcements[i] != enforcement {
+					t.Fatalf("expected enforcement %q at position %d, got %q", enforcement, i, enforcements[i])
+				}
+			}
+
+			if tt.cookie.Secure != original.Secure || tt.cookie.HttpOnly != original.HttpOnly || tt.cookie.SameSite != original.SameSite {
+				t.Fatalf("expected original cookie to remain unchanged, got %+v", tt.cookie)
+			}
+		})
+	}
+}
+
 func resetOidcCache() {
 	oidcDiscoveryCache.mu.Lock()
 	oidcDiscoveryCache.metadata = oidcDiscovery{}
