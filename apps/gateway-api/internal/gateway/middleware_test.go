@@ -90,9 +90,9 @@ func TestGlobalRateLimiterEnforcesIPLimit(t *testing.T) {
 	t.Setenv("GATEWAY_HTTP_RATE_LIMIT_WINDOW", "1m")
 
 	limiter := NewGlobalRateLimiter(nil)
-	handler := limiter.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := audit.Middleware(limiter.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-	}))
+	})))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "203.0.113.10:1234"
@@ -110,6 +110,9 @@ func TestGlobalRateLimiterEnforcesIPLimit(t *testing.T) {
 	handler.ServeHTTP(second, secondReq)
 	if second.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected second request to be rate limited, got %d", second.Code)
+	}
+	if requestID := strings.TrimSpace(second.Header().Get("X-Request-Id")); requestID == "" {
+		t.Fatal("expected rate limited response to include X-Request-Id header")
 	}
 	if retry := second.Header().Get("Retry-After"); retry == "" {
 		t.Fatal("expected Retry-After header to be set")
@@ -130,9 +133,9 @@ func TestGlobalRateLimiterEmitsAuditEventForAgentLimit(t *testing.T) {
 	gatewayAuditLogger = audit.Default()
 
 	limiter := NewGlobalRateLimiter(nil)
-	handler := limiter.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := audit.Middleware(limiter.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
-	}))
+	})))
 
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	req.RemoteAddr = "203.0.113.10:1234"
@@ -152,6 +155,9 @@ func TestGlobalRateLimiterEmitsAuditEventForAgentLimit(t *testing.T) {
 	if second.Code != http.StatusTooManyRequests {
 		t.Fatalf("expected second agent request to be rate limited, got %d", second.Code)
 	}
+	if requestID := strings.TrimSpace(second.Header().Get("X-Request-Id")); requestID == "" {
+		t.Fatal("expected rate limited response to include X-Request-Id header")
+	}
 
 	logs := buf.String()
 	if !strings.Contains(logs, "gateway.http.rate_limit") {
@@ -159,6 +165,9 @@ func TestGlobalRateLimiterEmitsAuditEventForAgentLimit(t *testing.T) {
 	}
 	if !strings.Contains(logs, "\"outcome\":\"denied\"") {
 		t.Fatalf("expected denied outcome in audit log, got %q", logs)
+	}
+	if !strings.Contains(logs, "\"request_id\"") {
+		t.Fatalf("expected audit log to include request_id, got %q", logs)
 	}
 }
 
