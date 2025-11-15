@@ -1,6 +1,9 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
+import { ensureEgressAllowed } from "../network/EgressGuard.js";
 import type { ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
 import { callWithRetry, ProviderError, requireSecret } from "./utils.js";
+
+const OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions";
 
 interface OpenRouterUsage {
   prompt_tokens?: number;
@@ -97,6 +100,10 @@ export class OpenRouterProvider implements ModelProvider {
         const apiKey = await this.resolveApiKey();
         const client = await this.getClient(apiKey);
         let response: OpenRouterResponse;
+        ensureEgressAllowed(OPENROUTER_CHAT_URL, {
+          action: "provider.request",
+          metadata: { provider: this.name, operation: "chat", model }
+        });
         try {
           response = await client.chat(messages, { model, temperature: 0.2 });
         } catch (error) {

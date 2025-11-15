@@ -2,6 +2,10 @@ import { setTimeout as delay } from "node:timers/promises";
 
 import type { SecretsStore } from "../auth/SecretsStore.js";
 
+// NOTE: Provider implementations must invoke `ensureEgressAllowed` with their target URL
+// immediately before performing any outbound request so network policy decisions are audited
+// consistently. See `../network/EgressGuard.ts` for the enforcement contract.
+
 export type SecretLookup = {
   key: string;
   env?: string;

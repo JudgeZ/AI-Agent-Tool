@@ -1,5 +1,9 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 
+vi.mock("../../network/EgressGuard.js", () => ({
+  ensureEgressAllowed: vi.fn()
+}));
+
 import type { SecretsStore } from "../../auth/SecretsStore.js";
 import { AnthropicProvider } from "../anthropic.js";
 import { ProviderError } from "../utils.js";

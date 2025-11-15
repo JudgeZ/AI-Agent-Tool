@@ -1,5 +1,6 @@
 import { createSign } from "node:crypto";
 
+import { ensureEgressAllowed } from "../network/EgressGuard.js";
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatMessage, ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
 import { callWithRetry, coalesceText, ProviderError, requireSecret } from "./utils.js";
@@ -202,6 +203,10 @@ export class GoogleProvider implements ModelProvider {
       params.set("client_secret", clientSecret);
     }
 
+    ensureEgressAllowed(GOOGLE_TOKEN_URL, {
+      action: "provider.request",
+      metadata: { provider: this.name, operation: "oauth.refresh" }
+    });
     const response = await this.fetchImpl(GOOGLE_TOKEN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -317,7 +322,12 @@ export class GoogleProvider implements ModelProvider {
       assertion
     });
 
-    const response = await this.fetchImpl(key.token_uri ?? GOOGLE_TOKEN_URL, {
+    const tokenUrl = key.token_uri ?? GOOGLE_TOKEN_URL;
+    ensureEgressAllowed(tokenUrl, {
+      action: "provider.request",
+      metadata: { provider: this.name, operation: "serviceAccount.token" }
+    });
+    const response = await this.fetchImpl(tokenUrl, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: params
@@ -387,6 +397,11 @@ export class GoogleProvider implements ModelProvider {
 
     let response: Response;
     try {
+      const ensureTarget = `${url.origin}${url.pathname}`;
+      ensureEgressAllowed(ensureTarget, {
+        action: "provider.request",
+        metadata: { provider: this.name, operation: "models.generateContent", model: normalizedModelPath }
+      });
       response = await this.fetchImpl(url.toString(), {
         method: "POST",
         headers,

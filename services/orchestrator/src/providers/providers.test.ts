@@ -1,5 +1,9 @@
 import { describe, it, expect, afterEach, beforeAll, afterAll, vi } from "vitest";
 
+vi.mock("../network/EgressGuard.js", () => ({
+  ensureEgressAllowed: vi.fn()
+}));
+
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatResponse, ModelProvider } from "./interfaces.js";
 import { OpenAIProvider } from "./openai.js";
