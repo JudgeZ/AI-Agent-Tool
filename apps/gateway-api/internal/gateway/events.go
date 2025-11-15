@@ -20,13 +20,16 @@ import (
 )
 
 const (
-	defaultHeartbeatInterval    = 30 * time.Second
-	heartbeatPayload            = ": ping\n\n"
-	auditEventPlanEvents        = "plan.events.subscribe"
-	auditTargetPlanEvents       = "plan.events"
-	auditCapabilityPlan         = "plan.events"
-	maxAuthorizationHeaderLen   = 4096
-	maxLastEventIDHeaderLen     = 1024
+	defaultHeartbeatInterval = 30 * time.Second
+	heartbeatPayload         = ": ping\n\n"
+	auditEventPlanEvents     = "plan.events.subscribe"
+	auditTargetPlanEvents    = "plan.events"
+	auditCapabilityPlan      = "plan.events"
+	// maxAuthorizationHeaderLen allows oversized bearer tokens while bounding resource usage.
+	maxAuthorizationHeaderLen = 4096
+	// maxLastEventIDHeaderLen comfortably supports UUIDs and vendor specific suffixes.
+	maxLastEventIDHeaderLen = 1024
+	// maxForwardedCookieHeaderLen caps forwarded cookie headers to 4KiB, matching common browser limits.
 	maxForwardedCookieHeaderLen = 4096
 )
 
@@ -459,6 +462,9 @@ func validateForwardedCookie(value string) error {
 
 func hasUnsafeHeaderRunes(value string) bool {
 	for _, r := range value {
+		if r == '\r' || r == '\n' {
+			return true
+		}
 		if r < 0x20 || r == 0x7f || r > 0x7e {
 			return true
 		}

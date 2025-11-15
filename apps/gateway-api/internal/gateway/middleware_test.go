@@ -2,12 +2,15 @@ package gateway
 
 import (
 	"bytes"
+	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/audit"
 )
@@ -242,5 +245,75 @@ func TestGlobalRateLimiterAppliesAnonymousAgentBucket(t *testing.T) {
 	}
 	if retry := second.Header().Get("Retry-After"); retry == "" {
 		t.Fatal("expected Retry-After header to be set for anonymous agent limit")
+	}
+}
+
+type failingRateLimiter struct {
+	err error
+}
+
+func (f *failingRateLimiter) Allow(context.Context, rateLimitBucket, string) (bool, time.Duration, error) {
+	return false, 0, f.err
+}
+
+func TestGlobalRateLimiterFailsClosedOnError(t *testing.T) {
+	var buf bytes.Buffer
+	original := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{})))
+	t.Cleanup(func() {
+		slog.SetDefault(original)
+		gatewayAuditLogger = audit.Default()
+	})
+	gatewayAuditLogger = audit.Default()
+
+	limiter := &GlobalRateLimiter{
+		limiter: &failingRateLimiter{err: errors.New("limiter offline")},
+		buckets: []rateLimitBucket{{Endpoint: "http_global", IdentityType: "ip", Window: time.Minute, Limit: 1}},
+	}
+
+	nextCalled := false
+	handler := limiter.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		nextCalled = true
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.10:9000"
+
+	rr := httptest.NewRecorder()
+	handler.ServeHTTP(rr, req)
+
+	if nextCalled {
+		t.Fatal("expected limiter error to short-circuit request")
+	}
+	if rr.Code != http.StatusServiceUnavailable {
+		t.Fatalf("expected 503 when limiter errors, got %d", rr.Code)
+	}
+	if id := strings.TrimSpace(rr.Header().Get("X-Request-Id")); id == "" {
+		t.Fatal("expected limiter error response to include X-Request-Id")
+	}
+	if retry := rr.Header().Get("Retry-After"); retry == "" {
+		t.Fatal("expected limiter error response to include Retry-After header")
+	}
+	logs := buf.String()
+	if !strings.Contains(logs, "rate_limiter_error") {
+		t.Fatalf("expected audit log to include rate_limiter_error, got %q", logs)
+	}
+}
+
+func TestSanitizeAgentIdentityLengthAndSafety(t *testing.T) {
+	valid := strings.Repeat("a", maxAgentIdentityLen)
+	if got := sanitizeAgentIdentity(valid); got != valid {
+		t.Fatalf("expected valid identity to be preserved, got %q", got)
+	}
+
+	oversized := strings.Repeat("b", maxAgentIdentityLen+1)
+	if got := sanitizeAgentIdentity(oversized); got != "" {
+		t.Fatalf("expected oversized identity to be rejected, got %q", got)
+	}
+
+	unsafe := "agent\r\n"
+	if got := sanitizeAgentIdentity(unsafe); got != "" {
+		t.Fatalf("expected identity with control characters to be rejected, got %q", got)
 	}
 }

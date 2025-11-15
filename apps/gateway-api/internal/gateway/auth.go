@@ -917,7 +917,7 @@ func deleteStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []
 
 func normalizeUpstreamCookies(cookies []*http.Cookie) ([]*http.Cookie, []map[string]any, []map[string]any) {
 	if len(cookies) == 0 {
-		return nil, nil, nil
+		return []*http.Cookie{}, []map[string]any{}, []map[string]any{}
 	}
 	normalized := make([]*http.Cookie, 0, len(cookies))
 	hardened := make([]map[string]any, 0)

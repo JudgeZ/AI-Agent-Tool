@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/audit"
 )
@@ -22,7 +23,12 @@ const (
 	defaultGlobalAgentLimit  = 600
 
 	anonymousAgentIdentity = "anonymous"
+	maxAgentIdentityLen    = 128
 )
+
+type rateLimitEvaluator interface {
+	Allow(context.Context, rateLimitBucket, string) (bool, time.Duration, error)
+}
 
 type globalRateLimitPolicy struct {
 	buckets []rateLimitBucket
@@ -30,7 +36,7 @@ type globalRateLimitPolicy struct {
 
 // GlobalRateLimiter enforces shared rate limits across all gateway HTTP routes.
 type GlobalRateLimiter struct {
-	limiter *rateLimiter
+	limiter rateLimitEvaluator
 	buckets []rateLimitBucket
 	trusted []*net.IPNet
 }
@@ -88,11 +94,27 @@ func (g *GlobalRateLimiter) Middleware(next http.Handler) http.Handler {
 
 			allowed, retryAfter, err := g.limiter.Allow(ctx, bucket, identity)
 			if err != nil {
-				slog.WarnContext(ctx, "gateway.http.rate_limiter_error",
+				slog.ErrorContext(ctx, "gateway.http.rate_limiter_error",
 					slog.String("endpoint", bucket.Endpoint),
 					slog.String("error", err.Error()),
 				)
-				continue
+				details := map[string]any{
+					"reason":        "rate_limiter_error",
+					"endpoint":      bucket.Endpoint,
+					"identity_type": bucket.IdentityType,
+					"path":          r.URL.Path,
+					"method":        r.Method,
+				}
+				switch bucket.IdentityType {
+				case "ip":
+					details["identity_hash"] = gatewayAuditLogger.HashIdentity(identity)
+				case "agent":
+					details["identity_hash"] = gatewayAuditLogger.HashIdentity("agent", identity)
+				}
+				details["error"] = err.Error()
+				auditHTTPRateLimitEvent(ctx, r, g.trusted, details)
+				respondRateLimiterUnavailable(w, r)
+				return
 			}
 			if !allowed {
 				details := map[string]any{
@@ -141,13 +163,24 @@ func sanitizeAgentIdentity(raw string) string {
 	if trimmed == "" {
 		return ""
 	}
-	if len(trimmed) > 128 {
-		trimmed = trimmed[:128]
+	if !utf8.ValidString(trimmed) {
+		return ""
+	}
+	if utf8.RuneCountInString(trimmed) > maxAgentIdentityLen {
+		return ""
 	}
 	if hasUnsafeHeaderRunes(trimmed) {
 		return ""
 	}
 	return trimmed
+}
+
+func respondRateLimiterUnavailable(w http.ResponseWriter, r *http.Request) {
+	if updated, _ := audit.EnsureRequestID(r, w); updated != nil {
+		r = updated
+	}
+	w.Header().Set("Retry-After", "1")
+	writeErrorResponse(w, r, http.StatusServiceUnavailable, "service_unavailable", "rate limiting temporarily unavailable", nil)
 }
 
 func auditHTTPRateLimitEvent(ctx context.Context, r *http.Request, trusted []*net.IPNet, details map[string]any) {
