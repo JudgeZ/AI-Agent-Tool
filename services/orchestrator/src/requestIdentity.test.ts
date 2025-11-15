@@ -239,6 +239,15 @@ describe("extractAgent", () => {
     expect(extractAgent(req)).toBe(agentName);
   });
 
+  it("accepts agent headers that trim to the maximum length", () => {
+    const req = createMockRequest({
+      remoteAddress: "198.51.100.39",
+      agentName: ` ${"a".repeat(128)} `,
+    });
+
+    expect(extractAgent(req)).toBe("a".repeat(128));
+  });
+
   it("rejects agent headers containing control characters", () => {
     const req = createMockRequest({
       remoteAddress: "198.51.100.34",
