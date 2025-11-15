@@ -56,4 +56,22 @@ describe("OllamaProvider", () => {
     );
     expect(ensure.mock.invocationCallOrder[0]).toBeLessThan(fetchMock.mock.invocationCallOrder[0]!);
   });
+
+  it("aborts requests that exceed the configured timeout", async () => {
+    const secrets = new StubSecretsStore({ "provider:ollama:baseUrl": "http://ollama.local" });
+    const fetchMock = vi.fn((_url: string, init?: { signal?: AbortSignal }) => {
+      return new Promise((_, reject) => {
+        init?.signal?.addEventListener("abort", () => {
+          const error = new Error("aborted");
+          error.name = "AbortError";
+          reject(error);
+        });
+      });
+    });
+    const provider = new OllamaProvider(secrets, { fetch: fetchMock, timeoutMs: 5 });
+
+    await expect(
+      provider.chat({ messages: [{ role: "user", content: "hi" }] })
+    ).rejects.toMatchObject({ provider: "local_ollama", status: 504 });
+  });
 });

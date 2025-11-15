@@ -1489,6 +1489,9 @@ export function createServer(config?: AppConfig): Express {
         traceId,
         details: {
           model: parsed.data.model,
+          provider: parsed.data.provider,
+          routing: parsed.data.routing,
+          temperature: parsed.data.temperature,
           messageCount: Array.isArray(parsed.data.messages)
             ? parsed.data.messages.length
             : undefined,

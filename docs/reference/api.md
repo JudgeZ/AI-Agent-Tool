@@ -149,15 +149,20 @@ Content-Type: application/json
   "messages": [
     { "role": "user", "content": "Hello" }
   ],
-  "model": "gpt-4o"
+  "model": "gpt-4o",
+  "provider": "openai",
+  "routing": "high_quality",
+  "temperature": 0.8
 }
 ```
 
 | Field | Type | Required | Notes |
 | - | - | - | - |
 | `messages` | array | ✅ | Ordered conversation history. Each item requires `role` (`user`\|`assistant`\|`system`) and `content` (string). |
-| `model` | string | optional | Overrides provider default. |
-| `agent` | string | optional | Alternatively supply the agent name in the body. |
+| `model` | string | optional | Overrides provider default model/deployment. |
+| `provider` | string | optional | Restricts routing to a single enabled provider (e.g. `openai`, `local_ollama`). Requests fail with `404` when the provider is not in `providers.enabled`. |
+| `routing` | string | optional | Fallback order (`balanced`, `high_quality`, `low_cost`). Defaults to the configured `providers.defaultRoute`. |
+| `temperature` | number | optional | Creativity knob validated between `0` and `2`. Providers that support temperature use the supplied value; others ignore it. |
 
 ### Response `200 OK`
 

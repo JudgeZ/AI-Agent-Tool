@@ -112,4 +112,24 @@ describe("MistralProvider", () => {
     );
     expect(ensure.mock.invocationCallOrder[0]).toBeLessThan(chat.mock.invocationCallOrder[0]!);
   });
+
+  it("uses the provided temperature when available", async () => {
+    const secrets = new StubSecretsStore({ "provider:mistral:apiKey": "sk-temp" });
+    const chat = vi.fn().mockResolvedValue({ choices: [{ message: { content: "ok" } }] });
+    const client = { chat };
+    const clientFactory = vi.fn().mockResolvedValue(client);
+    const provider = new MistralProvider(secrets, { clientFactory, defaultModel: "mistral-large" });
+
+    await provider.chat({
+      messages: [{ role: "user", content: "hi" }],
+      temperature: 1.2
+    });
+
+    expect(chat).toHaveBeenCalledWith(
+      expect.objectContaining({
+        model: "mistral-large",
+        temperature: 1.2
+      })
+    );
+  });
 });

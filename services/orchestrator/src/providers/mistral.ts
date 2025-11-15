@@ -127,7 +127,7 @@ export class MistralProvider implements ModelProvider {
           return await client.chat({
             model,
             messages: req.messages,
-            temperature: 0.2
+            temperature: req.temperature ?? 0.2
           });
         } catch (error) {
           throw this.normalizeError(error);

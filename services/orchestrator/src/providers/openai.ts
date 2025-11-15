@@ -126,7 +126,7 @@ export class OpenAIProvider implements ModelProvider {
           const response = await client.chat.completions.create({
             model,
             messages: req.messages,
-            temperature: 0.2
+            temperature: req.temperature ?? 0.2
           });
           return response;
         } catch (error) {

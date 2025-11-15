@@ -1,7 +1,12 @@
 export type ChatMessage = { role: "system" | "user" | "assistant"; content: string };
 
+export type RoutingMode = "balanced" | "high_quality" | "low_cost";
+
 export type ChatRequest = {
   model?: string;
+  provider?: string;
+  routing?: RoutingMode;
+  temperature?: number;
   messages: ChatMessage[];
 };
 

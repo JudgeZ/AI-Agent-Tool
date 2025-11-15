@@ -65,4 +65,52 @@ describe("OpenRouterProvider", () => {
     );
     expect(ensure.mock.invocationCallOrder[0]).toBeLessThan(chat.mock.invocationCallOrder[0]!);
   });
+
+  it("forwards temperature overrides", async () => {
+    const secrets = new StubSecretsStore({ "provider:openrouter:apiKey": "sk-temp" });
+    const chat = vi.fn().mockResolvedValue({
+      success: true,
+      data: { choices: [{ message: { content: "ok" } }] }
+    });
+    const clientFactory = vi.fn().mockResolvedValue({ chat });
+    const provider = new OpenRouterProvider(secrets, { clientFactory, defaultModel: "openrouter/test" });
+
+    await provider.chat({
+      messages: [{ role: "user", content: "hi" }],
+      temperature: 0.6
+    });
+
+    expect(chat).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.objectContaining({ model: "openrouter/test", temperature: 0.6 })
+    );
+  });
+
+  it("disposes cached clients when the API key rotates", async () => {
+    const secrets = new StubSecretsStore({ "provider:openrouter:apiKey": "sk-old" });
+    const firstClient = {
+      chat: vi.fn().mockResolvedValue({ success: true, data: { choices: [{ message: { content: "first" } }] } }),
+      close: vi.fn()
+    };
+    const secondClient = {
+      chat: vi.fn().mockResolvedValue({ success: true, data: { choices: [{ message: { content: "second" } }] } }),
+      close: vi.fn()
+    };
+    const clientFactory = vi
+      .fn()
+      .mockResolvedValueOnce(firstClient)
+      .mockResolvedValueOnce(secondClient);
+    const provider = new OpenRouterProvider(secrets, { clientFactory, defaultModel: "openrouter/test" });
+
+    const first = await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(first.output).toBe("first");
+
+    await secrets.set("provider:openrouter:apiKey", "sk-new");
+
+    const second = await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    expect(second.output).toBe("second");
+
+    expect(clientFactory).toHaveBeenCalledTimes(2);
+    expect(firstClient.close).toHaveBeenCalledTimes(1);
+  });
 });

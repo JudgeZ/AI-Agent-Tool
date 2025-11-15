@@ -15,6 +15,9 @@ import {
   setProviderOverride
 } from "./ProviderRegistry.js";
 import { ProviderError } from "./utils.js";
+import { appLogger } from "../observability/logger.js";
+import * as tracing from "../observability/tracing.js";
+import * as config from "../config.js";
 
 class MockSecretsStore implements SecretsStore {
   constructor(private readonly values: Record<string, string> = {}) {}
@@ -153,5 +156,137 @@ describe("providers", () => {
         ]
       })
     ).rejects.toMatchObject({ message: expect.stringContaining("503"), provider: "local_ollama" });
+  });
+
+  it("reorders providers based on routing hints", async () => {
+    const baseConfig = config.loadConfig();
+    const loadConfigSpy = vi.spyOn(config, "loadConfig").mockReturnValue({
+      ...baseConfig,
+      providers: {
+        ...baseConfig.providers,
+        enabled: ["openai", "local_ollama"],
+        defaultRoute: "balanced"
+      }
+    });
+    const callOrder: string[] = [];
+    const lowCostProvider: ModelProvider = {
+      name: "local_ollama",
+      async chat() {
+        callOrder.push("local_ollama");
+        throw new ProviderError("offline", { status: 503, provider: "local_ollama", retryable: false });
+      }
+    };
+    const premiumProvider: ModelProvider = {
+      name: "openai",
+      async chat() {
+        callOrder.push("openai");
+        return { output: "fallback", provider: "openai" };
+      }
+    };
+    setProviderOverride("local_ollama", lowCostProvider);
+    setProviderOverride("openai", premiumProvider);
+
+    const response = await routeChat({
+      routing: "low_cost",
+      messages: [{ role: "user", content: "ping" }]
+    });
+
+    expect(callOrder).toEqual(["local_ollama", "openai"]);
+    expect(response.provider).toBe("openai");
+    expect(response.warnings).toContain("local_ollama: offline");
+    loadConfigSpy.mockRestore();
+  });
+
+  it("honors explicit provider selections and rejects unknown providers", async () => {
+    process.env.PROVIDERS = "openai,mistral";
+    const openaiProvider: ModelProvider = {
+      name: "openai",
+      async chat() {
+        throw new ProviderError("should not run", { status: 500, provider: "openai", retryable: false });
+      }
+    };
+    const mistralProvider: ModelProvider = {
+      name: "mistral",
+      async chat() {
+        return { output: "direct", provider: "mistral" };
+      }
+    };
+    setProviderOverride("openai", openaiProvider);
+    setProviderOverride("mistral", mistralProvider);
+
+    const response = await routeChat({
+      provider: "mistral",
+      messages: [{ role: "user", content: "hi" }]
+    });
+
+    expect(response.provider).toBe("mistral");
+
+    await expect(
+      routeChat({ provider: "azureopenai", messages: [{ role: "user", content: "hi" }] })
+    ).rejects.toMatchObject({ status: 404, provider: "router" });
+  });
+
+  it("emits tracing spans and structured logs for provider failures", async () => {
+    process.env.PROVIDERS = "openai";
+    const failingProvider: ModelProvider = {
+      name: "openai",
+      async chat() {
+        throw new ProviderError("boom", { status: 500, provider: "openai", retryable: false });
+      }
+    };
+    setProviderOverride("openai", failingProvider);
+
+    const loggerMock = {
+      info: vi.fn(),
+      warn: vi.fn(),
+      error: vi.fn(),
+      debug: vi.fn(),
+      child: vi.fn().mockReturnThis()
+    };
+    const loggerSpy = vi.spyOn(appLogger, "child").mockReturnValue(loggerMock as any);
+
+    const spanSpy = vi.spyOn(tracing, "withSpan").mockImplementation(
+      async (name, fn, attrs) => {
+        const fakeSpan = {
+          name,
+          attributes: attrs ?? {},
+          setAttribute: vi.fn(),
+          addEvent: vi.fn(),
+          recordException: vi.fn(),
+          end: vi.fn(),
+          context: { traceId: "trace", spanId: "span" }
+        } as any;
+        try {
+          return await fn(fakeSpan);
+        } catch (error) {
+          fakeSpan.recordException(error as Error);
+          throw error;
+        } finally {
+          fakeSpan.end();
+        }
+      }
+    );
+
+    await expect(routeChat({ messages: [{ role: "user", content: "hi" }] })).rejects.toBeInstanceOf(ProviderError);
+
+    expect(loggerSpy).toHaveBeenCalled();
+    expect(loggerMock.warn).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "provider_attempt.failure", provider: "openai" }),
+      expect.stringContaining("boom")
+    );
+    expect(loggerMock.error).toHaveBeenCalledWith(
+      expect.objectContaining({ event: "provider_routing.failed" }),
+      expect.any(String)
+    );
+    expect(spanSpy).toHaveBeenCalledWith(
+      "providers.routeChat",
+      expect.any(Function),
+      expect.objectContaining({ routing_hint: "balanced", provider_hint: "auto" })
+    );
+    expect(spanSpy).toHaveBeenCalledWith(
+      "providers.routeChat.attempt",
+      expect.any(Function),
+      expect.objectContaining({ provider: "openai", routing: "balanced" })
+    );
   });
 });

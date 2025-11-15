@@ -1,6 +1,6 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
-import { callWithRetry, ProviderError, requireSecret, ensureProviderEgress } from "./utils.js";
+import { callWithRetry, ProviderError, requireSecret, ensureProviderEgress, disposeClient } from "./utils.js";
 
 const OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -66,7 +66,8 @@ function toOpenRouterMessages(messages: ChatRequest["messages"]) {
 export class OpenRouterProvider implements ModelProvider {
   name = "openrouter";
   supportsOAuth = true;
-  private clients = new Map<string, Promise<OpenRouterClient>>();
+  private clientPromise?: Promise<OpenRouterClient>;
+  private clientKey?: string;
 
   constructor(private readonly secrets: SecretsStore, private readonly options: OpenRouterProviderOptions = {}) {}
 
@@ -82,12 +83,43 @@ export class OpenRouterProvider implements ModelProvider {
     });
   }
 
-  private async getClient(apiKey: string): Promise<OpenRouterClient> {
-    if (!this.clients.has(apiKey)) {
-      const factory = this.options.clientFactory ?? defaultClientFactory;
-      this.clients.set(apiKey, Promise.resolve(factory({ apiKey, globalConfig: this.options.globalConfig })));
+  private async disposeExistingClient(promise?: Promise<OpenRouterClient>): Promise<void> {
+    if (!promise) {
+      return;
     }
-    return this.clients.get(apiKey)!;
+    try {
+      const client = await promise.catch(() => undefined);
+      if (client) {
+        await disposeClient(client);
+      }
+    } catch {
+      // ignore disposal failures
+    }
+  }
+
+  private async getClient(apiKey: string): Promise<OpenRouterClient> {
+    if (this.clientPromise && this.clientKey === apiKey) {
+      return this.clientPromise;
+    }
+    const factory = this.options.clientFactory ?? defaultClientFactory;
+    const nextPromise = Promise.resolve(factory({ apiKey, globalConfig: this.options.globalConfig }));
+    const wrappedPromise = nextPromise.then(
+      client => client,
+      error => {
+        if (this.clientPromise === wrappedPromise) {
+          this.clientPromise = undefined;
+          this.clientKey = undefined;
+        }
+        throw error;
+      }
+    );
+    const previousPromise = this.clientPromise;
+    this.clientPromise = wrappedPromise;
+    this.clientKey = apiKey;
+    if (previousPromise && previousPromise !== wrappedPromise) {
+      void this.disposeExistingClient(previousPromise);
+    }
+    return wrappedPromise;
   }
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
@@ -104,7 +136,7 @@ export class OpenRouterProvider implements ModelProvider {
         const client = await this.getClient(apiKey);
         let response: OpenRouterResponse;
         try {
-          response = await client.chat(messages, { model, temperature: 0.2 });
+          response = await client.chat(messages, { model, temperature: req.temperature ?? 0.2 });
         } catch (error) {
           throw this.normalizeError(error);
         }
