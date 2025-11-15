@@ -54,6 +54,15 @@ func SecurityHeadersMiddleware(next http.Handler) http.Handler {
 		if headers.Get("X-XSS-Protection") == "" {
 			headers.Set("X-XSS-Protection", "0")
 		}
+		if headers.Get("Cross-Origin-Resource-Policy") == "" {
+			headers.Set("Cross-Origin-Resource-Policy", "same-origin")
+		}
+		if headers.Get("Cross-Origin-Embedder-Policy") == "" {
+			headers.Set("Cross-Origin-Embedder-Policy", "require-corp")
+		}
+		if headers.Get("Cross-Origin-Opener-Policy") == "" {
+			headers.Set("Cross-Origin-Opener-Policy", "same-origin")
+		}
 
 		next.ServeHTTP(w, r)
 	})

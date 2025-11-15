@@ -414,7 +414,20 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 		return
 	}
 
-	for _, cookie := range resp.Cookies() {
+	normalizedCookies, hardenedDetails, droppedDetails := normalizeUpstreamCookies(resp.Cookies())
+	if len(droppedDetails) > 0 {
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, mergeDetails(baseDetails, map[string]any{
+			"reason":  "upstream_cookie_rejected",
+			"cookies": droppedDetails,
+		}))
+	}
+	if len(hardenedDetails) > 0 {
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeSuccess, mergeDetails(baseDetails, map[string]any{
+			"action":  "upstream_cookie_hardened",
+			"cookies": hardenedDetails,
+		}))
+	}
+	for _, cookie := range normalizedCookies {
 		http.SetCookie(w, cookie)
 	}
 
@@ -900,6 +913,61 @@ func deleteStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []
 	}
 
 	http.SetCookie(w, cookie)
+}
+
+func normalizeUpstreamCookies(cookies []*http.Cookie) ([]*http.Cookie, []map[string]any, []map[string]any) {
+	if len(cookies) == 0 {
+		return nil, nil, nil
+	}
+	normalized := make([]*http.Cookie, 0, len(cookies))
+	hardened := make([]map[string]any, 0)
+	dropped := make([]map[string]any, 0)
+
+	for _, cookie := range cookies {
+		if cookie == nil {
+			continue
+		}
+		if strings.TrimSpace(cookie.Name) == "" {
+			dropped = append(dropped, map[string]any{
+				"reasons": []string{"missing_name"},
+			})
+			continue
+		}
+
+		clone := *cookie
+		enforcements := make([]string, 0, 3)
+
+		if clone.SameSite == http.SameSiteNoneMode {
+			dropped = append(dropped, map[string]any{
+				"name_hash": gatewayAuditLogger.HashIdentity(cookie.Name),
+				"reasons":   []string{"samesite_none_not_allowed"},
+			})
+			continue
+		}
+
+		if !clone.Secure {
+			clone.Secure = true
+			enforcements = append(enforcements, "secure_enforced")
+		}
+		if !clone.HttpOnly {
+			clone.HttpOnly = true
+			enforcements = append(enforcements, "httponly_enforced")
+		}
+		if clone.SameSite != http.SameSiteStrictMode {
+			clone.SameSite = http.SameSiteStrictMode
+			enforcements = append(enforcements, "samesite_strict_enforced")
+		}
+
+		normalized = append(normalized, &clone)
+		if len(enforcements) > 0 {
+			hardened = append(hardened, map[string]any{
+				"name_hash":    gatewayAuditLogger.HashIdentity(cookie.Name),
+				"enforcements": enforcements,
+			})
+		}
+	}
+
+	return normalized, hardened, dropped
 }
 
 func validateAuthorizeRedirect(built *url.URL, configuredAuthorizeURL string) error {

@@ -20,11 +20,14 @@ import (
 )
 
 const (
-	defaultHeartbeatInterval = 30 * time.Second
-	heartbeatPayload         = ": ping\n\n"
-	auditEventPlanEvents     = "plan.events.subscribe"
-	auditTargetPlanEvents    = "plan.events"
-	auditCapabilityPlan      = "plan.events"
+	defaultHeartbeatInterval    = 30 * time.Second
+	heartbeatPayload            = ": ping\n\n"
+	auditEventPlanEvents        = "plan.events.subscribe"
+	auditTargetPlanEvents       = "plan.events"
+	auditCapabilityPlan         = "plan.events"
+	maxAuthorizationHeaderLen   = 4096
+	maxLastEventIDHeaderLen     = 1024
+	maxForwardedCookieHeaderLen = 4096
 )
 
 var forwardedSSEHeaders = []string{
@@ -241,17 +244,54 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 
 	req.Header.Set("Accept", "text/event-stream")
-	if auth := r.Header.Get("Authorization"); auth != "" {
+	if auth := strings.TrimSpace(r.Header.Get("Authorization")); auth != "" {
+		if err := validateAuthorizationHeader(auth); err != nil {
+			h.recordAudit(baseCtx, auditOutcomeDenied, map[string]any{
+				"reason":         "invalid_header",
+				"header":         "authorization",
+				"detail":         err.Error(),
+				"plan_id_hash":   planHash,
+				"client_ip_hash": clientHash,
+			})
+			writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "authorization header invalid", nil)
+			return
+		}
 		req.Header.Set("Authorization", auth)
 	}
-	if lastEventID := r.Header.Get("Last-Event-ID"); lastEventID != "" {
+	if lastEventID := strings.TrimSpace(r.Header.Get("Last-Event-ID")); lastEventID != "" {
+		if err := validateLastEventIDHeader(lastEventID); err != nil {
+			h.recordAudit(baseCtx, auditOutcomeDenied, map[string]any{
+				"reason":         "invalid_header",
+				"header":         "last-event-id",
+				"detail":         err.Error(),
+				"plan_id_hash":   planHash,
+				"client_ip_hash": clientHash,
+			})
+			writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "last-event-id header invalid", nil)
+			return
+		}
 		req.Header.Set("Last-Event-ID", lastEventID)
 	}
 	if cookies := r.Header.Values("Cookie"); len(cookies) > 0 {
+		sanitizedCookies := make([]string, 0, len(cookies))
 		for _, cookie := range cookies {
 			if cookie == "" {
 				continue
 			}
+			if err := validateForwardedCookie(cookie); err != nil {
+				h.recordAudit(baseCtx, auditOutcomeDenied, map[string]any{
+					"reason":         "invalid_header",
+					"header":         "cookie",
+					"detail":         err.Error(),
+					"plan_id_hash":   planHash,
+					"client_ip_hash": clientHash,
+				})
+				writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "cookie header invalid", nil)
+				return
+			}
+			sanitizedCookies = append(sanitizedCookies, cookie)
+		}
+		for _, cookie := range sanitizedCookies {
 			req.Header.Add("Cookie", cookie)
 		}
 	}
@@ -385,6 +425,45 @@ func (h *EventsHandler) getAuditLogger() *audit.Logger {
 		h.auditLogger = audit.Default()
 	}
 	return h.auditLogger
+}
+
+func validateAuthorizationHeader(value string) error {
+	if len(value) > maxAuthorizationHeaderLen {
+		return fmt.Errorf("value exceeds %d bytes", maxAuthorizationHeaderLen)
+	}
+	if hasUnsafeHeaderRunes(value) {
+		return errors.New("value contains invalid characters")
+	}
+	return nil
+}
+
+func validateLastEventIDHeader(value string) error {
+	if len(value) > maxLastEventIDHeaderLen {
+		return fmt.Errorf("value exceeds %d bytes", maxLastEventIDHeaderLen)
+	}
+	if hasUnsafeHeaderRunes(value) {
+		return errors.New("value contains invalid characters")
+	}
+	return nil
+}
+
+func validateForwardedCookie(value string) error {
+	if len(value) > maxForwardedCookieHeaderLen {
+		return fmt.Errorf("value exceeds %d bytes", maxForwardedCookieHeaderLen)
+	}
+	if hasUnsafeHeaderRunes(value) {
+		return errors.New("value contains invalid characters")
+	}
+	return nil
+}
+
+func hasUnsafeHeaderRunes(value string) bool {
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f || r > 0x7e {
+			return true
+		}
+	}
+	return false
 }
 
 func (h *EventsHandler) recordAudit(ctx context.Context, outcome string, details map[string]any) {
@@ -534,6 +613,12 @@ func parseTrustedProxyCIDRs(entries []string) ([]*net.IPNet, error) {
 		return nil, nil
 	}
 	return proxies, nil
+}
+
+// ParseTrustedProxyCIDRs is an exported helper that normalises trusted proxy
+// definitions for use by external callers such as the main package.
+func ParseTrustedProxyCIDRs(entries []string) ([]*net.IPNet, error) {
+	return parseTrustedProxyCIDRs(entries)
 }
 
 func getIntEnv(key string, fallback int) int {

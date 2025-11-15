@@ -61,6 +61,34 @@ func TestValidateServiceURL(t *testing.T) {
 	}
 }
 
+func TestValidateServiceURLRequiresHTTPSInProduction(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("ORCHESTRATOR_URL", "http://example.com/api")
+	if _, err := validateServiceURL("ORCHESTRATOR_URL", "http://127.0.0.1:4000"); err == nil {
+		t.Fatalf("expected https requirement error in production")
+	}
+
+	t.Setenv("ORCHESTRATOR_URL", "https://example.com/api")
+	if _, err := validateServiceURL("ORCHESTRATOR_URL", "http://127.0.0.1:4000"); err != nil {
+		t.Fatalf("expected https url to be accepted in production, got %v", err)
+	}
+}
+
+func TestValidateServiceURLRejectsFallbackLoopbackInProduction(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	if _, err := validateServiceURL("INDEXER_URL", "http://127.0.0.1:7070"); err == nil {
+		t.Fatalf("expected fallback loopback to be rejected in production")
+	}
+}
+
+func TestValidateServiceURLRunModeEnterpriseRequiresHTTPS(t *testing.T) {
+	t.Setenv("RUN_MODE", "enterprise")
+	t.Setenv("INDEXER_URL", "http://example.com")
+	if _, err := validateServiceURL("INDEXER_URL", "http://127.0.0.1:7070"); err == nil {
+		t.Fatalf("expected enterprise mode to require https")
+	}
+}
+
 func TestTrustedProxyCIDRsFromEnv(t *testing.T) {
 	cases := []struct {
 		name string

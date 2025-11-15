@@ -229,6 +229,52 @@ func TestEventsHandlerForwardsCookieHeader(t *testing.T) {
 	require.Contains(t, capturedCookies, "user=abc")
 }
 
+func TestEventsHandlerRejectsOversizedAuthorizationHeader(t *testing.T) {
+	var called int32
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		atomic.AddInt32(&called, 1)
+		return nil, context.DeadlineExceeded
+	})}
+
+	handler := NewEventsHandler(client, "http://orchestrator", 0, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil)
+	req.Header.Set("Authorization", strings.Repeat("a", maxAuthorizationHeaderLen+1))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized header, got %d", rec.Code)
+	}
+	if atomic.LoadInt32(&called) != 0 {
+		t.Fatalf("expected upstream to be skipped when header invalid")
+	}
+}
+
+func TestEventsHandlerRejectsInvalidCookieHeader(t *testing.T) {
+	var called int32
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		atomic.AddInt32(&called, 1)
+		return nil, context.DeadlineExceeded
+	})}
+
+	handler := NewEventsHandler(client, "http://orchestrator", 0, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil)
+	req.Header.Add("Cookie", "session=abc\r\nmalicious")
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for invalid cookie header, got %d", rec.Code)
+	}
+	if atomic.LoadInt32(&called) != 0 {
+		t.Fatalf("expected upstream to be skipped when cookie invalid")
+	}
+}
+
 func TestEventsHandlerErrorsWhenResponseWriterLacksFlusher(t *testing.T) {
 	orchestrator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
