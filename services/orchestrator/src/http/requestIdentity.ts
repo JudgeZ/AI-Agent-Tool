@@ -5,6 +5,8 @@ import type { PlanSubject } from "../plan/validation.js";
 import { resolveClientIp } from "./clientIp.js";
 
 const MAX_AGENT_NAME_LENGTH = 128;
+const MIN_PRINTABLE_ASCII = 0x20; // Space
+const MAX_PRINTABLE_ASCII = 0x7e; // Tilde (~)
 
 export type RequestIdentity = {
   ip: string;
@@ -141,7 +143,7 @@ function sanitizeAgentName(candidate: unknown): string | undefined {
   // ensure compatibility with downstream rate limiting keys.
   for (const char of trimmed) {
     const codePoint = char.codePointAt(0)!;
-    if (codePoint < 0x20 || codePoint > 0x7e) {
+    if (codePoint < MIN_PRINTABLE_ASCII || codePoint > MAX_PRINTABLE_ASCII) {
       return undefined;
     }
   }
