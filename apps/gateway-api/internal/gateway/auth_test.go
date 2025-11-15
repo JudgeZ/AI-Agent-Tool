@@ -1308,21 +1308,51 @@ func TestNormalizeUpstreamCookies(t *testing.T) {
 		}
 	})
 
-	t.Run("nil cookies are skipped", func(t *testing.T) {
+	t.Run("nil cookies are skipped and remaining cookie is hardened", func(t *testing.T) {
 		cookie := &http.Cookie{Name: "valid", Value: "v"}
 		original := *cookie
 		normalized, hardened, dropped := normalizeUpstreamCookies([]*http.Cookie{nil, cookie})
 		if len(dropped) != 0 {
 			t.Fatalf("expected no dropped cookies, got %d", len(dropped))
 		}
-		if len(hardened) != 0 {
-			t.Fatalf("expected no hardened metadata, got %d", len(hardened))
+		if len(hardened) != 1 {
+			t.Fatalf("expected a single hardened entry, got %d", len(hardened))
 		}
 		if len(normalized) != 1 {
 			t.Fatalf("expected a single normalized cookie, got %d", len(normalized))
 		}
-		if normalized[0].Name != cookie.Name || normalized[0].Value != cookie.Value {
-			t.Fatalf("unexpected normalized cookie %+v", normalized[0])
+		got := normalized[0]
+		if got.Name != cookie.Name || got.Value != cookie.Value {
+			t.Fatalf("unexpected normalized cookie %+v", got)
+		}
+		if !got.Secure || !got.HttpOnly || got.SameSite != http.SameSiteStrictMode {
+			t.Fatalf("expected normalized cookie to be hardened, got %+v", got)
+		}
+		entry := hardened[0]
+		hash, ok := entry["name_hash"].(string)
+		if !ok {
+			t.Fatalf("expected name_hash string in hardened entry, got %#v", entry["name_hash"])
+		}
+		expectedHash := gatewayAuditLogger.HashIdentity(cookie.Name)
+		if hash != expectedHash {
+			t.Fatalf("expected name_hash %q, got %q", expectedHash, hash)
+		}
+		enforcements, ok := entry["enforcements"].([]string)
+		if !ok {
+			t.Fatalf("expected enforcements slice in hardened entry, got %#v", entry["enforcements"])
+		}
+		expected := map[string]struct{}{"secure_enforced": {}, "httponly_enforced": {}, "samesite_strict_enforced": {}}
+		if len(enforcements) != len(expected) {
+			t.Fatalf("expected %d enforcements, got %d", len(expected), len(enforcements))
+		}
+		for _, enforcement := range enforcements {
+			if _, ok := expected[enforcement]; !ok {
+				t.Fatalf("unexpected enforcement %q", enforcement)
+			}
+			delete(expected, enforcement)
+		}
+		if len(expected) != 0 {
+			t.Fatalf("missing expected enforcements: %v", expected)
 		}
 		if cookie.Name != original.Name || cookie.Value != original.Value || cookie.Secure != original.Secure || cookie.HttpOnly != original.HttpOnly || cookie.SameSite != original.SameSite {
 			t.Fatalf("expected original cookie to remain unchanged, got %+v", cookie)
