@@ -205,10 +205,29 @@ describe("extractAgent", () => {
     expect(extractAgent(req)).toBeUndefined();
   });
 
+  it("accepts agent headers that are exactly at the maximum length", () => {
+    const agentName = "a".repeat(128);
+    const req = createMockRequest({
+      remoteAddress: "198.51.100.36",
+      agentName,
+    });
+
+    expect(extractAgent(req)).toBe(agentName);
+  });
+
   it("rejects agent headers containing control characters", () => {
     const req = createMockRequest({
       remoteAddress: "198.51.100.34",
       agentName: "bad\nagent",
+    });
+
+    expect(extractAgent(req)).toBeUndefined();
+  });
+
+  it("rejects agent headers containing surrogate pairs", () => {
+    const req = createMockRequest({
+      remoteAddress: "198.51.100.37",
+      agentName: "agent-😀-name",
     });
 
     expect(extractAgent(req)).toBeUndefined();

@@ -137,6 +137,8 @@ function sanitizeAgentName(candidate: unknown): string | undefined {
   if (trimmed.length === 0 || trimmed.length > MAX_AGENT_NAME_LENGTH) {
     return undefined;
   }
+  // Restrict agent identifiers to printable ASCII to protect log formatting and
+  // ensure compatibility with downstream rate limiting keys.
   for (const char of trimmed) {
     const codePoint = char.codePointAt(0)!;
     if (codePoint < 0x20 || codePoint > 0x7e) {
