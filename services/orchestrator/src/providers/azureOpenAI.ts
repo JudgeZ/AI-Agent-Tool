@@ -182,7 +182,7 @@ export class AzureOpenAIProvider implements ModelProvider {
         });
         try {
           return await client.getChatCompletions(deployment, toAzureMessages(req.messages), {
-            temperature: 0.2
+            temperature: req.temperature ?? 0.2
           });
         } catch (error) {
           throw this.normalizeError(error);

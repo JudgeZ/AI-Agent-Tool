@@ -1,13 +1,14 @@
-import { loadConfig } from "../config.js";
+import { loadConfig, type AppConfig } from "../config.js";
 import { LocalFileStore, VaultStore, type SecretsStore } from "../auth/SecretsStore.js";
 import { VersionedSecretsManager } from "../auth/VersionedSecretsManager.js";
-import { appLogger } from "../observability/logger.js";
+import { appLogger, normalizeError } from "../observability/logger.js";
+import { withSpan } from "../observability/tracing.js";
 import {
   createRateLimitStore,
   type RateLimitBackendConfig,
   type RateLimitStore,
 } from "../rateLimit/store.js";
-import type { ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
+import type { ChatRequest, ChatResponse, ModelProvider, RoutingMode } from "./interfaces.js";
 import { AzureOpenAIProvider } from "./azureOpenAI.js";
 import { AnthropicProvider } from "./anthropic.js";
 import { BedrockProvider } from "./bedrock.js";
@@ -164,9 +165,43 @@ export function __resetProviderResilienceForTests(): void {
   circuitBreakerOptions = undefined;
 }
 
-export async function routeChat(req: ChatRequest): Promise<ChatResponse> {
-  const cfg = loadConfig();
-  const enabled = cfg.providers.enabled.map(p => p.trim()).filter(Boolean);
+const PROVIDER_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
+
+function normalizeProviderId(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const normalized = trimmed.toLowerCase();
+  if (!PROVIDER_NAME_PATTERN.test(normalized)) {
+    return undefined;
+  }
+  return normalized;
+}
+
+const ROUTING_PRIORITY: Record<RoutingMode, string[]> = {
+  balanced: [],
+  high_quality: ["openai", "anthropic", "azureopenai", "google", "mistral", "bedrock", "openrouter", "local_ollama"],
+  low_cost: ["local_ollama", "mistral", "openrouter", "google", "bedrock", "azureopenai", "anthropic", "openai"]
+};
+
+type ProviderOrder = { providers: string[]; routingMode: RoutingMode };
+
+function determineProviderOrder(req: ChatRequest, cfg: AppConfig): ProviderOrder {
+  const enabled = cfg.providers.enabled.map(provider => {
+    const normalized = normalizeProviderId(provider);
+    if (!normalized) {
+      throw new ProviderError(`Configured provider name "${provider}" is invalid`, {
+        status: 500,
+        provider: "router",
+        retryable: false,
+      });
+    }
+    return normalized;
+  });
   if (enabled.length === 0) {
     throw new ProviderError("No providers are enabled for chat", {
       status: 503,
@@ -175,70 +210,216 @@ export async function routeChat(req: ChatRequest): Promise<ChatResponse> {
     });
   }
 
-  const warnings: string[] = [];
-  const errors: ProviderError[] = [];
-  const limiter = getRateLimiter(cfg.providers.rateLimit, cfg.server.rateLimits.backend);
-  const breaker = getCircuitBreaker(cfg.providers.circuitBreaker);
-
-  for (const providerName of enabled) {
-    const provider = getProvider(providerName);
-    if (!provider) {
-      warnings.push(`${providerName}: provider not registered`);
-      errors.push(
-        new ProviderError(`Provider ${providerName} is not registered`, {
-          status: 503,
-          provider: providerName,
-          retryable: false
-        })
-      );
-      continue;
-    }
-
-    try {
-      const response = await limiter.schedule(provider.name, () => breaker.execute(provider.name, () => provider.chat(req)));
-      const mergedWarnings = warnings.length
-        ? [...warnings, ...(response.warnings ?? [])]
-        : response.warnings;
-      return {
-        ...response,
-        provider: response.provider ?? provider.name,
-        warnings: mergedWarnings?.length ? mergedWarnings : undefined
-      };
-    } catch (error) {
-              const providerError =
-                error instanceof ProviderError
-                  ? error
-                  : (() => {
-                      type ErrorLike = { status?: unknown };
-                      const details: ErrorLike | undefined =
-                        typeof error === "object" && error !== null ? (error as ErrorLike) : undefined;
-                      const status = typeof details?.status === "number" ? details.status : 502;
-                      return new ProviderError(
-                        error instanceof Error ? error.message : "Provider request failed",
-                        {
-                          status,
-                          provider: provider.name,
-                          retryable: false,
-                          cause: error
-                        }
-                      );
-                    })();
-      warnings.push(`${provider.name}: ${providerError.message}`);
-      errors.push(providerError);
-    }
+  const requestedProvider = normalizeProviderId(req.provider);
+  if (req.provider && !requestedProvider) {
+    throw new ProviderError("Requested provider is invalid", {
+      status: 400,
+      provider: "router",
+      retryable: false
+    });
   }
 
-  const message = errors.length
-    ? errors.map(err => `[${err.provider ?? "unknown"}] ${err.message}`).join("; ")
-    : "All providers failed";
-  const status =
-    errors.find(err => err.status >= 400 && err.status < 500)?.status ??
-    errors[errors.length - 1]?.status ??
-    502;
-  throw new ProviderError(message, {
-    status,
-    provider: "router",
-    retryable: errors.some(err => err.retryable),
-    details: errors.map(err => ({ provider: err.provider ?? "unknown", message: err.message, status: err.status }))
-  });
+  const selectedRoute = req.routing ?? cfg.providers.defaultRoute ?? "balanced";
+
+  if (requestedProvider) {
+    if (!enabled.includes(requestedProvider)) {
+      throw new ProviderError(`Provider ${req.provider} is not enabled`, {
+        status: 404,
+        provider: "router",
+        retryable: false
+      });
+    }
+    return { providers: [requestedProvider], routingMode: selectedRoute };
+  }
+
+  const prioritizedList = ROUTING_PRIORITY[selectedRoute];
+  if (!prioritizedList || prioritizedList.length === 0 || selectedRoute === "balanced") {
+    return { providers: enabled, routingMode: selectedRoute };
+  }
+
+  const enabledSet = new Set(enabled);
+  const prioritized = prioritizedList.filter(provider => enabledSet.has(provider));
+  const prioritizedSet = new Set(prioritized);
+  const remaining = enabled.filter(provider => !prioritizedSet.has(provider));
+  const orderedProviders = [...prioritized, ...remaining];
+  if (orderedProviders.length === 0) {
+    throw new ProviderError(`No providers are available for the ${selectedRoute} route`, {
+      status: 503,
+      provider: "router",
+      retryable: false
+    });
+  }
+  return { providers: orderedProviders, routingMode: selectedRoute };
+}
+
+export async function routeChat(req: ChatRequest): Promise<ChatResponse> {
+  const cfg = loadConfig();
+  const routingHint = req.routing ?? cfg.providers.defaultRoute ?? "balanced";
+  return withSpan(
+    "providers.routeChat",
+    async routeSpan => {
+      const { providers: orderedProviders, routingMode } = determineProviderOrder(req, cfg);
+      routeSpan.setAttribute("providers.routing_mode", routingMode);
+      if (req.provider) {
+        routeSpan.setAttribute("providers.provider_hint", req.provider);
+      }
+      if (req.model) {
+        routeSpan.setAttribute("providers.model", req.model);
+      }
+      if (typeof req.temperature === "number") {
+        routeSpan.setAttribute("providers.temperature", req.temperature);
+      }
+
+      const logger = appLogger.child({ component: "provider-router", routing: routingMode });
+      logger.debug(
+        {
+          event: "provider_routing.start",
+          providerHint: req.provider ?? "auto",
+          routingHint: req.routing ?? routingMode
+        },
+        "Routing chat request",
+      );
+
+      const warnings: string[] = [];
+      const errors: ProviderError[] = [];
+      const limiter = getRateLimiter(cfg.providers.rateLimit, cfg.server.rateLimits.backend);
+      const breaker = getCircuitBreaker(cfg.providers.circuitBreaker);
+
+      for (const providerName of orderedProviders) {
+        const provider = getProvider(providerName);
+        if (!provider) {
+          const warning = `${providerName}: provider not registered`;
+          warnings.push(warning);
+          const error = new ProviderError(`Provider ${providerName} is not registered`, {
+            status: 503,
+            provider: providerName,
+            retryable: false
+          });
+          errors.push(error);
+          logger.warn(
+            {
+              event: "provider_attempt.failure",
+              provider: providerName,
+              routing: routingMode,
+              status: error.status,
+              retryable: error.retryable
+            },
+            warning,
+          );
+          continue;
+        }
+
+        const attemptMeta = { provider: provider.name, routing: routingMode };
+        const attemptStart = Date.now();
+        try {
+          const response = await withSpan(
+            "providers.routeChat.attempt",
+            async attemptSpan => {
+              attemptSpan.setAttribute("providers.provider", provider.name);
+              attemptSpan.setAttribute("providers.routing_mode", routingMode);
+              const result = await limiter.schedule(provider.name, () =>
+                breaker.execute(provider.name, () => provider.chat(req)),
+              );
+              attemptSpan.addEvent("provider_attempt.success", {
+                provider: provider.name,
+                routing: routingMode
+              });
+              return result;
+            },
+            attemptMeta,
+          );
+          const mergedWarnings = warnings.length
+            ? [...warnings, ...(response.warnings ?? [])]
+            : response.warnings;
+          const durationMs = Date.now() - attemptStart;
+          logger.info(
+            {
+              event: "provider_attempt.success",
+              ...attemptMeta,
+              durationMs,
+              warnings: mergedWarnings?.length ? mergedWarnings.length : 0
+            },
+            "Provider handled chat request",
+          );
+          routeSpan.addEvent("provider_routing.success", {
+            provider: provider.name,
+            routing: routingMode,
+            durationMs
+          });
+          return {
+            ...response,
+            provider: response.provider ?? provider.name,
+            warnings: mergedWarnings?.length ? mergedWarnings : undefined
+          };
+        } catch (error) {
+          const providerError =
+            error instanceof ProviderError
+              ? error
+              : (() => {
+                  type ErrorLike = { status?: unknown };
+                  const details: ErrorLike | undefined =
+                    typeof error === "object" && error !== null ? (error as ErrorLike) : undefined;
+                  const status = typeof details?.status === "number" ? details.status : 502;
+                  return new ProviderError(
+                    error instanceof Error ? error.message : "Provider request failed",
+                    {
+                      status,
+                      provider: provider.name,
+                      retryable: false,
+                      cause: error
+                    }
+                  );
+                })();
+          const durationMs = Date.now() - attemptStart;
+          warnings.push(`${provider.name}: ${providerError.message}`);
+          errors.push(providerError);
+          logger.warn(
+            {
+              event: "provider_attempt.failure",
+              ...attemptMeta,
+              status: providerError.status,
+              retryable: providerError.retryable,
+              durationMs,
+              err: normalizeError(providerError)
+            },
+            providerError.message,
+          );
+        }
+      }
+
+      const message = errors.length
+        ? errors.map(err => `[${err.provider ?? "unknown"}] ${err.message}`).join("; ")
+        : "All providers failed";
+      const status =
+        errors.find(err => err.status >= 400 && err.status < 500)?.status ??
+        errors[errors.length - 1]?.status ??
+        502;
+      const aggregatedError = new ProviderError(message, {
+        status,
+        provider: "router",
+        retryable: errors.some(err => err.retryable),
+        details: errors.map(err => ({ provider: err.provider ?? "unknown", message: err.message, status: err.status }))
+      });
+      logger.error(
+        {
+          event: "provider_routing.failed",
+          providerHint: req.provider ?? "auto",
+          routing: routingMode,
+          attempts: orderedProviders.length,
+          warnings,
+          err: normalizeError(aggregatedError)
+        },
+        aggregatedError.message,
+      );
+      routeSpan.addEvent("provider_routing.failed", {
+        routing: routingMode,
+        attempts: orderedProviders.length
+      });
+      throw aggregatedError;
+    },
+    {
+      routing_hint: routingHint,
+      provider_hint: req.provider ?? "auto"
+    }
+  );
 }

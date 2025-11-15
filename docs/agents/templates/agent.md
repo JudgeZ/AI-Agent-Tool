@@ -11,7 +11,7 @@ approval_policy:
   network.egress: deny
 model:
   provider: auto            # auto | openai | google | bedrock | local_ollama | ...
-  routing: default          # default | high_quality | low_cost
+  routing: balanced         # balanced | high_quality | low_cost | default (alias of balanced)
   temperature: 0.2
 observability:
   tracingTags:

@@ -129,4 +129,23 @@ describe("OpenAIProvider", () => {
     );
     expect(ensure.mock.invocationCallOrder[0]).toBeLessThan(create.mock.invocationCallOrder[0]!);
   });
+
+  it("forwards custom temperatures to the OpenAI API", async () => {
+    const secrets = new StubSecretsStore({ "provider:openai:apiKey": "sk-temp" });
+    const create = vi.fn().mockResolvedValue({ choices: [{ message: { content: "ok" } }] });
+    const clientFactory = vi.fn().mockResolvedValue({
+      chat: { completions: { create } }
+    });
+    const provider = new OpenAIProvider(secrets, { clientFactory, defaultModel: "gpt-test" });
+
+    await provider.chat({
+      model: "gpt-test",
+      temperature: 1.5,
+      messages: [{ role: "user", content: "hi" }]
+    });
+
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({ temperature: 1.5 })
+    );
+  });
 });

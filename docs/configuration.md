@@ -73,6 +73,21 @@ Values are merged with env vars at runtime. Invalid YAML now fails fast with a d
 
 Enterprise mode automatically promotes the secrets backend to `vault` unless you explicitly override it via file or environment variable.
 
+### Provider routing modes
+
+`providers.defaultRoute` controls which model providers are attempted first. The orchestrator supports the following tiers:
+
+- `balanced` - preserves the `providers.enabled` order.
+- `high_quality` - prioritises higher-accuracy clouds (`openai`, `anthropic`, `azureopenai`, `google`, `mistral`, `bedrock`, `openrouter`, then local models).
+- `low_cost` - favours inexpensive/local providers (`local_ollama`, `mistral`, `openrouter`, `google`, then higher-cost clouds).
+
+Each `/chat` request may override the routing tier (`routing`) or force a specific provider (`provider`). Provider identifiers are case-insensitive but must match `[A-Za-z0-9._-]+`; invalid names are detected and rejected as soon as a request is routed, so misconfigurations surface immediately even if the process has already started. When `provider` is supplied the orchestrator validates that the provider is enabled before dispatching the call, routes only to that provider (no fallback), and returns `404` for unknown providers. All requests may also include a validated `temperature` (0–2) that propagates to providers that support the knob (OpenAI, Azure OpenAI, Mistral, OpenRouter, etc.).
+
+Provider-specific knobs:
+
+- `google` – `timeoutMs` defaults to `15000` and must be a positive integer when overridden.
+- `local_ollama` – `timeoutMs` defaults to `10000` and must be a positive integer when overridden.
+
 Relevant environment overrides:
 
 | Variable | Description |

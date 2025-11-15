@@ -1,9 +1,11 @@
 import { z } from "zod";
 import type { ApprovalDecision } from "../queue/PlanQueueRuntime.js";
+import type { RoutingMode } from "../providers/interfaces.js";
 
 const MAX_GOAL_LENGTH = 2048;
 const MAX_RATIONALE_LENGTH = 2000;
 const MAX_MODEL_LENGTH = 256;
+const MAX_PROVIDER_NAME_LENGTH = 64;
 const MAX_MESSAGE_LENGTH = 16000;
 const MAX_MESSAGE_COUNT = 50;
 const MIN_CODE_VERIFIER_LENGTH = 43;
@@ -73,6 +75,8 @@ export const PlanApprovalSchema = RawPlanApprovalSchema.transform(
   }),
 );
 
+const RoutingModeValues = ["balanced", "high_quality", "low_cost", "default"] as const;
+
 const ChatMessageSchema = z.object({
   role: z.enum(["system", "user", "assistant"], {
     errorMap: () => ({ message: "role must be system, user, or assistant" }),
@@ -95,6 +99,24 @@ export const ChatRequestSchema = z
         message: `model must not exceed ${MAX_MODEL_LENGTH} characters`,
       })
       .optional(),
+    provider: z
+      .string()
+      .trim()
+      .max(MAX_PROVIDER_NAME_LENGTH, {
+        message: `provider must not exceed ${MAX_PROVIDER_NAME_LENGTH} characters`,
+      })
+      .regex(/^[A-Za-z0-9._-]+$/, {
+        message: "provider may only include letters, numbers, '.', '_' or '-'",
+      })
+      .optional(),
+    routing: z.enum(RoutingModeValues, {
+      errorMap: () => ({ message: "routing must be balanced, high_quality, low_cost, or default" }),
+    }).optional(),
+    temperature: z
+      .number({ invalid_type_error: "temperature must be a number" })
+      .min(0, { message: "temperature must be between 0 and 2" })
+      .max(2, { message: "temperature must be between 0 and 2" })
+      .optional(),
     messages: z
       .array(ChatMessageSchema)
       .min(1, { message: "messages must contain at least one entry" })
@@ -102,10 +124,29 @@ export const ChatRequestSchema = z
         message: `messages must not exceed ${MAX_MESSAGE_COUNT} entries`,
       }),
   })
-  .transform(({ model, messages }) => ({
-    model: model && model.length > 0 ? model : undefined,
-    messages,
-  }));
+  .transform(({ model, provider, routing, temperature, messages }) => {
+    const payload: {
+      model?: string;
+      provider?: string;
+      routing?: RoutingMode;
+      temperature?: number;
+      messages: typeof messages;
+    } = { messages };
+    if (model && model.length > 0) {
+      payload.model = model;
+    }
+    if (provider && provider.length > 0) {
+      payload.provider = provider;
+    }
+    if (routing) {
+      const normalizedRouting: RoutingMode = routing === "default" ? "balanced" : routing;
+      payload.routing = normalizedRouting; // Normalize the "default" alias to "balanced"
+    }
+    if (typeof temperature === "number") {
+      payload.temperature = temperature;
+    }
+    return payload;
+  });
 
 export type PlanRequestPayload = z.infer<typeof PlanRequestSchema>;
 export type PlanApprovalPayload = z.infer<typeof PlanApprovalSchema>;

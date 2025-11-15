@@ -8,6 +8,7 @@ const GOOGLE_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
 const GOOGLE_SCOPE = "https://www.googleapis.com/auth/generative-language";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const TOKEN_EXPIRY_SKEW_MS = 60_000;
+const DEFAULT_GOOGLE_TIMEOUT_MS = 15_000;
 
 type GeminiUsageMetadata = {
   promptTokenCount?: number;
@@ -41,6 +42,7 @@ export type GoogleProviderOptions = {
   retryAttempts?: number;
   fetch?: typeof fetch;
   now?: () => number;
+  timeoutMs?: number;
 };
 
 type GoogleAuth =
@@ -57,6 +59,16 @@ type CachedServiceAccountToken = {
   accessToken: string;
   expiresAt: number;
 };
+
+type FetchInit = NonNullable<Parameters<typeof fetch>[1]>;
+
+function isAbortError(error: unknown): boolean {
+  if (!error || typeof error !== "object") {
+    return false;
+  }
+  const candidate = error as { name?: unknown };
+  return candidate.name === "AbortError";
+}
 
 function toGeminiContents(messages: ChatMessage[]) {
   return messages
@@ -79,10 +91,53 @@ export class GoogleProvider implements ModelProvider {
   private readonly now: () => number;
   private serviceAccountKeyCache?: { raw: string; key: ServiceAccountKey };
   private serviceAccountToken?: CachedServiceAccountToken;
+  private readonly timeoutMs: number;
 
   constructor(private readonly secrets: SecretsStore, private readonly options: GoogleProviderOptions = {}) {
     this.fetchImpl = options.fetch ?? fetch.bind(globalThis);
     this.now = options.now ?? Date.now;
+    const requestedTimeout = options.timeoutMs;
+    if (requestedTimeout === undefined) {
+      this.timeoutMs = DEFAULT_GOOGLE_TIMEOUT_MS;
+    } else {
+      if (
+        typeof requestedTimeout !== "number" ||
+        !Number.isFinite(requestedTimeout) ||
+        requestedTimeout < 1 ||
+        !Number.isInteger(requestedTimeout)
+      ) {
+        throw new ProviderError("GoogleProvider: timeoutMs must be a positive integer in milliseconds", {
+          status: 400,
+          provider: this.name,
+          retryable: false,
+        });
+      }
+      this.timeoutMs = requestedTimeout;
+    }
+  }
+
+  private async fetchWithTimeout(
+    input: string,
+    init: FetchInit,
+    context: { operation: string; retryable?: boolean }
+  ): Promise<Response> {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
+    try {
+      return await this.fetchImpl(input, { ...init, signal: controller.signal });
+    } catch (error) {
+      if (isAbortError(error)) {
+        throw new ProviderError(`Google ${context.operation} timed out after ${this.timeoutMs}ms`, {
+          status: 504,
+          provider: this.name,
+          retryable: context.retryable ?? true,
+          cause: error
+        });
+      }
+      throw error;
+    } finally {
+      clearTimeout(timeout);
+    }
   }
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
@@ -206,11 +261,15 @@ export class GoogleProvider implements ModelProvider {
       action: "provider.request",
       metadata: { operation: "oauth.refresh" }
     });
-    const response = await this.fetchImpl(GOOGLE_TOKEN_URL, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: params
-    });
+    const response = await this.fetchWithTimeout(
+      GOOGLE_TOKEN_URL,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: params
+      },
+      { operation: "oauth.refresh", retryable: true }
+    );
 
     if (!response.ok) {
       return undefined;
@@ -326,11 +385,15 @@ export class GoogleProvider implements ModelProvider {
       action: "provider.request",
       metadata: { operation: "serviceAccount.token" }
     });
-    const response = await this.fetchImpl(tokenUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: params
-    });
+    const response = await this.fetchWithTimeout(
+      tokenUrl,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/x-www-form-urlencoded" },
+        body: params
+      },
+      { operation: "serviceAccount.token", retryable: true }
+    );
 
     if (!response.ok) {
       const message = await this.extractError(response);
@@ -402,12 +465,19 @@ export class GoogleProvider implements ModelProvider {
 
     let response: Response;
     try {
-      response = await this.fetchImpl(url.toString(), {
-        method: "POST",
-        headers,
-        body: JSON.stringify(body)
-      });
+      response = await this.fetchWithTimeout(
+        url.toString(),
+        {
+          method: "POST",
+          headers,
+          body: JSON.stringify(body)
+        },
+        { operation: "gemini.generate", retryable: true }
+      );
     } catch (error) {
+      if (error instanceof ProviderError) {
+        throw error;
+      }
       throw new ProviderError("Google Gemini request failed", {
         status: 502,
         provider: this.name,

@@ -72,7 +72,7 @@ Always log actions.
     });
     expect(profile.model).toEqual({
       provider: "auto",
-      routing: "default",
+      routing: "balanced",
       temperature: 0.2,
     });
     expect(profile.constraints).toEqual([

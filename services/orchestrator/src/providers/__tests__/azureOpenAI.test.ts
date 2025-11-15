@@ -78,6 +78,22 @@ describe("AzureOpenAIProvider", () => {
     });
   });
 
+  it("passes through temperature overrides", async () => {
+    const getChatCompletions = vi.fn().mockResolvedValue({ choices: [{ message: { content: "ok" } }] });
+    const { provider } = createProvider(getChatCompletions);
+
+    await provider.chat({
+      messages: [{ role: "user", content: "hi" }],
+      temperature: 0.9
+    });
+
+    expect(getChatCompletions).toHaveBeenCalledWith(
+      "my-deployment",
+      expect.any(Array),
+      expect.objectContaining({ temperature: 0.9 })
+    );
+  });
+
   it("retries on retryable errors returned by the client", async () => {
     const retryableError = { statusCode: 429, message: "too many" };
     const getChatCompletions = vi
