@@ -104,16 +104,19 @@ func main() {
 }
 
 func buildHTTPHandler(base http.Handler, limiter *gateway.GlobalRateLimiter, maxBodyBytes int64) http.Handler {
-        handler := http.Handler(base)
-        if limiter != nil {
-                handler = limiter.Middleware(handler)
-        }
-        if maxBodyBytes > 0 {
-                handler = gateway.RequestBodyLimitMiddleware(handler, maxBodyBytes)
-        }
-        handler = gateway.SecurityHeadersMiddleware(handler)
-        handler = audit.Middleware(handler)
-        return otelhttp.NewHandler(handler, "gateway.http.request", otelhttp.WithPublicEndpoint())
+	handler := http.Handler(base)
+	if maxBodyBytes > 0 {
+		handler = gateway.RequestBodyLimitMiddleware(handler, maxBodyBytes)
+	}
+	if limiter != nil {
+		handler = limiter.Middleware(handler)
+	}
+	// Order middlewares so that audit instrumentation always seeds the request
+	// identifier before rate limiting decisions are made while security headers
+	// remain on all responses, including 429s.
+	handler = gateway.SecurityHeadersMiddleware(handler)
+	handler = audit.Middleware(handler)
+	return otelhttp.NewHandler(handler, "gateway.http.request", otelhttp.WithPublicEndpoint())
 }
 
 func trustedProxyCIDRsFromEnv() []string {
