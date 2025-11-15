@@ -245,7 +245,7 @@ export class BedrockProvider implements ModelProvider {
       async () => {
         ensureProviderEgress(this.name, targetUrl, {
           action: "provider.request",
-          metadata: { provider: this.name, operation: "invokeModel", model: modelId, region }
+          metadata: { operation: "invokeModel", model: modelId, region }
         });
         try {
           return await client.invokeModel({

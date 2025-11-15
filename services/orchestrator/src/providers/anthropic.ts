@@ -155,7 +155,7 @@ export class AnthropicProvider implements ModelProvider {
       async () => {
         ensureProviderEgress(this.name, ANTHROPIC_MESSAGES_URL, {
           action: "provider.request",
-          metadata: { provider: this.name, operation: "messages.create", model }
+          metadata: { operation: "messages.create", model }
         });
         try {
           return await client.messages.create({

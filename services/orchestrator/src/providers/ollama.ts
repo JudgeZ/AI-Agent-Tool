@@ -125,7 +125,7 @@ export class OllamaProvider implements ModelProvider {
         let response: FetcherResponse;
         ensureProviderEgress(this.name, targetUrl, {
           action: "provider.request",
-          metadata: { provider: this.name, operation: "chat", model }
+          metadata: { operation: "chat", model }
         });
         try {
           response = await this.fetcher(targetUrl, {

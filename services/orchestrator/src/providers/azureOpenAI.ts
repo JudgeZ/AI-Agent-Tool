@@ -178,7 +178,7 @@ export class AzureOpenAIProvider implements ModelProvider {
       async () => {
         ensureProviderEgress(this.name, targetUrl, {
           action: "provider.request",
-          metadata: { provider: this.name, operation: "chat.completions", model: deployment }
+          metadata: { operation: "chat.completions", model: deployment }
         });
         try {
           return await client.getChatCompletions(deployment, toAzureMessages(req.messages), {

@@ -121,7 +121,7 @@ export class MistralProvider implements ModelProvider {
       async () => {
         ensureProviderEgress(this.name, "https://api.mistral.ai/v1/chat/completions", {
           action: "provider.request",
-          metadata: { provider: this.name, operation: "chat", model }
+          metadata: { operation: "chat", model }
         });
         try {
           return await client.chat({

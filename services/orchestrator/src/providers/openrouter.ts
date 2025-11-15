@@ -98,7 +98,7 @@ export class OpenRouterProvider implements ModelProvider {
       async () => {
         ensureProviderEgress(this.name, OPENROUTER_CHAT_URL, {
           action: "provider.request",
-          metadata: { provider: this.name, operation: "chat", model }
+          metadata: { operation: "chat", model }
         });
         const apiKey = await this.resolveApiKey();
         const client = await this.getClient(apiKey);

@@ -120,7 +120,7 @@ export class OpenAIProvider implements ModelProvider {
       async () => {
         ensureProviderEgress(this.name, OPENAI_CHAT_COMPLETIONS_URL, {
           action: "provider.request",
-          metadata: { provider: this.name, operation: "chat.completions.create", model }
+          metadata: { operation: "chat.completions.create", model }
         });
         try {
           const response = await client.chat.completions.create({

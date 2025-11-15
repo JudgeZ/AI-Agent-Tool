@@ -204,7 +204,7 @@ export class GoogleProvider implements ModelProvider {
 
     ensureProviderEgress(this.name, GOOGLE_TOKEN_URL, {
       action: "provider.request",
-      metadata: { provider: this.name, operation: "oauth.refresh" }
+      metadata: { operation: "oauth.refresh" }
     });
     const response = await this.fetchImpl(GOOGLE_TOKEN_URL, {
       method: "POST",
@@ -324,7 +324,7 @@ export class GoogleProvider implements ModelProvider {
     const tokenUrl = key.token_uri ?? GOOGLE_TOKEN_URL;
     ensureProviderEgress(this.name, tokenUrl, {
       action: "provider.request",
-      metadata: { provider: this.name, operation: "serviceAccount.token" }
+      metadata: { operation: "serviceAccount.token" }
     });
     const response = await this.fetchImpl(tokenUrl, {
       method: "POST",
@@ -397,7 +397,7 @@ export class GoogleProvider implements ModelProvider {
     const ensureTarget = `${url.origin}${url.pathname || "/"}`;
     ensureProviderEgress(this.name, ensureTarget, {
       action: "provider.request",
-      metadata: { provider: this.name, operation: "models.generateContent", model: normalizedModelPath }
+      metadata: { operation: "models.generateContent", model: normalizedModelPath }
     });
 
     let response: Response;

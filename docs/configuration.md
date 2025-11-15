@@ -170,7 +170,24 @@ Relevant environment overrides:
 
 Each header can be overridden or disabled in YAML and through environment variables. Override a value with `SERVER_SECURITY_HEADER_<NAME>` (`CSP`, `HSTS`, `XFO`, `XCTO`, `REFERRER_POLICY`, `PERMISSIONS_POLICY`, `COOP`, `CORP`, `COEP`, `XDNS_PREFETCH_CONTROL`) and disable a header entirely with `SERVER_SECURITY_HEADER_<NAME>_ENABLED=false`. HSTS is automatically omitted when the inbound request is not HTTPS; set `SERVER_SECURITY_HEADER_HSTS_REQUIRE_TLS=false` (or `strictTransportSecurity.requireTls: false`) to force the header during plain-HTTP migrations.
 
-Egress enforcement defaults to `enforce` with loopback addresses, the primary API hosts for OpenAI (`api.openai.com`), Anthropic (`api.anthropic.com`), Mistral (`api.mistral.ai`), Google Gemini (`generativelanguage.googleapis.com`), OAuth token exchange (`oauth2.googleapis.com`), OpenRouter (`openrouter.ai`), Azure OpenAI subdomains (`*.openai.azure.com`), AWS Bedrock runtime endpoints (`*.amazonaws.com`), and the internal `*.svc`/`*.svc.cluster.local`/`*.example.com` domains already whitelisted so local dev, model calls, OAuth token exchanges, Kubernetes service discovery, and test fixtures continue working. Extend `network.egress.allow` (or `NETWORK_EGRESS_ALLOW`) with any additional destinations such as Vault, OIDC providers, or outbound model APIs.
+Egress enforcement defaults to `enforce`, with the following destinations whitelisted by default:
+
+- Loopback addresses
+- Primary API hosts for:
+  - OpenAI (`api.openai.com`)
+  - Anthropic (`api.anthropic.com`)
+  - Mistral (`api.mistral.ai`)
+  - Google Gemini (`generativelanguage.googleapis.com`)
+  - OAuth token exchange (`oauth2.googleapis.com`)
+  - OpenRouter (`openrouter.ai`)
+  - Azure OpenAI subdomains (`*.openai.azure.com`)
+  - AWS Bedrock runtime endpoints (`*.amazonaws.com`)
+- Internal domains:
+  - `*.svc`
+  - `*.svc.cluster.local`
+  - `*.example.com`
+
+These defaults ensure that local development, model calls, OAuth token exchanges, Kubernetes service discovery, and test fixtures continue working out of the box. Extend `network.egress.allow` (or `NETWORK_EGRESS_ALLOW`) with any additional destinations such as Vault, OIDC providers, or outbound model APIs.
 
 For any variable documented above you can also supply a corresponding `*_FILE` variant (for example `OIDC_CLIENT_SECRET_FILE` or `VAULT_TOKEN_FILE`). When present, the orchestrator reads the secret value from the referenced file path—ideal for Docker or Kubernetes secret mounts. File-based values take precedence over the plain environment variable.
 
