@@ -189,6 +189,18 @@ describe("extractAgent", () => {
     expect(extractAgent(req)).toBe("body-agent");
   });
 
+  it("falls back to the request body agent when the header exceeds the maximum length", () => {
+    const req = {
+      ...createMockRequest({
+        remoteAddress: "198.51.100.38",
+        agentName: "a".repeat(200),
+      }),
+      body: { agent: "body-agent" },
+    } as Request;
+
+    expect(extractAgent(req)).toBe("body-agent");
+  });
+
   it("returns undefined when neither header nor body contain an agent", () => {
     const req = {
       ...createMockRequest({ remoteAddress: "198.51.100.32" }),
