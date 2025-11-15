@@ -217,7 +217,7 @@ func TestGlobalRateLimiterSetsRequestIDWithoutAuditMiddleware(t *testing.T) {
 	}
 }
 
-func TestGlobalRateLimiterAppliesAnonymousAgentBucket(t *testing.T) {
+func TestGlobalRateLimiterSkipsAgentBucketWithoutHeader(t *testing.T) {
 	t.Setenv("GATEWAY_HTTP_IP_RATE_LIMIT_MAX", "100")
 	t.Setenv("GATEWAY_HTTP_AGENT_RATE_LIMIT_MAX", "1")
 
@@ -240,11 +240,8 @@ func TestGlobalRateLimiterAppliesAnonymousAgentBucket(t *testing.T) {
 
 	second := httptest.NewRecorder()
 	handler.ServeHTTP(second, secondReq)
-	if second.Code != http.StatusTooManyRequests {
-		t.Fatalf("expected anonymous agent requests to share rate limit, got %d", second.Code)
-	}
-	if retry := second.Header().Get("Retry-After"); retry == "" {
-		t.Fatal("expected Retry-After header to be set for anonymous agent limit")
+	if second.Code != http.StatusOK {
+		t.Fatalf("expected second anonymous agent request to succeed, got %d", second.Code)
 	}
 }
 

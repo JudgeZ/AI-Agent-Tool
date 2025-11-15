@@ -22,8 +22,7 @@ const (
 	defaultGlobalAgentWindow = time.Minute
 	defaultGlobalAgentLimit  = 600
 
-	anonymousAgentIdentity = "anonymous"
-	maxAgentIdentityLen    = 128
+	maxAgentIdentityLen = 128
 )
 
 type rateLimitEvaluator interface {
@@ -65,8 +64,9 @@ func (g *GlobalRateLimiter) Middleware(next http.Handler) http.Handler {
 		}
 		ctx := r.Context()
 		var (
-			ipIdentity    string
-			agentIdentity string
+			ipIdentity            string
+			agentIdentity         string
+			agentIdentityResolved bool
 		)
 
 		for _, bucket := range g.buckets {
@@ -81,11 +81,12 @@ func (g *GlobalRateLimiter) Middleware(next http.Handler) http.Handler {
 				}
 				identity = ipIdentity
 			case "agent":
-				if agentIdentity == "" {
+				if !agentIdentityResolved {
 					agentIdentity = sanitizeAgentIdentity(r.Header.Get("X-Agent"))
-					if agentIdentity == "" {
-						agentIdentity = anonymousAgentIdentity
-					}
+					agentIdentityResolved = true
+				}
+				if agentIdentity == "" {
+					continue
 				}
 				identity = agentIdentity
 			default:
