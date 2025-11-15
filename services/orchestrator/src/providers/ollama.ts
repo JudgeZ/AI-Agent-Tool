@@ -1,6 +1,6 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
-import { callWithRetry, ProviderError } from "./utils.js";
+import { callWithRetry, ProviderError, ensureProviderEgress } from "./utils.js";
 
 type FetcherInit = {
   method?: string;
@@ -118,11 +118,17 @@ export class OllamaProvider implements ModelProvider {
       stream: false
     };
 
+    const targetUrl = `${baseUrl}/api/chat`;
+
     const body = await callWithRetry(
       async () => {
         let response: FetcherResponse;
+        ensureProviderEgress(this.name, targetUrl, {
+          action: "provider.request",
+          metadata: { operation: "chat", model }
+        });
         try {
-          response = await this.fetcher(`${baseUrl}/api/chat`, {
+          response = await this.fetcher(targetUrl, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)

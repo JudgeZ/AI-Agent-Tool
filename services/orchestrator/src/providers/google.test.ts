@@ -1,8 +1,13 @@
 import { describe, it, expect, vi, afterEach } from "vitest";
 
+vi.mock("../network/EgressGuard.js", () => ({
+  ensureEgressAllowed: vi.fn()
+}));
+
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import { GoogleProvider } from "./google.js";
 import { ProviderError } from "./utils.js";
+import { ensureEgressAllowed } from "../network/EgressGuard.js";
 
 class MockSecretsStore implements SecretsStore {
   constructor(private readonly values: Record<string, string> = {}) {}
@@ -26,7 +31,7 @@ describe("GoogleProvider", () => {
 
   afterEach(() => {
     vi.useRealTimers();
-    vi.restoreAllMocks();
+    vi.clearAllMocks();
     delete process.env.GOOGLE_OAUTH_CLIENT_ID;
     delete process.env.GOOGLE_OAUTH_CLIENT_SECRET;
     delete process.env.GOOGLE_SERVICE_ACCOUNT;
@@ -58,6 +63,16 @@ describe("GoogleProvider", () => {
     expect(init?.headers).toMatchObject({ Authorization: "Bearer test-token" });
     expect(response.output).toBe("hello");
     expect(response.usage).toEqual({ promptTokens: 1, completionTokens: 2, totalTokens: 3 });
+
+    const ensure = vi.mocked(ensureEgressAllowed);
+    expect(ensure).toHaveBeenCalledWith(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+      expect.objectContaining({
+        action: "provider.request",
+        metadata: expect.objectContaining({ provider: "google", operation: "models.generateContent", model: "gemini-1.5-flash" })
+      })
+    );
+    expect(ensure.mock.invocationCallOrder[0]).toBeLessThan(fetchMock.mock.invocationCallOrder[0]!);
   });
 
   it("falls back to service account credentials when OAuth tokens are absent", async () => {
@@ -90,6 +105,26 @@ describe("GoogleProvider", () => {
     const [, generativeInit] = fetchMock.mock.calls[1];
     expect(generativeInit?.headers).toMatchObject({ Authorization: "Bearer svc-token" });
     expect(response.output).toBe("svc");
+
+    const ensure = vi.mocked(ensureEgressAllowed);
+    expect(ensure).toHaveBeenNthCalledWith(
+      1,
+      "https://oauth2.googleapis.com/token",
+      expect.objectContaining({
+        action: "provider.request",
+        metadata: expect.objectContaining({ provider: "google", operation: "serviceAccount.token" })
+      })
+    );
+    expect(ensure).toHaveBeenNthCalledWith(
+      2,
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+      expect.objectContaining({
+        action: "provider.request",
+        metadata: expect.objectContaining({ provider: "google", operation: "models.generateContent", model: "gemini-1.5-flash" })
+      })
+    );
+    expect(ensure.mock.invocationCallOrder[0]).toBeLessThan(fetchMock.mock.invocationCallOrder[0]!);
+    expect(ensure.mock.invocationCallOrder[1]).toBeLessThan(fetchMock.mock.invocationCallOrder[1]!);
   });
 
   it("falls back to the configured API key when neither OAuth nor service accounts are present", async () => {
@@ -108,6 +143,15 @@ describe("GoogleProvider", () => {
     const [url] = fetchMock.mock.calls[0];
     expect(url).toContain("key=test-api-key");
     expect(response.output).toBe("api");
+
+    const ensure = vi.mocked(ensureEgressAllowed);
+    expect(ensure).toHaveBeenCalledWith(
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+      expect.objectContaining({
+        action: "provider.request",
+        metadata: expect.objectContaining({ provider: "google", operation: "models.generateContent", model: "gemini-1.5-flash" })
+      })
+    );
   });
 
   it("retries Gemini invocation when the initial fetch fails", async () => {
@@ -217,5 +261,25 @@ describe("GoogleProvider", () => {
     expect(generativeInit?.headers).toMatchObject({ Authorization: "Bearer fresh-token" });
     expect(await secrets.get("oauth:google:access_token")).toBe("fresh-token");
     expect(response.output).toBe("refreshed");
+
+    const ensure = vi.mocked(ensureEgressAllowed);
+    expect(ensure).toHaveBeenNthCalledWith(
+      1,
+      "https://oauth2.googleapis.com/token",
+      expect.objectContaining({
+        action: "provider.request",
+        metadata: expect.objectContaining({ provider: "google", operation: "oauth.refresh" })
+      })
+    );
+    expect(ensure).toHaveBeenNthCalledWith(
+      2,
+      "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent",
+      expect.objectContaining({
+        action: "provider.request",
+        metadata: expect.objectContaining({ provider: "google", operation: "models.generateContent", model: "gemini-1.5-flash" })
+      })
+    );
+    expect(ensure.mock.invocationCallOrder[0]).toBeLessThan(fetchMock.mock.invocationCallOrder[0]!);
+    expect(ensure.mock.invocationCallOrder[1]).toBeLessThan(fetchMock.mock.invocationCallOrder[1]!);
   });
 });

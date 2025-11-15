@@ -1,6 +1,6 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
-import { callWithRetry, ProviderError, requireSecret, disposeClient } from "./utils.js";
+import { callWithRetry, ProviderError, requireSecret, disposeClient, ensureProviderEgress } from "./utils.js";
 
 interface MistralChatResponse {
   choices: Array<{ message?: { content?: string } } | null>;
@@ -119,6 +119,10 @@ export class MistralProvider implements ModelProvider {
 
     const response = await callWithRetry(
       async () => {
+        ensureProviderEgress(this.name, "https://api.mistral.ai/v1/chat/completions", {
+          action: "provider.request",
+          metadata: { operation: "chat", model }
+        });
         try {
           return await client.chat({
             model,

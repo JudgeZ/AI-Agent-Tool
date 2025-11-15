@@ -1,6 +1,8 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
-import { callWithRetry, ProviderError, requireSecret, disposeClient } from "./utils.js";
+import { callWithRetry, ProviderError, requireSecret, disposeClient, ensureProviderEgress } from "./utils.js";
+
+const OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions";
 
 interface OpenAIChatResponse {
   choices: Array<{ message?: { content?: string } | null } | null>;
@@ -116,6 +118,10 @@ export class OpenAIProvider implements ModelProvider {
 
     const result = await callWithRetry(
       async () => {
+        ensureProviderEgress(this.name, OPENAI_CHAT_COMPLETIONS_URL, {
+          action: "provider.request",
+          metadata: { operation: "chat.completions.create", model }
+        });
         try {
           const response = await client.chat.completions.create({
             model,

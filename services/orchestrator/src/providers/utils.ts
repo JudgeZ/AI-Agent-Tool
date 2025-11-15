@@ -1,6 +1,11 @@
 import { setTimeout as delay } from "node:timers/promises";
 
 import type { SecretsStore } from "../auth/SecretsStore.js";
+import { ensureEgressAllowed } from "../network/EgressGuard.js";
+
+// NOTE: Provider implementations must invoke `ensureProviderEgress` with their target URL
+// immediately before performing any outbound request so network policy decisions are audited
+// consistently. See `../network/EgressGuard.ts` for the enforcement contract.
 
 export type SecretLookup = {
   key: string;
@@ -32,6 +37,31 @@ export class ProviderError extends Error {
     this.retryable = options.retryable ?? false;
     this.details = options.details;
     this.cause = options.cause;
+  }
+}
+
+export type ProviderEgressContext = {
+  action?: string;
+  metadata?: Record<string, unknown>;
+};
+
+export function ensureProviderEgress(
+  provider: string,
+  target: string,
+  context: ProviderEgressContext
+): void {
+  const metadata = { ...(context.metadata ?? {}) };
+  metadata.provider = provider;
+  try {
+    ensureEgressAllowed(target, { ...context, metadata });
+  } catch (error) {
+    throw new ProviderError(`Egress to '${target}' is not permitted by network policy`, {
+      status: 403,
+      code: "egress_blocked",
+      provider,
+      retryable: false,
+      cause: error
+    });
   }
 }
 

@@ -1,6 +1,13 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatMessage, ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
-import { callWithRetry, decodeBedrockBody, ProviderError, requireSecret, disposeClient } from "./utils.js";
+import {
+  callWithRetry,
+  decodeBedrockBody,
+  ProviderError,
+  requireSecret,
+  disposeClient,
+  ensureProviderEgress
+} from "./utils.js";
 
 interface BedrockInvokeResult {
   body?: unknown;
@@ -217,6 +224,16 @@ export class BedrockProvider implements ModelProvider {
     const client = await this.getClient();
     const systemMessage = req.messages.find(msg => msg.role === "system")?.content;
     const modelId = req.model ?? this.options.defaultModel ?? "anthropic.claude-3-sonnet-20240229-v1:0";
+    const region = this.clientCredentials?.region;
+    if (!region) {
+      throw new ProviderError("AWS region not resolved in client credentials", {
+        status: 500,
+        provider: this.name,
+        retryable: false
+      });
+    }
+    const targetUrl =
+      `https://bedrock-runtime.${region}.amazonaws.com/model/${encodeURIComponent(modelId)}/invoke`;
     const payload = {
       anthropic_version: "bedrock-2023-05-31",
       system: systemMessage,
@@ -226,6 +243,10 @@ export class BedrockProvider implements ModelProvider {
 
     const response = await callWithRetry(
       async () => {
+        ensureProviderEgress(this.name, targetUrl, {
+          action: "provider.request",
+          metadata: { operation: "invokeModel", model: modelId, region }
+        });
         try {
           return await client.invokeModel({
             modelId,

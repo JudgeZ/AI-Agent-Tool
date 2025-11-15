@@ -2,7 +2,7 @@ import { createSign } from "node:crypto";
 
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatMessage, ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
-import { callWithRetry, coalesceText, ProviderError, requireSecret } from "./utils.js";
+import { callWithRetry, coalesceText, ProviderError, requireSecret, ensureProviderEgress } from "./utils.js";
 
 const GOOGLE_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
 const GOOGLE_SCOPE = "https://www.googleapis.com/auth/generative-language";
@@ -202,6 +202,10 @@ export class GoogleProvider implements ModelProvider {
       params.set("client_secret", clientSecret);
     }
 
+    ensureProviderEgress(this.name, GOOGLE_TOKEN_URL, {
+      action: "provider.request",
+      metadata: { operation: "oauth.refresh" }
+    });
     const response = await this.fetchImpl(GOOGLE_TOKEN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -317,7 +321,12 @@ export class GoogleProvider implements ModelProvider {
       assertion
     });
 
-    const response = await this.fetchImpl(key.token_uri ?? GOOGLE_TOKEN_URL, {
+    const tokenUrl = key.token_uri ?? GOOGLE_TOKEN_URL;
+    ensureProviderEgress(this.name, tokenUrl, {
+      action: "provider.request",
+      metadata: { operation: "serviceAccount.token" }
+    });
+    const response = await this.fetchImpl(tokenUrl, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
       body: params
@@ -384,6 +393,12 @@ export class GoogleProvider implements ModelProvider {
         parts: [{ text: systemMessage }]
       };
     }
+
+    const ensureTarget = `${url.origin}${url.pathname || "/"}`;
+    ensureProviderEgress(this.name, ensureTarget, {
+      action: "provider.request",
+      metadata: { operation: "models.generateContent", model: normalizedModelPath }
+    });
 
     let response: Response;
     try {

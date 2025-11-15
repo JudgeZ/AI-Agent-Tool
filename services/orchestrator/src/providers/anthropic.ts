@@ -1,6 +1,15 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatMessage, ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
-import { callWithRetry, coalesceText, ProviderError, requireSecret, disposeClient } from "./utils.js";
+import {
+  callWithRetry,
+  coalesceText,
+  ProviderError,
+  requireSecret,
+  disposeClient,
+  ensureProviderEgress
+} from "./utils.js";
+
+const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
 
 interface AnthropicUsage {
   input_tokens?: number;
@@ -144,6 +153,10 @@ export class AnthropicProvider implements ModelProvider {
 
     const response = await callWithRetry(
       async () => {
+        ensureProviderEgress(this.name, ANTHROPIC_MESSAGES_URL, {
+          action: "provider.request",
+          metadata: { operation: "messages.create", model }
+        });
         try {
           return await client.messages.create({
             model,
