@@ -63,6 +63,8 @@ Override SANs or subject information with `mtls.orchestrator.additionalDnsNames`
 | `podDisruptionBudget.enabled` | `true` | Creates a PodDisruptionBudget for the gateway. Disable to opt out. |
 | `podDisruptionBudget.minAvailable` | `1` | Minimum available pods during voluntary disruptions (set `maxUnavailable` instead if preferred). |
 
+Use `gatewayApi.env` to surface the global HTTP rate limit knobs exposed by the gateway. Setting `GATEWAY_HTTP_IP_RATE_LIMIT_WINDOW` (default `1m`) and `GATEWAY_HTTP_IP_RATE_LIMIT_MAX` (default `120`, `0` disables) adds a coarse, per-IP circuit breaker in front of every route. The legacy fallbacks `GATEWAY_HTTP_RATE_LIMIT_WINDOW`/`MAX` still work when the IP-specific variables are omitted. Keep these values higher than the auth-specific buckets configured via `gatewayApi.rateLimit.auth.*` and the SSE connection quotas (`gatewayApi.sse.maxConnectionsPerIP`) so legitimate users do not hit conflicting throttles.
+
 ## Orchestrator (`orchestrator`)
 
 | Key | Default | Notes |

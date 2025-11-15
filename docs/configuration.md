@@ -115,6 +115,10 @@ Relevant environment overrides:
 | `ORCHESTRATOR_CALLBACK_TIMEOUT` | Gateway timeout for posting OAuth codes to the orchestrator (duration string, defaults to `10s`). |
 | `OPENROUTER_CLIENT_ID` / `OPENROUTER_CLIENT_SECRET` | OpenRouter OAuth credentials when using OpenRouter provider with OAuth flow. |
 | `GATEWAY_TRUSTED_PROXY_CIDRS` | Comma-separated list of CIDR ranges or individual IPs that terminate TLS in front of the gateway. Only these sources can supply `X-Forwarded-Proto`/`Forwarded` headers to mark requests as HTTPS. |
+| `GATEWAY_HTTP_IP_RATE_LIMIT_WINDOW` | Rolling window for the per-IP global HTTP rate limiter (defaults to `1m`). Tune alongside `GATEWAY_HTTP_IP_RATE_LIMIT_MAX` so the cap matches expected burstiness, and keep it higher than the auth (`GATEWAY_AUTH_*`) and SSE (`GATEWAY_SSE_MAX_CONNECTIONS_PER_IP`) limits to avoid double-throttling trusted clients. |
+| `GATEWAY_HTTP_IP_RATE_LIMIT_MAX` | Maximum number of HTTP requests allowed per client IP within the configured window (defaults to `120`; set to `0` to disable the global limiter). Applies to every route before the auth-specific buckets fire, giving you a coarse circuit breaker for the entire edge. |
+| `GATEWAY_HTTP_RATE_LIMIT_WINDOW` | Backwards-compatible alias for the global HTTP window used when the IP-specific variable is unset. Defaults to `1m`; prefer the IP-specific knob so you can keep different windows for new identity types later. |
+| `GATEWAY_HTTP_RATE_LIMIT_MAX` | Backwards-compatible alias for the global HTTP limit when no IP-specific value is supplied. Defaults to `120`. Keep this in sync with `GATEWAY_HTTP_IP_RATE_LIMIT_MAX` if you rely on the fallback path. |
 | `GATEWAY_MAX_REQUEST_BODY_BYTES` | Maximum request payload size accepted by the gateway (defaults to `1048576`). Requests above the limit are rejected with HTTP 413. |
 | `POLICY_CACHE_ENABLED` | Set to `true` to enable caching for capability policy decisions. Defaults to `false`. |
 | `POLICY_CACHE_PROVIDER` | `memory` or `redis`. Redis is recommended for multi-instance deployments; memory cache is per-process. |
