@@ -124,6 +124,60 @@ func TestMiddlewareManagesRequestID(t *testing.T) {
 	}
 }
 
+func TestEnsureRequestID(t *testing.T) {
+	t.Run("generates when missing", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		rec := httptest.NewRecorder()
+
+		updated, id := EnsureRequestID(req, rec)
+		if updated == nil {
+			t.Fatal("expected request to be returned")
+		}
+		if id == "" {
+			t.Fatal("expected generated request id")
+		}
+		if got := RequestID(updated.Context()); got != id {
+			t.Fatalf("expected context to contain %q, got %q", id, got)
+		}
+		if header := strings.TrimSpace(rec.Header().Get("X-Request-Id")); header != id {
+			t.Fatalf("expected response header to mirror id %q, got %q", id, header)
+		}
+		if header := strings.TrimSpace(updated.Header.Get("X-Request-Id")); header != id {
+			t.Fatalf("expected request header to contain id %q, got %q", id, header)
+		}
+	})
+
+	t.Run("reuses context identifier", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+		ctx := context.WithValue(req.Context(), requestIDContextKey, "existing")
+		req = req.WithContext(ctx)
+		rec := httptest.NewRecorder()
+
+		updated, id := EnsureRequestID(req, rec)
+		if id != "existing" {
+			t.Fatalf("expected to reuse existing id, got %q", id)
+		}
+		if updated != req {
+			t.Fatal("expected request not to be replaced when context already populated")
+		}
+		if header := strings.TrimSpace(rec.Header().Get("X-Request-Id")); header != id {
+			t.Fatalf("expected response header to mirror existing id %q, got %q", id, header)
+		}
+	})
+
+	t.Run("handles nil writer", func(t *testing.T) {
+		req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+		updated, id := EnsureRequestID(req, nil)
+		if updated == nil || id == "" {
+			t.Fatal("expected request and id when writer absent")
+		}
+		if header := strings.TrimSpace(updated.Header.Get("X-Request-Id")); header != id {
+			t.Fatalf("expected request header to contain id %q, got %q", id, header)
+		}
+	})
+}
+
 func TestLoggerLogIncludesContextAttributes(t *testing.T) {
 	handler := &recordingHandler{}
 	logger := &Logger{logger: slog.New(handler), salt: "salt"}

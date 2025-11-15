@@ -171,6 +171,49 @@ func TestGlobalRateLimiterEmitsAuditEventForAgentLimit(t *testing.T) {
 	}
 }
 
+func TestGlobalRateLimiterSetsRequestIDWithoutAuditMiddleware(t *testing.T) {
+	t.Setenv("GATEWAY_HTTP_RATE_LIMIT_MAX", "1")
+	t.Setenv("GATEWAY_HTTP_RATE_LIMIT_WINDOW", "1m")
+
+	var buf bytes.Buffer
+	original := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{})))
+	t.Cleanup(func() {
+		slog.SetDefault(original)
+		gatewayAuditLogger = audit.Default()
+	})
+	gatewayAuditLogger = audit.Default()
+
+	limiter := NewGlobalRateLimiter(nil)
+	handler := limiter.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	firstReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	firstReq.RemoteAddr = "198.51.100.10:1000"
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, firstReq)
+	if first.Code != http.StatusOK {
+		t.Fatalf("expected first request to succeed, got %d", first.Code)
+	}
+
+	secondReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	secondReq.RemoteAddr = "198.51.100.10:2000"
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, secondReq)
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected second request to be rate limited, got %d", second.Code)
+	}
+	if requestID := strings.TrimSpace(second.Header().Get("X-Request-Id")); requestID == "" {
+		t.Fatal("expected rate limited response to include X-Request-Id without audit middleware")
+	}
+
+	logs := buf.String()
+	if !strings.Contains(logs, "\"request_id\"") {
+		t.Fatalf("expected audit log to include request_id even without audit middleware, got %q", logs)
+	}
+}
+
 func TestGlobalRateLimiterAppliesAnonymousAgentBucket(t *testing.T) {
 	t.Setenv("GATEWAY_HTTP_IP_RATE_LIMIT_MAX", "100")
 	t.Setenv("GATEWAY_HTTP_AGENT_RATE_LIMIT_MAX", "1")

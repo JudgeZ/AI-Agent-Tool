@@ -54,6 +54,9 @@ func (g *GlobalRateLimiter) Middleware(next http.Handler) http.Handler {
 	}
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if updated, _ := audit.EnsureRequestID(r, w); updated != nil {
+			r = updated
+		}
 		ctx := r.Context()
 		var (
 			ipIdentity    string
