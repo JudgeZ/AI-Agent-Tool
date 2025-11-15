@@ -25,17 +25,18 @@ describe("SessionStore", () => {
         roles: [" admin ", "user", "admin", ""],
         scopes: ["write", "read", "write"],
         claims: { key: "value" },
-        tokens: { accessToken: "access" }
       },
       60
     );
 
     expect(session.roles).toEqual(["admin", "user"]);
     expect(session.scopes).toEqual(["read", "write"]);
+    expect(session).not.toHaveProperty("tokens");
 
     const retrieved = store.getSession(session.id);
     expect(retrieved?.roles).toEqual(["admin", "user"]);
     expect(retrieved?.scopes).toEqual(["read", "write"]);
+    expect(retrieved).not.toHaveProperty("tokens");
   });
 
   it("expires sessions after the configured ttl", () => {
@@ -45,7 +46,6 @@ describe("SessionStore", () => {
         roles: [],
         scopes: [],
         claims: {},
-        tokens: {}
       },
       1
     );
@@ -66,7 +66,6 @@ describe("SessionStore", () => {
         roles: [],
         scopes: [],
         claims: {},
-        tokens: {}
       },
       10,
       baseTime + 500
@@ -78,7 +77,6 @@ describe("SessionStore", () => {
         roles: [],
         scopes: [],
         claims: {},
-        tokens: {}
       },
       10
     );
@@ -98,7 +96,6 @@ describe("SessionStore", () => {
         roles: [],
         scopes: [],
         claims: {},
-        tokens: {}
       },
       30
     );

@@ -39,6 +39,7 @@ The Orchestrator is the core service of the OSS AI Agent Tool, orchestrating pla
 -   **CRITICAL**: Stack traces potentially exposed in dev mode via morgan logger (line 171).
 -   **NEEDS IMPROVEMENT**: No redaction of sensitive fields (tokens, API keys) in tracing spans.
 -   **NEEDS IMPROVEMENT**: Config file (lines 1-150 in `config.ts`) could expose sensitive env var names in error messages.
+-   **IMPROVEMENT**: Session store now retains only identity metadata; raw OIDC tokens are discarded after issuance to reduce in-memory secrets exposure.
 
 #### Denial of Service
 -   **PASS**: Rate limiting on /plan and /chat endpoints (lines 173-184 in `index.ts`).

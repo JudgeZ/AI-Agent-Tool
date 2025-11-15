@@ -361,17 +361,8 @@ export async function handleOidcCallback(req: Request, res: Response) {
         roles,
         scopes,
         claims: { ...payload },
-        tokens: {
-          idToken: tokenResponse.id_token,
-          accessToken:
-            typeof tokenResponse.access_token === "string"
-              ? tokenResponse.access_token
-              : undefined,
-          refreshToken:
-            typeof tokenResponse.refresh_token === "string"
-              ? tokenResponse.refresh_token
-              : undefined,
-        },
+        // Tokens are intentionally omitted from the session payload to reduce
+        // in-memory secret exposure; sessions retain only identity metadata.
       },
       ttlSeconds,
       targetExpiry,

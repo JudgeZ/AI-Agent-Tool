@@ -136,7 +136,6 @@ function createSessionForUser(
       roles: options.roles ?? [],
       scopes: options.scopes ?? [],
       claims: {},
-      tokens: {}
     },
     config.auth.oidc.session.ttlSeconds
   );
@@ -1017,7 +1016,6 @@ describe("orchestrator http api", () => {
         roles: ["reader"],
         scopes: ["plan.read"],
         claims: {},
-        tokens: {},
       },
       config.auth.oidc.session.ttlSeconds,
     );
@@ -1071,7 +1069,6 @@ describe("orchestrator http api", () => {
         roles: ["reader"],
         scopes: ["plan.read"],
         claims: {},
-        tokens: {},
       },
       config.auth.oidc.session.ttlSeconds,
     );
@@ -1283,7 +1280,6 @@ describe("orchestrator http api", () => {
         roles: ["reader"],
         scopes: ["plan.read"],
         claims: {},
-        tokens: {},
       },
       config.auth.oidc.session.ttlSeconds,
     );
@@ -1360,7 +1356,6 @@ describe("orchestrator http api", () => {
         roles: ["reader"],
         scopes: ["plan.read"],
         claims: {},
-        tokens: {},
       },
       config.auth.oidc.session.ttlSeconds,
     );

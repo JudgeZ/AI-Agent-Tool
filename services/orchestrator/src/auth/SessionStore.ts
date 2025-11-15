@@ -1,11 +1,5 @@
 import { randomUUID } from "node:crypto";
 
-export type SessionTokens = {
-  idToken?: string;
-  accessToken?: string;
-  refreshToken?: string;
-};
-
 function normalizeRoles(roles: string[]): string[] {
   return Array.from(
     new Set(roles.map(role => role.trim()).filter(role => role.length > 0))
@@ -23,7 +17,6 @@ export type SessionRecord = {
   issuedAt: string;
   expiresAt: string;
   claims: Record<string, unknown>;
-  tokens: SessionTokens;
 };
 
 export type CreateSessionInput = {
@@ -34,7 +27,6 @@ export type CreateSessionInput = {
   roles: string[];
   scopes: string[];
   claims: Record<string, unknown>;
-  tokens: SessionTokens;
 };
 
 export class SessionStore {
@@ -58,7 +50,6 @@ export class SessionStore {
       issuedAt: new Date(issuedAtMs).toISOString(),
       expiresAt: new Date(expiresAtMs).toISOString(),
       claims: { ...input.claims },
-      tokens: { ...input.tokens }
     };
 
     this.sessions.set(id, session);
