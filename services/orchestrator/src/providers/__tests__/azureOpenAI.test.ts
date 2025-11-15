@@ -47,7 +47,8 @@ describe("AzureOpenAIProvider", () => {
     const provider = new AzureOpenAIProvider(secrets, {
       clientFactory,
       retryAttempts: 2,
-      defaultDeployment: "my-deployment"
+      defaultDeployment: "my-deployment",
+      defaultTemperature: 0.2,
     });
     return { provider, clientFactory };
   }

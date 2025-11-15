@@ -151,12 +151,13 @@ export class AnthropicProvider implements ModelProvider {
     const model = req.model ?? this.options.defaultModel ?? "claude-3-sonnet-20240229";
     const maxTokens = this.options.maxTokens ?? 1024;
 
+    ensureProviderEgress(this.name, ANTHROPIC_MESSAGES_URL, {
+      action: "provider.request",
+      metadata: { operation: "messages.create", model }
+    });
+
     const response = await callWithRetry(
       async () => {
-        ensureProviderEgress(this.name, ANTHROPIC_MESSAGES_URL, {
-          action: "provider.request",
-          metadata: { operation: "messages.create", model }
-        });
         try {
           return await client.messages.create({
             model,

@@ -1,6 +1,13 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
-import { callWithRetry, ProviderError, requireSecret, ensureProviderEgress, disposeClient } from "./utils.js";
+import {
+  callWithRetry,
+  ProviderError,
+  requireSecret,
+  ensureProviderEgress,
+  disposeClient,
+  withProviderTimeout,
+} from "./utils.js";
 
 const OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -46,6 +53,8 @@ export type OpenRouterProviderOptions = {
   retryAttempts?: number;
   clientFactory?: (config: { apiKey: string; globalConfig?: Record<string, unknown> }) => Promise<OpenRouterClient> | OpenRouterClient;
   globalConfig?: Record<string, unknown>;
+  defaultTemperature?: number;
+  timeoutMs?: number;
 };
 
 async function defaultClientFactory({
@@ -142,18 +151,23 @@ export class OpenRouterProvider implements ModelProvider {
   async chat(req: ChatRequest): Promise<ChatResponse> {
     const model = req.model ?? this.options.defaultModel ?? "openrouter/openai/gpt-4o-mini";
     const messages = toOpenRouterMessages(req.messages);
+    const temperature = req.temperature ?? this.options.defaultTemperature;
+
+    ensureProviderEgress(this.name, OPENROUTER_CHAT_URL, {
+      action: "provider.request",
+      metadata: { operation: "chat", model }
+    });
 
     const result = await callWithRetry(
       async () => {
-        ensureProviderEgress(this.name, OPENROUTER_CHAT_URL, {
-          action: "provider.request",
-          metadata: { operation: "chat", model }
-        });
         const apiKey = await this.resolveApiKey();
         const client = await this.getClient(apiKey);
         let response: OpenRouterResponse;
         try {
-          response = await client.chat(messages, { model, temperature: req.temperature ?? 0.2 });
+          response = await withProviderTimeout(
+            () => client.chat(messages, { model, temperature }),
+            { provider: this.name, timeoutMs: this.options.timeoutMs, action: "chat" },
+          );
         } catch (error) {
           throw this.normalizeError(error);
         } finally {

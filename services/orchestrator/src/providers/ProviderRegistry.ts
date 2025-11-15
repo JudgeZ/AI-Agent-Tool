@@ -1,4 +1,4 @@
-import { loadConfig, type AppConfig } from "../config.js";
+import { loadConfig, type AppConfig, type ProviderRuntimeConfig } from "../config.js";
 import { LocalFileStore, VaultStore, type SecretsStore } from "../auth/SecretsStore.js";
 import { VersionedSecretsManager } from "../auth/VersionedSecretsManager.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
@@ -19,6 +19,7 @@ import { OpenAIProvider } from "./openai.js";
 import { OpenRouterProvider } from "./openrouter.js";
 import { ProviderError } from "./utils.js";
 import { CircuitBreaker, RateLimiter, type CircuitBreakerOptions, type RateLimiterOptions } from "./resilience.js";
+import { getProviderCapabilities } from "./capabilities.js";
 
 let secretsStore: SecretsStore | undefined;
 let versionedSecretsManager: VersionedSecretsManager | undefined;
@@ -118,14 +119,31 @@ export function getVersionedSecretsManager(): VersionedSecretsManager {
 function buildRegistry(): Record<string, ModelProvider> {
   if (!cachedRegistry) {
     const secrets = getSecretsStore();
+    const cfg = loadConfig();
+    const openaiSettings = getProviderSettings(cfg, "openai");
+    const azureSettings = getProviderSettings(cfg, "azureopenai");
+    const mistralSettings = getProviderSettings(cfg, "mistral");
+    const openRouterSettings = getProviderSettings(cfg, "openrouter");
     cachedRegistry = {
-      openai: new OpenAIProvider(secrets),
+      openai: new OpenAIProvider(secrets, {
+        defaultTemperature: openaiSettings?.defaultTemperature,
+        timeoutMs: openaiSettings?.timeoutMs,
+      }),
       anthropic: new AnthropicProvider(secrets),
       google: new GoogleProvider(secrets),
-      azureopenai: new AzureOpenAIProvider(secrets),
+      azureopenai: new AzureOpenAIProvider(secrets, {
+        defaultTemperature: azureSettings?.defaultTemperature,
+        timeoutMs: azureSettings?.timeoutMs,
+      }),
       bedrock: new BedrockProvider(secrets),
-      mistral: new MistralProvider(secrets),
-      openrouter: new OpenRouterProvider(secrets),
+      mistral: new MistralProvider(secrets, {
+        defaultTemperature: mistralSettings?.defaultTemperature,
+        timeoutMs: mistralSettings?.timeoutMs,
+      }),
+      openrouter: new OpenRouterProvider(secrets, {
+        defaultTemperature: openRouterSettings?.defaultTemperature,
+        timeoutMs: openRouterSettings?.timeoutMs,
+      }),
       local_ollama: new OllamaProvider(secrets)
     };
   }
@@ -182,13 +200,46 @@ function normalizeProviderId(value: string | undefined): string | undefined {
   return normalized;
 }
 
-const ROUTING_PRIORITY: Record<RoutingMode, string[]> = {
-  balanced: [],
-  high_quality: ["openai", "anthropic", "azureopenai", "google", "mistral", "bedrock", "openrouter", "local_ollama"],
-  low_cost: ["local_ollama", "mistral", "openrouter", "google", "bedrock", "azureopenai", "anthropic", "openai"]
-};
-
 type ProviderOrder = { providers: string[]; routingMode: RoutingMode };
+
+function cloneChatRequest(req: ChatRequest): ChatRequest {
+  return { ...req };
+}
+
+function buildProviderRequest(
+  req: ChatRequest,
+  providerName: string,
+  cfg: AppConfig,
+): { request: ChatRequest; warnings: string[] } {
+  const capability = getProviderCapabilities(providerName);
+  const warnings: string[] = [];
+  const request = cloneChatRequest(req);
+  if (!capability.supportsTemperature) {
+    if (typeof req.temperature === "number") {
+      warnings.push(`${providerName}: temperature is not supported and was ignored`);
+    }
+    delete (request as { temperature?: number }).temperature;
+    return { request, warnings };
+  }
+  const existingTemperature = req.temperature;
+  if (typeof existingTemperature === "number") {
+    request.temperature = existingTemperature;
+    return { request, warnings };
+  }
+  const providerSetting = getProviderSettings(cfg, providerName);
+  const fallbackTemperature = providerSetting?.defaultTemperature ?? capability.defaultTemperature;
+  if (typeof fallbackTemperature === "number") {
+    request.temperature = fallbackTemperature;
+  } else {
+    delete (request as { temperature?: number }).temperature;
+  }
+  return { request, warnings };
+}
+
+function getProviderSettings(cfg: AppConfig, provider: string): ProviderRuntimeConfig | undefined {
+  const normalized = provider.trim().toLowerCase();
+  return cfg.providers.settings[normalized];
+}
 
 function determineProviderOrder(req: ChatRequest, cfg: AppConfig): ProviderOrder {
   const enabled = cfg.providers.enabled.map(provider => {
@@ -232,7 +283,7 @@ function determineProviderOrder(req: ChatRequest, cfg: AppConfig): ProviderOrder
     return { providers: [requestedProvider], routingMode: selectedRoute };
   }
 
-  const prioritizedList = ROUTING_PRIORITY[selectedRoute];
+  const prioritizedList = cfg.providers.routingPriority[selectedRoute] ?? [];
   if (!prioritizedList || prioritizedList.length === 0 || selectedRoute === "balanced") {
     return { providers: enabled, routingMode: selectedRoute };
   }
@@ -311,6 +362,10 @@ export async function routeChat(req: ChatRequest): Promise<ChatResponse> {
 
         const attemptMeta = { provider: provider.name, routing: routingMode };
         const attemptStart = Date.now();
+        const { request: providerRequest, warnings: capabilityWarnings } = buildProviderRequest(req, provider.name, cfg);
+        if (capabilityWarnings.length) {
+          warnings.push(...capabilityWarnings);
+        }
         try {
           const response = await withSpan(
             "providers.routeChat.attempt",
@@ -318,7 +373,7 @@ export async function routeChat(req: ChatRequest): Promise<ChatResponse> {
               attemptSpan.setAttribute("providers.provider", provider.name);
               attemptSpan.setAttribute("providers.routing_mode", routingMode);
               const result = await limiter.schedule(provider.name, () =>
-                breaker.execute(provider.name, () => provider.chat(req)),
+                breaker.execute(provider.name, () => provider.chat(providerRequest)),
               );
               attemptSpan.addEvent("provider_attempt.success", {
                 provider: provider.name,

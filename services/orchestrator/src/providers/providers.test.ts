@@ -51,6 +51,7 @@ describe("providers", () => {
   afterEach(() => {
     clearProviderOverrides();
     __resetProviderResilienceForTests();
+    config.invalidateConfigCache();
     if (originalProvidersEnv === undefined) {
       delete process.env.PROVIDERS;
     } else {
@@ -245,6 +246,26 @@ describe("providers", () => {
 
     expect(provider.chat).toHaveBeenCalledTimes(1);
     expect(response.provider).toBe("openai");
+  });
+
+  it("warns when a provider ignores the requested temperature", async () => {
+    process.env.PROVIDERS = "anthropic";
+    const provider: ModelProvider = {
+      name: "anthropic",
+      async chat(request) {
+        expect(request.temperature).toBeUndefined();
+        return { output: "ok", provider: "anthropic" };
+      }
+    };
+    setProviderOverride("anthropic", provider);
+
+    const response = await routeChat({
+      temperature: 0.65,
+      messages: [{ role: "user", content: "ping" }]
+    });
+
+    expect(response.provider).toBe("anthropic");
+    expect(response.warnings).toContain("anthropic: temperature is not supported and was ignored");
   });
 
   it("rejects whitespace-only provider hints", async () => {

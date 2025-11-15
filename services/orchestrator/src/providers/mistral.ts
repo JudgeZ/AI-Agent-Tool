@@ -1,6 +1,13 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
-import { callWithRetry, ProviderError, requireSecret, disposeClient, ensureProviderEgress } from "./utils.js";
+import {
+  callWithRetry,
+  ProviderError,
+  requireSecret,
+  disposeClient,
+  ensureProviderEgress,
+  withProviderTimeout,
+} from "./utils.js";
 
 interface MistralChatResponse {
   choices: Array<{ message?: { content?: string } } | null>;
@@ -19,6 +26,8 @@ export type MistralProviderOptions = {
   defaultModel?: string;
   retryAttempts?: number;
   clientFactory?: (config: { apiKey: string }) => Promise<MistralApiClient> | MistralApiClient;
+  defaultTemperature?: number;
+  timeoutMs?: number;
 };
 
 async function defaultClientFactory({ apiKey }: { apiKey: string }): Promise<MistralApiClient> {
@@ -116,19 +125,25 @@ export class MistralProvider implements ModelProvider {
   async chat(req: ChatRequest): Promise<ChatResponse> {
     const client = await this.getClient();
     const model = req.model ?? this.options.defaultModel ?? "mistral-large-latest";
+    const temperature = req.temperature ?? this.options.defaultTemperature;
+
+    ensureProviderEgress(this.name, "https://api.mistral.ai/v1/chat/completions", {
+      action: "provider.request",
+      metadata: { operation: "chat", model }
+    });
 
     const response = await callWithRetry(
       async () => {
-        ensureProviderEgress(this.name, "https://api.mistral.ai/v1/chat/completions", {
-          action: "provider.request",
-          metadata: { operation: "chat", model }
-        });
         try {
-          return await client.chat({
-            model,
-            messages: req.messages,
-            temperature: req.temperature ?? 0.2
-          });
+          return await withProviderTimeout(
+            () =>
+              client.chat({
+                model,
+                messages: req.messages,
+                temperature,
+              }),
+            { provider: this.name, timeoutMs: this.options.timeoutMs, action: "chat" },
+          );
         } catch (error) {
           throw this.normalizeError(error);
         }

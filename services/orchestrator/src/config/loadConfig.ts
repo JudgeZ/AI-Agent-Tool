@@ -5,6 +5,7 @@ import YAML from "yaml";
 import { appLogger } from "../observability/logger.js";
 import { startSpan, type Span, type TracingConfig } from "../observability/tracing.js";
 import { resolveEnv } from "../utils/env.js";
+import { DEFAULT_ROUTING_PRIORITY, getDefaultProviderCapabilities } from "../providers/capabilities.js";
 
 export type RateLimitBackendProvider = "memory" | "redis";
 
@@ -142,6 +143,15 @@ export type NetworkConfig = {
   egress: NetworkEgressConfig;
 };
 
+export type ProviderRuntimeConfig = {
+  defaultTemperature?: number;
+  timeoutMs?: number;
+};
+
+export type ProviderRoutingPriority = Record<"balanced" | "high_quality" | "low_cost", string[]>;
+
+export type ProviderSettingsConfig = Record<string, ProviderRuntimeConfig>;
+
 export type PostgresDatabaseConfig = {
   maxConnections: number;
   minConnections: number;
@@ -226,6 +236,8 @@ export type AppConfig = {
     enabled: string[];
     rateLimit: RateLimitConfig;
     circuitBreaker: CircuitBreakerConfig;
+    routingPriority: ProviderRoutingPriority;
+    settings: ProviderSettingsConfig;
   };
   auth: {
     oauth: { redirectBaseUrl: string };
@@ -337,6 +349,44 @@ function sanitizeNonNegativeInteger(value: number | undefined, fallback: number)
   }
   const normalized = Math.floor(value);
   return normalized < 0 ? 0 : normalized;
+}
+
+function resolveRoutingPriority(
+  overrides: Partial<ProviderRoutingPriority> | undefined,
+  fallback: ProviderRoutingPriority,
+): ProviderRoutingPriority {
+  return {
+    balanced: overrides?.balanced ? [...overrides.balanced] : [...fallback.balanced],
+    high_quality: overrides?.high_quality ? [...overrides.high_quality] : [...fallback.high_quality],
+    low_cost: overrides?.low_cost ? [...overrides.low_cost] : [...fallback.low_cost],
+  };
+}
+
+function resolveProviderSettings(
+  overrides: Record<string, ProviderRuntimeConfig> | undefined,
+  fallback: ProviderSettingsConfig,
+): ProviderSettingsConfig {
+  const merged: ProviderSettingsConfig = {};
+  for (const [provider, config] of Object.entries(fallback)) {
+    merged[provider] = { ...config };
+  }
+  if (overrides) {
+    for (const [provider, config] of Object.entries(overrides)) {
+      const normalized = provider.trim().toLowerCase();
+      if (!normalized) {
+        continue;
+      }
+      const existing = merged[normalized] ? { ...merged[normalized] } : {};
+      if (config.defaultTemperature !== undefined) {
+        existing.defaultTemperature = config.defaultTemperature;
+      }
+      if (config.timeoutMs !== undefined) {
+        existing.timeoutMs = config.timeoutMs;
+      }
+      merged[normalized] = existing;
+    }
+  }
+  return merged;
 }
 
 function resolveSecurityHeaderConfig(
@@ -480,6 +530,8 @@ type PartialProvidersConfig = {
   enabled?: string[];
   rateLimit?: PartialRateLimitConfig;
   circuitBreaker?: PartialCircuitBreakerConfig;
+  routingPriority?: Partial<ProviderRoutingPriority>;
+  settings?: Record<string, ProviderRuntimeConfig>;
 };
 
 type PartialContentCaptureConfig = {
@@ -578,6 +630,30 @@ const DEFAULT_TRACING_CONFIG: TracingConfig = {
   sampleRatio: 1
 };
 
+const DEFAULT_PROVIDER_SETTINGS: ProviderSettingsConfig = (() => {
+  const capabilities = getDefaultProviderCapabilities();
+  const settings: ProviderSettingsConfig = {};
+  for (const [provider, capability] of Object.entries(capabilities)) {
+    const entry: ProviderRuntimeConfig = {};
+    if (typeof capability.defaultTemperature === "number") {
+      entry.defaultTemperature = capability.defaultTemperature;
+    }
+    if (typeof capability.defaultTimeoutMs === "number") {
+      entry.timeoutMs = Math.max(1, Math.floor(capability.defaultTimeoutMs));
+    }
+    if (Object.keys(entry).length > 0) {
+      settings[provider] = entry;
+    }
+  }
+  return settings;
+})();
+
+const DEFAULT_PROVIDER_ROUTING: ProviderRoutingPriority = {
+  balanced: [...DEFAULT_ROUTING_PRIORITY.balanced],
+  high_quality: [...DEFAULT_ROUTING_PRIORITY.high_quality],
+  low_cost: [...DEFAULT_ROUTING_PRIORITY.low_cost],
+};
+
 const DEFAULT_DEV_ALLOWED_ORIGINS = [
   "http://127.0.0.1:5173",
   "http://localhost:5173",
@@ -627,7 +703,9 @@ export const DEFAULT_CONFIG: AppConfig = {
     circuitBreaker: {
       failureThreshold: 5,
       resetTimeoutMs: 30_000
-    }
+    },
+    routingPriority: DEFAULT_PROVIDER_ROUTING,
+    settings: DEFAULT_PROVIDER_SETTINGS,
   },
   auth: {
     oauth: { redirectBaseUrl: "http://127.0.0.1:8080" },
@@ -780,7 +858,7 @@ export const DEFAULT_CONFIG: AppConfig = {
         "oauth2.googleapis.com",
         "openrouter.ai",
         "*.openai.azure.com",
-        "*.amazonaws.com",
+        "bedrock-runtime.*.amazonaws.com",
         "*.example.com",
         "*.svc",
         "*.svc.cluster.local",
@@ -968,6 +1046,66 @@ function parseRateLimitConfig(value: unknown): PartialRateLimitConfig | undefine
     result.maxRequests = maxRequests;
   }
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseRoutingPriorityRecord(value: unknown): Partial<ProviderRoutingPriority> | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const result: Partial<ProviderRoutingPriority> = {};
+  for (const key of ["balanced", "high_quality", "low_cost"] as const) {
+    const entries = parseStringArrayFlexible(record[key]);
+    if (entries && entries.length > 0) {
+      result[key] = entries.map(entry => entry.trim().toLowerCase()).filter(entry => entry.length > 0);
+    }
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseProviderRuntimeConfig(value: unknown, context: string): ProviderRuntimeConfig | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const result: ProviderRuntimeConfig = {};
+  if (record.defaultTemperature !== undefined) {
+    const temp = asNumber(record.defaultTemperature);
+    if (temp === undefined || temp < 0 || temp > 2) {
+      throw new Error(`${context} defaultTemperature must be between 0 and 2`);
+    }
+    result.defaultTemperature = temp;
+  }
+  if (record.timeoutMs !== undefined) {
+    const timeout = asNumber(record.timeoutMs);
+    if (timeout === undefined || timeout <= 0) {
+      throw new Error(`${context} timeoutMs must be a positive number`);
+    }
+    result.timeoutMs = Math.max(1, Math.floor(timeout));
+  }
+  return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function parseProviderSettingsRecord(value: unknown): Record<string, ProviderRuntimeConfig> | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const settings: Record<string, ProviderRuntimeConfig> = {};
+  for (const [key, raw] of Object.entries(record)) {
+    if (typeof key !== "string") {
+      continue;
+    }
+    const normalizedKey = key.trim().toLowerCase();
+    if (!normalizedKey) {
+      continue;
+    }
+    const parsed = parseProviderRuntimeConfig(raw, `providers.settings['${key}']`);
+    if (parsed) {
+      settings[normalizedKey] = parsed;
+    }
+  }
+  return Object.keys(settings).length > 0 ? settings : undefined;
 }
 
 function parseRateLimitBackendConfig(value: unknown): PartialRateLimitBackendConfig | undefined {
@@ -2143,7 +2281,17 @@ export function loadConfig(): AppConfig {
           : undefined;
 
         const providerRateLimit = providers ? parseRateLimitConfig(providers.rateLimit) : undefined;
-        const providerCircuitBreaker = providers ? parseCircuitBreakerConfig(providers.circuitBreaker) : undefined;
+        const providerCircuitBreaker = providers
+          ? parseCircuitBreakerConfig(providers.circuitBreaker)
+          : undefined;
+        const providerRoutingPriority = providers
+          ? parseRoutingPriorityRecord(
+              providers.routingPriority ?? providers.routing_priority ?? providers.routing,
+            )
+          : undefined;
+        const providerSettings = providers
+          ? parseProviderSettingsRecord(providers.settings)
+          : undefined;
         const serverRateLimits = server ? asRecord(server.rateLimits) : undefined;
         const serverRateLimitBackend = serverRateLimits
           ? parseRateLimitBackendConfig(
@@ -2234,10 +2382,12 @@ export function loadConfig(): AppConfig {
                 enabled: Array.isArray(providers.enabled)
                   ? asStringArray(providers.enabled) ?? []
                   : providers.enabled === undefined
-                  ? undefined
-                  : [],
+                    ? undefined
+                    : asStringArrayFlexible(providers.enabled),
                 rateLimit: providerRateLimit,
-                circuitBreaker: providerCircuitBreaker
+                circuitBreaker: providerCircuitBreaker,
+                routingPriority: providerRoutingPriority,
+                settings: providerSettings,
               }
             : undefined,
           auth: hasAuthConfig ? authPartial : undefined,
@@ -2619,6 +2769,16 @@ export function loadConfig(): AppConfig {
     resetTimeoutMs:
       fileCfg.providers?.circuitBreaker?.resetTimeoutMs ?? DEFAULT_CONFIG.providers.circuitBreaker.resetTimeoutMs
   };
+
+  const providerRoutingPriorityConfig = resolveRoutingPriority(
+    fileCfg.providers?.routingPriority,
+    DEFAULT_CONFIG.providers.routingPriority,
+  );
+
+  const providerSettingsConfig = resolveProviderSettings(
+    fileCfg.providers?.settings,
+    DEFAULT_CONFIG.providers.settings,
+  );
 
   const fileServerPlanRateLimit = fileCfg.server?.rateLimits?.plan;
   const serverPlanRateLimit = ensurePositiveRateLimit<IdentityAwareRateLimitConfig>(
@@ -3049,7 +3209,9 @@ export function loadConfig(): AppConfig {
       defaultRoute: fileCfg.providers?.defaultRoute ?? DEFAULT_CONFIG.providers.defaultRoute,
       enabled: envEnabled ?? fileEnabled ?? [...providersEnabledDefault],
       rateLimit: providerRateLimitConfig,
-      circuitBreaker: providerCircuitBreakerConfig
+      circuitBreaker: providerCircuitBreakerConfig,
+      routingPriority: providerRoutingPriorityConfig,
+      settings: providerSettingsConfig,
     },
     auth: {
       oauth: {

@@ -1,13 +1,20 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 
+vi.mock("../../network/EgressGuard.js", () => ({
+  ensureEgressAllowed: vi.fn()
+}));
+
 import type { SecretsStore } from "../../auth/SecretsStore.js";
 import {
   callWithRetry,
   coalesceText,
   decodeBedrockBody,
   ProviderError,
-  requireSecret
+  requireSecret,
+  ensureProviderEgress,
+  withProviderTimeout
 } from "../utils.js";
+import { ensureEgressAllowed } from "../../network/EgressGuard.js";
 
 class StubSecretsStore implements SecretsStore {
   constructor(private readonly values: Record<string, string> = {}) {}
@@ -141,5 +148,51 @@ describe("decodeBedrockBody", () => {
 
   it("falls back to String() for unknown shapes", async () => {
     await expect(decodeBedrockBody(123 as unknown as Uint8Array)).resolves.toBe("123");
+  });
+});
+
+describe("withProviderTimeout", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("returns the operation result when it completes before the deadline", async () => {
+    const result = await withProviderTimeout(
+      () => Promise.resolve("ok"),
+      { provider: "test", timeoutMs: 100, action: "call" },
+    );
+    expect(result).toBe("ok");
+  });
+
+  it("rejects with a ProviderError when the deadline expires", async () => {
+    vi.useFakeTimers();
+    const pending = withProviderTimeout(
+      () => new Promise<never>(() => {}),
+      { provider: "test", timeoutMs: 50, action: "call" },
+    );
+    const expectation = expect(pending).rejects.toMatchObject({ provider: "test", status: 504, code: "timeout" });
+    await vi.advanceTimersByTimeAsync(60);
+    await expectation;
+  });
+});
+
+describe("ensureProviderEgress", () => {
+  afterEach(() => {
+    vi.mocked(ensureEgressAllowed).mockClear();
+  });
+
+  it("does not mutate the original metadata object", () => {
+    const metadata = { correlationId: "abc" };
+    ensureProviderEgress("openai", "https://api.openai.com/v1/chat/completions", {
+      action: "provider.request",
+      metadata,
+    });
+    expect(metadata).toEqual({ correlationId: "abc" });
+    expect(ensureEgressAllowed).toHaveBeenCalledWith(
+      "https://api.openai.com/v1/chat/completions",
+      expect.objectContaining({
+        metadata: expect.objectContaining({ provider: "openai", correlationId: "abc" })
+      }),
+    );
   });
 });

@@ -111,6 +111,41 @@ export async function callWithRetry<T>(
   throw lastError ?? new ProviderError("Provider request failed");
 }
 
+export async function withProviderTimeout<T>(
+  operation: () => Promise<T>,
+  options: { provider: string; timeoutMs?: number; action?: string; retryable?: boolean }
+): Promise<T> {
+  const timeoutMs = options.timeoutMs;
+  if (timeoutMs === undefined || timeoutMs <= 0 || !Number.isFinite(timeoutMs)) {
+    return operation();
+  }
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      operation(),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          reject(
+            new ProviderError(
+              `${options.provider} ${options.action ?? "request"} timed out after ${timeoutMs}ms`,
+              {
+                status: 504,
+                provider: options.provider,
+                retryable: options.retryable ?? true,
+                code: "timeout",
+              },
+            ),
+          );
+        }, timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 export function coalesceText(parts: Array<{ text?: string } | undefined>): string {
   return parts
     .map(part => part?.text ?? "")

@@ -1,6 +1,13 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
-import { callWithRetry, ProviderError, requireSecret, disposeClient, ensureProviderEgress } from "./utils.js";
+import {
+  callWithRetry,
+  ProviderError,
+  requireSecret,
+  disposeClient,
+  ensureProviderEgress,
+  withProviderTimeout,
+} from "./utils.js";
 
 const OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions";
 
@@ -25,6 +32,8 @@ export type OpenAIProviderOptions = {
   defaultModel?: string;
   retryAttempts?: number;
   clientFactory?: (config: { apiKey: string }) => Promise<OpenAIClient> | OpenAIClient;
+  defaultTemperature?: number;
+  timeoutMs?: number;
 };
 
 async function defaultClientFactory({ apiKey }: { apiKey: string }): Promise<OpenAIClient> {
@@ -115,20 +124,25 @@ export class OpenAIProvider implements ModelProvider {
   async chat(req: ChatRequest): Promise<ChatResponse> {
     const client = await this.getClient();
     const model = req.model ?? this.options.defaultModel ?? "gpt-4o-mini";
+    const temperature = req.temperature ?? this.options.defaultTemperature;
+
+    ensureProviderEgress(this.name, OPENAI_CHAT_COMPLETIONS_URL, {
+      action: "provider.request",
+      metadata: { operation: "chat.completions.create", model },
+    });
 
     const result = await callWithRetry(
       async () => {
-        ensureProviderEgress(this.name, OPENAI_CHAT_COMPLETIONS_URL, {
-          action: "provider.request",
-          metadata: { operation: "chat.completions.create", model }
-        });
         try {
-          const response = await client.chat.completions.create({
-            model,
-            messages: req.messages,
-            temperature: req.temperature ?? 0.2
-          });
-          return response;
+          return await withProviderTimeout(
+            () =>
+              client.chat.completions.create({
+                model,
+                messages: req.messages,
+                temperature,
+              }),
+            { provider: this.name, timeoutMs: this.options.timeoutMs, action: "chat.completions.create" },
+          );
         } catch (error) {
           throw this.normalizeError(error);
         }
