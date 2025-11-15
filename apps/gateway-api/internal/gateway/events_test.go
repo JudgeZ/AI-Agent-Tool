@@ -3,6 +3,7 @@ package gateway
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
@@ -294,15 +295,29 @@ func TestEventsHandlerAllowsLargeCookieHeader(t *testing.T) {
 
 	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 0, nil, nil)
 
-	base := "session="
-	if len(base) >= maxForwardedCookieHeaderLen {
-		t.Fatalf("test setup base cookie name exceeds header limit")
+	// Construct a header containing multiple cookies that individually satisfy the 4KiB guidance but
+	// together exceed the previous 4KiB aggregate limit to ensure real clients are no longer rejected.
+	cookieCount := 4
+	cookieParts := make([]string, 0, cookieCount)
+	for i := 0; i < cookieCount; i++ {
+		name := fmt.Sprintf("cookie%d", i)
+		remaining := maxForwardedCookieValueLen - len(name) - 1 // account for '='
+		if remaining <= 0 {
+			t.Fatalf("test setup produced non-positive padding for %s", name)
+		}
+		value := strings.Repeat("a", remaining)
+		cookieParts = append(cookieParts, name+"="+value)
 	}
-	paddingLen := maxForwardedCookieHeaderLen - len(base)
-	largeValue := base + strings.Repeat("a", paddingLen)
+	largeHeader := strings.Join(cookieParts, "; ")
+	if len(largeHeader) <= 16*1024 {
+		t.Fatalf("expected combined header to exceed previous 16KiB limit, got %d", len(largeHeader))
+	}
+	if len(largeHeader) >= maxForwardedCookieHeaderLen {
+		t.Fatalf("combined cookie header exceeds configured limit: %d", len(largeHeader))
+	}
 
 	req := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil)
-	req.Header.Add("Cookie", largeValue)
+	req.Header.Add("Cookie", largeHeader)
 
 	rec := newFlushingRecorder()
 	handler.ServeHTTP(rec, req)
@@ -313,7 +328,7 @@ func TestEventsHandlerAllowsLargeCookieHeader(t *testing.T) {
 
 	select {
 	case cookie := <-cookieCh:
-		if cookie != largeValue {
+		if cookie != largeHeader {
 			t.Fatalf("expected large cookie header to be forwarded, got length %d", len(cookie))
 		}
 	default:
@@ -341,6 +356,34 @@ func TestEventsHandlerRejectsOversizedCookieHeader(t *testing.T) {
 	}
 	if atomic.LoadInt32(&called) != 0 {
 		t.Fatalf("expected upstream to be skipped when cookie oversized")
+	}
+}
+
+func TestEventsHandlerRejectsOversizedCookieValue(t *testing.T) {
+	var called int32
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		atomic.AddInt32(&called, 1)
+		return nil, context.DeadlineExceeded
+	})}
+
+	handler := NewEventsHandler(client, "http://orchestrator", 0, nil, nil)
+
+	oversized := "session=" + strings.Repeat("x", maxForwardedCookieValueLen)
+	if len(oversized) <= maxForwardedCookieValueLen {
+		t.Fatalf("test setup failed to exceed per-cookie limit, length=%d", len(oversized))
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil)
+	req.Header.Add("Cookie", oversized)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized cookie value, got %d", rec.Code)
+	}
+	if atomic.LoadInt32(&called) != 0 {
+		t.Fatalf("expected upstream to be skipped when cookie value oversized")
 	}
 }
 

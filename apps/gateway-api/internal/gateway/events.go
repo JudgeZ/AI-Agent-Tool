@@ -29,8 +29,11 @@ const (
 	maxAuthorizationHeaderLen = 4096
 	// maxLastEventIDHeaderLen comfortably supports UUIDs and vendor specific suffixes.
 	maxLastEventIDHeaderLen = 1024
-	// maxForwardedCookieHeaderLen caps forwarded cookie headers to 16KiB, accommodating multiple cookies while bounding resource usage.
-	maxForwardedCookieHeaderLen = 16 * 1024
+	// maxForwardedCookieHeaderLen caps forwarded cookie headers at 64KiB which comfortably exceeds
+	// common browser cookie payloads while still preventing unbounded forwarding.
+	maxForwardedCookieHeaderLen = 64 * 1024
+	// maxForwardedCookieValueLen enforces RFC 6265's 4KiB guidance on individual cookie name/value pairs.
+	maxForwardedCookieValueLen = 4096
 )
 
 var forwardedSSEHeaders = []string{
@@ -456,6 +459,15 @@ func validateForwardedCookie(value string) error {
 	}
 	if hasUnsafeHeaderRunes(value) {
 		return errors.New("value contains invalid characters")
+	}
+	for _, component := range strings.Split(value, ";") {
+		trimmed := strings.TrimSpace(component)
+		if trimmed == "" {
+			continue
+		}
+		if len(trimmed) > maxForwardedCookieValueLen {
+			return fmt.Errorf("cookie component exceeds %d bytes", maxForwardedCookieValueLen)
+		}
 	}
 	return nil
 }
