@@ -132,9 +132,6 @@ export class OllamaProvider implements ModelProvider {
   }
 
   private async fetchWithTimeout(input: string, init: FetcherInit): Promise<FetcherResponse> {
-    if (this.timeoutMs <= 0) {
-      return this.fetcher(input, init);
-    }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {

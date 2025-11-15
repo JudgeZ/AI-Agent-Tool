@@ -119,9 +119,6 @@ export class GoogleProvider implements ModelProvider {
     init: FetchInit,
     context: { operation: string; retryable?: boolean }
   ): Promise<Response> {
-    if (this.timeoutMs <= 0) {
-      return this.fetchImpl(input, init);
-    }
     const controller = new AbortController();
     const timeout = setTimeout(() => controller.abort(), this.timeoutMs);
     try {

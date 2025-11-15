@@ -162,7 +162,7 @@ Content-Type: application/json
 | `model` | string | optional | Overrides provider default model/deployment. |
 | `provider` | string | optional | Restricts routing to a single enabled provider (e.g. `openai`, `local_ollama`). Values are case-insensitive but must match `[A-Za-z0-9._-]+`. When supplied the router does **not** fall back to other providers; failures are surfaced from the requested provider. Requests fail with `404` when the provider is not in `providers.enabled`. |
 | `routing` | string | optional | Fallback order (`balanced`, `high_quality`, `low_cost`). Defaults to the configured `providers.defaultRoute`. |
-| `temperature` | number | optional | Creativity knob validated between `0` and `2`. OpenAI, Azure OpenAI, Mistral, and OpenRouter honour the supplied value; other providers ignore it. |
+| `temperature` | number | optional | Creativity knob validated between `0` and `2`. Requests that omit the field default to `0.2`. OpenAI, Azure OpenAI, Mistral, and OpenRouter honour the supplied value; other providers ignore it. |
 
 ### Response `200 OK`
 
