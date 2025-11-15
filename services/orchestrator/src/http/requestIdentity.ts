@@ -74,8 +74,12 @@ export function buildRateLimitBuckets(
 export function extractAgent(req: Request): string | undefined {
   const headerValue = readHeaderValue(req, "X-Agent");
   if (headerValue !== undefined) {
-    return sanitizeAgentName(headerValue);
+    const sanitizedHeader = sanitizeAgentName(headerValue);
+    if (sanitizedHeader !== undefined) {
+      return sanitizedHeader;
+    }
   }
+
   return sanitizeAgentName(readAgentFromBody(req.body));
 }
 
