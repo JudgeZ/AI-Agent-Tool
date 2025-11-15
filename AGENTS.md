@@ -271,6 +271,4 @@ For every PR, the author (human or agent) should verify:
 - [ ] **Docs:** Documentation updated (README, ADRs, API docs, or comments) where behavior or assumptions changed.
 - [ ] **Roll‑back:** The change can be reverted cleanly if needed.
 
-Reviewers should block the PR if any of the above are clearly missing for a non‑trivial change.
-
 This file is the contract between humans and agents. Keep it up to date as the system evolves.
