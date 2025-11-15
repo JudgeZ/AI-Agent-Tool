@@ -20,6 +20,8 @@ const (
 	defaultGlobalIPLimit     = 120
 	defaultGlobalAgentWindow = time.Minute
 	defaultGlobalAgentLimit  = 600
+
+	anonymousAgentIdentity = "anonymous"
 )
 
 type globalRateLimitPolicy struct {
@@ -72,9 +74,9 @@ func (g *GlobalRateLimiter) Middleware(next http.Handler) http.Handler {
 			case "agent":
 				if agentIdentity == "" {
 					agentIdentity = sanitizeAgentIdentity(r.Header.Get("X-Agent"))
-				}
-				if agentIdentity == "" {
-					continue
+					if agentIdentity == "" {
+						agentIdentity = anonymousAgentIdentity
+					}
 				}
 				identity = agentIdentity
 			default:

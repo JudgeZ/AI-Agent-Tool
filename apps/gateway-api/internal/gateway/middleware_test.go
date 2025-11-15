@@ -161,3 +161,34 @@ func TestGlobalRateLimiterEmitsAuditEventForAgentLimit(t *testing.T) {
 		t.Fatalf("expected denied outcome in audit log, got %q", logs)
 	}
 }
+
+func TestGlobalRateLimiterAppliesAnonymousAgentBucket(t *testing.T) {
+	t.Setenv("GATEWAY_HTTP_IP_RATE_LIMIT_MAX", "100")
+	t.Setenv("GATEWAY_HTTP_AGENT_RATE_LIMIT_MAX", "1")
+
+	limiter := NewGlobalRateLimiter(nil)
+	handler := limiter.Middleware(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.RemoteAddr = "203.0.113.12:4000"
+
+	first := httptest.NewRecorder()
+	handler.ServeHTTP(first, req)
+	if first.Code != http.StatusOK {
+		t.Fatalf("expected first anonymous agent request to succeed, got %d", first.Code)
+	}
+
+	secondReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	secondReq.RemoteAddr = "203.0.113.13:5000"
+
+	second := httptest.NewRecorder()
+	handler.ServeHTTP(second, secondReq)
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected anonymous agent requests to share rate limit, got %d", second.Code)
+	}
+	if retry := second.Header().Get("Retry-After"); retry == "" {
+		t.Fatal("expected Retry-After header to be set for anonymous agent limit")
+	}
+}
