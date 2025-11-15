@@ -62,17 +62,44 @@ func WithActor(ctx context.Context, actor string) context.Context {
 // provided it generates a UUIDv4.
 func Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requestID := strings.TrimSpace(r.Header.Get("X-Request-Id"))
-		if requestID == "" {
-			requestID = uuid.NewString()
-			r.Header.Set("X-Request-Id", requestID)
+		updated, _ := EnsureRequestID(r, w)
+		if updated == nil {
+			next.ServeHTTP(w, r)
+			return
 		}
-
-		ctx := context.WithValue(r.Context(), requestIDContextKey, requestID)
-		w.Header().Set("X-Request-Id", requestID)
-
-		next.ServeHTTP(w, r.WithContext(ctx))
+		next.ServeHTTP(w, updated)
 	})
+}
+
+// EnsureRequestID guarantees the provided request carries a request identifier
+// in both its context and headers. If a writer is supplied the identifier is
+// also mirrored on the response headers. Existing identifiers from either the
+// context or headers are preserved to avoid breaking request correlation.
+func EnsureRequestID(r *http.Request, w http.ResponseWriter) (*http.Request, string) {
+	if r == nil {
+		return nil, ""
+	}
+
+	requestID := RequestID(r.Context())
+	if requestID == "" {
+		requestID = strings.TrimSpace(r.Header.Get("X-Request-Id"))
+	}
+	if requestID == "" {
+		requestID = uuid.NewString()
+	}
+
+	if strings.TrimSpace(r.Header.Get("X-Request-Id")) == "" {
+		r.Header.Set("X-Request-Id", requestID)
+	}
+	if w != nil {
+		w.Header().Set("X-Request-Id", requestID)
+	}
+	if RequestID(r.Context()) == requestID {
+		return r, requestID
+	}
+
+	ctx := context.WithValue(r.Context(), requestIDContextKey, requestID)
+	return r.WithContext(ctx), requestID
 }
 
 // Info records a successful audit event.

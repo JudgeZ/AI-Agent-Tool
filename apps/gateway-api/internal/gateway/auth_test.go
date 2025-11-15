@@ -1,12 +1,15 @@
 package gateway
 
 import (
+	"bufio"
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +20,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/audit"
 )
 
 type httpErrorPayload struct {
@@ -487,6 +492,23 @@ func TestAuthRoutesRateLimiterBlocksPerIdentity(t *testing.T) {
 	}
 }
 
+func TestRespondTooManyRequestsEnsuresRequestID(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/auth/test", nil)
+
+	respondTooManyRequests(rec, req, time.Second)
+
+	requestID := strings.TrimSpace(rec.Header().Get("X-Request-Id"))
+	if requestID == "" {
+		t.Fatal("expected respondTooManyRequests to set X-Request-Id header")
+	}
+
+	payload := decodeErrorResponse(t, rec)
+	if payload.RequestID != requestID {
+		t.Fatalf("expected response payload to include requestId %q, got %q", requestID, payload.RequestID)
+	}
+}
+
 func TestCallbackHandlerRejectsStateMismatch(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
@@ -738,24 +760,138 @@ func TestCallbackHandlerSuccessPropagatesCookies(t *testing.T) {
 	if len(cookies) < 3 {
 		t.Fatalf("expected state deletion cookie plus upstream cookies, got %d", len(cookies))
 	}
-	var hasSession, hasRefresh, stateCleared bool
+	var sessionCookie, refreshCookie *http.Cookie
+	stateCleared := false
 	for _, c := range cookies {
 		switch c.Name {
 		case "session":
-			hasSession = c.Value == "abc"
+			sessionCookie = c
 		case "refresh":
-			hasRefresh = c.Value == "def"
+			refreshCookie = c
 		default:
 			if strings.HasPrefix(c.Name, "oauth_state_") && c.MaxAge == -1 {
 				stateCleared = true
 			}
 		}
 	}
-	if !hasSession || !hasRefresh {
-		t.Fatalf("expected cookies from orchestrator to be forwarded, got %#v", cookies)
+	if sessionCookie == nil || refreshCookie == nil {
+		t.Fatalf("expected session and refresh cookies to be set: %#v", cookies)
+	}
+	for _, cookie := range []*http.Cookie{sessionCookie, refreshCookie} {
+		if cookie.Value == "" {
+			t.Fatalf("expected cookie %s to retain value", cookie.Name)
+		}
+		if !cookie.Secure {
+			t.Fatalf("expected cookie %s to be Secure", cookie.Name)
+		}
+		if !cookie.HttpOnly {
+			t.Fatalf("expected cookie %s to be HttpOnly", cookie.Name)
+		}
+		if cookie.SameSite != http.SameSiteStrictMode {
+			t.Fatalf("expected cookie %s to enforce SameSite=Strict, got %v", cookie.Name, cookie.SameSite)
+		}
 	}
 	if !stateCleared {
 		t.Fatalf("expected state cookie to be cleared, got %#v", cookies)
+	}
+}
+
+func TestCallbackHandlerDropsInsecureUpstreamCookie(t *testing.T) {
+	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
+	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+
+	SetOrchestratorClientFactory(func() (*http.Client, error) {
+		return &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			body := io.NopCloser(strings.NewReader(`{"status":"ok"}`))
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       body,
+				Header:     make(http.Header),
+			}
+			resp.Header.Add("Set-Cookie", (&http.Cookie{Name: "session", Value: "abc", SameSite: http.SameSiteNoneMode}).String())
+			return resp, nil
+		})}, nil
+	})
+	t.Cleanup(ResetOrchestratorClient)
+
+	var buf bytes.Buffer
+	original := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{})))
+	gatewayAuditLogger = audit.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(original)
+		gatewayAuditLogger = audit.Default()
+	})
+
+	data := stateData{
+		Provider:     "openrouter",
+		RedirectURI:  "https://app.example.com/complete",
+		CodeVerifier: "verifier",
+		ExpiresAt:    time.Now().Add(1 * time.Minute),
+		State:        "state-token",
+	}
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("failed to encode state data: %v", err)
+	}
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/callback?code=abc&state=state-token", nil)
+	req.TLS = &tls.ConnectionState{}
+	req.AddCookie(&http.Cookie{
+		Name:  stateCookieName(data.State),
+		Value: base64.RawURLEncoding.EncodeToString(encoded),
+		Path:  "/auth/",
+	})
+	rec := httptest.NewRecorder()
+
+	callbackHandler(rec, req, nil, false)
+
+	res := rec.Result()
+	if res.StatusCode != http.StatusFound {
+		t.Fatalf("expected redirect response, got %d", res.StatusCode)
+	}
+	for _, cookie := range res.Cookies() {
+		if cookie.Name == "session" {
+			t.Fatalf("expected insecure upstream cookie to be dropped")
+		}
+	}
+
+	logs := buf.String()
+	scanner := bufio.NewScanner(strings.NewReader(logs))
+	found := false
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+		if event, _ := entry["event"].(string); event != "auth.oauth.callback" {
+			continue
+		}
+		details, _ := entry["details"].(map[string]any)
+		if details == nil {
+			continue
+		}
+		if details["action"] == "upstream_cookie_rejected" {
+			found = true
+			if outcome, _ := entry["outcome"].(string); outcome != "success" {
+				t.Fatalf("expected audit outcome to be success for sanitized cookies, got %q", outcome)
+			}
+			if _, ok := details["cookies"]; !ok {
+				t.Fatalf("expected dropped cookie details to be recorded: %q", line)
+			}
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("failed to scan audit logs: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected audit log to note cookie rejection, got %q", logs)
 	}
 }
 

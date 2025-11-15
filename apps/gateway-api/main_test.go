@@ -1,6 +1,8 @@
 package main
 
 import (
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
@@ -58,6 +60,34 @@ func TestValidateServiceURL(t *testing.T) {
 	t.Setenv("INDEXER_URL", "ftp://example.com")
 	if _, err := validateServiceURL("INDEXER_URL", "http://default"); err == nil {
 		t.Fatalf("expected validation error for unsupported scheme")
+	}
+}
+
+func TestValidateServiceURLRequiresHTTPSInProduction(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	t.Setenv("ORCHESTRATOR_URL", "http://example.com/api")
+	if _, err := validateServiceURL("ORCHESTRATOR_URL", "http://127.0.0.1:4000"); err == nil {
+		t.Fatalf("expected https requirement error in production")
+	}
+
+	t.Setenv("ORCHESTRATOR_URL", "https://example.com/api")
+	if _, err := validateServiceURL("ORCHESTRATOR_URL", "http://127.0.0.1:4000"); err != nil {
+		t.Fatalf("expected https url to be accepted in production, got %v", err)
+	}
+}
+
+func TestValidateServiceURLRejectsFallbackLoopbackInProduction(t *testing.T) {
+	t.Setenv("NODE_ENV", "production")
+	if _, err := validateServiceURL("INDEXER_URL", "http://127.0.0.1:7070"); err == nil {
+		t.Fatalf("expected fallback loopback to be rejected in production")
+	}
+}
+
+func TestValidateServiceURLRunModeEnterpriseRequiresHTTPS(t *testing.T) {
+	t.Setenv("RUN_MODE", "enterprise")
+	t.Setenv("INDEXER_URL", "http://example.com")
+	if _, err := validateServiceURL("INDEXER_URL", "http://127.0.0.1:7070"); err == nil {
+		t.Fatalf("expected enterprise mode to require https")
 	}
 }
 
@@ -151,6 +181,35 @@ func TestMaxRequestBodyBytesFromEnv(t *testing.T) {
 				t.Fatalf("maxRequestBodyBytesFromEnv() = %d, want %d", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestRateLimitedResponsesIncludeRequestID(t *testing.T) {
+	t.Setenv("GATEWAY_HTTP_RATE_LIMIT_MAX", "1")
+	t.Setenv("GATEWAY_HTTP_RATE_LIMIT_WINDOW", "1m")
+
+	limiter := gateway.NewGlobalRateLimiter(nil)
+	handler := buildHTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}), limiter, gateway.DefaultMaxRequestBodyBytes())
+
+	first := httptest.NewRecorder()
+	firstReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	firstReq.RemoteAddr = "203.0.113.50:1000"
+	handler.ServeHTTP(first, firstReq)
+	if first.Code != http.StatusOK {
+		t.Fatalf("expected first request to succeed, got %d", first.Code)
+	}
+
+	second := httptest.NewRecorder()
+	secondReq := httptest.NewRequest(http.MethodGet, "/", nil)
+	secondReq.RemoteAddr = "203.0.113.50:2000"
+	handler.ServeHTTP(second, secondReq)
+	if second.Code != http.StatusTooManyRequests {
+		t.Fatalf("expected second request to be rate limited, got %d", second.Code)
+	}
+	if requestID := strings.TrimSpace(second.Header().Get("X-Request-Id")); requestID == "" {
+		t.Fatal("expected rate-limited response to include X-Request-Id header")
 	}
 }
 

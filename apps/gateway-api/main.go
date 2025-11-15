@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -48,6 +49,10 @@ func main() {
 
 	trustedProxyCIDRs := trustedProxyCIDRsFromEnv()
 	allowInsecureStateCookie := allowInsecureStateCookieFromEnv()
+	trustedNetworks, err := gateway.ParseTrustedProxyCIDRs(trustedProxyCIDRs)
+	if err != nil {
+		log.Fatalf("invalid trusted proxy configuration: %v", err)
+	}
 	if err := validateStateCookieConfig(allowInsecureStateCookie); err != nil {
 		log.Fatalf("oauth state cookie configuration invalid: %v", err)
 	}
@@ -66,12 +71,9 @@ func main() {
 		port = "8080"
 	}
 
-	handler := audit.Middleware(mux)
-	if limitBytes := maxRequestBodyBytesFromEnv(); limitBytes > 0 {
-		handler = gateway.RequestBodyLimitMiddleware(handler, limitBytes)
-	}
-	handler = gateway.SecurityHeadersMiddleware(handler)
-	handler = otelhttp.NewHandler(handler, "gateway.http.request", otelhttp.WithPublicEndpoint())
+	globalLimiter := gateway.NewGlobalRateLimiter(trustedNetworks)
+	maxBodyBytes := maxRequestBodyBytesFromEnv()
+	handler := buildHTTPHandler(mux, globalLimiter, maxBodyBytes)
 
 	server := &http.Server{
 		Addr:         ":" + port,
@@ -99,6 +101,22 @@ func main() {
 	if err := server.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 		log.Fatalf("server error: %v", err)
 	}
+}
+
+func buildHTTPHandler(base http.Handler, limiter *gateway.GlobalRateLimiter, maxBodyBytes int64) http.Handler {
+	handler := http.Handler(base)
+	if maxBodyBytes > 0 {
+		handler = gateway.RequestBodyLimitMiddleware(handler, maxBodyBytes)
+	}
+	if limiter != nil {
+		handler = limiter.Middleware(handler)
+	}
+	// Order middlewares so that audit instrumentation always seeds the request
+	// identifier before rate limiting decisions are made while security headers
+	// remain on all responses, including 429s.
+	handler = gateway.SecurityHeadersMiddleware(handler)
+	handler = audit.Middleware(handler)
+	return otelhttp.NewHandler(handler, "gateway.http.request", otelhttp.WithPublicEndpoint())
 }
 
 func trustedProxyCIDRsFromEnv() []string {
@@ -165,12 +183,22 @@ func validateStateCookieConfig(allowInsecure bool) error {
 
 func validateServiceURL(key, fallback string) (string, error) {
 	raw := strings.TrimSpace(os.Getenv(key))
+	usedFallback := false
 	if raw == "" {
 		raw = fallback
+		usedFallback = true
 	}
 	normalized, err := normalizeServiceURL(raw)
 	if err != nil {
 		return "", err
+	}
+	if requireSecureServiceURLs() {
+		if !strings.HasPrefix(strings.ToLower(normalized), "https://") {
+			return "", fmt.Errorf("%s must use https when NODE_ENV or RUN_MODE indicate production", key)
+		}
+		if usedFallback && isLoopbackServiceURL(normalized) {
+			return "", fmt.Errorf("%s fallback value is not permitted in production", key)
+		}
 	}
 	if normalized != raw {
 		if err := os.Setenv(key, normalized); err != nil {
@@ -178,6 +206,41 @@ func validateServiceURL(key, fallback string) (string, error) {
 		}
 	}
 	return normalized, nil
+}
+
+func requireSecureServiceURLs() bool {
+	nodeEnv := strings.ToLower(strings.TrimSpace(os.Getenv("NODE_ENV")))
+	runMode := strings.ToLower(strings.TrimSpace(os.Getenv("RUN_MODE")))
+	if nodeEnv == "production" || nodeEnv == "prod" {
+		return true
+	}
+	switch runMode {
+	case "production", "prod", "enterprise":
+		return true
+	}
+	return false
+}
+
+func isLoopbackServiceURL(raw string) bool {
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	host := parsed.Host
+	if host == "" {
+		return false
+	}
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	if ip != nil && ip.IsLoopback() {
+		return true
+	}
+	return false
 }
 
 func normalizeServiceURL(raw string) (string, error) {
