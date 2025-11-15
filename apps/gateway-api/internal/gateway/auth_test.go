@@ -1,6 +1,7 @@
 package gateway
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"crypto/tls"
@@ -840,7 +841,39 @@ func TestCallbackHandlerDropsInsecureUpstreamCookie(t *testing.T) {
 	}
 
 	logs := buf.String()
-	if !strings.Contains(logs, "upstream_cookie_rejected") {
+	scanner := bufio.NewScanner(strings.NewReader(logs))
+	found := false
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+		if event, _ := entry["event"].(string); event != "auth.oauth.callback" {
+			continue
+		}
+		details, _ := entry["details"].(map[string]any)
+		if details == nil {
+			continue
+		}
+		if details["action"] == "upstream_cookie_rejected" {
+			found = true
+			if outcome, _ := entry["outcome"].(string); outcome != "success" {
+				t.Fatalf("expected audit outcome to be success for sanitized cookies, got %q", outcome)
+			}
+			if _, ok := details["cookies"]; !ok {
+				t.Fatalf("expected dropped cookie details to be recorded: %q", line)
+			}
+			break
+		}
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("failed to scan audit logs: %v", err)
+	}
+	if !found {
 		t.Fatalf("expected audit log to note cookie rejection, got %q", logs)
 	}
 }

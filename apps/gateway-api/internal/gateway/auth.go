@@ -416,8 +416,8 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 
 	normalizedCookies, hardenedDetails, droppedDetails := normalizeUpstreamCookies(resp.Cookies())
 	if len(droppedDetails) > 0 {
-		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, mergeDetails(baseDetails, map[string]any{
-			"reason":  "upstream_cookie_rejected",
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeSuccess, mergeDetails(baseDetails, map[string]any{
+			"action":  "upstream_cookie_rejected",
 			"cookies": droppedDetails,
 		}))
 	}
