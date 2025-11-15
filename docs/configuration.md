@@ -149,6 +149,23 @@ Relevant environment overrides:
 | `ORCHESTRATOR_TLS_SERVER_NAME` | Overrides the server name (SNI) used by the gateway when connecting to the orchestrator over TLS. |
 | `mtls.*` (Helm values) | `mtls.enabled=true` provisions orchestrator and gateway certificates via cert-manager. Configure `mtls.certManager.issuerRef` and optional SAN overrides. |
 
+### Security headers
+
+`server.securityHeaders` controls the HTTP hardening headers emitted by the orchestrator. Defaults include:
+
+- `Content-Security-Policy`: `default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`
+- `Strict-Transport-Security`: `max-age=63072000; includeSubDomains` (emitted for HTTPS requests)
+- `X-Frame-Options`: `DENY`
+- `X-Content-Type-Options`: `nosniff`
+- `Referrer-Policy`: `no-referrer`
+- `Permissions-Policy`: `camera=(), microphone=(), geolocation=()`
+- `Cross-Origin-Opener-Policy`: `same-origin`
+- `Cross-Origin-Resource-Policy`: `same-origin`
+- `Cross-Origin-Embedder-Policy`: `require-corp`
+- `X-DNS-Prefetch-Control`: `off`
+
+Each header can be overridden or disabled in YAML and through environment variables. Override a value with `SERVER_SECURITY_HEADER_<NAME>` (`CSP`, `HSTS`, `XFO`, `XCTO`, `REFERRER_POLICY`, `PERMISSIONS_POLICY`, `COOP`, `CORP`, `COEP`, `XDNS_PREFETCH_CONTROL`) and disable a header entirely with `SERVER_SECURITY_HEADER_<NAME>_ENABLED=false`. HSTS is automatically omitted when the inbound request is not HTTPS; set `SERVER_SECURITY_HEADER_HSTS_REQUIRE_TLS=false` (or `strictTransportSecurity.requireTls: false`) to force the header during plain-HTTP migrations.
+
 Egress enforcement defaults to `enforce` with loopback addresses, `oauth2.googleapis.com`, `openrouter.ai`, `*.svc`, `*.svc.cluster.local`, and `*.example.com` already whitelisted so local dev, Google and OpenRouter OAuth token exchanges, Kubernetes service discovery, and test fixtures continue working. Extend `network.egress.allow` (or `NETWORK_EGRESS_ALLOW`) with any additional destinations such as Vault, OIDC providers, or outbound model APIs.
 
 For any variable documented above you can also supply a corresponding `*_FILE` variant (for example `OIDC_CLIENT_SECRET_FILE` or `VAULT_TOKEN_FILE`). When present, the orchestrator reads the secret value from the referenced file path—ideal for Docker or Kubernetes secret mounts. File-based values take precedence over the plain environment variable.

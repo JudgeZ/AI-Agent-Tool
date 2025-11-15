@@ -57,6 +57,28 @@ export type ToolAgentTlsConfig = {
   caPaths?: string[];
 };
 
+export type SecurityHeaderValueConfig = {
+  enabled: boolean;
+  value: string;
+};
+
+export type StrictTransportSecurityHeaderConfig = SecurityHeaderValueConfig & {
+  requireTls: boolean;
+};
+
+export type SecurityHeadersConfig = {
+  contentSecurityPolicy: SecurityHeaderValueConfig;
+  strictTransportSecurity: StrictTransportSecurityHeaderConfig;
+  xFrameOptions: SecurityHeaderValueConfig;
+  xContentTypeOptions: SecurityHeaderValueConfig;
+  referrerPolicy: SecurityHeaderValueConfig;
+  permissionsPolicy: SecurityHeaderValueConfig;
+  crossOriginOpenerPolicy: SecurityHeaderValueConfig;
+  crossOriginResourcePolicy: SecurityHeaderValueConfig;
+  crossOriginEmbedderPolicy: SecurityHeaderValueConfig;
+  xDnsPrefetchControl: SecurityHeaderValueConfig;
+};
+
 export type KafkaSaslMechanism = "plain" | "scram-sha-256" | "scram-sha-512" | "aws" | "oauthbearer";
 
 export type KafkaSaslConfig = {
@@ -229,6 +251,7 @@ export type AppConfig = {
     tls: TlsConfig;
     trustedProxyCidrs: string[];
     cors: CorsConfig;
+    securityHeaders: SecurityHeadersConfig;
   };
   observability: ObservabilityConfig;
   policy: PolicyConfig;
@@ -316,6 +339,44 @@ function sanitizeNonNegativeInteger(value: number | undefined, fallback: number)
   return normalized < 0 ? 0 : normalized;
 }
 
+function resolveSecurityHeaderConfig(
+  envValue: string | undefined,
+  envEnabled: boolean | undefined,
+  fileValue: PartialSecurityHeaderValueConfig | undefined,
+  defaultValue: SecurityHeaderValueConfig,
+): SecurityHeaderValueConfig {
+  const value =
+    envValue !== undefined
+      ? envValue
+      : fileValue?.value !== undefined
+        ? fileValue.value
+        : defaultValue.value;
+  const enabled =
+    envEnabled !== undefined
+      ? envEnabled
+      : fileValue?.enabled !== undefined
+        ? fileValue.enabled
+        : defaultValue.enabled;
+  return { value, enabled };
+}
+
+function resolveStrictTransportSecurityConfig(
+  envValue: string | undefined,
+  envEnabled: boolean | undefined,
+  envRequireTls: boolean | undefined,
+  fileValue: PartialStrictTransportSecurityHeaderConfig | undefined,
+  defaultValue: StrictTransportSecurityHeaderConfig,
+): StrictTransportSecurityHeaderConfig {
+  const base = resolveSecurityHeaderConfig(envValue, envEnabled, fileValue, defaultValue);
+  const requireTls =
+    envRequireTls !== undefined
+      ? envRequireTls
+      : fileValue?.requireTls !== undefined
+        ? fileValue.requireTls
+        : defaultValue.requireTls;
+  return { ...base, requireTls };
+}
+
 function validateCookieSecure(runMode: AppConfig["runMode"]): void {
   const raw = process.env.COOKIE_SECURE;
   if (raw === undefined) {
@@ -362,6 +423,28 @@ type PartialCorsConfig = {
 type PartialCircuitBreakerConfig = {
   failureThreshold?: number;
   resetTimeoutMs?: number;
+};
+
+type PartialSecurityHeaderValueConfig = {
+  enabled?: boolean;
+  value?: string;
+};
+
+type PartialStrictTransportSecurityHeaderConfig = PartialSecurityHeaderValueConfig & {
+  requireTls?: boolean;
+};
+
+type PartialSecurityHeadersConfig = {
+  contentSecurityPolicy?: PartialSecurityHeaderValueConfig;
+  strictTransportSecurity?: PartialStrictTransportSecurityHeaderConfig;
+  xFrameOptions?: PartialSecurityHeaderValueConfig;
+  xContentTypeOptions?: PartialSecurityHeaderValueConfig;
+  referrerPolicy?: PartialSecurityHeaderValueConfig;
+  permissionsPolicy?: PartialSecurityHeaderValueConfig;
+  crossOriginOpenerPolicy?: PartialSecurityHeaderValueConfig;
+  crossOriginResourcePolicy?: PartialSecurityHeaderValueConfig;
+  crossOriginEmbedderPolicy?: PartialSecurityHeaderValueConfig;
+  xDnsPrefetchControl?: PartialSecurityHeaderValueConfig;
 };
 
 type PartialTlsConfig = {
@@ -634,6 +717,29 @@ export const DEFAULT_CONFIG: AppConfig = {
     cors: {
       allowedOrigins: [...DEFAULT_DEV_ALLOWED_ORIGINS],
     },
+    securityHeaders: {
+      contentSecurityPolicy: {
+        enabled: true,
+        value:
+          "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+      },
+      strictTransportSecurity: {
+        enabled: true,
+        value: "max-age=63072000; includeSubDomains",
+        requireTls: true,
+      },
+      xFrameOptions: { enabled: true, value: "DENY" },
+      xContentTypeOptions: { enabled: true, value: "nosniff" },
+      referrerPolicy: { enabled: true, value: "no-referrer" },
+      permissionsPolicy: {
+        enabled: true,
+        value: "camera=(), microphone=(), geolocation=()",
+      },
+      crossOriginOpenerPolicy: { enabled: true, value: "same-origin" },
+      crossOriginResourcePolicy: { enabled: true, value: "same-origin" },
+      crossOriginEmbedderPolicy: { enabled: true, value: "require-corp" },
+      xDnsPrefetchControl: { enabled: true, value: "off" },
+    },
   },
   observability: {
     tracing: { ...DEFAULT_TRACING_CONFIG }
@@ -744,6 +850,7 @@ type PartialServerConfig = {
   sseQuotas?: PartialSseQuotaConfig;
   trustedProxyCidrs?: string[];
   cors?: PartialCorsConfig;
+  securityHeaders?: PartialSecurityHeadersConfig;
 };
 
 type PartialOidcSessionConfig = {
@@ -927,6 +1034,127 @@ function parseCorsConfigRecord(value: unknown): PartialCorsConfig | undefined {
     return { allowedOrigins };
   }
   return undefined;
+}
+
+function parseSecurityHeaderEntry(
+  value: unknown,
+  { allowRequireTls = false }: { allowRequireTls?: boolean } = {},
+):
+  | PartialSecurityHeaderValueConfig
+  | PartialStrictTransportSecurityHeaderConfig
+  | undefined {
+  if (value === undefined || value === null) {
+    return undefined;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? { value: trimmed } : undefined;
+  }
+  if (typeof value === "boolean") {
+    return { enabled: value };
+  }
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const partial: PartialStrictTransportSecurityHeaderConfig = {};
+  const enabled = asBoolean(record.enabled);
+  if (enabled !== undefined) {
+    partial.enabled = enabled;
+  }
+  const headerValue = asString(
+    record.value ?? record.policy ?? record.header ?? record.setting,
+  );
+  if (headerValue !== undefined) {
+    partial.value = headerValue;
+  }
+  if (allowRequireTls) {
+    const requireTls = asBoolean(
+      record.requireTls ??
+        record.require_tls ??
+        record.requireHttps ??
+        record.require_https ??
+        record.requireSecure ??
+        record.require_secure,
+    );
+    if (requireTls !== undefined) {
+      partial.requireTls = requireTls;
+    }
+  }
+  return Object.keys(partial).length > 0 ? partial : undefined;
+}
+
+function parseSecurityHeadersRecord(
+  value: unknown,
+): PartialSecurityHeadersConfig | undefined {
+  const record = asRecord(value);
+  if (!record) {
+    return undefined;
+  }
+  const partial: PartialSecurityHeadersConfig = {};
+  const csp = parseSecurityHeaderEntry(
+    record.contentSecurityPolicy ?? record.csp ?? record.content_security_policy,
+  );
+  if (csp) {
+    partial.contentSecurityPolicy = csp;
+  }
+  const hsts = parseSecurityHeaderEntry(
+    record.strictTransportSecurity ??
+      record.hsts ??
+      record.strict_transport_security,
+    { allowRequireTls: true },
+  );
+  if (hsts) {
+    partial.strictTransportSecurity = hsts;
+  }
+  const xfo = parseSecurityHeaderEntry(record.xFrameOptions ?? record.x_frame_options);
+  if (xfo) {
+    partial.xFrameOptions = xfo;
+  }
+  const xcto = parseSecurityHeaderEntry(
+    record.xContentTypeOptions ?? record.x_content_type_options,
+  );
+  if (xcto) {
+    partial.xContentTypeOptions = xcto;
+  }
+  const referrerPolicy = parseSecurityHeaderEntry(
+    record.referrerPolicy ?? record.referrer_policy,
+  );
+  if (referrerPolicy) {
+    partial.referrerPolicy = referrerPolicy;
+  }
+  const permissionsPolicy = parseSecurityHeaderEntry(
+    record.permissionsPolicy ??
+      record.permissions_policy ??
+      record.permissionPolicy ??
+      record.permission_policy,
+  );
+  if (permissionsPolicy) {
+    partial.permissionsPolicy = permissionsPolicy;
+  }
+  const coop = parseSecurityHeaderEntry(record.crossOriginOpenerPolicy ?? record.coop);
+  if (coop) {
+    partial.crossOriginOpenerPolicy = coop;
+  }
+  const corp = parseSecurityHeaderEntry(
+    record.crossOriginResourcePolicy ?? record.corp,
+  );
+  if (corp) {
+    partial.crossOriginResourcePolicy = corp;
+  }
+  const coep = parseSecurityHeaderEntry(
+    record.crossOriginEmbedderPolicy ?? record.coep,
+  );
+  if (coep) {
+    partial.crossOriginEmbedderPolicy = coep;
+  }
+  const xdns = parseSecurityHeaderEntry(
+    record.xDnsPrefetchControl ?? record.x_dns_prefetch_control ?? record.dnsPrefetch ?? record.dns_prefetch,
+  );
+  if (xdns) {
+    partial.xDnsPrefetchControl = xdns;
+  }
+  return Object.keys(partial).length > 0 ? partial : undefined;
 }
 
 function parseCircuitBreakerConfig(value: unknown): PartialCircuitBreakerConfig | undefined {
@@ -1951,6 +2179,13 @@ export function loadConfig(): AppConfig {
         const serverCors = server
           ? parseCorsConfigRecord(server.cors ?? server.corsConfig ?? server.cors_config)
           : undefined;
+        const serverSecurityHeaders = server
+          ? parseSecurityHeadersRecord(
+              server.securityHeaders ??
+                server.security_headers ??
+                server.securityheaders,
+            )
+          : undefined;
         const kafkaMessaging = messagingRecord ? parseKafkaMessagingRecord(messagingRecord.kafka) : undefined;
         const fileOidc = parseOidcConfigRecord(oidc);
         const postgresConfig = databaseRecord
@@ -2029,6 +2264,7 @@ export function loadConfig(): AppConfig {
                 sseQuotas: serverSseQuotas,
                 trustedProxyCidrs: serverTrustedProxies,
                 cors: serverCors,
+                securityHeaders: serverSecurityHeaders,
               }
             : undefined,
           observability: tracing ? { tracing } : undefined,
@@ -2183,6 +2419,50 @@ export function loadConfig(): AppConfig {
   const envServerTlsCertPath = process.env.SERVER_TLS_CERT_PATH;
   const envServerTlsCaPaths = parseStringList(process.env.SERVER_TLS_CA_PATHS);
   const envServerTlsRequestClientCert = asBoolean(process.env.SERVER_TLS_REQUEST_CLIENT_CERT);
+  const envSecurityHeaderCsp = process.env.SERVER_SECURITY_HEADER_CSP;
+  const envSecurityHeaderCspEnabled = asBoolean(
+    process.env.SERVER_SECURITY_HEADER_CSP_ENABLED,
+  );
+  const envSecurityHeaderHsts = process.env.SERVER_SECURITY_HEADER_HSTS;
+  const envSecurityHeaderHstsEnabled = asBoolean(
+    process.env.SERVER_SECURITY_HEADER_HSTS_ENABLED,
+  );
+  const envSecurityHeaderHstsRequireTls = asBoolean(
+    process.env.SERVER_SECURITY_HEADER_HSTS_REQUIRE_TLS,
+  );
+  const envSecurityHeaderXfo = process.env.SERVER_SECURITY_HEADER_XFO;
+  const envSecurityHeaderXfoEnabled = asBoolean(
+    process.env.SERVER_SECURITY_HEADER_XFO_ENABLED,
+  );
+  const envSecurityHeaderXcto = process.env.SERVER_SECURITY_HEADER_XCTO;
+  const envSecurityHeaderXctoEnabled = asBoolean(
+    process.env.SERVER_SECURITY_HEADER_XCTO_ENABLED,
+  );
+  const envSecurityHeaderReferrerPolicy = process.env.SERVER_SECURITY_HEADER_REFERRER_POLICY;
+  const envSecurityHeaderReferrerPolicyEnabled = asBoolean(
+    process.env.SERVER_SECURITY_HEADER_REFERRER_POLICY_ENABLED,
+  );
+  const envSecurityHeaderPermissionsPolicy = process.env.SERVER_SECURITY_HEADER_PERMISSIONS_POLICY;
+  const envSecurityHeaderPermissionsPolicyEnabled = asBoolean(
+    process.env.SERVER_SECURITY_HEADER_PERMISSIONS_POLICY_ENABLED,
+  );
+  const envSecurityHeaderCoop = process.env.SERVER_SECURITY_HEADER_COOP;
+  const envSecurityHeaderCoopEnabled = asBoolean(
+    process.env.SERVER_SECURITY_HEADER_COOP_ENABLED,
+  );
+  const envSecurityHeaderCorp = process.env.SERVER_SECURITY_HEADER_CORP;
+  const envSecurityHeaderCorpEnabled = asBoolean(
+    process.env.SERVER_SECURITY_HEADER_CORP_ENABLED,
+  );
+  const envSecurityHeaderCoep = process.env.SERVER_SECURITY_HEADER_COEP;
+  const envSecurityHeaderCoepEnabled = asBoolean(
+    process.env.SERVER_SECURITY_HEADER_COEP_ENABLED,
+  );
+  const envSecurityHeaderXdnsPrefetchControl =
+    process.env.SERVER_SECURITY_HEADER_XDNS_PREFETCH_CONTROL;
+  const envSecurityHeaderXdnsPrefetchControlEnabled = asBoolean(
+    process.env.SERVER_SECURITY_HEADER_XDNS_PREFETCH_CONTROL_ENABLED,
+  );
   const envKafkaBrokers = parseStringList(process.env.KAFKA_BROKERS);
   const envKafkaClientId = asString(process.env.KAFKA_CLIENT_ID);
   const envKafkaGroupId = asString(process.env.KAFKA_GROUP_ID);
@@ -2476,6 +2756,71 @@ export function loadConfig(): AppConfig {
     envServerCorsAllowedOrigins ?? fileCorsAllowedOrigins ??
     (runMode === "enterprise" ? [] : DEFAULT_CONFIG.server.cors.allowedOrigins);
   const normalizedCorsAllowedOrigins = normalizeOriginList(corsAllowedOriginsSource);
+
+  const fileSecurityHeaders = fileCfg.server?.securityHeaders;
+  const serverSecurityHeadersConfig: SecurityHeadersConfig = {
+    contentSecurityPolicy: resolveSecurityHeaderConfig(
+      envSecurityHeaderCsp,
+      envSecurityHeaderCspEnabled,
+      fileSecurityHeaders?.contentSecurityPolicy,
+      DEFAULT_CONFIG.server.securityHeaders.contentSecurityPolicy,
+    ),
+    strictTransportSecurity: resolveStrictTransportSecurityConfig(
+      envSecurityHeaderHsts,
+      envSecurityHeaderHstsEnabled,
+      envSecurityHeaderHstsRequireTls,
+      fileSecurityHeaders?.strictTransportSecurity,
+      DEFAULT_CONFIG.server.securityHeaders.strictTransportSecurity,
+    ),
+    xFrameOptions: resolveSecurityHeaderConfig(
+      envSecurityHeaderXfo,
+      envSecurityHeaderXfoEnabled,
+      fileSecurityHeaders?.xFrameOptions,
+      DEFAULT_CONFIG.server.securityHeaders.xFrameOptions,
+    ),
+    xContentTypeOptions: resolveSecurityHeaderConfig(
+      envSecurityHeaderXcto,
+      envSecurityHeaderXctoEnabled,
+      fileSecurityHeaders?.xContentTypeOptions,
+      DEFAULT_CONFIG.server.securityHeaders.xContentTypeOptions,
+    ),
+    referrerPolicy: resolveSecurityHeaderConfig(
+      envSecurityHeaderReferrerPolicy,
+      envSecurityHeaderReferrerPolicyEnabled,
+      fileSecurityHeaders?.referrerPolicy,
+      DEFAULT_CONFIG.server.securityHeaders.referrerPolicy,
+    ),
+    permissionsPolicy: resolveSecurityHeaderConfig(
+      envSecurityHeaderPermissionsPolicy,
+      envSecurityHeaderPermissionsPolicyEnabled,
+      fileSecurityHeaders?.permissionsPolicy,
+      DEFAULT_CONFIG.server.securityHeaders.permissionsPolicy,
+    ),
+    crossOriginOpenerPolicy: resolveSecurityHeaderConfig(
+      envSecurityHeaderCoop,
+      envSecurityHeaderCoopEnabled,
+      fileSecurityHeaders?.crossOriginOpenerPolicy,
+      DEFAULT_CONFIG.server.securityHeaders.crossOriginOpenerPolicy,
+    ),
+    crossOriginResourcePolicy: resolveSecurityHeaderConfig(
+      envSecurityHeaderCorp,
+      envSecurityHeaderCorpEnabled,
+      fileSecurityHeaders?.crossOriginResourcePolicy,
+      DEFAULT_CONFIG.server.securityHeaders.crossOriginResourcePolicy,
+    ),
+    crossOriginEmbedderPolicy: resolveSecurityHeaderConfig(
+      envSecurityHeaderCoep,
+      envSecurityHeaderCoepEnabled,
+      fileSecurityHeaders?.crossOriginEmbedderPolicy,
+      DEFAULT_CONFIG.server.securityHeaders.crossOriginEmbedderPolicy,
+    ),
+    xDnsPrefetchControl: resolveSecurityHeaderConfig(
+      envSecurityHeaderXdnsPrefetchControl,
+      envSecurityHeaderXdnsPrefetchControlEnabled,
+      fileSecurityHeaders?.xDnsPrefetchControl,
+      DEFAULT_CONFIG.server.securityHeaders.xDnsPrefetchControl,
+    ),
+  };
 
   const fileTls = fileCfg.server?.tls;
   const tlsEnabled = envServerTlsEnabled ?? fileTls?.enabled ?? DEFAULT_CONFIG.server.tls.enabled;
@@ -2778,6 +3123,7 @@ export function loadConfig(): AppConfig {
       cors: {
         allowedOrigins: [...normalizedCorsAllowedOrigins],
       },
+      securityHeaders: serverSecurityHeadersConfig,
     },
     observability: {
       tracing: {
