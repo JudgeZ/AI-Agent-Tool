@@ -361,6 +361,8 @@ export async function handleOidcCallback(req: Request, res: Response) {
         roles,
         scopes,
         claims: { ...payload },
+        // Tokens are intentionally omitted from the session payload to reduce
+        // in-memory secret exposure; sessions retain only identity metadata.
       },
       ttlSeconds,
       targetExpiry,
