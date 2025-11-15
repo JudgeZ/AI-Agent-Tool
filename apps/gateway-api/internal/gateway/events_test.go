@@ -275,6 +275,75 @@ func TestEventsHandlerRejectsInvalidCookieHeader(t *testing.T) {
 	}
 }
 
+func TestEventsHandlerAllowsLargeCookieHeader(t *testing.T) {
+	cookieCh := make(chan string, 1)
+
+	orchestrator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		cookieCh <- r.Header.Get("Cookie")
+		w.Header().Set("Content-Type", "text/event-stream")
+		flusher, ok := w.(http.Flusher)
+		if !ok {
+			t.Fatal("orchestrator recorder missing flusher")
+		}
+		if _, err := io.WriteString(w, "data: ok\n\n"); err != nil {
+			t.Fatalf("failed to write upstream event: %v", err)
+		}
+		flusher.Flush()
+	}))
+	defer orchestrator.Close()
+
+	handler := NewEventsHandler(orchestrator.Client(), orchestrator.URL, 0, nil, nil)
+
+	base := "session="
+	if len(base) >= maxForwardedCookieHeaderLen {
+		t.Fatalf("test setup base cookie name exceeds header limit")
+	}
+	paddingLen := maxForwardedCookieHeaderLen - len(base)
+	largeValue := base + strings.Repeat("a", paddingLen)
+
+	req := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil)
+	req.Header.Add("Cookie", largeValue)
+
+	rec := newFlushingRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected proxied SSE request to succeed, got %d", rec.Code)
+	}
+
+	select {
+	case cookie := <-cookieCh:
+		if cookie != largeValue {
+			t.Fatalf("expected large cookie header to be forwarded, got length %d", len(cookie))
+		}
+	default:
+		t.Fatal("expected orchestrator to receive cookie header")
+	}
+}
+
+func TestEventsHandlerRejectsOversizedCookieHeader(t *testing.T) {
+	var called int32
+	client := &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		atomic.AddInt32(&called, 1)
+		return nil, context.DeadlineExceeded
+	})}
+
+	handler := NewEventsHandler(client, "http://orchestrator", 0, nil, nil)
+
+	req := httptest.NewRequest(http.MethodGet, "/events?plan_id="+validPlanID, nil)
+	req.Header.Add("Cookie", strings.Repeat("a", maxForwardedCookieHeaderLen+1))
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for oversized cookie header, got %d", rec.Code)
+	}
+	if atomic.LoadInt32(&called) != 0 {
+		t.Fatalf("expected upstream to be skipped when cookie oversized")
+	}
+}
+
 func TestEventsHandlerErrorsWhenResponseWriterLacksFlusher(t *testing.T) {
 	orchestrator := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")

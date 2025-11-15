@@ -29,8 +29,8 @@ const (
 	maxAuthorizationHeaderLen = 4096
 	// maxLastEventIDHeaderLen comfortably supports UUIDs and vendor specific suffixes.
 	maxLastEventIDHeaderLen = 1024
-	// maxForwardedCookieHeaderLen caps forwarded cookie headers to 4KiB, matching common browser limits.
-	maxForwardedCookieHeaderLen = 4096
+	// maxForwardedCookieHeaderLen caps forwarded cookie headers to 16KiB, accommodating multiple cookies while bounding resource usage.
+	maxForwardedCookieHeaderLen = 16 * 1024
 )
 
 var forwardedSSEHeaders = []string{
