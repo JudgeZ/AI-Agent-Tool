@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { ApprovalDecision } from "../queue/PlanQueueRuntime.js";
+import type { RoutingMode } from "../providers/interfaces.js";
 
 const MAX_GOAL_LENGTH = 2048;
 const MAX_RATIONALE_LENGTH = 2000;
@@ -127,7 +128,7 @@ export const ChatRequestSchema = z
     const payload: {
       model?: string;
       provider?: string;
-      routing?: typeof RoutingModeValues[number];
+      routing?: RoutingMode;
       temperature?: number;
       messages: typeof messages;
     } = { messages };
@@ -137,8 +138,9 @@ export const ChatRequestSchema = z
     if (provider && provider.length > 0) {
       payload.provider = provider;
     }
-    if (routing && routing !== "default") {
-      payload.routing = routing as "balanced" | "high_quality" | "low_cost";
+    if (routing) {
+      const normalizedRouting: RoutingMode = routing === "default" ? "balanced" : routing;
+      payload.routing = normalizedRouting; // "default" remains an alias for "balanced"
     }
     if (typeof temperature === "number") {
       payload.temperature = temperature;

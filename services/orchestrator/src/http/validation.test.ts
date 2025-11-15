@@ -174,6 +174,18 @@ describe("ChatRequestSchema", () => {
     });
   });
 
+  it("maps routing default alias to balanced", () => {
+    expect(
+      ChatRequestSchema.parse({
+        routing: "default",
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    ).toEqual({
+      routing: "balanced",
+      messages: [{ role: "user", content: "hi" }],
+    });
+  });
+
   it.each([
     {
       name: "missing messages",

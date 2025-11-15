@@ -380,7 +380,7 @@ export class GoogleProvider implements ModelProvider {
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: params
       },
-      { operation: "service_account.token", retryable: true }
+      { operation: "serviceAccount.token", retryable: true }
     );
 
     if (!response.ok) {
