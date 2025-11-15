@@ -1182,6 +1182,33 @@ func TestNormalizeUpstreamCookies(t *testing.T) {
 			expectedSameSite:     http.SameSiteStrictMode,
 			expectedEnforcements: []string{"secure_enforced", "httponly_enforced", "samesite_strict_enforced"},
 		},
+		{
+			name: "default samesite is upgraded to strict",
+			cookie: &http.Cookie{
+				Name:     "default_mode",
+				Value:    "defaults",
+				Secure:   true,
+				HttpOnly: true,
+				SameSite: http.SameSiteDefaultMode,
+			},
+			expectedSecure:       true,
+			expectedHTTPOnly:     true,
+			expectedSameSite:     http.SameSiteStrictMode,
+			expectedEnforcements: []string{"samesite_strict_enforced"},
+		},
+		{
+			name: "fully secure cookie requires no enforcement",
+			cookie: &http.Cookie{
+				Name:     "already_secure",
+				Value:    "token",
+				Secure:   true,
+				HttpOnly: true,
+				SameSite: http.SameSiteStrictMode,
+			},
+			expectedSecure:   true,
+			expectedHTTPOnly: true,
+			expectedSameSite: http.SameSiteStrictMode,
+		},
 	}
 
 	for _, tt := range tests {
@@ -1244,17 +1271,196 @@ func TestNormalizeUpstreamCookies(t *testing.T) {
 			if len(enforcements) != len(tt.expectedEnforcements) {
 				t.Fatalf("expected %d enforcements, got %d", len(tt.expectedEnforcements), len(enforcements))
 			}
-			for i, enforcement := range tt.expectedEnforcements {
-				if enforcements[i] != enforcement {
-					t.Fatalf("expected enforcement %q at position %d, got %q", enforcement, i, enforcements[i])
+
+			expectedSet := make(map[string]int, len(tt.expectedEnforcements))
+			for _, enforcement := range tt.expectedEnforcements {
+				expectedSet[enforcement]++
+			}
+			for _, enforcement := range enforcements {
+				if remaining, ok := expectedSet[enforcement]; !ok {
+					t.Fatalf("unexpected enforcement %q in %v", enforcement, enforcements)
+				} else if remaining == 1 {
+					delete(expectedSet, enforcement)
+				} else {
+					expectedSet[enforcement] = remaining - 1
 				}
 			}
+			if len(expectedSet) != 0 {
+				t.Fatalf("expected enforcements %v were not observed, got %v", tt.expectedEnforcements, enforcements)
+			}
 
-			if tt.cookie.Secure != original.Secure || tt.cookie.HttpOnly != original.HttpOnly || tt.cookie.SameSite != original.SameSite {
+			if tt.cookie.Name != original.Name || tt.cookie.Value != original.Value || tt.cookie.Secure != original.Secure || tt.cookie.HttpOnly != original.HttpOnly || tt.cookie.SameSite != original.SameSite {
 				t.Fatalf("expected original cookie to remain unchanged, got %+v", tt.cookie)
 			}
 		})
 	}
+
+	t.Run("empty slice returns empty results", func(t *testing.T) {
+		normalized, hardened, dropped := normalizeUpstreamCookies(nil)
+		if len(normalized) != 0 {
+			t.Fatalf("expected no normalized cookies, got %d", len(normalized))
+		}
+		if len(hardened) != 0 {
+			t.Fatalf("expected no hardened metadata, got %d", len(hardened))
+		}
+		if len(dropped) != 0 {
+			t.Fatalf("expected no dropped metadata, got %d", len(dropped))
+		}
+	})
+
+	t.Run("nil cookies are skipped", func(t *testing.T) {
+		cookie := &http.Cookie{Name: "valid", Value: "v"}
+		original := *cookie
+		normalized, hardened, dropped := normalizeUpstreamCookies([]*http.Cookie{nil, cookie})
+		if len(dropped) != 0 {
+			t.Fatalf("expected no dropped cookies, got %d", len(dropped))
+		}
+		if len(hardened) != 0 {
+			t.Fatalf("expected no hardened metadata, got %d", len(hardened))
+		}
+		if len(normalized) != 1 {
+			t.Fatalf("expected a single normalized cookie, got %d", len(normalized))
+		}
+		if normalized[0].Name != cookie.Name || normalized[0].Value != cookie.Value {
+			t.Fatalf("unexpected normalized cookie %+v", normalized[0])
+		}
+		if cookie.Name != original.Name || cookie.Value != original.Value || cookie.Secure != original.Secure || cookie.HttpOnly != original.HttpOnly || cookie.SameSite != original.SameSite {
+			t.Fatalf("expected original cookie to remain unchanged, got %+v", cookie)
+		}
+	})
+
+	t.Run("empty cookie name is dropped", func(t *testing.T) {
+		normalized, hardened, dropped := normalizeUpstreamCookies([]*http.Cookie{{Name: "   ", Value: "value"}})
+		if len(normalized) != 0 {
+			t.Fatalf("expected no normalized cookies, got %d", len(normalized))
+		}
+		if len(hardened) != 0 {
+			t.Fatalf("expected no hardened metadata, got %d", len(hardened))
+		}
+		if len(dropped) != 1 {
+			t.Fatalf("expected one dropped entry, got %d", len(dropped))
+		}
+		reasons, ok := dropped[0]["reasons"].([]string)
+		if !ok {
+			t.Fatalf("expected reasons slice in dropped entry, got %#v", dropped[0]["reasons"])
+		}
+		if len(reasons) != 1 || reasons[0] != "missing_name" {
+			t.Fatalf("expected missing_name reason, got %v", reasons)
+		}
+		if _, ok := dropped[0]["name_hash"]; ok {
+			t.Fatalf("did not expect name_hash for missing name entry, got %+v", dropped[0])
+		}
+	})
+
+	t.Run("samesite none cookies are dropped", func(t *testing.T) {
+		cookie := &http.Cookie{Name: "unsafe", Value: "token", SameSite: http.SameSiteNoneMode}
+		normalized, hardened, dropped := normalizeUpstreamCookies([]*http.Cookie{cookie})
+		if len(normalized) != 0 {
+			t.Fatalf("expected no normalized cookies, got %d", len(normalized))
+		}
+		if len(hardened) != 0 {
+			t.Fatalf("expected no hardened metadata, got %d", len(hardened))
+		}
+		if len(dropped) != 1 {
+			t.Fatalf("expected one dropped entry, got %d", len(dropped))
+		}
+		reasons, ok := dropped[0]["reasons"].([]string)
+		if !ok {
+			t.Fatalf("expected reasons slice in dropped entry, got %#v", dropped[0]["reasons"])
+		}
+		if len(reasons) != 1 || reasons[0] != "samesite_none_not_allowed" {
+			t.Fatalf("expected samesite_none_not_allowed reason, got %v", reasons)
+		}
+		hash, ok := dropped[0]["name_hash"].(string)
+		if !ok {
+			t.Fatalf("expected name_hash string in dropped entry, got %#v", dropped[0]["name_hash"])
+		}
+		expectedHash := gatewayAuditLogger.HashIdentity(cookie.Name)
+		if hash != expectedHash {
+			t.Fatalf("expected name_hash %q, got %q", expectedHash, hash)
+		}
+	})
+
+	t.Run("multiple cookies are normalized hardened and dropped appropriately", func(t *testing.T) {
+		cookies := []*http.Cookie{
+			nil,
+			{Name: "   ", Value: "ignored"},
+			{Name: "strict", Value: "secure", Secure: true, HttpOnly: true, SameSite: http.SameSiteStrictMode},
+			{Name: "soft", Value: "enforce", Secure: false, HttpOnly: false, SameSite: http.SameSiteLaxMode},
+			{Name: "none", Value: "drop", SameSite: http.SameSiteNoneMode},
+		}
+
+		originals := make([]http.Cookie, 0, len(cookies))
+		for _, c := range cookies {
+			if c != nil {
+				originals = append(originals, *c)
+			}
+		}
+
+		normalized, hardened, dropped := normalizeUpstreamCookies(cookies)
+
+		if len(normalized) != 2 {
+			t.Fatalf("expected two normalized cookies, got %d", len(normalized))
+		}
+		if normalized[0].Name != "strict" || normalized[0].Value != "secure" {
+			t.Fatalf("unexpected first normalized cookie %+v", normalized[0])
+		}
+		if normalized[1].Name != "soft" {
+			t.Fatalf("unexpected second normalized cookie %+v", normalized[1])
+		}
+		if !normalized[1].Secure || !normalized[1].HttpOnly || normalized[1].SameSite != http.SameSiteStrictMode {
+			t.Fatalf("expected security attributes to be enforced on %+v", normalized[1])
+		}
+
+		if len(hardened) != 1 {
+			t.Fatalf("expected one hardened metadata entry, got %d", len(hardened))
+		}
+		enforcements, ok := hardened[0]["enforcements"].([]string)
+		if !ok {
+			t.Fatalf("expected enforcements slice in hardened entry, got %#v", hardened[0]["enforcements"])
+		}
+		expected := map[string]struct{}{"secure_enforced": {}, "httponly_enforced": {}, "samesite_strict_enforced": {}}
+		if len(enforcements) != len(expected) {
+			t.Fatalf("expected %d enforcements, got %d", len(expected), len(enforcements))
+		}
+		for _, enforcement := range enforcements {
+			if _, ok := expected[enforcement]; !ok {
+				t.Fatalf("unexpected enforcement %q", enforcement)
+			}
+			delete(expected, enforcement)
+		}
+		if len(expected) != 0 {
+			t.Fatalf("missing expected enforcements: %v", expected)
+		}
+
+		if len(dropped) != 2 {
+			t.Fatalf("expected two dropped entries, got %d", len(dropped))
+		}
+
+		reasons0, _ := dropped[0]["reasons"].([]string)
+		reasons1, _ := dropped[1]["reasons"].([]string)
+		reasonsSeen := map[string]bool{}
+		for _, r := range reasons0 {
+			reasonsSeen[r] = true
+		}
+		for _, r := range reasons1 {
+			reasonsSeen[r] = true
+		}
+		if !reasonsSeen["missing_name"] || !reasonsSeen["samesite_none_not_allowed"] {
+			t.Fatalf("expected missing_name and samesite_none_not_allowed reasons, got %v", reasonsSeen)
+		}
+
+		idx := 0
+		for _, c := range cookies {
+			if c == nil {
+				continue
+			}
+			if c.Name != originals[idx].Name || c.Value != originals[idx].Value || c.Secure != originals[idx].Secure || c.HttpOnly != originals[idx].HttpOnly || c.SameSite != originals[idx].SameSite {
+				t.Fatalf("expected original cookie at index %d to remain unchanged, got %+v", idx, c)
+			}
+			idx++
+		}
+	})
 }
 
 func resetOidcCache() {
