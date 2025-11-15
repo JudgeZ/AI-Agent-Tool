@@ -1124,6 +1124,9 @@ func methodNotAllowed(w http.ResponseWriter, r *http.Request, allowed string) {
 }
 
 func respondTooManyRequests(w http.ResponseWriter, r *http.Request, retryAfter time.Duration) {
+	if updated, _ := audit.EnsureRequestID(r, w); updated != nil {
+		r = updated
+	}
 	if retryAfter <= 0 {
 		retryAfter = time.Second
 	}

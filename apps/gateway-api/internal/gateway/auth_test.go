@@ -492,6 +492,23 @@ func TestAuthRoutesRateLimiterBlocksPerIdentity(t *testing.T) {
 	}
 }
 
+func TestRespondTooManyRequestsEnsuresRequestID(t *testing.T) {
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/auth/test", nil)
+
+	respondTooManyRequests(rec, req, time.Second)
+
+	requestID := strings.TrimSpace(rec.Header().Get("X-Request-Id"))
+	if requestID == "" {
+		t.Fatal("expected respondTooManyRequests to set X-Request-Id header")
+	}
+
+	payload := decodeErrorResponse(t, rec)
+	if payload.RequestID != requestID {
+		t.Fatalf("expected response payload to include requestId %q, got %q", requestID, payload.RequestID)
+	}
+}
+
 func TestCallbackHandlerRejectsStateMismatch(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
