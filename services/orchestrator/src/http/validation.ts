@@ -140,7 +140,7 @@ export const ChatRequestSchema = z
     }
     if (routing) {
       const normalizedRouting: RoutingMode = routing === "default" ? "balanced" : routing;
-      payload.routing = normalizedRouting; // "default" remains an alias for "balanced"
+      payload.routing = normalizedRouting; // Normalize the "default" alias to "balanced"
     }
     if (typeof temperature === "number") {
       payload.temperature = temperature;

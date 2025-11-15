@@ -230,6 +230,31 @@ describe("providers", () => {
     ).rejects.toMatchObject({ status: 404, provider: "router" });
   });
 
+  it("treats provider hints case-insensitively", async () => {
+    process.env.PROVIDERS = "openai";
+    const provider: ModelProvider = {
+      name: "openai",
+      chat: vi.fn(async () => ({ output: "direct", provider: "openai" })),
+    };
+    setProviderOverride("openai", provider);
+
+    const response = await routeChat({
+      provider: "OPENAI",
+      messages: [{ role: "user", content: "hi" }]
+    });
+
+    expect(provider.chat).toHaveBeenCalledTimes(1);
+    expect(response.provider).toBe("openai");
+  });
+
+  it("rejects whitespace-only provider hints", async () => {
+    process.env.PROVIDERS = "openai";
+
+    await expect(
+      routeChat({ provider: "   ", messages: [{ role: "user", content: "hi" }] })
+    ).rejects.toMatchObject({ status: 400, provider: "router" });
+  });
+
   it("fails fast when configuration lists invalid provider names", async () => {
     const baseConfig = config.loadConfig();
     const loadConfigSpy = vi.spyOn(config, "loadConfig").mockReturnValue({

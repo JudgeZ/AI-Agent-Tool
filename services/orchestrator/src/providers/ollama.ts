@@ -29,6 +29,7 @@ function sanitizeBaseUrl(url: string): string {
 }
 
 type OllamaPayload = unknown;
+const DEFAULT_OLLAMA_TIMEOUT_MS = 10_000;
 
 function extractOllamaText(payload: OllamaPayload): string {
   if (!payload) return "";
@@ -112,14 +113,15 @@ export class OllamaProvider implements ModelProvider {
         retryable: false
       });
     }
-    if (options.timeoutMs === undefined) {
-      this.timeoutMs = 10_000;
+    const requestedTimeout = options.timeoutMs;
+    if (requestedTimeout === undefined) {
+      this.timeoutMs = DEFAULT_OLLAMA_TIMEOUT_MS;
     } else {
       if (
-        typeof options.timeoutMs !== "number" ||
-        !Number.isFinite(options.timeoutMs) ||
-        options.timeoutMs < 1 ||
-        !Number.isInteger(options.timeoutMs)
+        typeof requestedTimeout !== "number" ||
+        !Number.isFinite(requestedTimeout) ||
+        requestedTimeout < 1 ||
+        !Number.isInteger(requestedTimeout)
       ) {
         throw new ProviderError("OllamaProvider: timeoutMs must be a positive integer in milliseconds", {
           status: 400,
@@ -127,7 +129,7 @@ export class OllamaProvider implements ModelProvider {
           retryable: false,
         });
       }
-      this.timeoutMs = options.timeoutMs;
+      this.timeoutMs = requestedTimeout;
     }
   }
 

@@ -8,6 +8,7 @@ const GOOGLE_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
 const GOOGLE_SCOPE = "https://www.googleapis.com/auth/generative-language";
 const GOOGLE_TOKEN_URL = "https://oauth2.googleapis.com/token";
 const TOKEN_EXPIRY_SKEW_MS = 60_000;
+const DEFAULT_GOOGLE_TIMEOUT_MS = 15_000;
 
 type GeminiUsageMetadata = {
   promptTokenCount?: number;
@@ -95,14 +96,15 @@ export class GoogleProvider implements ModelProvider {
   constructor(private readonly secrets: SecretsStore, private readonly options: GoogleProviderOptions = {}) {
     this.fetchImpl = options.fetch ?? fetch.bind(globalThis);
     this.now = options.now ?? Date.now;
-    if (options.timeoutMs === undefined) {
-      this.timeoutMs = 15_000;
+    const requestedTimeout = options.timeoutMs;
+    if (requestedTimeout === undefined) {
+      this.timeoutMs = DEFAULT_GOOGLE_TIMEOUT_MS;
     } else {
       if (
-        typeof options.timeoutMs !== "number" ||
-        !Number.isFinite(options.timeoutMs) ||
-        options.timeoutMs < 1 ||
-        !Number.isInteger(options.timeoutMs)
+        typeof requestedTimeout !== "number" ||
+        !Number.isFinite(requestedTimeout) ||
+        requestedTimeout < 1 ||
+        !Number.isInteger(requestedTimeout)
       ) {
         throw new ProviderError("GoogleProvider: timeoutMs must be a positive integer in milliseconds", {
           status: 400,
@@ -110,7 +112,7 @@ export class GoogleProvider implements ModelProvider {
           retryable: false,
         });
       }
-      this.timeoutMs = options.timeoutMs;
+      this.timeoutMs = requestedTimeout;
     }
   }
 

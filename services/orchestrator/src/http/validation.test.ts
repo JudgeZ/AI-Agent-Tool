@@ -187,6 +187,21 @@ describe("ChatRequestSchema", () => {
   });
 
   it.each([
+    { label: "lower bound", temperature: 0 },
+    { label: "upper bound", temperature: 2 },
+  ])("accepts the $label temperature", ({ temperature }) => {
+    expect(
+      ChatRequestSchema.parse({
+        temperature,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    ).toEqual({
+      temperature,
+      messages: [{ role: "user", content: "hi" }],
+    });
+  });
+
+  it.each([
     {
       name: "missing messages",
       payload: { messages: [] },
