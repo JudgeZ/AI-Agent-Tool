@@ -177,6 +177,30 @@ describe("extractAgent", () => {
     expect(extractAgent(req)).toBe("body-agent");
   });
 
+  it("falls back to the request body agent when the header is invalid", () => {
+    const req = {
+      ...createMockRequest({
+        remoteAddress: "198.51.100.32",
+        agentName: "Développeur",
+      }),
+      body: { agent: "body-agent" },
+    } as Request;
+
+    expect(extractAgent(req)).toBe("body-agent");
+  });
+
+  it("falls back to the request body agent when the header exceeds the maximum length", () => {
+    const req = {
+      ...createMockRequest({
+        remoteAddress: "198.51.100.38",
+        agentName: "a".repeat(200),
+      }),
+      body: { agent: "body-agent" },
+    } as Request;
+
+    expect(extractAgent(req)).toBe("body-agent");
+  });
+
   it("returns undefined when neither header nor body contain an agent", () => {
     const req = {
       ...createMockRequest({ remoteAddress: "198.51.100.32" }),
@@ -194,6 +218,61 @@ describe("extractAgent", () => {
     } as unknown as Request;
 
     expect(extractAgent(req)).toBe("primary-agent");
+  });
+
+  it("rejects agent headers that exceed the maximum length", () => {
+    const req = createMockRequest({
+      remoteAddress: "198.51.100.33",
+      agentName: "a".repeat(200),
+    });
+
+    expect(extractAgent(req)).toBeUndefined();
+  });
+
+  it("accepts agent headers that are exactly at the maximum length", () => {
+    const agentName = "a".repeat(128);
+    const req = createMockRequest({
+      remoteAddress: "198.51.100.36",
+      agentName,
+    });
+
+    expect(extractAgent(req)).toBe(agentName);
+  });
+
+  it("accepts agent headers that trim to the maximum length", () => {
+    const req = createMockRequest({
+      remoteAddress: "198.51.100.39",
+      agentName: ` ${"a".repeat(128)} `,
+    });
+
+    expect(extractAgent(req)).toBe("a".repeat(128));
+  });
+
+  it("rejects agent headers containing control characters", () => {
+    const req = createMockRequest({
+      remoteAddress: "198.51.100.34",
+      agentName: "bad\nagent",
+    });
+
+    expect(extractAgent(req)).toBeUndefined();
+  });
+
+  it("rejects agent headers containing surrogate pairs", () => {
+    const req = createMockRequest({
+      remoteAddress: "198.51.100.37",
+      agentName: "agent-😀-name",
+    });
+
+    expect(extractAgent(req)).toBeUndefined();
+  });
+
+  it("rejects agent names supplied via the body when invalid", () => {
+    const req = {
+      ...createMockRequest({ remoteAddress: "198.51.100.35" }),
+      body: { agent: "\u00e9vil-agent" },
+    } as Request;
+
+    expect(extractAgent(req)).toBeUndefined();
   });
 });
 

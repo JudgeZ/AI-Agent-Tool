@@ -4,6 +4,10 @@ import type { AppConfig, IdentityAwareRateLimitConfig } from "../config.js";
 import type { PlanSubject } from "../plan/validation.js";
 import { resolveClientIp } from "./clientIp.js";
 
+const MAX_AGENT_NAME_LENGTH = 128;
+const MIN_PRINTABLE_ASCII = 0x20; // Space
+const MAX_PRINTABLE_ASCII = 0x7e; // Tilde (~)
+
 export type RequestIdentity = {
   ip: string;
   subjectId?: string;
@@ -69,12 +73,14 @@ export function buildRateLimitBuckets(
 
 export function extractAgent(req: Request): string | undefined {
   const headerValue = readHeaderValue(req, "X-Agent");
-  const candidate = headerValue ?? readAgentFromBody(req.body);
-  if (!candidate) {
-    return undefined;
+  if (headerValue !== undefined) {
+    const sanitizedHeader = sanitizeAgentName(headerValue);
+    if (sanitizedHeader !== undefined) {
+      return sanitizedHeader;
+    }
   }
-  const trimmed = candidate.trim();
-  return trimmed.length > 0 ? trimmed : undefined;
+
+  return sanitizeAgentName(readAgentFromBody(req.body));
 }
 
 export function normalizeRedirectIdentity(value: string | undefined | null): string | undefined {
@@ -127,6 +133,25 @@ function readAgentFromBody(body: unknown): string | undefined {
   }
   const candidate = (body as Record<string, unknown>).agent;
   return typeof candidate === "string" ? candidate : undefined;
+}
+
+function sanitizeAgentName(candidate: unknown): string | undefined {
+  if (typeof candidate !== "string") {
+    return undefined;
+  }
+  const trimmed = candidate.trim();
+  if (trimmed.length === 0 || trimmed.length > MAX_AGENT_NAME_LENGTH) {
+    return undefined;
+  }
+  // Restrict agent identifiers to printable ASCII to protect log formatting and
+  // ensure compatibility with downstream rate limiting keys.
+  for (const char of trimmed) {
+    const codePoint = char.codePointAt(0)!;
+    if (codePoint < MIN_PRINTABLE_ASCII || codePoint > MAX_PRINTABLE_ASCII) {
+      return undefined;
+    }
+  }
+  return trimmed;
 }
 
 function hasIdentityLimits(config: IdentityAwareRateLimitConfig): boolean {
