@@ -195,6 +195,33 @@ describe("extractAgent", () => {
 
     expect(extractAgent(req)).toBe("primary-agent");
   });
+
+  it("rejects agent headers that exceed the maximum length", () => {
+    const req = createMockRequest({
+      remoteAddress: "198.51.100.33",
+      agentName: "a".repeat(200),
+    });
+
+    expect(extractAgent(req)).toBeUndefined();
+  });
+
+  it("rejects agent headers containing control characters", () => {
+    const req = createMockRequest({
+      remoteAddress: "198.51.100.34",
+      agentName: "bad\nagent",
+    });
+
+    expect(extractAgent(req)).toBeUndefined();
+  });
+
+  it("rejects agent names supplied via the body when invalid", () => {
+    const req = {
+      ...createMockRequest({ remoteAddress: "198.51.100.35" }),
+      body: { agent: "\u00e9vil-agent" },
+    } as Request;
+
+    expect(extractAgent(req)).toBeUndefined();
+  });
 });
 
 describe("normalizeRedirectIdentity", () => {
