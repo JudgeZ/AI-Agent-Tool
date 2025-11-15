@@ -354,6 +354,28 @@ describe("security headers and oauth rate limiting", () => {
     );
   });
 
+  it("emits HSTS when TLS is offloaded upstream", async () => {
+    const config = buildConfig({
+      server: {
+        tls: {
+          ...buildConfig().server.tls,
+          enabled: false,
+        },
+      },
+    });
+
+    const app = await createServer(config);
+
+    const response = await request(app)
+      .get("/auth/oauth/unknown/authorize")
+      .set("X-Forwarded-Proto", "https")
+      .expect(404);
+
+    expect(response.headers["strict-transport-security"]).toBe(
+      "max-age=63072000; includeSubDomains",
+    );
+  });
+
   it("allows overriding security headers", async () => {
     const config = buildConfig({
       server: {

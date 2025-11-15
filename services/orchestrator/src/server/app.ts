@@ -240,21 +240,40 @@ function applySecurityHeader(
   res.setHeader(name, config.value);
 }
 
+function isSecureRequest(req: Request): boolean {
+  if (req.secure || req.protocol === "https") {
+    return true;
+  }
+
+  const forwardedProto = req.headers["x-forwarded-proto"];
+  if (forwardedProto === undefined) {
+    return false;
+  }
+
+  const values = Array.isArray(forwardedProto)
+    ? forwardedProto
+    : forwardedProto.split(",");
+  return values.some(
+    (value) => value.trim().toLowerCase() === "https",
+  );
+}
+
 function createSecurityHeadersMiddleware(config: AppConfig) {
-  return (_req: Request, res: Response, next: NextFunction) => {
+  return (req: Request, res: Response, next: NextFunction) => {
     const headers = config.server.securityHeaders;
     applySecurityHeader(
       res,
       "Content-Security-Policy",
       headers.contentSecurityPolicy,
     );
+    const hsts = headers.strictTransportSecurity;
     if (
-      headers.strictTransportSecurity.enabled &&
-      (config.server.tls.enabled || !headers.strictTransportSecurity.requireTls)
+      hsts.enabled &&
+      (!hsts.requireTls || config.server.tls.enabled || isSecureRequest(req))
     ) {
       res.setHeader(
         "Strict-Transport-Security",
-        headers.strictTransportSecurity.value,
+        hsts.value,
       );
     } else {
       res.removeHeader("Strict-Transport-Security");

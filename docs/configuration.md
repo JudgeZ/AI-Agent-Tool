@@ -154,7 +154,7 @@ Relevant environment overrides:
 `server.securityHeaders` controls the HTTP hardening headers emitted by the orchestrator. Defaults include:
 
 - `Content-Security-Policy`: `default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'`
-- `Strict-Transport-Security`: `max-age=63072000; includeSubDomains` (only when TLS is enabled)
+- `Strict-Transport-Security`: `max-age=63072000; includeSubDomains` (emitted for HTTPS requests)
 - `X-Frame-Options`: `DENY`
 - `X-Content-Type-Options`: `nosniff`
 - `Referrer-Policy`: `no-referrer`
@@ -164,7 +164,7 @@ Relevant environment overrides:
 - `Cross-Origin-Embedder-Policy`: `require-corp`
 - `X-DNS-Prefetch-Control`: `off`
 
-Each header can be overridden or disabled in YAML and through environment variables. Override a value with `SERVER_SECURITY_HEADER_<NAME>` (`CSP`, `HSTS`, `XFO`, `XCTO`, `REFERRER_POLICY`, `PERMISSIONS_POLICY`, `COOP`, `CORP`, `COEP`, `XDNS_PREFETCH_CONTROL`) and disable a header entirely with `SERVER_SECURITY_HEADER_<NAME>_ENABLED=false`. HSTS is automatically omitted when TLS is disabled; set `SERVER_SECURITY_HEADER_HSTS_REQUIRE_TLS=false` (or `strictTransportSecurity.requireTls: false`) to force the header during plain-HTTP migrations.
+Each header can be overridden or disabled in YAML and through environment variables. Override a value with `SERVER_SECURITY_HEADER_<NAME>` (`CSP`, `HSTS`, `XFO`, `XCTO`, `REFERRER_POLICY`, `PERMISSIONS_POLICY`, `COOP`, `CORP`, `COEP`, `XDNS_PREFETCH_CONTROL`) and disable a header entirely with `SERVER_SECURITY_HEADER_<NAME>_ENABLED=false`. HSTS is automatically omitted when the inbound request is not HTTPS; set `SERVER_SECURITY_HEADER_HSTS_REQUIRE_TLS=false` (or `strictTransportSecurity.requireTls: false`) to force the header during plain-HTTP migrations.
 
 Egress enforcement defaults to `enforce` with loopback addresses, `oauth2.googleapis.com`, `openrouter.ai`, `*.svc`, `*.svc.cluster.local`, and `*.example.com` already whitelisted so local dev, Google and OpenRouter OAuth token exchanges, Kubernetes service discovery, and test fixtures continue working. Extend `network.egress.allow` (or `NETWORK_EGRESS_ALLOW`) with any additional destinations such as Vault, OIDC providers, or outbound model APIs.
 
