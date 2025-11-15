@@ -47,4 +47,11 @@ describe("GoogleProvider", () => {
       provider.chat({ messages: [{ role: "user", content: "hi" }] })
     ).rejects.toMatchObject({ provider: "google", status: 504 });
   });
+
+  it("rejects invalid timeout configuration", () => {
+    const secrets = new StubSecretsStore({ "provider:google:apiKey": "sk-config" });
+    expect(
+      () => new GoogleProvider(secrets, { timeoutMs: 0, fetch: vi.fn() as typeof fetch })
+    ).toThrow(/timeoutMs must be a positive integer/i);
+  });
 });

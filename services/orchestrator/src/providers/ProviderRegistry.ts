@@ -165,6 +165,8 @@ export function __resetProviderResilienceForTests(): void {
   circuitBreakerOptions = undefined;
 }
 
+const PROVIDER_NAME_PATTERN = /^[A-Za-z0-9._-]+$/;
+
 function normalizeProviderId(value: string | undefined): string | undefined {
   if (!value) {
     return undefined;
@@ -173,7 +175,11 @@ function normalizeProviderId(value: string | undefined): string | undefined {
   if (!trimmed) {
     return undefined;
   }
-  return trimmed.toLowerCase();
+  const normalized = trimmed.toLowerCase();
+  if (!PROVIDER_NAME_PATTERN.test(normalized)) {
+    return undefined;
+  }
+  return normalized;
 }
 
 const ROUTING_PRIORITY: Record<RoutingMode, string[]> = {
@@ -185,9 +191,17 @@ const ROUTING_PRIORITY: Record<RoutingMode, string[]> = {
 type ProviderOrder = { providers: string[]; routingMode: RoutingMode };
 
 function determineProviderOrder(req: ChatRequest, cfg: AppConfig): ProviderOrder {
-  const enabled = cfg.providers.enabled
-    .map(normalizeProviderId)
-    .filter((provider): provider is string => Boolean(provider));
+  const enabled = cfg.providers.enabled.map(provider => {
+    const normalized = normalizeProviderId(provider);
+    if (!normalized) {
+      throw new ProviderError(`Configured provider name "${provider}" is invalid`, {
+        status: 500,
+        provider: "router",
+        retryable: false,
+      });
+    }
+    return normalized;
+  });
   if (enabled.length === 0) {
     throw new ProviderError("No providers are enabled for chat", {
       status: 503,

@@ -66,8 +66,7 @@ function toOpenRouterMessages(messages: ChatRequest["messages"]) {
 export class OpenRouterProvider implements ModelProvider {
   name = "openrouter";
   supportsOAuth = true;
-  private clientPromise?: Promise<OpenRouterClient>;
-  private clientKey?: string;
+  private readonly clientCache = new Map<string, { promise: Promise<OpenRouterClient>; active: number; stale: boolean }>();
 
   constructor(private readonly secrets: SecretsStore, private readonly options: OpenRouterProviderOptions = {}) {}
 
@@ -98,28 +97,46 @@ export class OpenRouterProvider implements ModelProvider {
   }
 
   private async getClient(apiKey: string): Promise<OpenRouterClient> {
-    if (this.clientPromise && this.clientKey === apiKey) {
-      return this.clientPromise;
-    }
-    const factory = this.options.clientFactory ?? defaultClientFactory;
-    const nextPromise = Promise.resolve(factory({ apiKey, globalConfig: this.options.globalConfig }));
-    const wrappedPromise = nextPromise.then(
-      client => client,
-      error => {
-        if (this.clientPromise === wrappedPromise) {
-          this.clientPromise = undefined;
-          this.clientKey = undefined;
+    let entry = this.clientCache.get(apiKey);
+    if (!entry) {
+      const factory = this.options.clientFactory ?? defaultClientFactory;
+      const nextPromise = Promise.resolve(factory({ apiKey, globalConfig: this.options.globalConfig }));
+      const wrappedPromise = nextPromise.then(
+        client => client,
+        error => {
+          const cached = this.clientCache.get(apiKey);
+          if (cached?.promise === wrappedPromise) {
+            this.clientCache.delete(apiKey);
+          }
+          throw error;
         }
-        throw error;
+      );
+      entry = { promise: wrappedPromise, active: 0, stale: false };
+      this.clientCache.set(apiKey, entry);
+      for (const [key, other] of this.clientCache) {
+        if (key !== apiKey) {
+          other.stale = true;
+          if (other.active === 0) {
+            this.clientCache.delete(key);
+            void this.disposeExistingClient(other.promise);
+          }
+        }
       }
-    );
-    const previousPromise = this.clientPromise;
-    this.clientPromise = wrappedPromise;
-    this.clientKey = apiKey;
-    if (previousPromise && previousPromise !== wrappedPromise) {
-      void this.disposeExistingClient(previousPromise);
     }
-    return wrappedPromise;
+    entry.active += 1;
+    return entry.promise;
+  }
+
+  private releaseClient(apiKey: string): void {
+    const entry = this.clientCache.get(apiKey);
+    if (!entry) {
+      return;
+    }
+    entry.active = Math.max(0, entry.active - 1);
+    if (entry.active === 0 && entry.stale) {
+      this.clientCache.delete(apiKey);
+      void this.disposeExistingClient(entry.promise);
+    }
   }
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
@@ -139,6 +156,8 @@ export class OpenRouterProvider implements ModelProvider {
           response = await client.chat(messages, { model, temperature: req.temperature ?? 0.2 });
         } catch (error) {
           throw this.normalizeError(error);
+        } finally {
+          this.releaseClient(apiKey);
         }
         if (!response.success) {
           throw this.normalizeResponseError(response);

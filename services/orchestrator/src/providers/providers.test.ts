@@ -51,7 +51,11 @@ describe("providers", () => {
   afterEach(() => {
     clearProviderOverrides();
     __resetProviderResilienceForTests();
-    process.env.PROVIDERS = originalProvidersEnv;
+    if (originalProvidersEnv === undefined) {
+      delete process.env.PROVIDERS;
+    } else {
+      process.env.PROVIDERS = originalProvidersEnv;
+    }
     vi.restoreAllMocks();
   });
 
@@ -224,6 +228,25 @@ describe("providers", () => {
     await expect(
       routeChat({ provider: "azureopenai", messages: [{ role: "user", content: "hi" }] })
     ).rejects.toMatchObject({ status: 404, provider: "router" });
+  });
+
+  it("fails fast when configuration lists invalid provider names", async () => {
+    const baseConfig = config.loadConfig();
+    const loadConfigSpy = vi.spyOn(config, "loadConfig").mockReturnValue({
+      ...baseConfig,
+      providers: {
+        ...baseConfig.providers,
+        enabled: ["openai", "invalid provider name"],
+      },
+    });
+
+    await expect(routeChat({ messages: [{ role: "user", content: "hi" }] })).rejects.toMatchObject({
+      status: 500,
+      provider: "router",
+      message: expect.stringContaining("Configured provider name"),
+    });
+
+    loadConfigSpy.mockRestore();
   });
 
   it("emits tracing spans and structured logs for provider failures", async () => {

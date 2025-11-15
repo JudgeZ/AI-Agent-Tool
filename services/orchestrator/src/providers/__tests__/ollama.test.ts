@@ -74,4 +74,11 @@ describe("OllamaProvider", () => {
       provider.chat({ messages: [{ role: "user", content: "hi" }] })
     ).rejects.toMatchObject({ provider: "local_ollama", status: 504 });
   });
+
+  it("rejects invalid timeout configuration", () => {
+    const secrets = new StubSecretsStore({ "provider:ollama:baseUrl": "http://ollama.local" });
+    expect(() => new OllamaProvider(secrets, { timeoutMs: -5, fetch: vi.fn() as any })).toThrow(
+      /timeoutMs must be a positive integer/i,
+    );
+  });
 });

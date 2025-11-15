@@ -95,10 +95,23 @@ export class GoogleProvider implements ModelProvider {
   constructor(private readonly secrets: SecretsStore, private readonly options: GoogleProviderOptions = {}) {
     this.fetchImpl = options.fetch ?? fetch.bind(globalThis);
     this.now = options.now ?? Date.now;
-    const configuredTimeout = typeof options.timeoutMs === "number" && Number.isFinite(options.timeoutMs)
-      ? Math.floor(options.timeoutMs)
-      : undefined;
-    this.timeoutMs = configuredTimeout && configuredTimeout > 0 ? configuredTimeout : 15_000;
+    if (options.timeoutMs === undefined) {
+      this.timeoutMs = 15_000;
+    } else {
+      if (
+        typeof options.timeoutMs !== "number" ||
+        !Number.isFinite(options.timeoutMs) ||
+        options.timeoutMs < 1 ||
+        !Number.isInteger(options.timeoutMs)
+      ) {
+        throw new ProviderError("GoogleProvider: timeoutMs must be a positive integer in milliseconds", {
+          status: 400,
+          provider: this.name,
+          retryable: false,
+        });
+      }
+      this.timeoutMs = options.timeoutMs;
+    }
   }
 
   private async fetchWithTimeout(

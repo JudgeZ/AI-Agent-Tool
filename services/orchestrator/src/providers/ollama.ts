@@ -112,10 +112,23 @@ export class OllamaProvider implements ModelProvider {
         retryable: false
       });
     }
-    const configuredTimeout = typeof options.timeoutMs === "number" && Number.isFinite(options.timeoutMs)
-      ? Math.floor(options.timeoutMs)
-      : undefined;
-    this.timeoutMs = configuredTimeout && configuredTimeout > 0 ? configuredTimeout : 10_000;
+    if (options.timeoutMs === undefined) {
+      this.timeoutMs = 10_000;
+    } else {
+      if (
+        typeof options.timeoutMs !== "number" ||
+        !Number.isFinite(options.timeoutMs) ||
+        options.timeoutMs < 1 ||
+        !Number.isInteger(options.timeoutMs)
+      ) {
+        throw new ProviderError("OllamaProvider: timeoutMs must be a positive integer in milliseconds", {
+          status: 400,
+          provider: this.name,
+          retryable: false,
+        });
+      }
+      this.timeoutMs = options.timeoutMs;
+    }
   }
 
   private async fetchWithTimeout(input: string, init: FetcherInit): Promise<FetcherResponse> {
