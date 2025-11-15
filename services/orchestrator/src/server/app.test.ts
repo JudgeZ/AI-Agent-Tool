@@ -72,6 +72,34 @@ function buildConfig(overrides: DeepPartial<AppConfig> = {}): AppConfig {
         chat: { ...base.server.rateLimits.chat },
         auth: { ...base.server.rateLimits.auth },
       },
+      securityHeaders: {
+        contentSecurityPolicy: {
+          ...base.server.securityHeaders.contentSecurityPolicy,
+        },
+        strictTransportSecurity: {
+          ...base.server.securityHeaders.strictTransportSecurity,
+        },
+        xFrameOptions: { ...base.server.securityHeaders.xFrameOptions },
+        xContentTypeOptions: {
+          ...base.server.securityHeaders.xContentTypeOptions,
+        },
+        referrerPolicy: { ...base.server.securityHeaders.referrerPolicy },
+        permissionsPolicy: {
+          ...base.server.securityHeaders.permissionsPolicy,
+        },
+        crossOriginOpenerPolicy: {
+          ...base.server.securityHeaders.crossOriginOpenerPolicy,
+        },
+        crossOriginResourcePolicy: {
+          ...base.server.securityHeaders.crossOriginResourcePolicy,
+        },
+        crossOriginEmbedderPolicy: {
+          ...base.server.securityHeaders.crossOriginEmbedderPolicy,
+        },
+        xDnsPrefetchControl: {
+          ...base.server.securityHeaders.xDnsPrefetchControl,
+        },
+      },
     },
   };
 
@@ -99,7 +127,11 @@ function buildConfig(overrides: DeepPartial<AppConfig> = {}): AppConfig {
   }
 
   if (serverOverrides) {
-    const { rateLimits: rateLimitOverrides, ...serverRest } = serverOverrides;
+    const {
+      rateLimits: rateLimitOverrides,
+      securityHeaders: securityHeaderOverrides,
+      ...serverRest
+    } = serverOverrides;
     Object.assign(config.server, serverRest);
     if (rateLimitOverrides) {
       if (rateLimitOverrides.backend) {
@@ -124,6 +156,19 @@ function buildConfig(overrides: DeepPartial<AppConfig> = {}): AppConfig {
         Object.assign(
           config.server.rateLimits.auth,
           rateLimitOverrides.auth,
+        );
+      }
+    }
+    if (securityHeaderOverrides) {
+      for (const [key, value] of Object.entries(securityHeaderOverrides)) {
+        if (!value) {
+          continue;
+        }
+        Object.assign(
+          config.server.securityHeaders[
+            key as keyof AppConfig["server"]["securityHeaders"]
+          ],
+          value,
         );
       }
     }
@@ -261,26 +306,87 @@ describe("POST /plan security", () => {
 });
 
 describe("security headers and oauth rate limiting", () => {
-  it("applies security headers to responses", async () => {
+  it("applies default security headers to responses", async () => {
     const app = await createServer(buildConfig());
 
     const response = await request(app)
       .get("/auth/oauth/unknown/authorize")
       .expect(404);
 
-    expect(response.headers["content-security-policy"]).toContain("default-src 'none'");
-    expect(response.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
-    expect(response.headers["content-security-policy"]).toContain("base-uri 'none'");
-    expect(response.headers["content-security-policy"]).toContain("form-action 'self'");
-    expect(response.headers["strict-transport-security"]).toBe(
-      "max-age=63072000; includeSubDomains",
+    expect(response.headers["content-security-policy"]).toBe(
+      "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
     );
+    expect(response.headers["strict-transport-security"]).toBeUndefined();
     expect(response.headers["x-frame-options"]).toBe("DENY");
     expect(response.headers["x-content-type-options"]).toBe("nosniff");
     expect(response.headers["referrer-policy"]).toBe("no-referrer");
     expect(response.headers["permissions-policy"]).toBe(
       "camera=(), microphone=(), geolocation=()",
     );
+    expect(response.headers["cross-origin-opener-policy"]).toBe("same-origin");
+    expect(response.headers["cross-origin-resource-policy"]).toBe(
+      "same-origin",
+    );
+    expect(response.headers["cross-origin-embedder-policy"]).toBe(
+      "require-corp",
+    );
+    expect(response.headers["x-dns-prefetch-control"]).toBe("off");
+  });
+
+  it("emits HSTS when TLS is enabled", async () => {
+    const config = buildConfig({
+      server: {
+        tls: {
+          ...buildConfig().server.tls,
+          enabled: true,
+        },
+      },
+    });
+
+    const app = await createServer(config);
+
+    const response = await request(app)
+      .get("/auth/oauth/unknown/authorize")
+      .expect(404);
+
+    expect(response.headers["strict-transport-security"]).toBe(
+      "max-age=63072000; includeSubDomains",
+    );
+  });
+
+  it("allows overriding security headers", async () => {
+    const config = buildConfig({
+      server: {
+        securityHeaders: {
+          contentSecurityPolicy: {
+            value: "default-src 'self'",
+          },
+          strictTransportSecurity: {
+            value: "max-age=60",
+            requireTls: false,
+          },
+          crossOriginOpenerPolicy: {
+            enabled: false,
+          },
+          xDnsPrefetchControl: {
+            value: "on",
+          },
+        },
+      },
+    });
+
+    const app = await createServer(config);
+
+    const response = await request(app)
+      .get("/auth/oauth/unknown/authorize")
+      .expect(404);
+
+    expect(response.headers["content-security-policy"]).toBe(
+      "default-src 'self'",
+    );
+    expect(response.headers["strict-transport-security"]).toBe("max-age=60");
+    expect(response.headers["cross-origin-opener-policy"]).toBeUndefined();
+    expect(response.headers["x-dns-prefetch-control"]).toBe("on");
   });
 
   it("rate limits oauth authorization attempts", async () => {

@@ -226,27 +226,69 @@ function determineCorsOptions(config: AppConfig): CorsOptions {
   };
 }
 
-function securityHeadersMiddleware(
-  _req: Request,
+type SecurityHeaderConfig = AppConfig["server"]["securityHeaders"][keyof AppConfig["server"]["securityHeaders"]];
+
+function applySecurityHeader(
   res: Response,
-  next: NextFunction,
+  name: string,
+  config: SecurityHeaderConfig,
 ) {
-  res.setHeader(
-    "Content-Security-Policy",
-    "default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
-  );
-  res.setHeader(
-    "Strict-Transport-Security",
-    "max-age=63072000; includeSubDomains",
-  );
-  res.setHeader("X-Frame-Options", "DENY");
-  res.setHeader("X-Content-Type-Options", "nosniff");
-  res.setHeader("Referrer-Policy", "no-referrer");
-  res.setHeader(
-    "Permissions-Policy",
-    "camera=(), microphone=(), geolocation=()",
-  );
-  next();
+  if (!config.enabled) {
+    res.removeHeader(name);
+    return;
+  }
+  res.setHeader(name, config.value);
+}
+
+function createSecurityHeadersMiddleware(config: AppConfig) {
+  return (_req: Request, res: Response, next: NextFunction) => {
+    const headers = config.server.securityHeaders;
+    applySecurityHeader(
+      res,
+      "Content-Security-Policy",
+      headers.contentSecurityPolicy,
+    );
+    if (
+      headers.strictTransportSecurity.enabled &&
+      (config.server.tls.enabled || !headers.strictTransportSecurity.requireTls)
+    ) {
+      res.setHeader(
+        "Strict-Transport-Security",
+        headers.strictTransportSecurity.value,
+      );
+    } else {
+      res.removeHeader("Strict-Transport-Security");
+    }
+    applySecurityHeader(res, "X-Frame-Options", headers.xFrameOptions);
+    applySecurityHeader(
+      res,
+      "X-Content-Type-Options",
+      headers.xContentTypeOptions,
+    );
+    applySecurityHeader(res, "Referrer-Policy", headers.referrerPolicy);
+    applySecurityHeader(res, "Permissions-Policy", headers.permissionsPolicy);
+    applySecurityHeader(
+      res,
+      "Cross-Origin-Opener-Policy",
+      headers.crossOriginOpenerPolicy,
+    );
+    applySecurityHeader(
+      res,
+      "Cross-Origin-Resource-Policy",
+      headers.crossOriginResourcePolicy,
+    );
+    applySecurityHeader(
+      res,
+      "Cross-Origin-Embedder-Policy",
+      headers.crossOriginEmbedderPolicy,
+    );
+    applySecurityHeader(
+      res,
+      "X-DNS-Prefetch-Control",
+      headers.xDnsPrefetchControl,
+    );
+    next();
+  };
 }
 
 function getRequestIds(res: Response): { requestId: string; traceId: string } {
@@ -583,7 +625,7 @@ export function createServer(config?: AppConfig): Express {
     });
   });
 
-  app.use(securityHeadersMiddleware);
+  app.use(createSecurityHeadersMiddleware(appConfig));
 
   app.use(cors(determineCorsOptions(appConfig)));
   app.use(express.json({ limit: appConfig.server.requestLimits.jsonBytes }));
