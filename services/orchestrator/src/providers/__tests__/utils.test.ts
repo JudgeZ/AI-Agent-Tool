@@ -190,6 +190,32 @@ describe("withProviderTimeout", () => {
     await expectation;
     expect(abortSpy).toHaveBeenCalledTimes(1);
   });
+
+  it("does not emit unhandled rejections when the timed-out operation later rejects", async () => {
+    vi.useFakeTimers();
+    const handler = vi.fn();
+    const listener = (reason: unknown) => {
+      handler(reason);
+    };
+    const pending = withProviderTimeout(
+      () =>
+        new Promise<never>((_, reject) => {
+          setTimeout(() => reject(new Error("late")), 100);
+        }),
+      { provider: "test", timeoutMs: 10, action: "call" },
+    );
+    const expectation = expect(pending).rejects.toMatchObject({ code: "timeout" });
+    await vi.advanceTimersByTimeAsync(10);
+    await expectation;
+    process.once("unhandledRejection", listener);
+    try {
+      await vi.advanceTimersByTimeAsync(100);
+      await Promise.resolve();
+      expect(handler).not.toHaveBeenCalled();
+    } finally {
+      process.removeListener("unhandledRejection", listener);
+    }
+  });
 });
 
 describe("ensureProviderEgress", () => {

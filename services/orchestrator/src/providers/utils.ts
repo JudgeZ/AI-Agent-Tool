@@ -136,10 +136,12 @@ export async function withProviderTimeout<T>(
     return operation(context);
   }
 
+  const operationPromise = Promise.resolve(operation(context));
+  operationPromise.catch(() => undefined);
   let timer: NodeJS.Timeout | undefined;
   try {
-    return await Promise.race([
-      operation(context),
+    const result = await Promise.race([
+      operationPromise,
       new Promise<never>((_, reject) => {
         timer = setTimeout(() => {
           const error = new ProviderError(
@@ -163,6 +165,7 @@ export async function withProviderTimeout<T>(
         }, timeoutMs);
       }),
     ]);
+    return result;
   } finally {
     if (timer) {
       clearTimeout(timer);

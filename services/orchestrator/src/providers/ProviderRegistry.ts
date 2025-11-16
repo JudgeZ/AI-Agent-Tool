@@ -124,6 +124,7 @@ function buildRegistry(): Record<string, ModelProvider> {
     const azureSettings = getProviderSettings(cfg, "azureopenai");
     const mistralSettings = getProviderSettings(cfg, "mistral");
     const openRouterSettings = getProviderSettings(cfg, "openrouter");
+    const bedrockSettings = getProviderSettings(cfg, "bedrock");
     cachedRegistry = {
       openai: new OpenAIProvider(secrets, {
         defaultTemperature: openaiSettings?.defaultTemperature,
@@ -135,7 +136,9 @@ function buildRegistry(): Record<string, ModelProvider> {
         defaultTemperature: azureSettings?.defaultTemperature,
         timeoutMs: azureSettings?.timeoutMs,
       }),
-      bedrock: new BedrockProvider(secrets),
+      bedrock: new BedrockProvider(secrets, {
+        timeoutMs: bedrockSettings?.timeoutMs,
+      }),
       mistral: new MistralProvider(secrets, {
         defaultTemperature: mistralSettings?.defaultTemperature,
         timeoutMs: mistralSettings?.timeoutMs,

@@ -980,6 +980,18 @@ providers:
     );
   });
 
+  it("rejects unsupported types for providers.enabled", () => {
+    const configPath = createTempConfigFile(`
+providers:
+  enabled: 42
+`);
+    process.env.APP_CONFIG = configPath;
+
+    expect(() => loadConfig()).toThrow(
+      "providers.enabled must be an array, comma-delimited string, or undefined (received number)",
+    );
+  });
+
   it("enforces bounds on provider timeout overrides", () => {
     const negativePath = createTempConfigFile(`
 providers:

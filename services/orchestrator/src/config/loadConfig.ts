@@ -2382,6 +2382,21 @@ export function loadConfig(): AppConfig {
           hasAuthConfig = true;
         }
 
+        let enabledProviders: string[] | undefined;
+        if (providers) {
+          if (Array.isArray(providers.enabled)) {
+            enabledProviders = asStringArray(providers.enabled) ?? [];
+          } else if (providers.enabled === undefined) {
+            enabledProviders = undefined;
+          } else if (typeof providers.enabled === "string") {
+            enabledProviders = parseStringArrayFlexible(providers.enabled) ?? [];
+          } else {
+            throw new Error(
+              `providers.enabled must be an array, comma-delimited string, or undefined (received ${typeof providers.enabled})`,
+            );
+          }
+        }
+
         fileCfg = {
           runMode: asRunMode(doc.runMode),
           messaging: messagingRecord
@@ -2393,11 +2408,7 @@ export function loadConfig(): AppConfig {
           providers: providers
             ? {
                 defaultRoute: asDefaultRoute(providers.defaultRoute),
-                enabled: Array.isArray(providers.enabled)
-                  ? asStringArray(providers.enabled) ?? []
-                  : providers.enabled === undefined
-                    ? undefined
-                    : parseStringArrayFlexible(providers.enabled),
+                enabled: enabledProviders,
                 rateLimit: providerRateLimit,
                 circuitBreaker: providerCircuitBreaker,
                 routingPriority: providerRoutingPriority,

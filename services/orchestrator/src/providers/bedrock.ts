@@ -6,7 +6,8 @@ import {
   ProviderError,
   requireSecret,
   disposeClient,
-  ensureProviderEgress
+  ensureProviderEgress,
+  withProviderTimeout
 } from "./utils.js";
 
 interface BedrockInvokeResult {
@@ -14,12 +15,15 @@ interface BedrockInvokeResult {
 }
 
 interface BedrockClient {
-  invokeModel: (input: {
-    modelId: string;
-    body: Uint8Array | Buffer | string;
-    contentType: string;
-    accept: string;
-  }) => Promise<BedrockInvokeResult>;
+  invokeModel: (
+    input: {
+      modelId: string;
+      body: Uint8Array | Buffer | string;
+      contentType: string;
+      accept: string;
+    },
+    options?: { abortSignal?: AbortSignal }
+  ) => Promise<BedrockInvokeResult>;
   destroy?: () => void | Promise<void>;
 }
 
@@ -28,10 +32,11 @@ export type BedrockProviderOptions = {
   region?: string;
   maxTokens?: number;
   retryAttempts?: number;
+  timeoutMs?: number;
   clientFactory?: (config: {
     region: string;
-  credentials: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
-}) => Promise<BedrockClient> | BedrockClient;
+    credentials: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
+  }) => Promise<BedrockClient> | BedrockClient;
 };
 
 async function defaultClientFactory({
@@ -44,7 +49,8 @@ async function defaultClientFactory({
   const { BedrockRuntimeClient, InvokeModelCommand } = await import("@aws-sdk/client-bedrock-runtime");
   const client = new BedrockRuntimeClient({ region, credentials });
   return {
-    invokeModel: async input => client.send(new InvokeModelCommand(input)),
+    invokeModel: async (input, options) =>
+      client.send(new InvokeModelCommand(input), { abortSignal: options?.abortSignal }),
     destroy: () => client.destroy()
   };
 }
@@ -261,12 +267,19 @@ export class BedrockProvider implements ModelProvider {
           metadata: { operation: "invokeModel", model: modelId, region }
         });
         try {
-          return await client.invokeModel({
-            modelId,
-            contentType: "application/json",
-            accept: "application/json",
-            body: Buffer.from(JSON.stringify(payload), "utf-8")
-          });
+          return await withProviderTimeout(
+            ({ signal }) =>
+              client.invokeModel(
+                {
+                  modelId,
+                  contentType: "application/json",
+                  accept: "application/json",
+                  body: Buffer.from(JSON.stringify(payload), "utf-8")
+                },
+                { abortSignal: signal },
+              ),
+            { provider: this.name, timeoutMs: this.options.timeoutMs, action: "invokeModel" },
+          );
         } catch (error) {
           throw this.normalizeError(error);
         }
