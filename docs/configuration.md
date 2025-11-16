@@ -21,6 +21,21 @@ providers:
     - mistral
     - openrouter
     - local_ollama
+  routingPriority:
+    high_quality:
+      - openai
+      - anthropic
+      - azureopenai
+    low_cost:
+      - local_ollama
+      - mistral
+  settings:
+    openai:
+      defaultTemperature: 0.2
+      timeoutMs: 60000
+    azureopenai:
+      defaultTemperature: 0.2
+      timeoutMs: 60000
 auth:
   oauth:
     redirectBaseUrl: "http://localhost:8080"  # consumer loopback
@@ -83,10 +98,33 @@ Enterprise mode automatically promotes the secrets backend to `vault` unless you
 
 Each `/chat` request may override the routing tier (`routing`) or force a specific provider (`provider`). Provider identifiers are case-insensitive but must match `[A-Za-z0-9._-]+`; invalid names are detected and rejected as soon as a request is routed, so misconfigurations surface immediately even if the process has already started. When `provider` is supplied the orchestrator validates that the provider is enabled before dispatching the call, routes only to that provider (no fallback), and returns `404` for unknown providers. All requests may also include a validated `temperature` (0–2) that propagates to providers that support the knob (OpenAI, Azure OpenAI, Mistral, OpenRouter, etc.).
 
+Deployments that want to explicitly reorder providers can override `providers.routingPriority.<mode>` in `config/app.yaml`. Each list contains provider identifiers in priority order; any enabled providers not listed are appended automatically. For example, to always try `openrouter` before `openai` in the `balanced` tier:
+
+```yaml
+providers:
+  routingPriority:
+    balanced:
+      - openrouter
+      - openai
+```
+
 Provider-specific knobs:
 
 - `google` – `timeoutMs` defaults to `15000` and must be a positive integer when overridden.
 - `local_ollama` – `timeoutMs` defaults to `10000` and must be a positive integer when overridden.
+- `openai`, `azureopenai`, `mistral`, `openrouter` – use `providers.settings.<provider>.defaultTemperature` and `.timeoutMs` to tune the default sampling temperature and per-request timeout. Both values are optional; temperatures must stay within `0`–`2` and timeouts must be positive integers up to `600000` milliseconds (10 minutes). Providers that do not support temperatures reject the `defaultTemperature` override during config loading so misconfigurations fail fast.
+
+Example:
+
+```yaml
+providers:
+  settings:
+    openai:
+      defaultTemperature: 0.1
+      timeoutMs: 45000
+    openrouter:
+      timeoutMs: 90000
+```
 
 Relevant environment overrides:
 
@@ -196,7 +234,7 @@ Egress enforcement defaults to `enforce`, with the following destinations whitel
   - OAuth token exchange (`oauth2.googleapis.com`)
   - OpenRouter (`openrouter.ai`)
   - Azure OpenAI subdomains (`*.openai.azure.com`)
-  - AWS Bedrock runtime endpoints (`*.amazonaws.com`)
+  - AWS Bedrock runtime endpoints (`bedrock-runtime.*.amazonaws.com`)
 - Internal domains:
   - `*.svc`
   - `*.svc.cluster.local`

@@ -1,6 +1,13 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatMessage, ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
-import { callWithRetry, ProviderError, requireSecret, disposeClient, ensureProviderEgress } from "./utils.js";
+import {
+  callWithRetry,
+  ProviderError,
+  requireSecret,
+  disposeClient,
+  ensureProviderEgress,
+  withProviderTimeout,
+} from "./utils.js";
 
 interface AzureUsage {
   promptTokens?: number;
@@ -17,7 +24,7 @@ interface AzureOpenAIClient {
   getChatCompletions: (
     deployment: string,
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }> ,
-    options?: { temperature?: number }
+    options?: { temperature?: number; abortSignal?: AbortSignal }
   ) => Promise<AzureChatResponse>;
 }
 
@@ -26,6 +33,8 @@ export type AzureOpenAIProviderOptions = {
   retryAttempts?: number;
   apiVersion?: string;
   clientFactory?: (config: { apiKey: string; endpoint: string; apiVersion?: string }) => Promise<AzureOpenAIClient> | AzureOpenAIClient;
+  defaultTemperature?: number;
+  timeoutMs?: number;
 };
 
 async function defaultClientFactory({
@@ -63,20 +72,38 @@ export class AzureOpenAIProvider implements ModelProvider {
 
   constructor(private readonly secrets: SecretsStore, private readonly options: AzureOpenAIProviderOptions = {}) {}
 
-  private async getClient(): Promise<AzureOpenAIClient> {
+  private async getClient(): Promise<{ client: AzureOpenAIClient; credentials: { apiKey: string; endpoint: string } }> {
     const currentPromise = this.clientPromise;
     let credentials!: { apiKey: string; endpoint: string };
     try {
       credentials = await this.resolveCredentials();
     } catch (error) {
-      if (currentPromise && this.clientCredentials) {
-        return currentPromise;
+      if (currentPromise) {
+        const snapshot = this.clientCredentials;
+        if (!snapshot) {
+          throw new ProviderError("Azure OpenAI credentials are not available", {
+            status: 500,
+            provider: this.name,
+            retryable: false,
+          });
+        }
+        const client = await currentPromise;
+        return { client, credentials: snapshot };
       }
       throw error;
     }
 
     if (currentPromise && this.areCredentialsEqual(this.clientCredentials, credentials)) {
-      return currentPromise;
+      const snapshot = this.clientCredentials;
+      if (!snapshot) {
+        throw new ProviderError("Azure OpenAI credentials are not available", {
+          status: 500,
+          provider: this.name,
+          retryable: false,
+        });
+      }
+      const client = await currentPromise;
+      return { client, credentials: snapshot };
     }
 
     const factory = this.options.clientFactory ?? defaultClientFactory;
@@ -95,7 +122,8 @@ export class AzureOpenAIProvider implements ModelProvider {
     this.clientPromise = wrappedPromise;
     this.clientCredentials = credentials;
     void this.disposeExistingClient(currentPromise);
-    return wrappedPromise;
+    const client = await wrappedPromise;
+    return { client, credentials };
   }
 
   /** @internal */
@@ -147,7 +175,7 @@ export class AzureOpenAIProvider implements ModelProvider {
   }
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
-    const client = await this.getClient();
+    const { client, credentials } = await this.getClient();
     const deployment =
       req.model ??
       this.options.defaultDeployment ??
@@ -163,7 +191,7 @@ export class AzureOpenAIProvider implements ModelProvider {
       });
     }
 
-    const endpoint = this.clientCredentials?.endpoint;
+    const endpoint = credentials.endpoint;
     if (!endpoint) {
       throw new ProviderError("Azure OpenAI endpoint is not resolved", {
         status: 500,
@@ -173,6 +201,8 @@ export class AzureOpenAIProvider implements ModelProvider {
     }
     const baseUrl = endpoint.endsWith("/") ? endpoint.slice(0, -1) : endpoint;
     const targetUrl = `${baseUrl}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions`;
+    const temperature = req.temperature ?? this.options.defaultTemperature;
+    const azureMessages = toAzureMessages(req.messages);
 
     const response = await callWithRetry(
       async () => {
@@ -181,9 +211,16 @@ export class AzureOpenAIProvider implements ModelProvider {
           metadata: { operation: "chat.completions", model: deployment }
         });
         try {
-          return await client.getChatCompletions(deployment, toAzureMessages(req.messages), {
-            temperature: req.temperature ?? 0.2
-          });
+          return await withProviderTimeout(
+            ({ signal }) => {
+              const options: { temperature?: number; abortSignal: AbortSignal } = { abortSignal: signal };
+              if (typeof temperature === "number") {
+                options.temperature = temperature;
+              }
+              return client.getChatCompletions(deployment, azureMessages, options);
+            },
+            { provider: this.name, timeoutMs: this.options.timeoutMs, action: "chat.completions" },
+          );
         } catch (error) {
           throw this.normalizeError(error);
         }

@@ -1,6 +1,13 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
-import { callWithRetry, ProviderError, requireSecret, disposeClient, ensureProviderEgress } from "./utils.js";
+import {
+  callWithRetry,
+  ProviderError,
+  requireSecret,
+  disposeClient,
+  ensureProviderEgress,
+  withProviderTimeout,
+} from "./utils.js";
 
 const OPENAI_CHAT_COMPLETIONS_URL = "https://api.openai.com/v1/chat/completions";
 
@@ -12,11 +19,14 @@ interface OpenAIChatResponse {
 interface OpenAIClient {
   chat: {
     completions: {
-      create: (payload: {
-        model: string;
-        messages: ChatRequest["messages"];
-        temperature?: number;
-      }) => Promise<OpenAIChatResponse>;
+      create: (
+        payload: {
+          model: string;
+          messages: ChatRequest["messages"];
+          temperature?: number;
+        },
+        options?: { signal?: AbortSignal }
+      ) => Promise<OpenAIChatResponse>;
     };
   };
 }
@@ -25,6 +35,8 @@ export type OpenAIProviderOptions = {
   defaultModel?: string;
   retryAttempts?: number;
   clientFactory?: (config: { apiKey: string }) => Promise<OpenAIClient> | OpenAIClient;
+  defaultTemperature?: number;
+  timeoutMs?: number;
 };
 
 async function defaultClientFactory({ apiKey }: { apiKey: string }): Promise<OpenAIClient> {
@@ -115,20 +127,26 @@ export class OpenAIProvider implements ModelProvider {
   async chat(req: ChatRequest): Promise<ChatResponse> {
     const client = await this.getClient();
     const model = req.model ?? this.options.defaultModel ?? "gpt-4o-mini";
-
+    const temperature = req.temperature ?? this.options.defaultTemperature;
     const result = await callWithRetry(
       async () => {
         ensureProviderEgress(this.name, OPENAI_CHAT_COMPLETIONS_URL, {
           action: "provider.request",
-          metadata: { operation: "chat.completions.create", model }
+          metadata: { operation: "chat.completions.create", model },
         });
+        const payload: Parameters<OpenAIClient["chat"]["completions"]["create"]>[0] = {
+          model,
+          messages: req.messages,
+        };
+        if (typeof temperature === "number") {
+          payload.temperature = temperature;
+        }
         try {
-          const response = await client.chat.completions.create({
-            model,
-            messages: req.messages,
-            temperature: req.temperature ?? 0.2
-          });
-          return response;
+          return await withProviderTimeout(
+            ({ signal }) =>
+              client.chat.completions.create(payload, { signal }),
+            { provider: this.name, timeoutMs: this.options.timeoutMs, action: "chat.completions.create" },
+          );
         } catch (error) {
           throw this.normalizeError(error);
         }

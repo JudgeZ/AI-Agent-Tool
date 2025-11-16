@@ -1,6 +1,13 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import type { ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
-import { callWithRetry, ProviderError, requireSecret, ensureProviderEgress, disposeClient } from "./utils.js";
+import {
+  callWithRetry,
+  ProviderError,
+  requireSecret,
+  ensureProviderEgress,
+  disposeClient,
+  withProviderTimeout,
+} from "./utils.js";
 
 const OPENROUTER_CHAT_URL = "https://openrouter.ai/api/v1/chat/completions";
 
@@ -37,7 +44,7 @@ type OpenRouterResponse = OpenRouterResponseSuccess | OpenRouterResponseError | 
 interface OpenRouterClient {
   chat: (
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
-    config?: { model?: string; max_tokens?: number; temperature?: number }
+    config?: { model?: string; max_tokens?: number; temperature?: number; signal?: AbortSignal }
   ) => Promise<OpenRouterResponse>;
 }
 
@@ -46,6 +53,8 @@ export type OpenRouterProviderOptions = {
   retryAttempts?: number;
   clientFactory?: (config: { apiKey: string; globalConfig?: Record<string, unknown> }) => Promise<OpenRouterClient> | OpenRouterClient;
   globalConfig?: Record<string, unknown>;
+  defaultTemperature?: number;
+  timeoutMs?: number;
 };
 
 async function defaultClientFactory({
@@ -142,7 +151,7 @@ export class OpenRouterProvider implements ModelProvider {
   async chat(req: ChatRequest): Promise<ChatResponse> {
     const model = req.model ?? this.options.defaultModel ?? "openrouter/openai/gpt-4o-mini";
     const messages = toOpenRouterMessages(req.messages);
-
+    const temperature = req.temperature ?? this.options.defaultTemperature;
     const result = await callWithRetry(
       async () => {
         ensureProviderEgress(this.name, OPENROUTER_CHAT_URL, {
@@ -153,7 +162,16 @@ export class OpenRouterProvider implements ModelProvider {
         const client = await this.getClient(apiKey);
         let response: OpenRouterResponse;
         try {
-          response = await client.chat(messages, { model, temperature: req.temperature ?? 0.2 });
+          response = await withProviderTimeout(
+            ({ signal }) => {
+              const options: { model: string; temperature?: number; signal: AbortSignal } = { model, signal };
+              if (typeof temperature === "number") {
+                options.temperature = temperature;
+              }
+              return client.chat(messages, options);
+            },
+            { provider: this.name, timeoutMs: this.options.timeoutMs, action: "chat" },
+          );
         } catch (error) {
           throw this.normalizeError(error);
         } finally {

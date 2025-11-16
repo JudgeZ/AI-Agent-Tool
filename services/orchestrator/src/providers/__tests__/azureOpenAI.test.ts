@@ -47,7 +47,8 @@ describe("AzureOpenAIProvider", () => {
     const provider = new AzureOpenAIProvider(secrets, {
       clientFactory,
       retryAttempts: 2,
-      defaultDeployment: "my-deployment"
+      defaultDeployment: "my-deployment",
+      defaultTemperature: 0.2,
     });
     return { provider, clientFactory };
   }
@@ -67,10 +68,14 @@ describe("AzureOpenAIProvider", () => {
     });
 
     expect(clientFactory).toHaveBeenCalledTimes(1);
-    expect(getChatCompletions).toHaveBeenCalledWith("my-deployment", [
-      { role: "system", content: "be helpful" },
-      { role: "user", content: "hi" }
-    ], { temperature: 0.2 });
+    expect(getChatCompletions).toHaveBeenCalledWith(
+      "my-deployment",
+      [
+        { role: "system", content: "be helpful" },
+        { role: "user", content: "hi" }
+      ],
+      expect.objectContaining({ temperature: 0.2, abortSignal: expect.any(AbortSignal) })
+    );
     expect(response).toEqual({
       output: "Hello world",
       provider: "azureopenai",
@@ -92,6 +97,26 @@ describe("AzureOpenAIProvider", () => {
       expect.any(Array),
       expect.objectContaining({ temperature: 0.9 })
     );
+  });
+
+  it("omits the temperature option when neither the request nor defaults provide one", async () => {
+    const getChatCompletions = vi.fn().mockResolvedValue({ choices: [{ message: { content: "ok" } }] });
+    const secrets = new StubSecretsStore({
+      "provider:azureopenai:apiKey": "sk-az",
+      "provider:azureopenai:endpoint": "https://example.openai.azure.com"
+    });
+    const clientFactory = vi.fn().mockResolvedValue({ getChatCompletions });
+    const provider = new AzureOpenAIProvider(secrets, {
+      clientFactory,
+      defaultDeployment: "my-deployment",
+      retryAttempts: 1,
+    });
+
+    await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+
+    expect(getChatCompletions).toHaveBeenCalledTimes(1);
+    const options = getChatCompletions.mock.calls[0]?.[2];
+    expect(options).not.toHaveProperty("temperature");
   });
 
   it("retries on retryable errors returned by the client", async () => {
@@ -219,5 +244,30 @@ describe("AzureOpenAIProvider", () => {
     expect(second.output).toBe("ok");
     expect(clientFactory).toHaveBeenCalledTimes(1);
     expect(getChatCompletions).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws a descriptive error when cached credentials are unavailable during fallback", async () => {
+    const secrets = new StubSecretsStore({
+      "provider:azureopenai:apiKey": "sk-az",
+      "provider:azureopenai:endpoint": "https://example.openai.azure.com"
+    });
+    const getChatCompletions = vi.fn().mockResolvedValue({ choices: [{ message: { content: "ok" } }] });
+    const client = { getChatCompletions };
+    const clientFactory = vi.fn().mockResolvedValue(client);
+    const provider = new AzureOpenAIProvider(secrets, {
+      clientFactory,
+      defaultDeployment: "dep",
+      retryAttempts: 1
+    });
+
+    await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    secrets.setFailure(new Error("vault unavailable"));
+    (provider as unknown as { clientCredentials?: unknown }).clientCredentials = undefined;
+
+    await expect(provider.chat({ messages: [{ role: "user", content: "hi" }] })).rejects.toMatchObject({
+      message: "Azure OpenAI credentials are not available",
+      status: 500,
+      provider: "azureopenai",
+    });
   });
 });

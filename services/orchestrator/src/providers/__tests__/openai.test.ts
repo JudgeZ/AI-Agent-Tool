@@ -145,7 +145,23 @@ describe("OpenAIProvider", () => {
     });
 
     expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ temperature: 1.5 })
+      expect.objectContaining({ temperature: 1.5 }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
     );
+  });
+
+  it("omits the temperature field when no value is provided", async () => {
+    const secrets = new StubSecretsStore({ "provider:openai:apiKey": "sk-temp" });
+    const create = vi.fn().mockResolvedValue({ choices: [{ message: { content: "ok" } }] });
+    const clientFactory = vi.fn().mockResolvedValue({
+      chat: { completions: { create } }
+    });
+    const provider = new OpenAIProvider(secrets, { clientFactory, defaultModel: "gpt-test" });
+
+    await provider.chat({ model: "gpt-test", messages: [{ role: "user", content: "hi" }] });
+
+    expect(create).toHaveBeenCalledTimes(1);
+    const payload = create.mock.calls[0]?.[0];
+    expect(payload).not.toHaveProperty("temperature");
   });
 });

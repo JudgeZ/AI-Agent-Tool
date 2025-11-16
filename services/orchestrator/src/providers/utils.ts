@@ -111,6 +111,68 @@ export async function callWithRetry<T>(
   throw lastError ?? new ProviderError("Provider request failed");
 }
 
+export type ProviderTimeoutContext = {
+  signal: AbortSignal;
+  onCancel: (handler: () => void | Promise<void>) => void;
+};
+
+export async function withProviderTimeout<T>(
+  operation: (context: ProviderTimeoutContext) => Promise<T>,
+  options: { provider: string; timeoutMs?: number; action?: string; retryable?: boolean }
+): Promise<T> {
+  const controller = new AbortController();
+  const cancelHandlers: Array<() => void | Promise<void>> = [];
+  const context: ProviderTimeoutContext = {
+    signal: controller.signal,
+    onCancel(handler) {
+      if (typeof handler === "function") {
+        cancelHandlers.push(handler);
+      }
+    }
+  };
+
+  const timeoutMs = options.timeoutMs;
+  if (timeoutMs === undefined || timeoutMs <= 0 || !Number.isFinite(timeoutMs)) {
+    return operation(context);
+  }
+
+  const operationPromise = Promise.resolve(operation(context));
+  operationPromise.catch(() => undefined);
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    const result = await Promise.race([
+      operationPromise,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => {
+          const error = new ProviderError(
+            `${options.provider} ${options.action ?? "request"} timed out after ${timeoutMs}ms`,
+            {
+              status: 504,
+              provider: options.provider,
+              retryable: options.retryable ?? true,
+              code: "timeout",
+            },
+          );
+          controller.abort();
+          for (const handler of cancelHandlers) {
+            try {
+              void Promise.resolve(handler());
+            } catch {
+              // ignore cancellation errors
+            }
+          }
+          reject(error);
+        }, timeoutMs);
+      }),
+    ]);
+    return result;
+  } finally {
+    if (timer) {
+      clearTimeout(timer);
+    }
+  }
+}
+
 export function coalesceText(parts: Array<{ text?: string } | undefined>): string {
   return parts
     .map(part => part?.text ?? "")

@@ -7,6 +7,7 @@ vi.mock("../../network/EgressGuard.js", () => ({
 import type { SecretsStore } from "../../auth/SecretsStore.js";
 import { BedrockProvider } from "../bedrock.js";
 import { ensureEgressAllowed } from "../../network/EgressGuard.js";
+import * as providerUtils from "../utils.js";
 
 class StubSecretsStore implements SecretsStore {
   private failure?: Error;
@@ -72,12 +73,15 @@ describe("BedrockProvider", () => {
     });
 
     expect(clientFactory).toHaveBeenCalledTimes(1);
-    expect(invokeModel).toHaveBeenCalledWith({
-      modelId: "anthropic.test",
-      contentType: "application/json",
-      accept: "application/json",
-      body: expect.any(Buffer)
-    });
+    expect(invokeModel).toHaveBeenCalledWith(
+      {
+        modelId: "anthropic.test",
+        contentType: "application/json",
+        accept: "application/json",
+        body: expect.any(Buffer)
+      },
+      expect.objectContaining({ abortSignal: expect.any(AbortSignal) }),
+    );
     expect(response).toEqual({
       output: "Hello world",
       provider: "bedrock",
@@ -125,6 +129,35 @@ describe("BedrockProvider", () => {
       })
     );
     expect(ensure.mock.invocationCallOrder[0]).toBeLessThan(invokeModel.mock.invocationCallOrder[0]!);
+  });
+
+  it("passes configured timeout overrides to the timeout helper", async () => {
+    const secrets = new StubSecretsStore({
+      "provider:bedrock:accessKeyId": "AKIA",
+      "provider:bedrock:secretAccessKey": "SECRET"
+    });
+    const invokeModel = vi.fn().mockResolvedValue({
+      body: Buffer.from(JSON.stringify({ outputText: "ok" }), "utf-8")
+    });
+    const clientFactory = vi.fn().mockResolvedValue({ invokeModel });
+    const timeoutSpy = vi.spyOn(providerUtils, "withProviderTimeout");
+    const provider = new BedrockProvider(secrets, {
+      clientFactory,
+      timeoutMs: 1234,
+      defaultModel: "anthropic.test",
+      region: "us-west-2"
+    });
+
+    try {
+      await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+
+      expect(timeoutSpy).toHaveBeenCalledWith(
+        expect.any(Function),
+        expect.objectContaining({ timeoutMs: 1234, provider: "bedrock", action: "invokeModel" }),
+      );
+    } finally {
+      timeoutSpy.mockRestore();
+    }
   });
 
   it("does not retry non-retryable validation errors", async () => {
@@ -222,5 +255,32 @@ describe("BedrockProvider", () => {
     expect(second.output).toBe("ok");
     expect(clientFactory).toHaveBeenCalledTimes(1);
     expect(invokeModel).toHaveBeenCalledTimes(2);
+  });
+
+  it("throws a descriptive error when cached credentials are unavailable during fallback", async () => {
+    const secrets = new StubSecretsStore({
+      "provider:bedrock:accessKeyId": "AKIA",
+      "provider:bedrock:secretAccessKey": "SECRET"
+    });
+    const invokeModel = vi.fn().mockResolvedValue({
+      body: Buffer.from(JSON.stringify({ outputText: "ok" }), "utf-8")
+    });
+    const client = { invokeModel };
+    const clientFactory = vi.fn().mockResolvedValue(client);
+    const provider = new BedrockProvider(secrets, {
+      clientFactory,
+      defaultModel: "model",
+      region: "us-east-1"
+    });
+
+    await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    secrets.setFailure(new Error("vault unavailable"));
+    (provider as unknown as { clientCredentials?: unknown }).clientCredentials = undefined;
+
+    await expect(provider.chat({ messages: [{ role: "user", content: "hi" }] })).rejects.toMatchObject({
+      message: "Bedrock credentials are not available",
+      status: 500,
+      provider: "bedrock",
+    });
   });
 });

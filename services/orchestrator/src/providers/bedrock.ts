@@ -6,7 +6,8 @@ import {
   ProviderError,
   requireSecret,
   disposeClient,
-  ensureProviderEgress
+  ensureProviderEgress,
+  withProviderTimeout
 } from "./utils.js";
 
 interface BedrockInvokeResult {
@@ -14,12 +15,15 @@ interface BedrockInvokeResult {
 }
 
 interface BedrockClient {
-  invokeModel: (input: {
-    modelId: string;
-    body: Uint8Array | Buffer | string;
-    contentType: string;
-    accept: string;
-  }) => Promise<BedrockInvokeResult>;
+  invokeModel: (
+    input: {
+      modelId: string;
+      body: Uint8Array | Buffer | string;
+      contentType: string;
+      accept: string;
+    },
+    options?: { abortSignal?: AbortSignal }
+  ) => Promise<BedrockInvokeResult>;
   destroy?: () => void | Promise<void>;
 }
 
@@ -28,10 +32,11 @@ export type BedrockProviderOptions = {
   region?: string;
   maxTokens?: number;
   retryAttempts?: number;
+  timeoutMs?: number;
   clientFactory?: (config: {
     region: string;
-  credentials: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
-}) => Promise<BedrockClient> | BedrockClient;
+    credentials: { accessKeyId: string; secretAccessKey: string; sessionToken?: string };
+  }) => Promise<BedrockClient> | BedrockClient;
 };
 
 async function defaultClientFactory({
@@ -44,7 +49,8 @@ async function defaultClientFactory({
   const { BedrockRuntimeClient, InvokeModelCommand } = await import("@aws-sdk/client-bedrock-runtime");
   const client = new BedrockRuntimeClient({ region, credentials });
   return {
-    invokeModel: async input => client.send(new InvokeModelCommand(input)),
+    invokeModel: async (input, options) =>
+      client.send(new InvokeModelCommand(input), { abortSignal: options?.abortSignal }),
     destroy: () => client.destroy()
   };
 }
@@ -100,7 +106,10 @@ export class BedrockProvider implements ModelProvider {
 
   constructor(private readonly secrets: SecretsStore, private readonly options: BedrockProviderOptions = {}) {}
 
-  private async getClient(): Promise<BedrockClient> {
+  private async getClient(): Promise<{
+    client: BedrockClient;
+    credentials: { region: string; accessKeyId: string; secretAccessKey: string; sessionToken?: string };
+  }> {
     const currentPromise = this.clientPromise;
     let credentials!: {
       region: string;
@@ -111,14 +120,32 @@ export class BedrockProvider implements ModelProvider {
     try {
       credentials = await this.resolveCredentials();
     } catch (error) {
-      if (currentPromise && this.clientCredentials) {
-        return currentPromise;
+      if (currentPromise) {
+        const snapshot = this.clientCredentials;
+        if (!snapshot) {
+          throw new ProviderError("Bedrock credentials are not available", {
+            status: 500,
+            provider: this.name,
+            retryable: false,
+          });
+        }
+        const client = await currentPromise;
+        return { client, credentials: snapshot };
       }
       throw error;
     }
 
     if (currentPromise && this.areCredentialsEqual(this.clientCredentials, credentials)) {
-      return currentPromise;
+      const snapshot = this.clientCredentials;
+      if (!snapshot) {
+        throw new ProviderError("Bedrock credentials are not available", {
+          status: 500,
+          provider: this.name,
+          retryable: false,
+        });
+      }
+      const client = await currentPromise;
+      return { client, credentials: snapshot };
     }
 
     const factory = this.options.clientFactory ?? defaultClientFactory;
@@ -140,7 +167,8 @@ export class BedrockProvider implements ModelProvider {
     this.clientPromise = wrappedPromise;
     this.clientCredentials = credentials;
     void this.disposeExistingClient(currentPromise);
-    return wrappedPromise;
+    const client = await wrappedPromise;
+    return { client, credentials };
   }
 
   /** @internal */
@@ -221,10 +249,10 @@ export class BedrockProvider implements ModelProvider {
   }
 
   async chat(req: ChatRequest): Promise<ChatResponse> {
-    const client = await this.getClient();
+    const { client, credentials } = await this.getClient();
     const systemMessage = req.messages.find(msg => msg.role === "system")?.content;
     const modelId = req.model ?? this.options.defaultModel ?? "anthropic.claude-3-sonnet-20240229-v1:0";
-    const region = this.clientCredentials?.region;
+    const region = credentials.region;
     if (!region) {
       throw new ProviderError("AWS region not resolved in client credentials", {
         status: 500,
@@ -248,12 +276,19 @@ export class BedrockProvider implements ModelProvider {
           metadata: { operation: "invokeModel", model: modelId, region }
         });
         try {
-          return await client.invokeModel({
-            modelId,
-            contentType: "application/json",
-            accept: "application/json",
-            body: Buffer.from(JSON.stringify(payload), "utf-8")
-          });
+          return await withProviderTimeout(
+            ({ signal }) =>
+              client.invokeModel(
+                {
+                  modelId,
+                  contentType: "application/json",
+                  accept: "application/json",
+                  body: Buffer.from(JSON.stringify(payload), "utf-8")
+                },
+                { abortSignal: signal },
+              ),
+            { provider: this.name, timeoutMs: this.options.timeoutMs, action: "invokeModel" },
+          );
         } catch (error) {
           throw this.normalizeError(error);
         }
