@@ -10,21 +10,22 @@ This document is a **fully‑specified execution plan for Codex** to plan and bu
 The following capabilities, files, and workflows already exist in the repo and should be reused/extended (do **not** re‑implement):
 
 **Core services**
-- `apps/gateway-api/` — **Go** HTTP server with SSE (`/events`), health (`/healthz`), and OAuth stub routes (`/auth/...`).  
+- `apps/gateway-api/` — **Go** HTTP server with SSE (`/events`), health (`/healthz`), OAuth routes (`/auth/...`), and OIDC helpers with audit logging + PKCE enforcement (`internal/gateway/auth.go`).
 - `services/orchestrator/` — **TypeScript/Node** orchestrator with:
-  - `/plan` endpoint and OTel hooks (`src/index.ts`, `src/otel.ts`)
-  - **Provider registry** (OpenAI, Anthropic, Google/Gemini, Azure OpenAI, AWS Bedrock, Mistral, OpenRouter, Local/Ollama) — stubs return echoes (`src/providers/*`)
-  - **SecretsStore** abstraction (`LocalFileStore`, `VaultStore` stubs) and OAuth controller (`src/auth/*`)
-  - **Plan Tool** writes `.plans/<id>/plan.json|md` (`src/plan/planner.ts`)
-  - **AgentLoader** parses per‑agent `agent.md` with YAML front‑matter (`src/agents/AgentLoader.ts`)
-  - Config loader (`src/config.ts`) including **consumer|enterprise** mode and **RabbitMQ|Kafka** selection
-  - gRPC proto placeholder (`src/grpc/agent.proto`)
+  - `/plan` endpoint and OTel hooks (`src/index.ts`, `src/otel.ts`).
+  - **Provider registry** containing production-grade connectors for OpenAI, Anthropic, Google/Gemini, Azure OpenAI, AWS Bedrock, Mistral, OpenRouter, and Local/Ollama with retry/timeouts + secret loading (`src/providers/*`).
+  - **SecretsStore** abstraction (`LocalFileStore`, `VaultStore` stubs) plus encrypted local keystore + OAuth/OIDC controllers with audit trails (`src/auth/*`).
+  - **Plan Tool** persists `.plans/<id>/plan.json|md`, annotates capabilities/timeouts, and streams SSE step events (`src/plan/planner.ts`, `src/plan/events.ts`).
+  - **Plan execution runtime** with typed queue contracts, RabbitMQ + Kafka adapters, plan state store, retry/dead-letter handling, and queue depth metrics (`src/queue/*`).
+  - **AgentLoader** parses per‑agent `agent.md` with YAML front‑matter (`src/agents/AgentLoader.ts`).
+  - Config loader (`src/config.ts`) including **consumer|enterprise** mode and **RabbitMQ|Kafka** selection.
+  - gRPC proto for tool execution contracts (`src/grpc/agent.proto`).
 - `services/indexer/` — **Rust** skeleton for symbolic indexing (tree‑sitter/LSP to be added).
 - _(Deferred)_ Memory/cache glue to be revisited once orchestrator scale requires a dedicated service.
 - `apps/cli/` — **TypeScript** CLI (`ossaat`) with:
   - `ossaat new-agent <name>` — scaffolds `agents/<name>/agent.md` from template
   - `ossaat plan "<goal>"` — creates `.plans/<id>` artifacts
-- `apps/gui/` — **Tauri (Rust)** + **SvelteKit (TypeScript)** placeholder shell with SSE display.
+- `apps/gui/` — **Tauri (Rust)** + **SvelteKit (TypeScript)** desktop shell with live plan timeline, approvals modal, and SSE streaming (`src/lib/components/*`).
 
 **Deployment & Ops**
 - **Dockerfiles** for gateway‑api (Go), orchestrator (Node), indexer (Rust).
@@ -80,69 +81,43 @@ The following capabilities, files, and workflows already exist in the repo and s
 
 ---
 
-### Phase 1 — MVP Inner Loop & Providers
+### Phase 1 — MVP Inner Loop & Providers (✅ Completed)
 **Goal:** Make the orchestrator useful with real model calls, a stable inner loop, and job planning.
 
-**Epics & Tasks**  
-- **E1.1 Providers (TypeScript)**  
-  - T1.1 Implement **OpenAI** provider using official SDK; config via `SecretsStore`.  
-  - T1.2 Implement **Anthropic** provider via SDK.  
-  - T1.3 Implement **Google Gemini** with **OAuth** (consumer) and **Service Account** (enterprise).  
-  - T1.4 Implement **Azure OpenAI** (AAD token or API key) and **AWS Bedrock** (IAM).  
-  - T1.5 Implement **Mistral**, **OpenRouter**; **Ollama** local HTTP.  
-  - **Acceptance:** `POST /chat` returns real completions; negative tests handle auth errors gracefully.
+**Delivered:**
+- Production model connectors for OpenAI, Anthropic, Google/Gemini, Azure OpenAI, AWS Bedrock, Mistral, OpenRouter, and Local/Ollama with retries, timeouts, and `SecretsStore` integration (`services/orchestrator/src/providers/*`).
+- Typed inner-loop contracts: the gRPC proto plus comprehensive `zod` validation for plan, events, and tool I/O schemas (`services/orchestrator/src/grpc/agent.proto`, `services/orchestrator/src/plan/validation.ts`).
+- Planner + CLI streaming: plan files now include capability labels, approvals, and SSE step events that power both CLI and GUI timelines (`services/orchestrator/src/plan/planner.ts`, `services/orchestrator/src/plan/events.ts`).
 
-- **E1.2 Inner Loop contracts**  
-  - T1.6 Define **gRPC** proto for tool/agent exec (`src/grpc/agent.proto`), generate TS/Go stubs.  
-  - T1.7 Add JSON schemas (zod) for **Plan**, **Events**, **Tool I/O** (runtime validation).  
-  - T1.9 Align initial plan events with approval gating and emit `queued` only after broker enqueue (✅).  
-  - **Acceptance:** Orchestrator invokes a mock tool via gRPC with retries & timeouts.
+**Validation & CI/CD:** Provider/unit tests run in `ci.yml`, negative-path auth tests guard the connectors, and security workflows remain unchanged.
 
-- **E1.3 Plan Tool**  
-  - T1.8 Expand planner to emit **capability labels**, **timeouts**, **approvals**, and **SSE events**.  
-  - **Acceptance:** Running `ossaat plan "<goal>"` creates plan + streams events to GUI.
-
-**CI/CD Operations (Phase 1)**  
-- **ci.yml:** add unit tests for provider adapters; mock APIs.  
-- **security.yml:** Semgrep & gitleaks gate PRs; Trivy config scan runs on chart.  
-- **release-images.yml:** (unchanged) builds+signs+SBOMs on tags.  
-**Definition of Done:** Providers functional end‑to‑end; planner emits steps & events; docs updated.
+**Status:** ✅ Done — orchestrator inner loop issues real completions, enforces approvals, and emits structured telemetry.
 
 ---
 
-### Phase 2 — Outer Loop & Consumer Mode polish
+### Phase 2 — Outer Loop & Consumer Mode polish (✅ Completed)
 **Goal:** Durable job processing, RabbitMQ adapter, local-first UX, and OAuth where available.
 
-**Epics & Tasks**  
-- **E2.1 RabbitMQ Adapter (TypeScript)**  
-  - T2.1 Define `QueueAdapter` interface: `enqueue(job)`, `ack`, `retry`, `dead-letter`.  
-  - T2.2 Implement **RabbitMQ** with **amqplib**; idempotency keys; at‑least‑once semantics.  
-  - **Acceptance:** Long-running plan steps resume on restart; queue depth metric exported.
+**Delivered:**
+- Queue runtime with shared `QueueAdapter` contracts, RabbitMQ implementation, and plan state store + retry/dead-letter metrics (see `services/orchestrator/src/queue/*`).
+- Consumer-mode auth improvements: loopback OAuth routes, encrypted LocalKeystore, and audited SecretsStore operations across orchestrator + gateway (`services/orchestrator/src/auth/*`, `apps/gateway-api/internal/gateway/auth.go`).
+- GUI enhancements covering SSE timelines, approval modal, and diff-ready step rendering so users can approve/deny capabilities in real time (`apps/gui/src/lib/components/*`).
 
-- **E2.2 Consumer OAuth & Secrets**  
-  - T2.3 Implement **loopback** OAuth in gateway for providers that support it; store tokens via `LocalFileStore` (encrypted).  
-  - T2.4 Add **local keystore encryption** (password‑derived key).  
-  - **Acceptance:** User can link a provider via `/auth/<provider>` and run a chat.
+**Validation & CI/CD:** Integration tests exercise RabbitMQ/Kafka flows and GUI stores inside `ci.yml`; Playwright smoke + OAuth tests run in `security.yml` where applicable.
 
-- **E2.3 GUI UX**  
-  - T2.5 SSE event timeline (plan/run/approval states); diff viewer for file changes.  
-  - T2.6 “Approve action” dialog for `repo.write` and `network.egress` steps.  
-  - **Acceptance:** End‑to‑end plan→apply→test visible from UI.
-
-**CI/CD Operations (Phase 2)**  
-- **ci.yml:** add integration tests with embedded RabbitMQ (docker service).  
-- **security.yml:** add Selenium/Playwright smoke for GUI (optional).  
-**Definition of Done:** Consumer can run complex plans locally; approvals work; docs updated.
+**Status:** ✅ Done — consumer workflows survive restarts, approvals are enforced via UI, and secrets stay encrypted locally.
 
 ---
 
-### Phase 3 — Enterprise Mode & Kafka
+### Phase 3 — Enterprise Mode & Kafka (⏳ In Progress)
 **Goal:** Multi-tenant, Kafka backbone, Vault secrets, and OIDC SSO.
 
+**Current progress:** Kafka adapter + tests landed in `services/orchestrator/src/queue/KafkaAdapter.ts`, so the remaining focus is observability (lag metrics/HPA wiring), enterprise secrets, and tenant-aware identity/compliance guardrails.
+
 **Epics & Tasks**  
-- **E3.1 Kafka Adapter (TypeScript)**  
-  - T3.1 Implement **Kafka** adapter using **kafkajs** with compacted topics for job state.  
-  - T3.2 Add **HPA** metrics (queue depth lag) and dashboards.  
+- **E3.1 Kafka Adapter (TypeScript)**
+  - ✅ T3.1 Implement **Kafka** adapter using **kafkajs** with compacted topics for job state (`services/orchestrator/src/queue/KafkaAdapter.ts`).
+  - ⏳ T3.2 Add **HPA** metrics (queue depth lag) and dashboards (Helm + Grafana overlays).
   - **Acceptance:** Swap RabbitMQ↔Kafka via Helm values; queue autoscaling effective.
 
 - **E3.2 Secrets & Identity**  
@@ -241,11 +216,11 @@ The following capabilities, files, and workflows already exist in the repo and s
 
 ## 7) Immediate Next Work Items (for Codex)
 
-1. **Implement OpenAI & Anthropic providers (real SDKs)** in `services/orchestrator/src/providers/` with secrets from `SecretsStore`. Add unit tests and update docs.  
-2. **Define QueueAdapter interface** and **implement RabbitMQ adapter** with idempotent semantics (`services/orchestrator/src/queue/*`). Add metrics endpoints.  
-3. **Expand Plan Tool** to stream all step transitions to SSE and label capabilities/timeouts/approvals. Update GUI to render the timeline. (Initial state now `waiting_approval` or `queued` only after enqueue.)  
-4. **Add basic “approve action” modal** in GUI for `repo.write`/`network.egress`.  
-5. **Write ADRs** for provider auth flows (OAuth vs API key specifics) and queue selection policies.
+1. **Finish Kafka observability + autoscaling** — expose lag/depth metrics to Prometheus, wire Grafana dashboards, and add Helm values for queue-driven HPAs (`services/orchestrator/src/queue/KafkaAdapter.ts`, `charts/oss-ai-agent-tool/templates/*`).
+2. **Ship Vault-backed SecretsStore** with token rotation + policy enforcement for multi-tenant deployments (`services/orchestrator/src/auth/SecretsStore.ts`, `services/orchestrator/src/auth/VaultStore.ts`, Helm secrets wiring).
+3. **End-to-end OIDC SSO** — connect gateway OIDC helpers, orchestrator session store, and GUI auth surfaces for enterprise sign-on (`apps/gateway-api/internal/gateway/auth.go`, `services/orchestrator/src/auth/OidcController.ts`, `apps/gui/src/lib/stores/session.ts`).
+4. **Retention + tenant isolation guardrails** — enforce 30-day max history for plan artifacts + queue state, encrypt per-tenant data, and add policy tests (`services/orchestrator/src/queue/PlanStateStore.ts`, `services/orchestrator/src/plan/events.ts`).
+5. **Compliance package** — author system card + DPIA under `docs/compliance/`, document audit/a11y controls, and link from `docs/SECURITY-THREAT-MODEL.md`.
 
 ---
 
