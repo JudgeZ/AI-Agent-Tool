@@ -624,6 +624,7 @@ type PartialAppConfig = {
 };
 
 const PROVIDER_CAPABILITIES = getDefaultProviderCapabilities();
+const KNOWN_PROVIDER_NAMES = new Set(Object.keys(PROVIDER_CAPABILITIES));
 
 const DEFAULT_TRACING_CONFIG: TracingConfig = {
   enabled: false,
@@ -1060,7 +1061,24 @@ function parseRoutingPriorityRecord(value: unknown): Partial<ProviderRoutingPrio
   for (const key of ["balanced", "high_quality", "low_cost"] as const) {
     const entries = parseStringArrayFlexible(record[key]);
     if (entries && entries.length > 0) {
-      result[key] = entries.map(entry => entry.trim().toLowerCase()).filter(entry => entry.length > 0);
+      const normalized = entries.map(entry => entry.trim().toLowerCase()).filter(entry => entry.length > 0);
+      if (normalized.length === 0) {
+        continue;
+      }
+      const unknownProviders = Array.from(
+        new Set(normalized.filter(entry => !KNOWN_PROVIDER_NAMES.has(entry)))
+      );
+      if (unknownProviders.length > 0) {
+        appLogger.warn(
+          {
+            event: "config.routing_priority.unknown_provider",
+            route: key,
+            providers: unknownProviders,
+          },
+          `Unknown provider names configured for providers.routingPriority.${key}`,
+        );
+      }
+      result[key] = normalized;
     }
   }
   return Object.keys(result).length > 0 ? result : undefined;
@@ -1074,14 +1092,19 @@ function parseProviderRuntimeConfig(value: unknown, context: string): ProviderRu
   const result: ProviderRuntimeConfig = {};
   if (record.defaultTemperature !== undefined) {
     const temp = asNumber(record.defaultTemperature);
-    if (temp === undefined || temp < 0 || temp > 2) {
+    if (temp === undefined || !Number.isFinite(temp) || temp < 0 || temp > 2) {
       throw new Error(`${context} defaultTemperature must be between 0 and 2`);
     }
     result.defaultTemperature = temp;
   }
   if (record.timeoutMs !== undefined) {
     const timeout = asNumber(record.timeoutMs);
-    if (timeout === undefined || timeout <= 0 || timeout > MAX_PROVIDER_TIMEOUT_MS) {
+    if (
+      timeout === undefined ||
+      !Number.isFinite(timeout) ||
+      timeout <= 0 ||
+      timeout > MAX_PROVIDER_TIMEOUT_MS
+    ) {
       throw new Error(
         `${context} timeoutMs must be between 1 and ${MAX_PROVIDER_TIMEOUT_MS} milliseconds`,
       );

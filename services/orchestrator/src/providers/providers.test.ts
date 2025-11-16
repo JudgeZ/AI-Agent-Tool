@@ -241,6 +241,38 @@ describe("providers", () => {
     loadConfigSpy.mockRestore();
   });
 
+  it("ignores routing priority entries for providers that are not enabled", async () => {
+    const baseConfig = config.loadConfig();
+    const loadConfigSpy = vi.spyOn(config, "loadConfig").mockReturnValue({
+      ...baseConfig,
+      providers: {
+        ...baseConfig.providers,
+        enabled: ["openai"],
+        routingPriority: {
+          ...baseConfig.providers.routingPriority,
+          balanced: ["mistral", "openai"],
+        },
+      },
+    });
+    const enabledProvider: ModelProvider = {
+      name: "openai",
+      chat: vi.fn(async () => ({ output: "ok", provider: "openai" })),
+    };
+    const disabledProvider: ModelProvider = {
+      name: "mistral",
+      chat: vi.fn(async () => ({ output: "disabled", provider: "mistral" })),
+    };
+    setProviderOverride("openai", enabledProvider);
+    setProviderOverride("mistral", disabledProvider);
+
+    const response = await routeChat({ messages: [{ role: "user", content: "ping" }] });
+
+    expect(response.provider).toBe("openai");
+    expect(enabledProvider.chat).toHaveBeenCalledTimes(1);
+    expect(disabledProvider.chat).not.toHaveBeenCalled();
+    loadConfigSpy.mockRestore();
+  });
+
   it("applies provider default temperatures from configuration when not specified", async () => {
     const baseConfig = config.loadConfig();
     const loadConfigSpy = vi.spyOn(config, "loadConfig").mockReturnValue({

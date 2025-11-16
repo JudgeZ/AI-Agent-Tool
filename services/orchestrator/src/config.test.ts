@@ -952,6 +952,32 @@ providers:
     expect(cfg.providers.settings.azureopenai.timeoutMs).toBe(90000);
   });
 
+  it("warns when routing priority entries reference unknown providers", () => {
+    const configPath = createTempConfigFile(`
+providers:
+  enabled:
+    - openai
+  routingPriority:
+    balanced:
+      - openai
+      - mystery
+      - NEW_PROVIDER
+`);
+    process.env.APP_CONFIG = configPath;
+
+    const cfg = loadConfig();
+
+    expect(cfg.providers.routingPriority.balanced).toEqual(["openai", "mystery", "new_provider"]);
+    expect(warnSpy).toHaveBeenCalledWith(
+      {
+        event: "config.routing_priority.unknown_provider",
+        route: "balanced",
+        providers: ["mystery", "new_provider"],
+      },
+      expect.stringContaining("Unknown provider names"),
+    );
+  });
+
   it("throws when provider default temperature overrides are invalid", () => {
     const configPath = createTempConfigFile(`
 providers:
