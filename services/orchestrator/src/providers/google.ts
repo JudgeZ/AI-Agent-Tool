@@ -1,4 +1,4 @@
-import { createSign } from "node:crypto";
+import { SignJWT, importPKCS8, type KeyLike } from "jose";
 
 import type { SecretsStore } from "../auth/SecretsStore.js";
 import { keyForTenant } from "../auth/tenantSecrets.js";
@@ -97,6 +97,7 @@ export class GoogleProvider implements ModelProvider {
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
   private serviceAccountKeyCache?: { raw: string; key: ServiceAccountKey };
+  private serviceAccountSigningKey?: { privateKey: string; key: KeyLike };
   private serviceAccountToken?: CachedServiceAccountToken;
   private readonly timeoutMs: number;
 
@@ -384,6 +385,7 @@ export class GoogleProvider implements ModelProvider {
       (await this.secrets.get("provider:google:serviceAccount")) ?? process.env.GOOGLE_SERVICE_ACCOUNT ?? "";
     if (!raw) {
       this.serviceAccountKeyCache = undefined;
+      this.serviceAccountSigningKey = undefined;
       return undefined;
     }
 
@@ -397,6 +399,7 @@ export class GoogleProvider implements ModelProvider {
         throw new Error("invalid service account payload");
       }
       this.serviceAccountKeyCache = { raw, key: parsed };
+      this.serviceAccountSigningKey = undefined;
       this.serviceAccountToken = undefined;
       return parsed;
     } catch (error) {
@@ -412,21 +415,7 @@ export class GoogleProvider implements ModelProvider {
   private async requestServiceAccountToken(key: ServiceAccountKey): Promise<CachedServiceAccountToken> {
     const nowSeconds = Math.floor(this.now() / 1000);
     const expSeconds = nowSeconds + 3600;
-    const header = Buffer.from(JSON.stringify({ alg: "RS256", typ: "JWT" })).toString("base64url");
-    const payload = Buffer.from(
-      JSON.stringify({
-        iss: key.client_email,
-        scope: GOOGLE_SCOPE,
-        aud: key.token_uri ?? GOOGLE_TOKEN_URL,
-        iat: nowSeconds,
-        exp: expSeconds
-      })
-    ).toString("base64url");
-
-    const signer = createSign("RSA-SHA256");
-    signer.update(`${header}.${payload}`);
-    const signature = signer.sign(key.private_key, "base64url");
-    const assertion = `${header}.${payload}.${signature}`;
+    const assertion = await this.createServiceAccountAssertion(key, nowSeconds, expSeconds);
 
     const params = new URLSearchParams({
       grant_type: "urn:ietf:params:oauth:grant-type:jwt-bearer",
@@ -479,6 +468,31 @@ export class GoogleProvider implements ModelProvider {
       return false;
     }
     return expiresAt - TOKEN_EXPIRY_SKEW_MS <= this.now();
+  }
+
+  private async createServiceAccountAssertion(
+    key: ServiceAccountKey,
+    issuedAt: number,
+    expiresAt: number,
+  ): Promise<string> {
+    const signingKey = await this.getServiceAccountSigningKey(key.private_key);
+    const audience = key.token_uri ?? GOOGLE_TOKEN_URL;
+    return await new SignJWT({ scope: GOOGLE_SCOPE })
+      .setProtectedHeader({ alg: "RS256", typ: "JWT" })
+      .setIssuer(key.client_email)
+      .setAudience(audience)
+      .setIssuedAt(issuedAt)
+      .setExpirationTime(expiresAt)
+      .sign(signingKey);
+  }
+
+  private async getServiceAccountSigningKey(privateKey: string): Promise<KeyLike> {
+    if (this.serviceAccountSigningKey?.privateKey === privateKey) {
+      return this.serviceAccountSigningKey.key;
+    }
+    const key = await importPKCS8(privateKey, "RS256");
+    this.serviceAccountSigningKey = { privateKey, key };
+    return key;
   }
 
   private async invokeGemini(

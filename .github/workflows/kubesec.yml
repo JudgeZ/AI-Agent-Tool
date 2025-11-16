@@ -75,6 +75,11 @@ jobs:
               extra_args+=(--set)
               extra_args+=("monitoring.grafana.enabled=true")
               ;;
+            templates/orchestrator-servicemonitor.yaml)
+              echo "Detected optional ServiceMonitor; enabling monitoring flag for rendering."
+              extra_args+=(--set)
+              extra_args+=("monitoring.serviceMonitor.enabled=true")
+              ;;
             templates/langfuse.yaml)
               echo "Detected optional Langfuse manifest; enabling chart with placeholder secrets for rendering."
               extra_args+=(--set)

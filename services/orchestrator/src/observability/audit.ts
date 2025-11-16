@@ -46,6 +46,19 @@ const identifierHashSalt = hashSalt || `${serviceName}-audit-salt`;
 const HASH_ITERATIONS = 310_000;
 const HASH_KEY_LENGTH = 32;
 const HASH_DIGEST = "sha256";
+const HASH_CACHE_LIMIT = 2048;
+
+const hashCache = new Map<string, string>();
+
+function rememberHash(value: string, hash: string): void {
+  hashCache.set(value, hash);
+  if (hashCache.size > HASH_CACHE_LIMIT) {
+    const oldest = hashCache.keys().next().value;
+    if (oldest !== undefined) {
+      hashCache.delete(oldest);
+    }
+  }
+}
 
 const secretKeyPatterns = [
   /token/i,
@@ -77,9 +90,15 @@ function hashIdentifier(value?: string | null): string | undefined {
   if (!trimmed) {
     return undefined;
   }
-  return crypto
+  const cached = hashCache.get(trimmed);
+  if (cached) {
+    return cached;
+  }
+  const derived = crypto
     .pbkdf2Sync(trimmed, identifierHashSalt, HASH_ITERATIONS, HASH_KEY_LENGTH, HASH_DIGEST)
     .toString("hex");
+  rememberHash(trimmed, derived);
+  return derived;
 }
 
 function shouldMask(key?: string): boolean {
@@ -235,4 +254,8 @@ export function logAuditEvent(event: AuditEvent): void {
       "audit.log_failure"
     );
   }
+}
+
+export function __clearAuditHashCacheForTests(): void {
+  hashCache.clear();
 }

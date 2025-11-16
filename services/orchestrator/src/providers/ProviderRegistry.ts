@@ -395,6 +395,9 @@ export async function routeChat(
         if (capabilityWarnings.length) {
           warnings.push(...capabilityWarnings);
         }
+        const invokeProvider = context === undefined
+          ? () => provider.chat(providerRequest)
+          : () => provider.chat(providerRequest, context);
         try {
           const response = await withSpan(
             "providers.routeChat.attempt",
@@ -402,7 +405,7 @@ export async function routeChat(
               attemptSpan.setAttribute("providers.provider", provider.name);
               attemptSpan.setAttribute("providers.routing_mode", routingMode);
               const result = await limiter.schedule(provider.name, () =>
-                breaker.execute(provider.name, () => provider.chat(providerRequest, context)),
+                breaker.execute(provider.name, invokeProvider),
               );
               attemptSpan.addEvent("provider_attempt.success", {
                 provider: provider.name,

@@ -2056,6 +2056,28 @@ describe("orchestrator http api", () => {
     expect(routeChat).toHaveBeenCalledWith({ messages: [{ role: "user", content: "hi" }] });
   });
 
+  it("passes the tenant context to the provider router when a session is present", async () => {
+    const { createServer } = await import("./index.js");
+    const oidcConfig = createOidcEnabledConfig();
+    const app = createServer(oidcConfig);
+    const session = createSessionForUser(oidcConfig, {
+      userId: "tenant-user",
+      tenantId: "tenant-123",
+    });
+
+    await request(app)
+      .post("/chat")
+      .set("Authorization", `Bearer ${session.id}`)
+      .send({ messages: [{ role: "user", content: "hi" }] })
+      .expect(200);
+
+    const { routeChat } = await import("./providers/ProviderRegistry.js");
+    expect(routeChat).toHaveBeenLastCalledWith(
+      { messages: [{ role: "user", content: "hi" }] },
+      { tenantId: "tenant-123" },
+    );
+  });
+
   it("validates chat payloads", async () => {
     const { createServer } = await import("./index.js");
     const app = createServer();

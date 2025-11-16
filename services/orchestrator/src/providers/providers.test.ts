@@ -241,6 +241,26 @@ describe("providers", () => {
     loadConfigSpy.mockRestore();
   });
 
+  it("passes the provider context through to the selected provider", async () => {
+    process.env.PROVIDERS = "openai";
+    const chat = vi.fn().mockResolvedValue({ output: "ctx", provider: "openai" });
+    const provider: ModelProvider = {
+      name: "openai",
+      chat
+    };
+    setProviderOverride("openai", provider);
+
+    const context = { tenantId: "tenant-123" };
+    const response = await routeChat(
+      { messages: [{ role: "user", content: "ping" }] },
+      context,
+    );
+
+    expect(chat).toHaveBeenCalledTimes(1);
+    expect(chat).toHaveBeenCalledWith(expect.any(Object), context);
+    expect(response.output).toBe("ctx");
+  });
+
   it("ignores routing priority entries for providers that are not enabled", async () => {
     const baseConfig = config.loadConfig();
     const loadConfigSpy = vi.spyOn(config, "loadConfig").mockReturnValue({
