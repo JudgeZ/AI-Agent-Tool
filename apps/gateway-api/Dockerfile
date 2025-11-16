@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.6
 
-FROM golang:1.24-alpine AS build
+FROM golang:1.24.10-alpine AS build
 WORKDIR /src
 RUN apk add --no-cache git build-base
 COPY go.mod go.sum ./
