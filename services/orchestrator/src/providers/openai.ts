@@ -128,25 +128,23 @@ export class OpenAIProvider implements ModelProvider {
     const client = await this.getClient();
     const model = req.model ?? this.options.defaultModel ?? "gpt-4o-mini";
     const temperature = req.temperature ?? this.options.defaultTemperature;
-
-    ensureProviderEgress(this.name, OPENAI_CHAT_COMPLETIONS_URL, {
-      action: "provider.request",
-      metadata: { operation: "chat.completions.create", model },
-    });
-
     const result = await callWithRetry(
       async () => {
+        ensureProviderEgress(this.name, OPENAI_CHAT_COMPLETIONS_URL, {
+          action: "provider.request",
+          metadata: { operation: "chat.completions.create", model },
+        });
+        const payload: Parameters<OpenAIClient["chat"]["completions"]["create"]>[0] = {
+          model,
+          messages: req.messages,
+        };
+        if (typeof temperature === "number") {
+          payload.temperature = temperature;
+        }
         try {
           return await withProviderTimeout(
             ({ signal }) =>
-              client.chat.completions.create(
-                {
-                  model,
-                  messages: req.messages,
-                  temperature,
-                },
-                { signal }
-              ),
+              client.chat.completions.create(payload, { signal }),
             { provider: this.name, timeoutMs: this.options.timeoutMs, action: "chat.completions.create" },
           );
         } catch (error) {

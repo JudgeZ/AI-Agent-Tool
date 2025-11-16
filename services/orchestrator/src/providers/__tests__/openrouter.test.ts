@@ -96,6 +96,19 @@ describe("OpenRouterProvider", () => {
     );
   });
 
+  it("omits temperature when it is undefined", async () => {
+    const secrets = new StubSecretsStore({ "provider:openrouter:apiKey": "sk-temp" });
+    const chat = vi.fn().mockResolvedValue({ success: true, data: { choices: [{ message: { content: "ok" } }] } });
+    const clientFactory = vi.fn().mockResolvedValue({ chat });
+    const provider = new OpenRouterProvider(secrets, { clientFactory, defaultModel: "openrouter/test" });
+
+    await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+
+    expect(chat).toHaveBeenCalledTimes(1);
+    const options = chat.mock.calls[0]?.[1];
+    expect(options).not.toHaveProperty("temperature");
+  });
+
   it("disposes cached clients when the API key rotates", async () => {
     const secrets = new StubSecretsStore({ "provider:openrouter:apiKey": "sk-old" });
     const firstClient = {

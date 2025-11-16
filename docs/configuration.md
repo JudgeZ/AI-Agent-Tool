@@ -112,7 +112,7 @@ Provider-specific knobs:
 
 - `google` – `timeoutMs` defaults to `15000` and must be a positive integer when overridden.
 - `local_ollama` – `timeoutMs` defaults to `10000` and must be a positive integer when overridden.
-- `openai`, `azureopenai`, `mistral`, `openrouter` – use `providers.settings.<provider>.defaultTemperature` and `.timeoutMs` to tune the default sampling temperature and per-request timeout. Both values are optional; temperatures must stay within `0`–`2` and timeouts must be positive integers up to `600000` milliseconds (10 minutes).
+- `openai`, `azureopenai`, `mistral`, `openrouter` – use `providers.settings.<provider>.defaultTemperature` and `.timeoutMs` to tune the default sampling temperature and per-request timeout. Both values are optional; temperatures must stay within `0`–`2` and timeouts must be positive integers up to `600000` milliseconds (10 minutes). Providers that do not support temperatures reject the `defaultTemperature` override during config loading so misconfigurations fail fast.
 
 Example:
 

@@ -127,23 +127,23 @@ export class MistralProvider implements ModelProvider {
     const client = await this.getClient();
     const model = req.model ?? this.options.defaultModel ?? "mistral-large-latest";
     const temperature = req.temperature ?? this.options.defaultTemperature;
-
-    ensureProviderEgress(this.name, "https://api.mistral.ai/v1/chat/completions", {
-      action: "provider.request",
-      metadata: { operation: "chat", model }
-    });
-
     const response = await callWithRetry(
       async () => {
+        ensureProviderEgress(this.name, "https://api.mistral.ai/v1/chat/completions", {
+          action: "provider.request",
+          metadata: { operation: "chat", model }
+        });
+        const payload: Parameters<MistralApiClient["chat"]>[0] = {
+          model,
+          messages: req.messages,
+        };
+        if (typeof temperature === "number") {
+          payload.temperature = temperature;
+        }
         try {
           return await withProviderTimeout(
             ({ signal }) =>
-              client.chat({
-                model,
-                messages: req.messages,
-                temperature,
-                signal,
-              }),
+              client.chat({ ...payload, signal }),
             { provider: this.name, timeoutMs: this.options.timeoutMs, action: "chat" },
           );
         } catch (error) {

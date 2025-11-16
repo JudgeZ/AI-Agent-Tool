@@ -99,6 +99,26 @@ describe("AzureOpenAIProvider", () => {
     );
   });
 
+  it("omits the temperature option when neither the request nor defaults provide one", async () => {
+    const getChatCompletions = vi.fn().mockResolvedValue({ choices: [{ message: { content: "ok" } }] });
+    const secrets = new StubSecretsStore({
+      "provider:azureopenai:apiKey": "sk-az",
+      "provider:azureopenai:endpoint": "https://example.openai.azure.com"
+    });
+    const clientFactory = vi.fn().mockResolvedValue({ getChatCompletions });
+    const provider = new AzureOpenAIProvider(secrets, {
+      clientFactory,
+      defaultDeployment: "my-deployment",
+      retryAttempts: 1,
+    });
+
+    await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+
+    expect(getChatCompletions).toHaveBeenCalledTimes(1);
+    const options = getChatCompletions.mock.calls[0]?.[2];
+    expect(options).not.toHaveProperty("temperature");
+  });
+
   it("retries on retryable errors returned by the client", async () => {
     const retryableError = { statusCode: 429, message: "too many" };
     const getChatCompletions = vi

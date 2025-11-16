@@ -623,6 +623,8 @@ type PartialAppConfig = {
   network?: PartialNetworkConfig;
 };
 
+const PROVIDER_CAPABILITIES = getDefaultProviderCapabilities();
+
 const DEFAULT_TRACING_CONFIG: TracingConfig = {
   enabled: false,
   serviceName: "oss-ai-orchestrator",
@@ -633,9 +635,8 @@ const DEFAULT_TRACING_CONFIG: TracingConfig = {
 };
 
 const DEFAULT_PROVIDER_SETTINGS: ProviderSettingsConfig = (() => {
-  const capabilities = getDefaultProviderCapabilities();
   const settings: ProviderSettingsConfig = {};
-  for (const [provider, capability] of Object.entries(capabilities)) {
+  for (const [provider, capability] of Object.entries(PROVIDER_CAPABILITIES)) {
     const entry: ProviderRuntimeConfig = {};
     if (typeof capability.defaultTemperature === "number") {
       entry.defaultTemperature = capability.defaultTemperature;
@@ -1104,8 +1105,17 @@ function parseProviderSettingsRecord(value: unknown): Record<string, ProviderRun
     if (!normalizedKey) {
       continue;
     }
-    const parsed = parseProviderRuntimeConfig(raw, `providers.settings['${key}']`);
+    const context = `providers.settings['${key}']`;
+    const parsed = parseProviderRuntimeConfig(raw, context);
     if (parsed) {
+      const capability = PROVIDER_CAPABILITIES[normalizedKey];
+      if (
+        capability &&
+        parsed.defaultTemperature !== undefined &&
+        capability.supportsTemperature === false
+      ) {
+        throw new Error(`${context} defaultTemperature is not supported by provider "${key}"`);
+      }
       settings[normalizedKey] = parsed;
     }
   }

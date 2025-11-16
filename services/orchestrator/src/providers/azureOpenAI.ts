@@ -93,7 +93,8 @@ export class AzureOpenAIProvider implements ModelProvider {
           retryable: false,
         });
       }
-      return { client: await currentPromise, credentials: snapshot };
+      const client = await currentPromise;
+      return { client, credentials: snapshot };
     }
 
     const factory = this.options.clientFactory ?? defaultClientFactory;
@@ -192,21 +193,23 @@ export class AzureOpenAIProvider implements ModelProvider {
     const baseUrl = endpoint.endsWith("/") ? endpoint.slice(0, -1) : endpoint;
     const targetUrl = `${baseUrl}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions`;
     const temperature = req.temperature ?? this.options.defaultTemperature;
-
-    ensureProviderEgress(this.name, targetUrl, {
-      action: "provider.request",
-      metadata: { operation: "chat.completions", model: deployment }
-    });
+    const azureMessages = toAzureMessages(req.messages);
 
     const response = await callWithRetry(
       async () => {
+        ensureProviderEgress(this.name, targetUrl, {
+          action: "provider.request",
+          metadata: { operation: "chat.completions", model: deployment }
+        });
         try {
           return await withProviderTimeout(
-            ({ signal }) =>
-              client.getChatCompletions(deployment, toAzureMessages(req.messages), {
-                temperature,
-                abortSignal: signal,
-              }),
+            ({ signal }) => {
+              const options: { temperature?: number; abortSignal: AbortSignal } = { abortSignal: signal };
+              if (typeof temperature === "number") {
+                options.temperature = temperature;
+              }
+              return client.getChatCompletions(deployment, azureMessages, options);
+            },
             { provider: this.name, timeoutMs: this.options.timeoutMs, action: "chat.completions" },
           );
         } catch (error) {

@@ -170,13 +170,12 @@ export class OllamaProvider implements ModelProvider {
 
     const targetUrl = `${baseUrl}/api/chat`;
 
-    ensureProviderEgress(this.name, targetUrl, {
-      action: "provider.request",
-      metadata: { operation: "chat", model }
-    });
-
     const body = await callWithRetry(
       async () => {
+        ensureProviderEgress(this.name, targetUrl, {
+          action: "provider.request",
+          metadata: { operation: "chat", model }
+        });
         let response: FetcherResponse;
         try {
           response = await this.fetchWithTimeout(targetUrl, {

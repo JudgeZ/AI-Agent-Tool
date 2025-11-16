@@ -129,7 +129,8 @@ export class BedrockProvider implements ModelProvider {
           retryable: false,
         });
       }
-      return { client: await currentPromise, credentials: snapshot };
+      const client = await currentPromise;
+      return { client, credentials: snapshot };
     }
 
     const factory = this.options.clientFactory ?? defaultClientFactory;
@@ -253,13 +254,12 @@ export class BedrockProvider implements ModelProvider {
       messages: toBedrockMessages(req.messages)
     };
 
-    ensureProviderEgress(this.name, targetUrl, {
-      action: "provider.request",
-      metadata: { operation: "invokeModel", model: modelId, region }
-    });
-
     const response = await callWithRetry(
       async () => {
+        ensureProviderEgress(this.name, targetUrl, {
+          action: "provider.request",
+          metadata: { operation: "invokeModel", model: modelId, region }
+        });
         try {
           return await client.invokeModel({
             modelId,

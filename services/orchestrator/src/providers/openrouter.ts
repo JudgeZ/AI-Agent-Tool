@@ -152,20 +152,24 @@ export class OpenRouterProvider implements ModelProvider {
     const model = req.model ?? this.options.defaultModel ?? "openrouter/openai/gpt-4o-mini";
     const messages = toOpenRouterMessages(req.messages);
     const temperature = req.temperature ?? this.options.defaultTemperature;
-
-    ensureProviderEgress(this.name, OPENROUTER_CHAT_URL, {
-      action: "provider.request",
-      metadata: { operation: "chat", model }
-    });
-
     const result = await callWithRetry(
       async () => {
+        ensureProviderEgress(this.name, OPENROUTER_CHAT_URL, {
+          action: "provider.request",
+          metadata: { operation: "chat", model }
+        });
         const apiKey = await this.resolveApiKey();
         const client = await this.getClient(apiKey);
         let response: OpenRouterResponse;
         try {
           response = await withProviderTimeout(
-            ({ signal }) => client.chat(messages, { model, temperature, signal }),
+            ({ signal }) => {
+              const options: { model: string; temperature?: number; signal: AbortSignal } = { model, signal };
+              if (typeof temperature === "number") {
+                options.temperature = temperature;
+              }
+              return client.chat(messages, options);
+            },
             { provider: this.name, timeoutMs: this.options.timeoutMs, action: "chat" },
           );
         } catch (error) {

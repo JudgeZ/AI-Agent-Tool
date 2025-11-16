@@ -47,5 +47,9 @@ export function getProviderCapabilities(provider: string): ProviderCapabilities 
 }
 
 export function getDefaultProviderCapabilities(): Record<string, ProviderCapabilities> {
-  return JSON.parse(JSON.stringify(DEFAULT_CAPABILITIES)) as Record<string, ProviderCapabilities>;
+  const clone: Record<string, ProviderCapabilities> = {};
+  for (const [provider, capability] of Object.entries(DEFAULT_CAPABILITIES)) {
+    clone[provider] = { ...capability };
+  }
+  return clone;
 }

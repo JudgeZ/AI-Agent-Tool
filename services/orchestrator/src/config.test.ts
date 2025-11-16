@@ -966,6 +966,20 @@ providers:
     );
   });
 
+  it("rejects default temperature overrides for providers without temperature support", () => {
+    const configPath = createTempConfigFile(`
+providers:
+  settings:
+    anthropic:
+      defaultTemperature: 0.5
+`);
+    process.env.APP_CONFIG = configPath;
+
+    expect(() => loadConfig()).toThrow(
+      'providers.settings[\'anthropic\'] defaultTemperature is not supported by provider "anthropic"',
+    );
+  });
+
   it("enforces bounds on provider timeout overrides", () => {
     const negativePath = createTempConfigFile(`
 providers:

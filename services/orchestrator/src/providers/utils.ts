@@ -151,7 +151,6 @@ export async function withProviderTimeout<T>(
               code: "timeout",
             },
           );
-          reject(error);
           controller.abort();
           for (const handler of cancelHandlers) {
             try {
@@ -160,6 +159,7 @@ export async function withProviderTimeout<T>(
               // ignore cancellation errors
             }
           }
+          reject(error);
         }, timeoutMs);
       }),
     ]);

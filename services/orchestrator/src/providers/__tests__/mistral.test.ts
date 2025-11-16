@@ -132,4 +132,17 @@ describe("MistralProvider", () => {
       })
     );
   });
+
+  it("omits the temperature property when no value is provided", async () => {
+    const secrets = new StubSecretsStore({ "provider:mistral:apiKey": "sk-temp" });
+    const chat = vi.fn().mockResolvedValue({ choices: [{ message: { content: "ok" } }] });
+    const client = { chat };
+    const clientFactory = vi.fn().mockResolvedValue(client);
+    const provider = new MistralProvider(secrets, { clientFactory, defaultModel: "mistral-large" });
+
+    await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+
+    const payload = chat.mock.calls[0]?.[0];
+    expect(payload).not.toHaveProperty("temperature");
+  });
 });
