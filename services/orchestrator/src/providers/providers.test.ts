@@ -202,6 +202,79 @@ describe("providers", () => {
     loadConfigSpy.mockRestore();
   });
 
+  it("respects custom balanced routing priority overrides", async () => {
+    const baseConfig = config.loadConfig();
+    const loadConfigSpy = vi.spyOn(config, "loadConfig").mockReturnValue({
+      ...baseConfig,
+      providers: {
+        ...baseConfig.providers,
+        enabled: ["openai", "mistral"],
+        routingPriority: {
+          ...baseConfig.providers.routingPriority,
+          balanced: ["mistral", "openai"],
+        },
+      },
+    });
+    const callOrder: string[] = [];
+    const firstProvider: ModelProvider = {
+      name: "mistral",
+      async chat() {
+        callOrder.push("mistral");
+        throw new ProviderError("offline", { status: 503, provider: "mistral", retryable: false });
+      },
+    };
+    const secondProvider: ModelProvider = {
+      name: "openai",
+      async chat() {
+        callOrder.push("openai");
+        return { output: "ok", provider: "openai" };
+      },
+    };
+    setProviderOverride("mistral", firstProvider);
+    setProviderOverride("openai", secondProvider);
+
+    const response = await routeChat({ messages: [{ role: "user", content: "ping" }] });
+
+    expect(callOrder).toEqual(["mistral", "openai"]);
+    expect(response.provider).toBe("openai");
+    expect(response.warnings).toContain("mistral: offline");
+    loadConfigSpy.mockRestore();
+  });
+
+  it("applies provider default temperatures from configuration when not specified", async () => {
+    const baseConfig = config.loadConfig();
+    const loadConfigSpy = vi.spyOn(config, "loadConfig").mockReturnValue({
+      ...baseConfig,
+      providers: {
+        ...baseConfig.providers,
+        enabled: ["openai"],
+        settings: {
+          ...baseConfig.providers.settings,
+          openai: {
+            ...(baseConfig.providers.settings.openai ?? {}),
+            defaultTemperature: 0.55,
+          },
+        },
+      },
+    });
+    const provider: ModelProvider = {
+      name: "openai",
+      chat: vi.fn(async request => {
+        expect(request.temperature).toBeCloseTo(0.55);
+        return { output: "ok", provider: "openai" };
+      }),
+    };
+    setProviderOverride("openai", provider);
+
+    const response = await routeChat({ messages: [{ role: "user", content: "ping" }] });
+
+    expect(provider.chat).toHaveBeenCalledWith(
+      expect.objectContaining({ temperature: 0.55, messages: expect.any(Array) }),
+    );
+    expect(response.provider).toBe("openai");
+    loadConfigSpy.mockRestore();
+  });
+
   it("honors explicit provider selections and rejects unknown providers", async () => {
     process.env.PROVIDERS = "openai,mistral";
     const openaiProvider: ModelProvider = {

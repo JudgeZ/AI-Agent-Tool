@@ -148,6 +148,8 @@ export type ProviderRuntimeConfig = {
   timeoutMs?: number;
 };
 
+const MAX_PROVIDER_TIMEOUT_MS = 10 * 60_000; // 10 minutes
+
 export type ProviderRoutingPriority = Record<"balanced" | "high_quality" | "low_cost", string[]>;
 
 export type ProviderSettingsConfig = Record<string, ProviderRuntimeConfig>;
@@ -1078,8 +1080,10 @@ function parseProviderRuntimeConfig(value: unknown, context: string): ProviderRu
   }
   if (record.timeoutMs !== undefined) {
     const timeout = asNumber(record.timeoutMs);
-    if (timeout === undefined || timeout <= 0) {
-      throw new Error(`${context} timeoutMs must be a positive number`);
+    if (timeout === undefined || timeout <= 0 || timeout > MAX_PROVIDER_TIMEOUT_MS) {
+      throw new Error(
+        `${context} timeoutMs must be between 1 and ${MAX_PROVIDER_TIMEOUT_MS} milliseconds`,
+      );
     }
     result.timeoutMs = Math.max(1, Math.floor(timeout));
   }
@@ -2383,7 +2387,7 @@ export function loadConfig(): AppConfig {
                   ? asStringArray(providers.enabled) ?? []
                   : providers.enabled === undefined
                     ? undefined
-                    : asStringArrayFlexible(providers.enabled),
+                    : parseStringArrayFlexible(providers.enabled),
                 rateLimit: providerRateLimit,
                 circuitBreaker: providerCircuitBreaker,
                 routingPriority: providerRoutingPriority,

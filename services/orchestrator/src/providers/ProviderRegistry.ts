@@ -284,7 +284,7 @@ function determineProviderOrder(req: ChatRequest, cfg: AppConfig): ProviderOrder
   }
 
   const prioritizedList = cfg.providers.routingPriority[selectedRoute] ?? [];
-  if (!prioritizedList || prioritizedList.length === 0 || selectedRoute === "balanced") {
+  if (!prioritizedList || prioritizedList.length === 0) {
     return { providers: enabled, routingMode: selectedRoute };
   }
 

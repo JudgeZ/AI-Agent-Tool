@@ -917,6 +917,81 @@ providers:
     expect(() => loadConfig()).toThrow("providers.rateLimit windowMs must be a positive number");
   });
 
+  it("parses provider routing priority overrides from configuration files", () => {
+    const configPath = createTempConfigFile(`
+providers:
+  routingPriority:
+    balanced:
+      - Mistral
+      - OpenAI
+    high_quality: openai,anthropic
+`);
+    process.env.APP_CONFIG = configPath;
+
+    const cfg = loadConfig();
+
+    expect(cfg.providers.routingPriority.balanced).toEqual(["mistral", "openai"]);
+    expect(cfg.providers.routingPriority.high_quality).toEqual(["openai", "anthropic"]);
+  });
+
+  it("parses provider settings overrides from configuration files", () => {
+    const configPath = createTempConfigFile(`
+providers:
+  settings:
+    openai:
+      defaultTemperature: 0.75
+      timeoutMs: 45000
+    azureopenai:
+      timeoutMs: 90000
+`);
+    process.env.APP_CONFIG = configPath;
+
+    const cfg = loadConfig();
+
+    expect(cfg.providers.settings.openai).toMatchObject({ defaultTemperature: 0.75, timeoutMs: 45000 });
+    expect(cfg.providers.settings.azureopenai.timeoutMs).toBe(90000);
+  });
+
+  it("throws when provider default temperature overrides are invalid", () => {
+    const configPath = createTempConfigFile(`
+providers:
+  settings:
+    openai:
+      defaultTemperature: 2.5
+`);
+    process.env.APP_CONFIG = configPath;
+
+    expect(() => loadConfig()).toThrow(
+      "providers.settings['openai'] defaultTemperature must be between 0 and 2",
+    );
+  });
+
+  it("enforces bounds on provider timeout overrides", () => {
+    const negativePath = createTempConfigFile(`
+providers:
+  settings:
+    openai:
+      timeoutMs: 0
+`);
+    process.env.APP_CONFIG = negativePath;
+
+    expect(() => loadConfig()).toThrow(
+      "providers.settings['openai'] timeoutMs must be between 1 and 600000 milliseconds",
+    );
+
+    const excessivePath = createTempConfigFile(`
+providers:
+  settings:
+    openai:
+      timeoutMs: 700000
+`);
+    process.env.APP_CONFIG = excessivePath;
+
+    expect(() => loadConfig()).toThrow(
+      "providers.settings['openai'] timeoutMs must be between 1 and 600000 milliseconds",
+    );
+  });
+
   it("throws when HTTP rate limits are non-positive", () => {
     const configPath = createTempConfigFile(`
 server:
