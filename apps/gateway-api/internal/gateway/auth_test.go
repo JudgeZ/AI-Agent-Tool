@@ -712,6 +712,52 @@ func TestCallbackHandlerIncludesTenantIDInUpstreamPayload(t *testing.T) {
 	}
 }
 
+func TestCallbackHandlerRejectsTamperedTenantID(t *testing.T) {
+	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
+	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+
+	SetOrchestratorClientFactory(func() (*http.Client, error) {
+		t.Fatalf("orchestrator should not be contacted when tenant_id is invalid")
+		return nil, nil
+	})
+	t.Cleanup(ResetOrchestratorClient)
+
+	data := stateData{
+		Provider:     "openrouter",
+		RedirectURI:  "https://app.example.com/complete",
+		CodeVerifier: "verifier",
+		ExpiresAt:    time.Now().Add(1 * time.Minute),
+		State:        "state-token",
+		TenantID:     "acme@corp",
+	}
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("failed to encode state data: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/callback?code=abc&state=state-token", nil)
+	req.TLS = &tls.ConnectionState{}
+	req.AddCookie(&http.Cookie{
+		Name:  stateCookieName(data.State),
+		Value: base64.RawURLEncoding.EncodeToString(encoded),
+		Path:  "/auth/",
+	})
+	rec := httptest.NewRecorder()
+
+	callbackHandler(rec, req, nil, false)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 for tampered tenant, got %d", rec.Code)
+	}
+	resp := decodeErrorResponse(t, rec)
+	if resp.Code != "invalid_request" {
+		t.Fatalf("expected invalid_request code, got %s", resp.Code)
+	}
+	if resp.Message != "invalid or expired state" {
+		t.Fatalf("unexpected error message: %q", resp.Message)
+	}
+}
+
 func TestCallbackHandlerRedirectsOnOrchestratorError(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")

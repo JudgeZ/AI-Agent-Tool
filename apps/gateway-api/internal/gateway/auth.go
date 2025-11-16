@@ -402,6 +402,16 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 	}
 
 	deleteStateCookie(w, r, trustedProxies, allowInsecureStateCookie, params.State)
+	tenantID, tenantErr := normalizeTenantID(data.TenantID)
+	if tenantErr != nil {
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, mergeDetails(baseDetails, map[string]any{
+			"reason": "invalid_state_tenant",
+			"state":  params.State,
+		}))
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "invalid or expired state", nil)
+		return
+	}
+	data.TenantID = tenantID
 	tenantHash := hashTenantID(data.TenantID)
 	if tenantHash != "" {
 		baseDetails = mergeDetails(baseDetails, map[string]any{"tenant_id_hash": tenantHash})

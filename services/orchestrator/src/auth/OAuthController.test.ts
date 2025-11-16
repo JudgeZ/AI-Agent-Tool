@@ -72,6 +72,9 @@ vi.mock("../providers/ProviderRegistry.js", () => ({
 
 vi.mock("../observability/audit.js", () => ({
   logAuditEvent: vi.fn(),
+  hashIdentifier: vi.fn((value?: string | null) =>
+    value && value.length > 0 ? `hash:${value}` : undefined,
+  ),
 }));
 
 let authorize: typeof import("./OAuthController.js") extends {

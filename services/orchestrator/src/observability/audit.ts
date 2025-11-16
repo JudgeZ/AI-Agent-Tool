@@ -82,7 +82,7 @@ function selectLevel(outcome: AuditOutcome): "info" | "warn" | "error" {
   }
 }
 
-function hashIdentifier(value?: string | null): string | undefined {
+export function hashIdentifier(value?: string | null): string | undefined {
   if (!value) {
     return undefined;
   }

@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import type { Request, Response } from "express";
 import { loadConfig } from "../config.js";
 import {
@@ -17,9 +16,10 @@ import { type SecretsStore } from "./SecretsStore.js";
 import { keyForTenant } from "./tenantSecrets.js";
 import { resolveEnv } from "../utils/env.js";
 import { ensureEgressAllowed } from "../network/EgressGuard.js";
-import { logAuditEvent } from "../observability/audit.js";
+import { hashIdentifier, logAuditEvent } from "../observability/audit.js";
 import { getRequestContext } from "../observability/requestContext.js";
 import { extractAgent, readHeaderValue } from "../http/requestIdentity.js";
+import type { VersionInfo } from "./VersionedSecretsManager.js";
 
 class HttpError extends Error {
   constructor(
@@ -48,16 +48,6 @@ type ProviderConfig = {
   redirectUri: string;
   extraParams?: Record<string, string>;
 };
-
-const ERROR_HASH_ITERATIONS = 310_000;
-const ERROR_HASH_KEY_LENGTH = 32;
-const ERROR_HASH_DIGEST = "sha256";
-const errorHashSalt =
-  process.env.OAUTH_ERROR_HASH_SALT ??
-  process.env.AUDIT_HASH_SALT ??
-  process.env.ORCHESTRATOR_AUDIT_SALT ??
-  process.env.OSS_AUDIT_SALT ??
-  "oauth.error.hash";
 
 function secrets(): SecretsStore {
   return getSecretsStore();
@@ -110,12 +100,7 @@ function buildAuditSubject(tenantId: string | undefined) {
 }
 
 function hashErrorMessage(message: string | undefined): string | undefined {
-  if (!message) {
-    return undefined;
-  }
-  return crypto
-    .pbkdf2Sync(message, errorHashSalt, ERROR_HASH_ITERATIONS, ERROR_HASH_KEY_LENGTH, ERROR_HASH_DIGEST)
-    .toString("hex");
+  return hashIdentifier(message);
 }
 
 function responseMessageForStatus(status: number): {
@@ -252,28 +237,21 @@ export async function callback(req: Request, res: Response) {
       store.set(accessKey, tokens.access_token),
       store.set(tokensKey, JSON.stringify(normalizedTokens)),
     ];
-    let refreshVersionId: string | undefined;
+    let refreshOperation: Promise<VersionInfo | undefined>;
 
     if (tokens.refresh_token) {
-      operations.push(
-        rotator
-          .rotate(refreshKey, tokens.refresh_token, {
-            retain: 5,
-            labels: { provider },
-          })
-          .then((info) => {
-            refreshVersionId = info.id;
-          }),
-      );
+      refreshOperation = rotator.rotate(refreshKey, tokens.refresh_token, {
+        retain: 5,
+        labels: { provider },
+      });
     } else {
-      operations.push(
-        rotator.clear(refreshKey).then(() => {
-          refreshVersionId = undefined;
-        }),
-      );
+      refreshOperation = rotator.clear(refreshKey).then(() => undefined);
     }
+    operations.push(refreshOperation);
 
     await Promise.all(operations);
+    const refreshInfo = await refreshOperation;
+    const refreshVersionId = refreshInfo?.id;
     res.json({ ok: true });
     logAuditEvent({
       action: "auth.oauth.callback",
