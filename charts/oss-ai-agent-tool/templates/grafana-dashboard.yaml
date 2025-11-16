@@ -35,15 +35,40 @@ data:
           "id": 1,
           "type": "timeseries",
           "title": "Queue Depth",
+          "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
           "datasource": {
             "type": "prometheus",
             "uid": "$datasource"
           },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "decimals": 0,
+              "custom": {
+                "lineWidth": 2,
+                "drawStyle": "line",
+                "fillOpacity": 15
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom"
+            },
+            "tooltip": {"mode": "single"}
+          },
           "targets": [
             {
               "refId": "A",
-              "expr": "sum(orchestrator_queue_depth{queue=~\"$queue\",transport=~\"$transport\",tenant=~\"$tenant\"})",
-              "legendFormat": "{{queue}}/{{tenant}}"
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "sum by (queue, tenant) (orchestrator_queue_depth{queue=~\"$queue\",transport=~\"$transport\",tenant=~\"$tenant\"})",
+              "legendFormat": "{{queue}}/{{tenant}}",
+              "format": "time_series"
             }
           ]
         },
@@ -51,15 +76,39 @@ data:
           "id": 2,
           "type": "timeseries",
           "title": "Partition Lag",
+          "gridPos": {"x": 0, "y": 8, "w": 24, "h": 8},
           "datasource": {
             "type": "prometheus",
             "uid": "$datasource"
           },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "drawStyle": "line",
+                "fillOpacity": 15
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom"
+            },
+            "tooltip": {"mode": "single"}
+          },
           "targets": [
             {
               "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
               "expr": "orchestrator_queue_partition_lag{queue=~\"$queue\",transport=~\"$transport\",tenant=~\"$tenant\",partition=~\"$partition\"}",
-              "legendFormat": "p{{partition}}"
+              "legendFormat": "p{{partition}}",
+              "format": "time_series"
             }
           ]
         }

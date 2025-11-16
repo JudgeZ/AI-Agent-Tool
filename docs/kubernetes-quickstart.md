@@ -94,6 +94,8 @@ orchestrator:
     # You can include additional attributes (service.name, deployment.environment, etc.).
     # The tenant label is exported on every queue depth/lag metric.
     OTEL_RESOURCE_ATTRIBUTES: "tenant.id=demo,service.name=oss-orchestrator"
+    # If OTEL_RESOURCE_ATTRIBUTES is omitted (or none of the configured keys exist),
+    # the tenant label defaults to "unscoped".
 # Optional: direct the keystore somewhere other than /app/config/secrets/local/secrets.json
 #   LOCAL_SECRETS_PATH: /mnt/credentials/secrets.json
 observability:
@@ -110,8 +112,26 @@ monitoring:
 ```
 
 When Kafka is enabled, the default HorizontalPodAutoscaler targets the `orchestrator_queue_lag`
-metric with a label selector of `{ queue: plan.steps, transport: kafka }`. Override
-`orchestrator.hpa.metricSelector` if you rename topics or use multiple queue groups.
+metric with a label selector of `{ queue: plan.steps, transport: kafka }`. The chart now
+uses the lag metric for RabbitMQ as well and automatically switches the default transport label
+to match `messaging.type`, so default installs continue to scale even when RabbitMQ is the
+backing transport. Override `orchestrator.hpa.metricSelector` if you rename topics, operate in
+multiple queue groups, or need to pin the `tenant` label for multi-tenant deployments:
+
+```yaml
+orchestrator:
+  hpa:
+    metricSelector:
+      queue: plan.steps
+      transport: kafka
+      tenant: demo
+```
+
+> **Breaking change:** Existing deployments that customized the HPA metric should ensure the
+> metrics adapter exposes `orchestrator_queue_lag`. Upgrades from earlier chart versions need to
+> set `orchestrator.hpa.metricName=orchestrator_queue_depth` if they prefer the previous scaling
+> signal.
+
 The same metrics power the optional Grafana dashboard (`monitoring.grafana.enabled=true`) and
 Prometheus `ServiceMonitor` (`monitoring.serviceMonitor.enabled=true`).
 

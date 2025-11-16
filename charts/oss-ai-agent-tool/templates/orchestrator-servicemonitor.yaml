@@ -24,7 +24,7 @@ spec:
         - {{ $root.Release.Namespace }}
     {{- end }}
   endpoints:
-    - port: http
+    - port: {{ $svcMon.portName | default "http" }}
       path: /metrics
       interval: {{ $svcMon.interval | default "30s" }}
       scrapeTimeout: {{ $svcMon.scrapeTimeout | default "10s" }}

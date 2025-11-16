@@ -22,6 +22,9 @@ function sanitizeLabelValue(value: string | undefined, fallback: string): string
   return trimmed.slice(0, 256);
 }
 
+// NOTE: This helper intentionally stays simple and does not handle escaped commas or equals
+// characters from the OTEL spec. Provide attributes without escaped delimiters or extend the
+// parser before relying on such inputs.
 function parseOtelResourceAttributes(raw: string | undefined): Record<string, string> {
   if (!raw) {
     return {};

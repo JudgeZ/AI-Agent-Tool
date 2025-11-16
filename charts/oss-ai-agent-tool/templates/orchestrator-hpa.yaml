@@ -1,9 +1,23 @@
 {{- $root := . -}}
 {{- with $root.Values.orchestrator.hpa }}
 {{- if .enabled }}
-{{- $defaultMetric := ternary "orchestrator_queue_lag" "orchestrator_queue_depth" (eq $root.Values.messaging.type "kafka") -}}
+{{- $messagingType := $root.Values.messaging.type | default "rabbitmq" -}}
+{{- $useLagMetric := or (eq $messagingType "kafka") (eq $messagingType "rabbitmq") -}}
+{{- $defaultMetric := ternary "orchestrator_queue_lag" "orchestrator_queue_depth" $useLagMetric -}}
 {{- $metricName := .metricName | default $defaultMetric -}}
-{{- $metricSelector := .metricSelector | default dict -}}
+{{- $userMetricSelector := .metricSelector | default dict -}}
+{{- $metricSelector := dict -}}
+{{- range $key, $value := $userMetricSelector }}
+{{- $_ := set $metricSelector $key $value -}}
+{{- end -}}
+{{- if not (hasKey $metricSelector "queue") -}}
+{{- $_ := set $metricSelector "queue" "plan.steps" -}}
+{{- end -}}
+{{- if and (not (hasKey $metricSelector "transport")) (eq $messagingType "kafka") -}}
+{{- $_ := set $metricSelector "transport" "kafka" -}}
+{{- else if and (not (hasKey $metricSelector "transport")) (eq $messagingType "rabbitmq") -}}
+{{- $_ := set $metricSelector "transport" "rabbitmq" -}}
+{{- end -}}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
