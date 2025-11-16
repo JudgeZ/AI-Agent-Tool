@@ -35,6 +35,10 @@ spec:
         {{- include "oss-ai-agent-tool.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: jaeger
     spec:
+      {{- with .Values.jaeger.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: jaeger
           image: {{ .Values.jaeger.image | default "jaegertracing/all-in-one:1.57" }}
@@ -46,8 +50,18 @@ spec:
             - containerPort: 16686
             - containerPort: 4317
             - containerPort: 4318
+          {{- with .Values.jaeger.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- with .Values.jaeger.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
           {{- end }}
+          volumeMounts:
+            - name: jaeger-tmp
+              mountPath: /tmp
+      volumes:
+        - name: jaeger-tmp
+          emptyDir: {}
 {{- end }}

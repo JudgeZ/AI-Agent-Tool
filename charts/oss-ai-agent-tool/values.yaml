@@ -354,6 +354,17 @@ indexer:
 redis:
   enabled: true
   image: bitnami/redis:7.2.5
+  podSecurityContext:
+    runAsNonRoot: true
+    fsGroup: 1001
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
   persistence:
     enabled: false
     size: 1Gi
@@ -363,6 +374,17 @@ redis:
 postgres:
   enabled: true
   image: postgres:15-alpine
+  podSecurityContext:
+    runAsNonRoot: true
+    fsGroup: 999
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
   database: ossaat
   username: ossaat
   # When left empty and postgres.enabled=true, the orchestrator falls back to the bundled Secret's password (default "ossaat").
@@ -379,6 +401,17 @@ postgres:
 rabbitmq:
   enabled: true
   image: rabbitmq:3.13-management
+  podSecurityContext:
+    runAsNonRoot: true
+    fsGroup: 1001
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
   username: ""
   password: ""
   host: ""
@@ -426,6 +459,17 @@ monitoring:
 jaeger:
   enabled: true
   image: jaegertracing/all-in-one:1.57
+  podSecurityContext:
+    runAsNonRoot: true
+    fsGroup: 1000
+    seccompProfile:
+      type: RuntimeDefault
+  containerSecurityContext:
+    allowPrivilegeEscalation: false
+    readOnlyRootFilesystem: true
+    capabilities:
+      drop:
+        - ALL
   resources: {}
 
 langfuse:
