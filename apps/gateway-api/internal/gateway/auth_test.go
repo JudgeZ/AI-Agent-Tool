@@ -1074,6 +1074,77 @@ func TestAuthorizeAuditIncludesActorAndTenantHashes(t *testing.T) {
 	}
 }
 
+func TestAuthorizeAuditIncludesTenantHashWhenStateGenerationFails(t *testing.T) {
+	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
+	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+
+	var buf bytes.Buffer
+	originalLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{})))
+	originalAudit := gatewayAuditLogger
+	gatewayAuditLogger = audit.Default()
+	originalGenerator := generateStateAndPKCEFunc
+	generateStateAndPKCEFunc = func() (string, string, string, error) {
+		return "", "", "", errors.New("generation failed")
+	}
+	t.Cleanup(func() {
+		slog.SetDefault(originalLogger)
+		gatewayAuditLogger = originalAudit
+		generateStateAndPKCEFunc = originalGenerator
+	})
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/auth/openrouter/authorize?redirect_uri="+url.QueryEscape("https://app.example.com/callback")+"&tenant_id=acme",
+		nil,
+	)
+	req.RemoteAddr = "203.0.113.10:1234"
+	req.TLS = &tls.ConnectionState{}
+	rec := httptest.NewRecorder()
+
+	authorizeHandler(rec, req, nil, false)
+
+	if rec.Code != http.StatusInternalServerError {
+		t.Fatalf("expected internal error when state generation fails, got %d", rec.Code)
+	}
+
+	scanner := bufio.NewScanner(&buf)
+	expectedHash := hashTenantID("acme")
+	found := false
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+		if event, _ := entry["event"].(string); event != "auth.oauth.authorize" {
+			continue
+		}
+		details, _ := entry["details"].(map[string]any)
+		if details == nil {
+			continue
+		}
+		if details["reason"] != "state_generation_failed" {
+			continue
+		}
+		if details["tenant_id_hash"] != expectedHash {
+			t.Fatalf("expected tenant hash %q, got %+v", expectedHash, details)
+		}
+		found = true
+		break
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("failed to scan audit logs: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected authorize audit log with tenant hash, got %q", buf.String())
+	}
+}
+
 func TestGenerateStateAndPKCE(t *testing.T) {
 	state, verifier, challenge, err := generateStateAndPKCE()
 	if err != nil {

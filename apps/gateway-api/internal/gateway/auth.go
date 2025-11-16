@@ -35,6 +35,8 @@ var allowedRedirectOrigins = loadAllowedRedirectOrigins()
 var requestValidator = validator.New(validator.WithRequiredStructEnabled())
 var tenantIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 
+var generateStateAndPKCEFunc = generateStateAndPKCE
+
 const (
 	auditEventAuthorize   = "auth.oauth.authorize"
 	auditEventCallback    = "auth.oauth.callback"
@@ -299,13 +301,13 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*
 		return
 	}
 
-	state, codeVerifier, codeChallenge, err := generateStateAndPKCE()
+	state, codeVerifier, codeChallenge, err := generateStateAndPKCEFunc()
 	if err != nil {
-		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, map[string]any{
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, withTenantHash(map[string]any{
 			"provider":          provider,
 			"reason":            "state_generation_failed",
 			"redirect_uri_hash": redirectHash(redirectURI),
-		})
+		}, tenantHash))
 		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "failed to generate state", nil)
 		return
 	}
