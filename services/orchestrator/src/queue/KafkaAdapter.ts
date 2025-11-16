@@ -131,6 +131,7 @@ export class KafkaAdapter implements QueueAdapter {
   private readonly deadLetterSuffix: string;
   private readonly tenantLabel: string;
   private readonly transportLabel = "kafka";
+  private readonly partitionLagPartitions = new Map<string, Set<string>>();
 
   private producer: Producer | null = null;
   private consumer: Consumer | null = null;
@@ -294,22 +295,34 @@ export class KafkaAdapter implements QueueAdapter {
       }
 
       let totalLag = 0n;
+      const partitionIds = new Set<string>();
       for (const partition of topicOffsets) {
         const latest = BigInt(partition.offset);
         const committedRaw = groupOffsetMap.get(partition.partition);
         const committed = committedRaw && committedRaw !== "-1" ? BigInt(committedRaw) : latest;
         const partitionLag = latest > committed ? latest - committed : 0n;
+        const partitionId = partition.partition.toString();
         queuePartitionLagGauge
-          .labels(queue, partition.partition.toString(), this.transportLabel, this.tenantLabel)
+          .labels(queue, partitionId, this.transportLabel, this.tenantLabel)
           .set(Number(partitionLag));
+        partitionIds.add(partitionId);
         totalLag += partitionLag;
       }
+      this.partitionLagPartitions.set(queue, partitionIds);
       const totalLagNumber = Number(totalLag);
       queueLagGauge.labels(queue, this.transportLabel, this.tenantLabel).set(totalLagNumber);
       return totalLagNumber;
     } catch (error) {
       this.logger.warn?.(`Failed to fetch Kafka lag for ${queue}: ${(error as Error).message}`);
       queueLagGauge.labels(queue, this.transportLabel, this.tenantLabel).set(0);
+      const knownPartitions = this.partitionLagPartitions.get(queue);
+      if (knownPartitions) {
+        for (const partitionId of knownPartitions) {
+          queuePartitionLagGauge
+            .labels(queue, partitionId, this.transportLabel, this.tenantLabel)
+            .set(0);
+        }
+      }
       return 0;
     }
   }

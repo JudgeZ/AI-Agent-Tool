@@ -97,7 +97,8 @@ orchestrator:
     # If OTEL_RESOURCE_ATTRIBUTES is omitted (or none of the configured keys exist),
     # the tenant label defaults to "unscoped".
     # Avoid placing sensitive data (API keys, internal URLs, etc.) in OTEL_RESOURCE_ATTRIBUTES
-    # because each attribute becomes a Prometheus label that surfaces in metrics and dashboards.
+    # because any attribute referenced by the code (tenant.id, deployment.tenant, service.namespace)
+    # becomes a Prometheus label that surfaces in metrics and dashboards.
 # Optional: direct the keystore somewhere other than /app/config/secrets/local/secrets.json
 #   LOCAL_SECRETS_PATH: /mnt/credentials/secrets.json
 observability:
@@ -113,11 +114,10 @@ monitoring:
     namespace: monitoring
 ```
 
-When Kafka is enabled, the default HorizontalPodAutoscaler targets the `orchestrator_queue_lag`
-metric with a label selector of `{ queue: plan.steps, transport: kafka }`. The chart now
-uses the lag metric for RabbitMQ as well and automatically switches the default transport label
-to match `messaging.type`, so default installs continue to scale even when RabbitMQ is the
-backing transport. Override `orchestrator.hpa.metricSelector` if you rename topics, operate in
+The HorizontalPodAutoscaler now defaults to the `orchestrator_queue_lag` metric for both Kafka
+and RabbitMQ, automatically matching the `transport` label to the configured `messaging.type` so
+default installs continue to scale regardless of the backing transport. Override
+`orchestrator.hpa.metricSelector` if you rename topics, operate in
 multiple queue groups, or need to pin the `tenant` label for multi-tenant deployments:
 
 ```yaml

@@ -14,10 +14,8 @@
 {{- if and $isQueueMetric (not (hasKey $metricSelector "queue")) -}}
 {{- $_ := set $metricSelector "queue" "plan.steps" -}}
 {{- end -}}
-{{- if and $isQueueMetric (not (hasKey $metricSelector "transport")) (eq $messagingType "kafka") -}}
-{{- $_ := set $metricSelector "transport" "kafka" -}}
-{{- else if and $isQueueMetric (not (hasKey $metricSelector "transport")) (eq $messagingType "rabbitmq") -}}
-{{- $_ := set $metricSelector "transport" "rabbitmq" -}}
+{{- if and $isQueueMetric (not (hasKey $metricSelector "transport")) -}}
+{{- $_ := set $metricSelector "transport" $messagingType -}}
 {{- end -}}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler

@@ -310,6 +310,25 @@ describe("KafkaAdapter", () => {
     expect(partitionLag).toBe(3);
   });
 
+  it("resets partition lag gauges when getQueueDepth fails", async () => {
+    mocks.fetchTopicOffsets.mockResolvedValueOnce([
+      { partition: 0, offset: "10" }
+    ]);
+    mocks.fetchOffsets.mockResolvedValueOnce([
+      { topic: "plan.steps", partitions: [{ partition: 0, offset: "7" }] }
+    ]);
+
+    await adapter.getQueueDepth("plan.steps");
+    expect(await getMetricValue(queuePartitionLagGauge, kafkaLabels({ partition: "0" }))).toBe(3);
+
+    mocks.fetchTopicOffsets.mockRejectedValueOnce(new Error("boom"));
+
+    await adapter.getQueueDepth("plan.steps");
+
+    expect(await getMetricValue(queueLagGauge, kafkaLabels())).toBe(0);
+    expect(await getMetricValue(queuePartitionLagGauge, kafkaLabels({ partition: "0" }))).toBe(0);
+  });
+
   it("resets depth and lag gauges when Kafka refreshDepth fails", async () => {
     queueDepthGauge.labels("plan.steps", "kafka", tenantLabel).set(4);
     queueLagGauge.labels("plan.steps", "kafka", tenantLabel).set(6);
