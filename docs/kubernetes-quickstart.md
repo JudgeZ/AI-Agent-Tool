@@ -96,6 +96,8 @@ orchestrator:
     OTEL_RESOURCE_ATTRIBUTES: "tenant.id=demo,service.name=oss-orchestrator"
     # If OTEL_RESOURCE_ATTRIBUTES is omitted (or none of the configured keys exist),
     # the tenant label defaults to "unscoped".
+    # Avoid placing sensitive data (API keys, internal URLs, etc.) in OTEL_RESOURCE_ATTRIBUTES
+    # because each attribute becomes a Prometheus label that surfaces in metrics and dashboards.
 # Optional: direct the keystore somewhere other than /app/config/secrets/local/secrets.json
 #   LOCAL_SECRETS_PATH: /mnt/credentials/secrets.json
 observability:
@@ -134,6 +136,17 @@ orchestrator:
 
 The same metrics power the optional Grafana dashboard (`monitoring.grafana.enabled=true`) and
 Prometheus `ServiceMonitor` (`monitoring.serviceMonitor.enabled=true`).
+
+> **Operational notes**
+> - Each `(queue, transport, tenant)` combination generates a unique Prometheus time series. In
+>   large multi-tenant clusters this can grow quickly, so size your Prometheus retention and
+>   cardinality limits accordingly.
+> - The orchestrator HPA requires the custom metrics pipeline (e.g. prometheus-adapter) and at
+>   least one running orchestrator pod so that `orchestrator_queue_*` metrics exist before the HPA
+>   evaluates.
+> - Grafana dashboards expose the `tenant` label for filtering. Apply RBAC on your Grafana
+>   instance to ensure tenants cannot view each other's metrics if that isolation requirement
+>   exists in your environment.
 
 ### Optional: enable internal mTLS with cert-manager
 

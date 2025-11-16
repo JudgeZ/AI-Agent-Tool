@@ -310,6 +310,24 @@ describe("KafkaAdapter", () => {
     expect(partitionLag).toBe(3);
   });
 
+  it("resets depth and lag gauges when Kafka refreshDepth fails", async () => {
+    queueDepthGauge.labels("plan.steps", "kafka", tenantLabel).set(4);
+    queueLagGauge.labels("plan.steps", "kafka", tenantLabel).set(6);
+
+    const spy = vi
+      .spyOn(adapter, "getQueueDepth")
+      .mockRejectedValueOnce(new Error("depth failed"));
+    const refreshDepth = (adapter as unknown as {
+      refreshDepth(queue: string): Promise<void>;
+    }).refreshDepth.bind(adapter);
+
+    await refreshDepth("plan.steps");
+
+    expect(await getMetricValue(queueDepthGauge, kafkaLabels())).toBe(0);
+    expect(await getMetricValue(queueLagGauge, kafkaLabels())).toBe(0);
+    spy.mockRestore();
+  });
+
   it("creates topics once and reuses cached metadata", async () => {
     await adapter.consume("plan.steps", async () => {});
     const initialCalls = mocks.createTopics.mock.calls.length;

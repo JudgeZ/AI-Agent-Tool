@@ -91,4 +91,26 @@ describe("metrics", () => {
     expect(attrs["tenant.id"]).toBe("demo");
     expect(attrs.token).toBe("base64==");
   });
+
+  it("handles escaped commas and equals signs in OTEL attributes", () => {
+    const { parseOtelResourceAttributes } = __testUtils;
+    const attrs = parseOtelResourceAttributes(
+      "tenant.id=demo\\,inc,service.name=oss\\=orchestrator"
+    );
+    expect(attrs["tenant.id"]).toBe("demo,inc");
+    expect(attrs["service.name"]).toBe("oss=orchestrator");
+  });
+
+  it("ignores malformed OTEL segments and trims whitespace", () => {
+    const { parseOtelResourceAttributes } = __testUtils;
+    const attrs = parseOtelResourceAttributes("=value, tenant.id = demo , keyonly");
+    expect(attrs["tenant.id"]).toBe("demo");
+    expect(attrs.keyonly).toBe("");
+    expect(Object.keys(attrs)).toHaveLength(2);
+  });
+
+  it("returns an empty object when OTEL attributes are undefined", () => {
+    const { parseOtelResourceAttributes } = __testUtils;
+    expect(parseOtelResourceAttributes(undefined)).toEqual({});
+  });
 });

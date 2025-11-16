@@ -457,6 +457,9 @@ export class RabbitMQAdapter implements QueueAdapter {
       this.logger.warn?.(
         `Failed to refresh depth for ${queue}: ${(error as Error).message}`,
       );
+      queueDepthGauge
+        .labels(queue, this.transportLabel, this.tenantLabel)
+        .set(0);
       queueLagGauge.labels(queue, this.transportLabel, this.tenantLabel).set(0);
     }
   }

@@ -544,6 +544,8 @@ export class KafkaAdapter implements QueueAdapter {
       queueDepthGauge.labels(queue, this.transportLabel, this.tenantLabel).set(depth);
     } catch (error: unknown) {
       this.logger.warn?.(`Failed to refresh Kafka depth for ${queue}: ${(error as Error).message}`);
+      queueDepthGauge.labels(queue, this.transportLabel, this.tenantLabel).set(0);
+      queueLagGauge.labels(queue, this.transportLabel, this.tenantLabel).set(0);
     }
   }
 

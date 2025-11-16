@@ -9,8 +9,12 @@ export const QUEUE_PROCESSING_SECONDS_NAME = "orchestrator_queue_processing_seco
 export const QUEUE_PARTITION_LAG_NAME = "orchestrator_queue_partition_lag";
 export const QUEUE_LAG_NAME = "orchestrator_queue_lag";
 
+// Resolve once at module load. Callers should ensure OTEL_RESOURCE_ATTRIBUTES and
+// METRICS_TENANT_LABEL are configured before importing this module.
 const DEFAULT_TENANT_LABEL = resolveDefaultTenantLabel();
 
+// Allowed characters align with the Prometheus data model for label values
+// (alphanumeric plus `_`, `.`, `:`, and `-`). Everything else is replaced.
 const VALID_LABEL_VALUE = /[^a-zA-Z0-9_.:-]/g;
 
 function sanitizeLabelValue(value: string | undefined, fallback: string): string {
@@ -22,29 +26,75 @@ function sanitizeLabelValue(value: string | undefined, fallback: string): string
     return fallback;
   }
   const sanitized = trimmed.replace(VALID_LABEL_VALUE, "_").slice(0, 256);
-  if (!sanitized) {
-    return fallback;
-  }
   return sanitized;
 }
 
-// NOTE: This helper intentionally stays simple and does not handle escaped commas or equals
-// characters from the OTEL spec. Provide attributes without escaped delimiters or extend the
-// parser before relying on such inputs.
 function parseOtelResourceAttributes(raw: string | undefined): Record<string, string> {
   if (!raw) {
     return {};
   }
-  return raw.split(",").reduce<Record<string, string>>((acc, segment) => {
-    const entry = segment.trim();
-    if (!entry) {
+
+  const pairs: Array<{ key: string; value: string }> = [];
+  let current = "";
+  let key = "";
+  let inKey = true;
+  let escape = false;
+
+  const pushPair = (): void => {
+    if (!key && current === "") {
+      return;
+    }
+    const finalKey = key.trim();
+    if (!finalKey) {
+      key = "";
+      current = "";
+      inKey = true;
+      return;
+    }
+    pairs.push({ key: finalKey, value: current.trim() });
+    key = "";
+    current = "";
+    inKey = true;
+  };
+
+  for (let i = 0; i < raw.length; i += 1) {
+    const char = raw[i]!;
+    if (escape) {
+      current += char;
+      escape = false;
+      continue;
+    }
+    if (char === "\\") {
+      escape = true;
+      continue;
+    }
+    if (inKey && char === "=") {
+      key = current;
+      current = "";
+      inKey = false;
+      continue;
+    }
+    if (!inKey && char === ",") {
+      pushPair();
+      continue;
+    }
+    current += char;
+  }
+
+  if (!inKey) {
+    pairs.push({ key: key.trim(), value: current.trim() });
+  } else if (current.trim() !== "") {
+    pairs.push({ key: current.trim(), value: "" });
+  }
+
+  const unescapeOtel = (value: string): string => value.replace(/\\([,=\\])/g, "$1");
+
+  return pairs.reduce<Record<string, string>>((acc, pair) => {
+    const normalizedKey = unescapeOtel(pair.key);
+    if (!normalizedKey) {
       return acc;
     }
-    const [key, ...valueParts] = entry.split("=");
-    if (!key || valueParts.length === 0) {
-      return acc;
-    }
-    acc[key.trim()] = valueParts.join("=").trim();
+    acc[normalizedKey] = unescapeOtel(pair.value);
     return acc;
   }, {});
 }
@@ -64,6 +114,8 @@ export function getDefaultTenantLabel(): string {
 }
 
 export function resolveTenantLabel(candidate?: string): string {
+  // Exported for adapters/tests that might sanitize dynamic overrides when we
+  // support multi-tenant routing beyond the default label.
   return sanitizeLabelValue(candidate, DEFAULT_TENANT_LABEL);
 }
 

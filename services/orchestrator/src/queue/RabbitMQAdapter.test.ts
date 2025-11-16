@@ -379,4 +379,22 @@ describe("RabbitMQAdapter", () => {
     expect(payloads[0].job).toEqual({ id: "job-1", attempt: 0 });
     expect(payloads[1].job).toEqual({ id: "job-1", attempt: 1 });
   });
+
+  it("resets depth and lag metrics when refreshDepth fails", async () => {
+    queueDepthGauge.labels("plan.steps", "rabbitmq", tenantLabel).set(5);
+    queueLagGauge.labels("plan.steps", "rabbitmq", tenantLabel).set(7);
+
+    const spy = vi
+      .spyOn(adapter, "getQueueDepth")
+      .mockRejectedValueOnce(new Error("depth boom"));
+    const refreshDepth = (adapter as unknown as {
+      refreshDepth(queue: string): Promise<void>;
+    }).refreshDepth.bind(adapter);
+
+    await refreshDepth("plan.steps");
+
+    expect(await getMetricValue(queueDepthGauge, rabbitLabels())).toBe(0);
+    expect(await getMetricValue(queueLagGauge, rabbitLabels())).toBe(0);
+    spy.mockRestore();
+  });
 });
