@@ -267,6 +267,7 @@ function toSecretDescriptor(key: string): SecretDescriptor {
 }
 
 const TENANT_NAMESPACE_SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/;
+const TENANT_PLACEHOLDER_REGEX = /\{tenant\}/g;
 
 function sanitizeNamespaceSegment(value: string | undefined): string | undefined {
   if (!value) {
@@ -283,6 +284,33 @@ function sanitizeNamespaceSegment(value: string | undefined): string | undefined
     trimmed.includes("..")
   ) {
     return undefined;
+  }
+  return trimmed;
+}
+
+function validateTenantNamespaceTemplate(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new Error(
+      "VAULT_TENANT_NAMESPACE_TEMPLATE must not be empty when provided",
+    );
+  }
+  if (!trimmed.includes("{tenant}")) {
+    throw new Error(
+      "VAULT_TENANT_NAMESPACE_TEMPLATE must include the {tenant} placeholder",
+    );
+  }
+  const preview = trimSlashes(
+    trimmed.replace(TENANT_PLACEHOLDER_REGEX, "tenant-sample"),
+  );
+  const segments = preview
+    .split("/")
+    .map((segment) => segment.trim())
+    .filter(Boolean);
+  if (segments.some((segment) => segment === "." || segment === "..")) {
+    throw new Error(
+      "VAULT_TENANT_NAMESPACE_TEMPLATE must not include '.' or '..' segments",
+    );
   }
   return trimmed;
 }
@@ -423,9 +451,7 @@ export class VaultStore implements SecretsStore {
       options.tenantNamespaceTemplate ??
       resolveEnv("VAULT_TENANT_NAMESPACE_TEMPLATE");
     this.tenantNamespaceTemplate = tenantNamespaceTemplate
-      ?.trim()
-      ?.length
-      ? tenantNamespaceTemplate.trim()
+      ? validateTenantNamespaceTemplate(tenantNamespaceTemplate)
       : undefined;
 
     const mountCandidate =
@@ -533,7 +559,7 @@ export class VaultStore implements SecretsStore {
       return this.namespace;
     }
     const tenantNamespace = this.tenantNamespaceTemplate.replace(
-      /\{tenant\}/g,
+      TENANT_PLACEHOLDER_REGEX,
       safeTenant,
     );
     return combineNamespaces(this.namespace, tenantNamespace);

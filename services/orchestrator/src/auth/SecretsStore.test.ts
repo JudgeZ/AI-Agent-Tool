@@ -206,6 +206,27 @@ describe("VaultStore", () => {
     expect(headers.get("X-Vault-Namespace")).toBe("root");
   });
 
+  test("rejects tenant namespace templates without a tenant placeholder", () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+    process.env.VAULT_TENANT_NAMESPACE_TEMPLATE = "tenants/acme";
+
+    expect(() => new VaultStore()).toThrow(
+      /VAULT_TENANT_NAMESPACE_TEMPLATE must include the \{tenant\} placeholder/,
+    );
+  });
+
+  test("rejects tenant namespace templates with traversal segments", () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+    process.env.VAULT_TENANT_NAMESPACE_TEMPLATE =
+      "tenants/{tenant}/../global";
+
+    expect(() => new VaultStore()).toThrow(
+      /VAULT_TENANT_NAMESPACE_TEMPLATE must not include '\.' or '\.\.' segments/,
+    );
+  });
+
   test("applies tenant namespaces when deleting version metadata keys", async () => {
     process.env.VAULT_ADDR = "https://vault.example.com";
     process.env.VAULT_TOKEN = "token";
