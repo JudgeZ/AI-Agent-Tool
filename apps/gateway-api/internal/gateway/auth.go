@@ -52,6 +52,8 @@ const (
 	defaultAuthIdentityLimit  = 10
 	defaultAuthIPWindow       = time.Minute
 	defaultAuthIdentityWindow = time.Minute
+
+	tenantValidationErrorMessage = "tenant_id may only include letters, numbers, '.', '_' or '-'"
 )
 
 type validationError struct {
@@ -278,10 +280,13 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*
 	if tenantErr != nil {
 		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, withTenantHash(map[string]any{
 			"provider":          provider,
-			"reason":            tenantErr.Error(),
+			"reason":            tenantValidationErrorMessage,
 			"redirect_uri_hash": redirectHash(params.RedirectURI),
 		}, tenantHash))
-		writeValidationError(w, r, []validationError{{Field: "tenant_id", Message: tenantErr.Error()}})
+		writeValidationError(w, r, []validationError{{
+			Field:   "tenant_id",
+			Message: tenantValidationErrorMessage,
+		}})
 		return
 	}
 	params.TenantID = tenantID

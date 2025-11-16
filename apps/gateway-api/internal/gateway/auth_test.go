@@ -333,6 +333,9 @@ func TestAuthorizeHandlerRejectsInvalidTenantID(t *testing.T) {
 	if len(details) == 0 || details[0].Field != "tenant_id" {
 		t.Fatalf("expected tenant_id validation error, got %+v", details)
 	}
+	if details[0].Message != tenantValidationErrorMessage {
+		t.Fatalf("unexpected tenant validation message: %s", details[0].Message)
+	}
 }
 
 func TestAuthorizeHandlerRejectsInvalidRedirect(t *testing.T) {
