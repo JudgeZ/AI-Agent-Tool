@@ -8,6 +8,55 @@ export const QUEUE_RESULTS_NAME = "orchestrator_queue_results_total";
 export const QUEUE_PROCESSING_SECONDS_NAME = "orchestrator_queue_processing_seconds";
 export const QUEUE_PARTITION_LAG_NAME = "orchestrator_queue_partition_lag";
 export const QUEUE_LAG_NAME = "orchestrator_queue_lag";
+
+const DEFAULT_TENANT_LABEL = resolveDefaultTenantLabel();
+
+function sanitizeLabelValue(value: string | undefined, fallback: string): string {
+  if (!value) {
+    return fallback;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return fallback;
+  }
+  return trimmed.slice(0, 256);
+}
+
+function parseOtelResourceAttributes(raw: string | undefined): Record<string, string> {
+  if (!raw) {
+    return {};
+  }
+  return raw.split(",").reduce<Record<string, string>>((acc, segment) => {
+    const entry = segment.trim();
+    if (!entry) {
+      return acc;
+    }
+    const [key, ...valueParts] = entry.split("=");
+    if (!key || valueParts.length === 0) {
+      return acc;
+    }
+    acc[key.trim()] = valueParts.join("=").trim();
+    return acc;
+  }, {});
+}
+
+function resolveDefaultTenantLabel(): string {
+  const attributes = parseOtelResourceAttributes(process.env.OTEL_RESOURCE_ATTRIBUTES);
+  const candidate =
+    process.env.METRICS_TENANT_LABEL ??
+    attributes["tenant.id"] ??
+    attributes["deployment.tenant"] ??
+    attributes["service.namespace"];
+  return sanitizeLabelValue(candidate, "unscoped");
+}
+
+export function getDefaultTenantLabel(): string {
+  return DEFAULT_TENANT_LABEL;
+}
+
+export function resolveTenantLabel(candidate?: string): string {
+  return sanitizeLabelValue(candidate, DEFAULT_TENANT_LABEL);
+}
 const RATE_LIMIT_HITS_NAME = "limit_hits_total";
 const RATE_LIMIT_BLOCKED_NAME = "limit_blocked_total";
 function getOrCreateRateLimitHitCounter(): Counter<string> {
@@ -42,7 +91,7 @@ function getOrCreateGauge(): Gauge<string> {
   return new Gauge({
     name: QUEUE_DEPTH_NAME,
     help: "Number of messages waiting in orchestrator queues",
-    labelNames: ["queue"]
+    labelNames: ["queue", "transport", "tenant"]
   });
 }
 
@@ -90,7 +139,7 @@ function getOrCreateLagGauge(): Gauge<string> {
   return new Gauge({
     name: QUEUE_LAG_NAME,
     help: "Total consumer lag for orchestrator queues (messages)",
-    labelNames: ["queue"]
+    labelNames: ["queue", "transport", "tenant"]
   });
 }
 
@@ -102,7 +151,7 @@ function getOrCreatePartitionLagGauge(): Gauge<string> {
   return new Gauge({
     name: QUEUE_PARTITION_LAG_NAME,
     help: "Consumer lag for orchestrator queues by partition",
-    labelNames: ["queue", "partition"]
+    labelNames: ["queue", "partition", "transport", "tenant"]
   });
 }
 

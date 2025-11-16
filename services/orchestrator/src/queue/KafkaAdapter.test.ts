@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { KafkaAdapter } from "./KafkaAdapter.js";
 import {
+  getDefaultTenantLabel,
   queueAckCounter,
   queueDeadLetterCounter,
   queueDepthGauge,
@@ -104,6 +105,13 @@ describe("KafkaAdapter", () => {
   let adapter: KafkaAdapter;
   let mocks: ReturnType<typeof createKafkaMocks>;
   const PLAN_ID = "plan-550e8400-e29b-41d4-a716-446655440000";
+  const tenantLabel = getDefaultTenantLabel();
+  const kafkaLabels = (extra: Record<string, string> = {}) => ({
+    queue: "plan.steps",
+    transport: "kafka",
+    tenant: tenantLabel,
+    ...extra
+  });
 
   beforeEach(async () => {
     resetMetrics();
@@ -148,7 +156,7 @@ describe("KafkaAdapter", () => {
     expect(mocks.producerSend).toHaveBeenCalledTimes(1);
     const ackMetric = await getMetricValue(queueAckCounter, { queue: "plan.steps" });
     expect(ackMetric).toBe(1);
-    const lagMetric = await getMetricValue(queueLagGauge, { queue: "plan.steps" });
+    const lagMetric = await getMetricValue(queueLagGauge, kafkaLabels());
     expect(lagMetric).toBe(0);
   });
 
@@ -293,8 +301,13 @@ describe("KafkaAdapter", () => {
 
     const depth = await adapter.getQueueDepth("plan.steps");
     expect(depth).toBe(3);
-    const lagMetric = await getMetricValue(queueLagGauge, { queue: "plan.steps" });
+    const lagMetric = await getMetricValue(queueLagGauge, kafkaLabels());
     expect(lagMetric).toBe(3);
+    const partitionLag = await getMetricValue(
+      queuePartitionLagGauge,
+      kafkaLabels({ partition: "0" })
+    );
+    expect(partitionLag).toBe(3);
   });
 
   it("creates topics once and reuses cached metadata", async () => {

@@ -18,6 +18,7 @@ import {
 } from "kafkajs";
 
 import {
+  getDefaultTenantLabel,
   queueAckCounter,
   queueDeadLetterCounter,
   queueDepthGauge,
@@ -128,6 +129,8 @@ export class KafkaAdapter implements QueueAdapter {
   private readonly topicConfig: Record<string, string>;
   private readonly compactTopicMatchers: TopicMatcher[];
   private readonly deadLetterSuffix: string;
+  private readonly tenantLabel: string;
+  private readonly transportLabel = "kafka";
 
   private producer: Producer | null = null;
   private consumer: Consumer | null = null;
@@ -165,6 +168,7 @@ export class KafkaAdapter implements QueueAdapter {
     this.compactTopicMatchers = [...BUILTIN_COMPACT_MATCHERS, ...compiledPatterns];
     this.deadLetterSuffix =
       options.deadLetterSuffix ?? process.env.KAFKA_DEAD_LETTER_SUFFIX ?? DEFAULT_DEAD_LETTER_SUFFIX;
+    this.tenantLabel = getDefaultTenantLabel();
 
     const tlsConfig = options.tls ?? parseTlsConfigFromEnv();
     const saslConfig = options.sasl ?? parseSaslConfigFromEnv();
@@ -295,15 +299,17 @@ export class KafkaAdapter implements QueueAdapter {
         const committedRaw = groupOffsetMap.get(partition.partition);
         const committed = committedRaw && committedRaw !== "-1" ? BigInt(committedRaw) : latest;
         const partitionLag = latest > committed ? latest - committed : 0n;
-        queuePartitionLagGauge.labels(queue, partition.partition.toString()).set(Number(partitionLag));
+        queuePartitionLagGauge
+          .labels(queue, partition.partition.toString(), this.transportLabel, this.tenantLabel)
+          .set(Number(partitionLag));
         totalLag += partitionLag;
       }
       const totalLagNumber = Number(totalLag);
-      queueLagGauge.labels(queue).set(totalLagNumber);
+      queueLagGauge.labels(queue, this.transportLabel, this.tenantLabel).set(totalLagNumber);
       return totalLagNumber;
     } catch (error) {
       this.logger.warn?.(`Failed to fetch Kafka lag for ${queue}: ${(error as Error).message}`);
-      queueLagGauge.labels(queue).set(0);
+      queueLagGauge.labels(queue, this.transportLabel, this.tenantLabel).set(0);
       return 0;
     }
   }
@@ -535,7 +541,7 @@ export class KafkaAdapter implements QueueAdapter {
   private async refreshDepth(queue: string): Promise<void> {
     try {
       const depth = await this.getQueueDepth(queue);
-      queueDepthGauge.labels(queue).set(depth);
+      queueDepthGauge.labels(queue, this.transportLabel, this.tenantLabel).set(depth);
     } catch (error: unknown) {
       this.logger.warn?.(`Failed to refresh Kafka depth for ${queue}: ${(error as Error).message}`);
     }

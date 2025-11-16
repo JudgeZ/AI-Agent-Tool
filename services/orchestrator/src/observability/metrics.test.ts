@@ -10,6 +10,7 @@ import {
   QUEUE_PROCESSING_SECONDS_NAME,
   QUEUE_RESULTS_NAME,
   QUEUE_RETRY_NAME,
+  getDefaultTenantLabel,
   queueAckCounter,
   queueDeadLetterCounter,
   queueDepthGauge,
@@ -48,12 +49,13 @@ describe("metrics", () => {
   });
 
   it("resets all metric values", async () => {
-    queueDepthGauge.labels("primary").set(5);
+    const tenant = getDefaultTenantLabel();
+    queueDepthGauge.labels("primary", "test", tenant).set(5);
     queueRetryCounter.labels("primary").inc();
     queueAckCounter.labels("primary").inc(2);
     queueDeadLetterCounter.labels("primary").inc();
-    queueLagGauge.labels("primary").set(3);
-    queuePartitionLagGauge.labels("primary", "0").set(7);
+    queueLagGauge.labels("primary", "test", tenant).set(3);
+    queuePartitionLagGauge.labels("primary", "0", "test", tenant).set(7);
     queueResultCounter.labels("primary", "success").inc(4);
     queueProcessingHistogram.labels("primary").observe(0.5);
 

@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RabbitMQAdapter } from "./RabbitMQAdapter.js";
 import {
+  getDefaultTenantLabel,
   queueAckCounter,
   queueDeadLetterCounter,
   queueDepthGauge,
@@ -156,6 +157,12 @@ describe("RabbitMQAdapter", () => {
   let adapter: RabbitMQAdapter;
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const PLAN_ID = "plan-550e8400-e29b-41d4-a716-446655440000";
+  const tenantLabel = getDefaultTenantLabel();
+  const rabbitLabels = () => ({
+    queue: "plan.steps",
+    transport: "rabbitmq",
+    tenant: tenantLabel
+  });
 
   beforeEach(async () => {
     resetMetrics();
@@ -178,9 +185,9 @@ describe("RabbitMQAdapter", () => {
     await flushMicrotasks();
 
     expect(channel.getDepth("plan.steps")).toBe(0);
-    const depthMetric = await getMetricValue(queueDepthGauge, { queue: "plan.steps" });
+    const depthMetric = await getMetricValue(queueDepthGauge, rabbitLabels());
     expect(depthMetric).toBe(0);
-    const lagMetric = await getMetricValue(queueLagGauge, { queue: "plan.steps" });
+    const lagMetric = await getMetricValue(queueLagGauge, rabbitLabels());
     expect(lagMetric).toBe(0);
     const ackMetric = await getMetricValue(queueAckCounter, { queue: "plan.steps" });
     expect(ackMetric).toBe(1);

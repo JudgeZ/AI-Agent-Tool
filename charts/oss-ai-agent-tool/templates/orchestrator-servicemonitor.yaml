@@ -1,0 +1,46 @@
+{{- $root := . -}}
+{{- $svcMon := $root.Values.monitoring.serviceMonitor | default dict -}}
+{{- if $svcMon.enabled }}
+apiVersion: monitoring.coreos.com/v1
+kind: ServiceMonitor
+metadata:
+  name: {{ include "oss-ai-agent-tool.fullname" $root }}-orchestrator
+  namespace: {{ $svcMon.namespace | default $root.Release.Namespace }}
+  labels:
+    {{- include "oss-ai-agent-tool.labels" $root | nindent 4 }}
+    {{- with $svcMon.additionalLabels }}
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  selector:
+    matchLabels:
+      {{- include "oss-ai-agent-tool.selectorLabels" $root | nindent 6 }}
+      app.kubernetes.io/component: orchestrator
+  namespaceSelector:
+    {{- if $svcMon.namespaceSelector }}
+      {{- toYaml $svcMon.namespaceSelector | nindent 4 }}
+    {{- else }}
+      matchNames:
+        - {{ $root.Release.Namespace }}
+    {{- end }}
+  endpoints:
+    - port: http
+      path: /metrics
+      interval: {{ $svcMon.interval | default "30s" }}
+      scrapeTimeout: {{ $svcMon.scrapeTimeout | default "10s" }}
+      {{- if $svcMon.scheme }}
+      scheme: {{ $svcMon.scheme }}
+      {{- end }}
+      {{- with $svcMon.tlsConfig }}
+      tlsConfig:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $svcMon.relabelings }}
+      relabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with $svcMon.metricRelabelings }}
+      metricRelabelings:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

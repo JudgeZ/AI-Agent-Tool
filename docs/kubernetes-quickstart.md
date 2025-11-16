@@ -90,6 +90,10 @@ secrets:
 orchestrator:
   env:
     LOCAL_SECRETS_PASSPHRASE: "change-me"
+    # Surface tenant-aware queue metrics for HPAs and dashboards.
+    # You can include additional attributes (service.name, deployment.environment, etc.).
+    # The tenant label is exported on every queue depth/lag metric.
+    OTEL_RESOURCE_ATTRIBUTES: "tenant.id=demo,service.name=oss-orchestrator"
 # Optional: direct the keystore somewhere other than /app/config/secrets/local/secrets.json
 #   LOCAL_SECRETS_PATH: /mnt/credentials/secrets.json
 observability:
@@ -97,7 +101,19 @@ observability:
     enabled: true
   langfuse:
     enabled: true
+monitoring:
+  serviceMonitor:
+    enabled: true
+  grafana:
+    enabled: true
+    namespace: monitoring
 ```
+
+When Kafka is enabled, the default HorizontalPodAutoscaler targets the `orchestrator_queue_lag`
+metric with a label selector of `{ queue: plan.steps, transport: kafka }`. Override
+`orchestrator.hpa.metricSelector` if you rename topics or use multiple queue groups.
+The same metrics power the optional Grafana dashboard (`monitoring.grafana.enabled=true`) and
+Prometheus `ServiceMonitor` (`monitoring.serviceMonitor.enabled=true`).
 
 ### Optional: enable internal mTLS with cert-manager
 
@@ -171,6 +187,7 @@ The chart provisions Deployments and ClusterIP Services for both the gateway API
 * **Secrets rotation:** rotate provider tokens in the referenced secret; the orchestrator reloads them on change.
 * **Upgrades:** use `helm upgrade` with a newer chart version. CI-generated SBOMs and cosign signatures support supply-chain attestation.
 * **Monitoring:** integrate cluster metrics with your observability stack; Jaeger and Langfuse provide tracing and prompt analytics out of the box.
+  * Enable the ServiceMonitor + Grafana dashboard values to scrape `/metrics` and visualize queue depth/lag across tenants.
 
 ## Related documentation
 

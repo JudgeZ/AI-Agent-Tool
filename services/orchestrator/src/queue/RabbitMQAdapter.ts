@@ -7,6 +7,7 @@ import { randomUUID } from "node:crypto";
 import { setTimeout as delay } from "node:timers/promises";
 
 import {
+  getDefaultTenantLabel,
   queueAckCounter,
   queueDeadLetterCounter,
   queueDepthGauge,
@@ -84,6 +85,8 @@ export class RabbitMQAdapter implements QueueAdapter {
   private readonly reconnectBaseDelayMs: number;
   private readonly amqp: typeof amqplib;
   private readonly logger: Logger;
+  private readonly tenantLabel: string;
+  private readonly transportLabel = "rabbitmq";
 
   constructor(options: RabbitMQAdapterOptions = {}) {
     const resolvedUrl = resolveEnv(
@@ -102,6 +105,7 @@ export class RabbitMQAdapter implements QueueAdapter {
       options.reconnectBaseDelayMs ?? DEFAULT_RECONNECT_BASE_MS;
     this.amqp = options.amqplib ?? amqplib;
     this.logger = options.logger ?? console;
+    this.tenantLabel = getDefaultTenantLabel();
   }
 
   async connect(): Promise<void> {
@@ -445,13 +449,15 @@ export class RabbitMQAdapter implements QueueAdapter {
   private async refreshDepth(queue: string): Promise<void> {
     try {
       const depth = await this.getQueueDepth(queue);
-      queueDepthGauge.labels(queue).set(depth);
-      queueLagGauge.labels(queue).set(depth);
+      queueDepthGauge
+        .labels(queue, this.transportLabel, this.tenantLabel)
+        .set(depth);
+      queueLagGauge.labels(queue, this.transportLabel, this.tenantLabel).set(depth);
     } catch (error) {
       this.logger.warn?.(
         `Failed to refresh depth for ${queue}: ${(error as Error).message}`,
       );
-      queueLagGauge.labels(queue).set(0);
+      queueLagGauge.labels(queue, this.transportLabel, this.tenantLabel).set(0);
     }
   }
 }
