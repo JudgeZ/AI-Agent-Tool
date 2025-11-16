@@ -42,6 +42,10 @@ const hashSalt =
   process.env.ORCHESTRATOR_AUDIT_SALT ??
   process.env.OSS_AUDIT_SALT ??
   "";
+const identifierHashSalt = hashSalt || `${serviceName}-audit-salt`;
+const HASH_ITERATIONS = 310_000;
+const HASH_KEY_LENGTH = 32;
+const HASH_DIGEST = "sha256";
 
 const secretKeyPatterns = [
   /token/i,
@@ -73,10 +77,9 @@ function hashIdentifier(value?: string | null): string | undefined {
   if (!trimmed) {
     return undefined;
   }
-  const hash = crypto.createHash("sha256");
-  hash.update(hashSalt);
-  hash.update(trimmed);
-  return hash.digest("hex");
+  return crypto
+    .pbkdf2Sync(trimmed, identifierHashSalt, HASH_ITERATIONS, HASH_KEY_LENGTH, HASH_DIGEST)
+    .toString("hex");
 }
 
 function shouldMask(key?: string): boolean {

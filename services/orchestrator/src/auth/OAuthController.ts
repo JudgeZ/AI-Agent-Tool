@@ -49,6 +49,16 @@ type ProviderConfig = {
   extraParams?: Record<string, string>;
 };
 
+const ERROR_HASH_ITERATIONS = 310_000;
+const ERROR_HASH_KEY_LENGTH = 32;
+const ERROR_HASH_DIGEST = "sha256";
+const errorHashSalt =
+  process.env.OAUTH_ERROR_HASH_SALT ??
+  process.env.AUDIT_HASH_SALT ??
+  process.env.ORCHESTRATOR_AUDIT_SALT ??
+  process.env.OSS_AUDIT_SALT ??
+  "oauth.error.hash";
+
 function secrets(): SecretsStore {
   return getSecretsStore();
 }
@@ -103,9 +113,9 @@ function hashErrorMessage(message: string | undefined): string | undefined {
   if (!message) {
     return undefined;
   }
-  const hash = crypto.createHash("sha256");
-  hash.update(message);
-  return hash.digest("hex");
+  return crypto
+    .pbkdf2Sync(message, errorHashSalt, ERROR_HASH_ITERATIONS, ERROR_HASH_KEY_LENGTH, ERROR_HASH_DIGEST)
+    .toString("hex");
 }
 
 function responseMessageForStatus(status: number): {
