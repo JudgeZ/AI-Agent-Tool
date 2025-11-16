@@ -197,6 +197,7 @@ export async function callback(req: Request, res: Response) {
     return;
   }
   const { code, codeVerifier, redirectUri, tenantId } = parsedBody.data;
+  const auditSubject = buildAuditSubject(tenantId);
 
   if (redirectUri !== cfg.redirectUri) {
     respondWithValidationError(res, [
@@ -208,7 +209,12 @@ export async function callback(req: Request, res: Response) {
       requestId: metadata.requestId,
       traceId: metadata.traceId,
       agent: metadata.agent,
-      details: { provider: cfg.name, reason: "redirect_mismatch" },
+      subject: auditSubject,
+      details: {
+        provider: cfg.name,
+        reason: "redirect_mismatch",
+        tenantId,
+      },
     });
     return;
   }
@@ -223,8 +229,6 @@ export async function callback(req: Request, res: Response) {
     if (typeof tokens.expires_in === "number") {
       normalizedTokens.expires_at = Date.now() + tokens.expires_in * 1000;
     }
-    const auditSubject = buildAuditSubject(tenantId);
-
     const accessKey = keyForTenant(
       tenantId,
       `oauth:${provider}:access_token`,
@@ -292,7 +296,6 @@ export async function callback(req: Request, res: Response) {
         ? statusCandidate
         : 502;
     const response = responseMessageForStatus(status);
-    const auditSubject = buildAuditSubject(tenantId);
     logAuditEvent({
       action: "auth.oauth.callback",
       outcome: response.outcome,

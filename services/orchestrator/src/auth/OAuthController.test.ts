@@ -322,6 +322,7 @@ describe("OAuthController", () => {
         code: "auth-code",
         code_verifier: "v".repeat(64),
         redirect_uri: "https://evil.example.com/callback",
+        tenant_id: "acme",
       },
     } as any;
     const res = createResponse();
@@ -336,6 +337,8 @@ describe("OAuthController", () => {
     });
     const event = findAuditEvent("auth.oauth.callback", "failure");
     expect(event?.details?.reason).toBe("redirect_mismatch");
+    expect(event?.details?.tenantId).toBe("acme");
+    expect(event?.subject?.tenantId).toBe("acme");
   });
 
   it("propagates provider errors when access_token is missing", async () => {
