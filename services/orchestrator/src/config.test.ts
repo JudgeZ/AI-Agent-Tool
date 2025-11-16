@@ -992,6 +992,20 @@ providers:
     );
   });
 
+  it("requires provider default temperature overrides to be numeric", () => {
+    const configPath = createTempConfigFile(`
+providers:
+  settings:
+    openai:
+      defaultTemperature: invalid
+`);
+    process.env.APP_CONFIG = configPath;
+
+    expect(() => loadConfig()).toThrow(
+      "providers.settings['openai'] defaultTemperature must be a finite number",
+    );
+  });
+
   it("rejects default temperature overrides for providers without temperature support", () => {
     const configPath = createTempConfigFile(`
 providers:
@@ -1041,6 +1055,20 @@ providers:
 
     expect(() => loadConfig()).toThrow(
       "providers.settings['openai'] timeoutMs must be between 1 and 600000 milliseconds",
+    );
+  });
+
+  it("requires provider timeout overrides to be numeric", () => {
+    const configPath = createTempConfigFile(`
+providers:
+  settings:
+    openai:
+      timeoutMs: not-a-number
+`);
+    process.env.APP_CONFIG = configPath;
+
+    expect(() => loadConfig()).toThrow(
+      "providers.settings['openai'] timeoutMs must be a finite number",
     );
   });
 

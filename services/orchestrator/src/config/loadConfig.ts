@@ -149,6 +149,8 @@ export type ProviderRuntimeConfig = {
 };
 
 const MAX_PROVIDER_TIMEOUT_MS = 10 * 60_000; // 10 minutes
+const MIN_PROVIDER_TEMPERATURE = 0;
+const MAX_PROVIDER_TEMPERATURE = 2;
 
 export type ProviderRoutingPriority = Record<"balanced" | "high_quality" | "low_cost", string[]>;
 
@@ -1092,19 +1094,22 @@ function parseProviderRuntimeConfig(value: unknown, context: string): ProviderRu
   const result: ProviderRuntimeConfig = {};
   if (record.defaultTemperature !== undefined) {
     const temp = asNumber(record.defaultTemperature);
-    if (temp === undefined || !Number.isFinite(temp) || temp < 0 || temp > 2) {
-      throw new Error(`${context} defaultTemperature must be between 0 and 2`);
+    if (temp === undefined) {
+      throw new Error(`${context} defaultTemperature must be a finite number`);
+    }
+    if (temp < MIN_PROVIDER_TEMPERATURE || temp > MAX_PROVIDER_TEMPERATURE) {
+      throw new Error(
+        `${context} defaultTemperature must be between ${MIN_PROVIDER_TEMPERATURE} and ${MAX_PROVIDER_TEMPERATURE}`,
+      );
     }
     result.defaultTemperature = temp;
   }
   if (record.timeoutMs !== undefined) {
     const timeout = asNumber(record.timeoutMs);
-    if (
-      timeout === undefined ||
-      !Number.isFinite(timeout) ||
-      timeout <= 0 ||
-      timeout > MAX_PROVIDER_TIMEOUT_MS
-    ) {
+    if (timeout === undefined) {
+      throw new Error(`${context} timeoutMs must be a finite number`);
+    }
+    if (timeout <= 0 || timeout > MAX_PROVIDER_TIMEOUT_MS) {
       throw new Error(
         `${context} timeoutMs must be between 1 and ${MAX_PROVIDER_TIMEOUT_MS} milliseconds`,
       );
