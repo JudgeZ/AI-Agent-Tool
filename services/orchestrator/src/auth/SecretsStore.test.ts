@@ -144,6 +144,81 @@ describe("VaultStore", () => {
     expect(init?.dispatcher).toBeInstanceOf(Agent);
   });
 
+  test("applies tenant namespace templates when keys use tenant prefixes", async () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+    process.env.VAULT_NAMESPACE = "root";
+    process.env.VAULT_TENANT_NAMESPACE_TEMPLATE = "tenants/{tenant}";
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ data: { data: { value: "secret-value" } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    await store.get("tenant:acme:provider:openai:apiKey");
+
+    const [, init] = fetchMock.mock.calls[0];
+    const headers = new Headers((init as RequestInit | undefined)?.headers);
+    expect(headers.get("X-Vault-Namespace")).toBe("root/tenants/acme");
+  });
+
+  test("raises errors when Vault responds with a 5xx status", async () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response("", { status: 500 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    await expect(() => store.get("provider:openai:apiKey")).rejects.toThrow(
+      "Vault request failed with status 500",
+    );
+  });
+
+  test("includes error details from Vault responses when available", async () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ errors: ["permission denied"] }),
+          { status: 403, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    await expect(() =>
+      store.set("provider:openai:apiKey", "secret"),
+    ).rejects.toThrow("Vault request failed with status 403: permission denied");
+  });
+
+  test("truncates oversized Vault error bodies", async () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+
+    const longError = "x".repeat(600);
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(longError, { status: 502 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    await expect(() => store.delete("provider:openai:apiKey")).rejects.toThrow(
+      /Vault request failed with status 502: x{256}…/,
+    );
+  });
+
   test("returns undefined when vault returns 404", async () => {
     process.env.VAULT_ADDR = "https://vault.example.com";
     process.env.VAULT_TOKEN = "token";

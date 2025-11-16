@@ -22,6 +22,7 @@ type VaultStoreOptions = {
   url?: string;
   token?: string;
   namespace?: string;
+  tenantNamespaceTemplate?: string;
   kvMountPath?: string;
   caCert?: string;
   rejectUnauthorized?: boolean;
@@ -225,10 +226,124 @@ function computeRenewalDeadline(
   return Date.now() + effectiveSeconds * 1000;
 }
 
+type SecretDescriptor = {
+  path: string;
+  tenantId?: string;
+};
+
+function splitKeySegments(key: string): string[] {
+  const segments: string[] = [];
+  let current = "";
+  for (const char of key) {
+    if (char === ":" || char === "/") {
+      if (current.length > 0) {
+        segments.push(current);
+        current = "";
+      }
+      continue;
+    }
+    current += char;
+  }
+  if (current.length > 0) {
+    segments.push(current);
+  }
+  return segments.map((segment) => segment.trim()).filter(Boolean);
+}
+
+function toSecretDescriptor(key: string): SecretDescriptor {
+  const segments = splitKeySegments(key);
+  if (segments.length === 0) {
+    throw new Error("Secret keys must contain at least one valid segment");
+  }
+  let tenantId: string | undefined;
+  if (segments.length >= 2 && segments[0].toLowerCase() === "tenant") {
+    tenantId = segments[1];
+  }
+  const encoded = segments.map((segment) => encodeURIComponent(segment));
+  return { path: encoded.join("/"), tenantId };
+}
+
+function sanitizeNamespaceSegment(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const normalized = trimmed.replace(/[^A-Za-z0-9._-]/g, "-");
+  return normalized.length > 0 ? normalized : undefined;
+}
+
+function combineNamespaces(base?: string, tenant?: string): string | undefined {
+  const normalizedBase = base ? trimSlashes(base) : undefined;
+  const normalizedTenant = tenant ? trimSlashes(tenant) : undefined;
+  if (normalizedBase && normalizedTenant) {
+    return `${normalizedBase}/${normalizedTenant}`;
+  }
+  return normalizedTenant ?? normalizedBase;
+}
+
+const MAX_VAULT_ERROR_SNIPPET = 256;
+
+function extractVaultErrorDetail(payload: unknown): string | undefined {
+  if (!payload || typeof payload !== "object") {
+    return undefined;
+  }
+  const candidate = payload as Record<string, unknown>;
+  const errors = candidate.errors;
+  if (Array.isArray(errors) && errors.length > 0) {
+    const firstError = errors.find((item) => typeof item === "string");
+    if (typeof firstError === "string" && firstError.trim()) {
+      return firstError.trim();
+    }
+  }
+  const error = candidate.error;
+  if (typeof error === "string" && error.trim()) {
+    return error.trim();
+  }
+  if (
+    typeof candidate.data === "object" &&
+    candidate.data !== null &&
+    typeof (candidate.data as Record<string, unknown>).error === "string"
+  ) {
+    const nested = (candidate.data as Record<string, unknown>).error;
+    if (typeof nested === "string" && nested.trim()) {
+      return nested.trim();
+    }
+  }
+  return undefined;
+}
+
+async function readVaultErrorMessage(response: Response): Promise<string | undefined> {
+  try {
+    const cloned = await response.clone().text();
+    const trimmed = cloned.trim();
+    if (!trimmed) {
+      return undefined;
+    }
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      const detail = extractVaultErrorDetail(parsed);
+      if (detail) {
+        return detail;
+      }
+    } catch {
+      // fall back to the raw body snippet below
+    }
+    return trimmed.length > MAX_VAULT_ERROR_SNIPPET
+      ? `${trimmed.slice(0, MAX_VAULT_ERROR_SNIPPET)}…`
+      : trimmed;
+  } catch {
+    return undefined;
+  }
+}
+
 export class VaultStore implements SecretsStore {
   private readonly baseUrl: URL;
   private token?: string;
   private readonly namespace?: string;
+  private readonly tenantNamespaceTemplate?: string;
   private readonly mountPath: string;
   private readonly dispatcher?: Dispatcher;
   private readonly authConfig?: VaultAuthConfig;
@@ -249,6 +364,15 @@ export class VaultStore implements SecretsStore {
       options.namespace ?? resolveEnv("VAULT_NAMESPACE")
     )?.trim();
     this.namespace = namespace && namespace.length > 0 ? namespace : undefined;
+
+    const tenantNamespaceTemplate =
+      options.tenantNamespaceTemplate ??
+      resolveEnv("VAULT_TENANT_NAMESPACE_TEMPLATE");
+    this.tenantNamespaceTemplate = tenantNamespaceTemplate
+      ?.trim()
+      ?.length
+      ? tenantNamespaceTemplate.trim()
+      : undefined;
 
     const mountCandidate =
       options.kvMountPath ?? resolveEnv("VAULT_KV_MOUNT", "secret") ?? "secret";
@@ -334,12 +458,31 @@ export class VaultStore implements SecretsStore {
     return new URL(path, this.baseUrl).toString();
   }
 
-  private createBaseHeaders(init?: HeadersInit): Headers {
+  private createBaseHeaders(
+    init?: HeadersInit,
+    namespaceOverride?: string,
+  ): Headers {
     const headers = new Headers(init);
-    if (this.namespace) {
-      headers.set("X-Vault-Namespace", this.namespace);
+    const namespaceHeader = namespaceOverride ?? this.namespace;
+    if (namespaceHeader) {
+      headers.set("X-Vault-Namespace", namespaceHeader);
     }
     return headers;
+  }
+
+  private resolveNamespaceForTenant(tenantId?: string): string | undefined {
+    if (!tenantId || !this.tenantNamespaceTemplate) {
+      return this.namespace;
+    }
+    const safeTenant = sanitizeNamespaceSegment(tenantId);
+    if (!safeTenant) {
+      return this.namespace;
+    }
+    const tenantNamespace = this.tenantNamespaceTemplate.replace(
+      /\{tenant\}/gi,
+      safeTenant,
+    );
+    return combineNamespaces(this.namespace, tenantNamespace);
   }
 
   private async send(path: string, init: RequestInit = {}): Promise<Response> {
@@ -451,13 +594,15 @@ export class VaultStore implements SecretsStore {
   private async request(
     path: string,
     init: RequestInit = {},
+    tenantId?: string,
     retry = true,
   ): Promise<Response> {
     await this.ensureToken();
     if (!this.token) {
       throw new Error("Vault authentication did not yield a token");
     }
-    const headers = this.createBaseHeaders(init.headers);
+    const namespaceHeader = this.resolveNamespaceForTenant(tenantId);
+    const headers = this.createBaseHeaders(init.headers, namespaceHeader);
     headers.set("X-Vault-Token", this.token);
     const response = await this.send(path, {
       ...init,
@@ -469,21 +614,32 @@ export class VaultStore implements SecretsStore {
       retry
     ) {
       this.invalidateToken();
-      return this.request(path, init, false);
+      return this.request(path, init, tenantId, false);
     }
     return response;
   }
 
+  private async toVaultError(response: Response): Promise<Error> {
+    const detail = await readVaultErrorMessage(response);
+    const base = `Vault request failed with status ${response.status}`;
+    if (detail) {
+      return new Error(`${base}: ${detail}`);
+    }
+    return new Error(base);
+  }
+
   async get(key: string): Promise<string | undefined> {
-    const secretPath = toSecretPath(key);
+    const descriptor = toSecretDescriptor(key);
     const response = await this.request(
-      `/v1/${this.mountPath}/data/${secretPath}`,
+      `/v1/${this.mountPath}/data/${descriptor.path}`,
+      undefined,
+      descriptor.tenantId,
     );
     if (response.status === 404) {
       return undefined;
     }
     if (!response.ok) {
-      throw new Error(`Vault request failed with status ${response.status}`);
+      throw await this.toVaultError(response);
     }
     const payload = (await response.json()) as {
       data?: { data?: Record<string, unknown> };
@@ -493,33 +649,35 @@ export class VaultStore implements SecretsStore {
   }
 
   async set(key: string, value: string): Promise<void> {
-    const secretPath = toSecretPath(key);
+    const descriptor = toSecretDescriptor(key);
     const response = await this.request(
-      `/v1/${this.mountPath}/data/${secretPath}`,
+      `/v1/${this.mountPath}/data/${descriptor.path}`,
       {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ data: { value } }),
       },
+      descriptor.tenantId,
     );
     if (!response.ok) {
-      throw new Error(`Vault request failed with status ${response.status}`);
+      throw await this.toVaultError(response);
     }
   }
 
   async delete(key: string): Promise<void> {
-    const secretPath = toSecretPath(key);
+    const descriptor = toSecretDescriptor(key);
     const response = await this.request(
-      `/v1/${this.mountPath}/metadata/${secretPath}`,
+      `/v1/${this.mountPath}/metadata/${descriptor.path}`,
       {
         method: "DELETE",
       },
+      descriptor.tenantId,
     );
     if (response.status === 404) {
       return;
     }
     if (!response.ok) {
-      throw new Error(`Vault request failed with status ${response.status}`);
+      throw await this.toVaultError(response);
     }
   }
 }

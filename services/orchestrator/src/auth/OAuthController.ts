@@ -48,6 +48,13 @@ type ProviderConfig = {
   extraParams?: Record<string, string>;
 };
 
+function keyForTenant(tenantId: string | undefined, key: string): string {
+  if (!tenantId) {
+    return key;
+  }
+  return `tenant:${tenantId}:${key}`;
+}
+
 function secrets(): SecretsStore {
   return getSecretsStore();
 }
@@ -92,6 +99,10 @@ function buildAuditMetadata(req: Request): AuditMetadata {
   const agent =
     extractAgent(req) ?? readHeaderValue(req, "user-agent") ?? undefined;
   return { requestId, traceId, agent };
+}
+
+function buildAuditSubject(tenantId: string | undefined) {
+  return tenantId ? { tenantId } : undefined;
 }
 
 function hashErrorMessage(message: string | undefined): string | undefined {
@@ -191,7 +202,7 @@ export async function callback(req: Request, res: Response) {
     });
     return;
   }
-  const { code, codeVerifier, redirectUri } = parsedBody.data;
+  const { code, codeVerifier, redirectUri, tenantId } = parsedBody.data;
 
   if (redirectUri !== cfg.redirectUri) {
     respondWithValidationError(res, [
@@ -218,25 +229,40 @@ export async function callback(req: Request, res: Response) {
     if (typeof tokens.expires_in === "number") {
       normalizedTokens.expires_at = Date.now() + tokens.expires_in * 1000;
     }
+    const auditSubject = buildAuditSubject(tenantId);
 
+    const accessKey = keyForTenant(
+      tenantId,
+      `oauth:${provider}:access_token`,
+    );
+    const tokensKey = keyForTenant(tenantId, `oauth:${provider}:tokens`);
+    const refreshKey = keyForTenant(
+      tenantId,
+      `oauth:${provider}:refresh_token`,
+    );
     const operations: Array<Promise<unknown>> = [
-      store.set(`oauth:${provider}:access_token`, tokens.access_token),
-      store.set(`oauth:${provider}:tokens`, JSON.stringify(normalizedTokens)),
+      store.set(accessKey, tokens.access_token),
+      store.set(tokensKey, JSON.stringify(normalizedTokens)),
     ];
+    let refreshVersionId: string | undefined;
 
     if (tokens.refresh_token) {
       operations.push(
-        rotator.rotate(
-          `oauth:${provider}:refresh_token`,
-          tokens.refresh_token,
-          {
+        rotator
+          .rotate(refreshKey, tokens.refresh_token, {
             retain: 5,
             labels: { provider },
-          },
-        ),
+          })
+          .then((info) => {
+            refreshVersionId = info.id;
+          }),
       );
     } else {
-      operations.push(rotator.clear(`oauth:${provider}:refresh_token`));
+      operations.push(
+        rotator.clear(refreshKey).then(() => {
+          refreshVersionId = undefined;
+        }),
+      );
     }
 
     await Promise.all(operations);
@@ -247,9 +273,12 @@ export async function callback(req: Request, res: Response) {
       requestId: metadata.requestId,
       traceId: metadata.traceId,
       agent: metadata.agent,
+      subject: auditSubject,
       details: {
         provider: cfg.name,
         refreshTokenStored: Boolean(tokens.refresh_token),
+        tenantId,
+        ...(refreshVersionId ? { refreshTokenVersion: refreshVersionId } : {}),
       },
     });
   } catch (error) {
@@ -269,17 +298,20 @@ export async function callback(req: Request, res: Response) {
         ? statusCandidate
         : 502;
     const response = responseMessageForStatus(status);
+    const auditSubject = buildAuditSubject(tenantId);
     logAuditEvent({
       action: "auth.oauth.callback",
       outcome: response.outcome,
       requestId: metadata.requestId,
       traceId: metadata.traceId,
       agent: metadata.agent,
+      subject: auditSubject,
       details: {
         provider: cfg.name,
         status,
         reason: response.reason,
         upstreamErrorHash: hashErrorMessage(message),
+        tenantId,
       },
     });
     respondWithError(res, status, {

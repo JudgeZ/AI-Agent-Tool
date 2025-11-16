@@ -270,6 +270,71 @@ func TestAuthorizeHandlerGeneratesPKCEChallenge(t *testing.T) {
 	}
 }
 
+func TestAuthorizeHandlerPersistsTenantIDInState(t *testing.T) {
+	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
+	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/auth/openrouter/authorize?redirect_uri=https://app.example.com/complete&tenant_id=acme",
+		nil,
+	)
+	req.TLS = &tls.ConnectionState{}
+	rec := httptest.NewRecorder()
+
+	authorizeHandler(rec, req, nil, false)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected authorize handler to redirect, got %d", rec.Code)
+	}
+	var stateCookie *http.Cookie
+	for _, cookie := range rec.Result().Cookies() {
+		if strings.HasPrefix(cookie.Name, "oauth_state_") {
+			stateCookie = cookie
+			break
+		}
+	}
+	if stateCookie == nil {
+		t.Fatal("expected state cookie to be set")
+	}
+	decoded, err := base64.RawURLEncoding.DecodeString(stateCookie.Value)
+	if err != nil {
+		t.Fatalf("failed to decode state cookie: %v", err)
+	}
+	var stored stateData
+	if err := json.Unmarshal(decoded, &stored); err != nil {
+		t.Fatalf("failed to unmarshal state data: %v", err)
+	}
+	if stored.TenantID != "acme" {
+		t.Fatalf("expected tenant id to be propagated, got %q", stored.TenantID)
+	}
+}
+
+func TestAuthorizeHandlerRejectsInvalidTenantID(t *testing.T) {
+	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
+	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+
+	req := httptest.NewRequest(
+		http.MethodGet,
+		"/auth/openrouter/authorize?redirect_uri=https://app.example.com/complete&tenant_id=bad*!",
+		nil,
+	)
+	rec := httptest.NewRecorder()
+
+	authorizeHandler(rec, req, nil, false)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected invalid tenant to return 400, got %d", rec.Code)
+	}
+	payload := decodeErrorResponse(t, rec)
+	details := extractValidationDetails(t, payload)
+	if len(details) == 0 || details[0].Field != "tenant_id" {
+		t.Fatalf("expected tenant_id validation error, got %+v", details)
+	}
+}
+
 func TestAuthorizeHandlerRejectsInvalidRedirect(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
@@ -596,6 +661,57 @@ func TestCallbackHandlerHandlesOrchestratorContactFailure(t *testing.T) {
 	}
 }
 
+func TestCallbackHandlerIncludesTenantIDInUpstreamPayload(t *testing.T) {
+	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
+	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+
+	var capturedBody string
+	SetOrchestratorClientFactory(func() (*http.Client, error) {
+		return &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			body, _ := io.ReadAll(req.Body)
+			capturedBody = string(body)
+			resp := &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("{}")),
+				Header:     make(http.Header),
+			}
+			return resp, nil
+		})}, nil
+	})
+	t.Cleanup(ResetOrchestratorClient)
+
+	data := stateData{
+		Provider:     "openrouter",
+		RedirectURI:  "https://app.example.com/complete",
+		CodeVerifier: "verifier",
+		ExpiresAt:    time.Now().Add(1 * time.Minute),
+		State:        "state-token",
+		TenantID:     "acme",
+	}
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("failed to encode state data: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/callback?code=abc&state=state-token", nil)
+	req.TLS = &tls.ConnectionState{}
+	req.AddCookie(&http.Cookie{
+		Name:  stateCookieName(data.State),
+		Value: base64.RawURLEncoding.EncodeToString(encoded),
+		Path:  "/auth/",
+	})
+	rec := httptest.NewRecorder()
+
+	callbackHandler(rec, req, nil, false)
+
+	if !strings.Contains(capturedBody, `"tenant_id":"acme"`) {
+		t.Fatalf("expected upstream payload to include tenant_id, got %s", capturedBody)
+	}
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected callback handler to redirect on success, got %d", rec.Code)
+	}
+}
+
 func TestCallbackHandlerRedirectsOnOrchestratorError(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
@@ -892,6 +1008,69 @@ func TestCallbackHandlerDropsInsecureUpstreamCookie(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected audit log to note cookie rejection, got %q", logs)
+	}
+}
+
+func TestAuthorizeAuditIncludesActorAndTenantHashes(t *testing.T) {
+	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
+	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+
+	var buf bytes.Buffer
+	original := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(&buf, &slog.HandlerOptions{})))
+	gatewayAuditLogger = audit.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(original)
+		gatewayAuditLogger = audit.Default()
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/authorize?redirect_uri="+url.QueryEscape("https://app.example.com/callback")+"&tenant_id=acme", nil)
+	req.RemoteAddr = "203.0.113.10:1234"
+	req.TLS = &tls.ConnectionState{}
+	rec := httptest.NewRecorder()
+
+	authorizeHandler(rec, req, nil, false)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected authorize handler to redirect, got %d", rec.Code)
+	}
+
+	expectedTenantHash := hashTenantID("acme")
+	expectedActorHash := gatewayAuditLogger.HashIdentity("203.0.113.10")
+
+	scanner := bufio.NewScanner(&buf)
+	found := false
+	for scanner.Scan() {
+		line := bytes.TrimSpace(scanner.Bytes())
+		if len(line) == 0 {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal(line, &entry); err != nil {
+			continue
+		}
+		if event, _ := entry["event"].(string); event != "auth.oauth.authorize" {
+			continue
+		}
+		details, _ := entry["details"].(map[string]any)
+		if details == nil {
+			continue
+		}
+		if details["tenant_id_hash"] != expectedTenantHash {
+			t.Fatalf("expected tenant hash %q, got %+v", expectedTenantHash, details)
+		}
+		if details["actor_id"] != expectedActorHash {
+			t.Fatalf("expected actor hash %q, got %+v", expectedActorHash, details)
+		}
+		found = true
+		break
+	}
+	if err := scanner.Err(); err != nil {
+		t.Fatalf("failed to scan audit logs: %v", err)
+	}
+	if !found {
+		t.Fatalf("expected authorize audit log, got %q", buf.String())
 	}
 }
 

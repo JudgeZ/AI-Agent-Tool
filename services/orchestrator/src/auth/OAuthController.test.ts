@@ -248,6 +248,47 @@ describe("OAuthController", () => {
     expect(event).toBeDefined();
     expect(event?.details?.provider).toBe("google");
     expect(event?.details?.refreshTokenStored).toBe(true);
+    expect(event?.details?.refreshTokenVersion).toBeDefined();
+  });
+
+  it("namespaces stored secrets when tenant_id is provided", async () => {
+    fetchMock.mockResolvedValue({
+      ok: true,
+      json: async () => ({
+        access_token: "tenant-access",
+        refresh_token: "tenant-refresh",
+        expires_in: 1800,
+        token_type: "Bearer",
+      }),
+    });
+
+    const req = {
+      params: { provider: "google" },
+      body: {
+        code: "auth-code",
+        code_verifier: "v".repeat(64),
+        redirect_uri: "http://127.0.0.1:8080/auth/google/callback",
+        tenant_id: "acme",
+      },
+    } as any;
+    const res = createResponse();
+
+    await callback(req, res);
+
+    expect(secretsStoreData.get("tenant:acme:oauth:google:access_token")).toBe(
+      "tenant-access",
+    );
+    expect(
+      secretsStoreData.get("tenant:acme:oauth:google:refresh_token"),
+    ).toBe("tenant-refresh");
+    expect(
+      secretsStoreData.get("oauth:google:access_token"),
+    ).toBeUndefined();
+
+    const event = findAuditEvent("auth.oauth.callback", "success");
+    expect(event?.details?.tenantId).toBe("acme");
+    expect(event?.subject?.tenantId).toBe("acme");
+    expect(event?.details?.refreshTokenVersion).toBeDefined();
   });
 
   it("rejects requests with missing parameters", async () => {
@@ -358,6 +399,32 @@ describe("OAuthController", () => {
     expect(secretsStoreData.has("oauth:google:refresh_token")).toBe(false);
     const event = findAuditEvent("auth.oauth.callback", "success");
     expect(event?.details?.refreshTokenStored).toBe(false);
+    expect(event?.details?.refreshTokenVersion).toBeUndefined();
+  });
+
+  it("records tenant subject metadata when the provider rejects the callback", async () => {
+    fetchMock.mockResolvedValue({
+      ok: false,
+      status: 429,
+      text: async () => "rate limited",
+    });
+
+    const req = {
+      params: { provider: "google" },
+      body: {
+        code: "auth-code",
+        code_verifier: "v".repeat(64),
+        redirect_uri: "http://127.0.0.1:8080/auth/google/callback",
+        tenant_id: "acme",
+      },
+    } as any;
+    const res = createResponse();
+
+    await callback(req, res);
+
+    const event = findAuditEvent("auth.oauth.callback", "denied");
+    expect(event?.subject?.tenantId).toBe("acme");
+    expect(event?.details?.tenantId).toBe("acme");
   });
 
   it("returns upstream error when token endpoint responds with HTTP error", async () => {
