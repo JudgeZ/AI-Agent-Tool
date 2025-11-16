@@ -3,6 +3,8 @@ import { z } from "zod";
 
 import {
   ChatRequestSchema,
+  OAuthCallbackSchema,
+  OidcCallbackSchema,
   PlanApprovalSchema,
   PlanIdSchema,
   PlanRequestSchema,
@@ -245,6 +247,71 @@ describe("ChatRequestSchema", () => {
     if (!result.success) {
       expect(result.error.issues.map((issue) => issue.message)).toContain(message);
     }
+  });
+});
+
+describe("OAuthCallbackSchema", () => {
+  const basePayload = {
+    code: "auth-code",
+    code_verifier: "a".repeat(64),
+    redirect_uri: "https://example.com/callback",
+  };
+
+  it("treats missing tenant_id as undefined", () => {
+    expect(OAuthCallbackSchema.parse(basePayload)).toEqual({
+      code: basePayload.code,
+      codeVerifier: basePayload.code_verifier,
+      redirectUri: basePayload.redirect_uri,
+      tenantId: undefined,
+    });
+  });
+
+  it("coerces blank tenant_id to undefined", () => {
+    const result = OAuthCallbackSchema.parse({
+      ...basePayload,
+      tenant_id: "   ",
+    });
+    expect(result.tenantId).toBeUndefined();
+  });
+
+  it("rejects tenant_id with invalid characters", () => {
+    const result = OAuthCallbackSchema.safeParse({
+      ...basePayload,
+      tenant_id: "invalid tenant",
+    });
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toBe(
+        "tenant_id may only include letters, numbers, '.', '_' or '-'",
+      );
+    }
+  });
+});
+
+describe("OidcCallbackSchema", () => {
+  const basePayload = {
+    code: "auth-code",
+    code_verifier: "a".repeat(64),
+    redirect_uri: "https://example.com/callback",
+    state: "opaque-state",
+  };
+
+  it("omits tenant_id when not provided", () => {
+    expect(OidcCallbackSchema.parse(basePayload)).toEqual({
+      code: basePayload.code,
+      codeVerifier: basePayload.code_verifier,
+      redirectUri: basePayload.redirect_uri,
+      tenantId: undefined,
+      state: basePayload.state,
+    });
+  });
+
+  it("omits tenant_id when blank", () => {
+    const result = OidcCallbackSchema.parse({
+      ...basePayload,
+      tenant_id: "",
+    });
+    expect(result.tenantId).toBeUndefined();
   });
 });
 

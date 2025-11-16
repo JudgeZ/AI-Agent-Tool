@@ -186,6 +186,17 @@ const TenantIdSchema = z
     message: "tenant_id may only include letters, numbers, '.', '_' or '-'",
   });
 
+const OptionalTenantIdSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+    const trimmed = value.trim();
+    return trimmed.length === 0 ? undefined : trimmed;
+  },
+  TenantIdSchema.optional(),
+);
+
 const RawOAuthCallbackSchema = z.object({
   code: z
     .string({ required_error: "code is required" })
@@ -193,7 +204,7 @@ const RawOAuthCallbackSchema = z.object({
     .min(1, { message: "code is required" }),
   code_verifier: CodeVerifierSchema,
   redirect_uri: RedirectUriSchema,
-  tenant_id: TenantIdSchema.optional(),
+  tenant_id: OptionalTenantIdSchema,
 });
 
 export const OAuthCallbackSchema = RawOAuthCallbackSchema.transform(
