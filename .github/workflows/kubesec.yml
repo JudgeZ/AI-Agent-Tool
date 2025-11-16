@@ -70,6 +70,11 @@ jobs:
               extra_args+=(--set)
               extra_args+=("kafka.enabled=true")
               ;;
+            templates/grafana-dashboard.yaml)
+              echo "Detected optional Grafana dashboard; enabling chart for rendering."
+              extra_args+=(--set)
+              extra_args+=("monitoring.grafana.enabled=true")
+              ;;
             templates/langfuse.yaml)
               echo "Detected optional Langfuse manifest; enabling chart with placeholder secrets for rendering."
               extra_args+=(--set)
