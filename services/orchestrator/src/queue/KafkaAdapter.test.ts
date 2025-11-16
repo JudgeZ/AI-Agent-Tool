@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { KafkaAdapter } from "./KafkaAdapter.js";
 import {
+  getDefaultTenantLabel,
   queueAckCounter,
   queueDeadLetterCounter,
   queueDepthGauge,
@@ -104,6 +105,13 @@ describe("KafkaAdapter", () => {
   let adapter: KafkaAdapter;
   let mocks: ReturnType<typeof createKafkaMocks>;
   const PLAN_ID = "plan-550e8400-e29b-41d4-a716-446655440000";
+  const tenantLabel = getDefaultTenantLabel();
+  const kafkaLabels = (extra: Record<string, string> = {}) => ({
+    queue: "plan.steps",
+    transport: "kafka",
+    tenant: tenantLabel,
+    ...extra
+  });
 
   beforeEach(async () => {
     resetMetrics();
@@ -148,7 +156,7 @@ describe("KafkaAdapter", () => {
     expect(mocks.producerSend).toHaveBeenCalledTimes(1);
     const ackMetric = await getMetricValue(queueAckCounter, { queue: "plan.steps" });
     expect(ackMetric).toBe(1);
-    const lagMetric = await getMetricValue(queueLagGauge, { queue: "plan.steps" });
+    const lagMetric = await getMetricValue(queueLagGauge, kafkaLabels());
     expect(lagMetric).toBe(0);
   });
 
@@ -293,8 +301,50 @@ describe("KafkaAdapter", () => {
 
     const depth = await adapter.getQueueDepth("plan.steps");
     expect(depth).toBe(3);
-    const lagMetric = await getMetricValue(queueLagGauge, { queue: "plan.steps" });
+    const lagMetric = await getMetricValue(queueLagGauge, kafkaLabels());
     expect(lagMetric).toBe(3);
+    const partitionLag = await getMetricValue(
+      queuePartitionLagGauge,
+      kafkaLabels({ partition: "0" })
+    );
+    expect(partitionLag).toBe(3);
+  });
+
+  it("resets partition lag gauges when getQueueDepth fails", async () => {
+    mocks.fetchTopicOffsets.mockResolvedValueOnce([
+      { partition: 0, offset: "10" }
+    ]);
+    mocks.fetchOffsets.mockResolvedValueOnce([
+      { topic: "plan.steps", partitions: [{ partition: 0, offset: "7" }] }
+    ]);
+
+    await adapter.getQueueDepth("plan.steps");
+    expect(await getMetricValue(queuePartitionLagGauge, kafkaLabels({ partition: "0" }))).toBe(3);
+
+    mocks.fetchTopicOffsets.mockRejectedValueOnce(new Error("boom"));
+
+    await adapter.getQueueDepth("plan.steps");
+
+    expect(await getMetricValue(queueLagGauge, kafkaLabels())).toBe(0);
+    expect(await getMetricValue(queuePartitionLagGauge, kafkaLabels({ partition: "0" }))).toBe(0);
+  });
+
+  it("resets depth and lag gauges when Kafka refreshDepth fails", async () => {
+    queueDepthGauge.labels("plan.steps", "kafka", tenantLabel).set(4);
+    queueLagGauge.labels("plan.steps", "kafka", tenantLabel).set(6);
+
+    const spy = vi
+      .spyOn(adapter, "getQueueDepth")
+      .mockRejectedValueOnce(new Error("depth failed"));
+    const refreshDepth = (adapter as unknown as {
+      refreshDepth(queue: string): Promise<void>;
+    }).refreshDepth.bind(adapter);
+
+    await refreshDepth("plan.steps");
+
+    expect(await getMetricValue(queueDepthGauge, kafkaLabels())).toBe(0);
+    expect(await getMetricValue(queueLagGauge, kafkaLabels())).toBe(0);
+    spy.mockRestore();
   });
 
   it("creates topics once and reuses cached metadata", async () => {

@@ -1,0 +1,220 @@
+{{- $root := . -}}
+{{- $grafana := $root.Values.monitoring.grafana | default dict -}}
+{{- if $grafana.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "oss-ai-agent-tool.fullname" $root }}-grafana-queues
+  namespace: {{ $grafana.namespace | default $root.Release.Namespace }}
+  labels:
+    {{- include "oss-ai-agent-tool.labels" $root | nindent 4 }}
+    grafana_dashboard: "1"
+    {{- with $grafana.additionalLabels }}
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- if or $grafana.folder $grafana.annotations }}
+  annotations:
+    {{- if $grafana.folder }}
+    grafana_folder: {{ $grafana.folder | quote }}
+    {{- end }}
+    {{- with $grafana.annotations }}
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+data:
+  orchestrator-queues.json: |
+    {
+      "schemaVersion": 39,
+      "title": "OSS Agent Tool / Queue Health",
+      "uid": "ossaat-queue-health",
+      "version": 1,
+      "editable": true,
+      "refresh": "30s",
+      "panels": [
+        {
+          "id": 1,
+          "type": "timeseries",
+          "title": "Queue Depth",
+          "gridPos": {"x": 0, "y": 0, "w": 24, "h": 8},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "decimals": 0,
+              "custom": {
+                "lineWidth": 2,
+                "drawStyle": "line",
+                "fillOpacity": 15
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom"
+            },
+            "tooltip": {"mode": "single"}
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "sum by (queue, tenant) (orchestrator_queue_depth{queue=~\"$queue\",transport=~\"$transport\",tenant=~\"$tenant\"})",
+              "legendFormat": "{{queue}}/{{tenant}}",
+              "format": "time_series"
+            }
+          ]
+        },
+        {
+          "id": 2,
+          "type": "timeseries",
+          "title": "Queue Lag",
+          "gridPos": {"x": 0, "y": 8, "w": 24, "h": 8},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "decimals": 0,
+              "custom": {
+                "lineWidth": 2,
+                "drawStyle": "line",
+                "fillOpacity": 15
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom"
+            },
+            "tooltip": {"mode": "single"}
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "sum by (queue, tenant) (orchestrator_queue_lag{queue=~\"$queue\",transport=~\"$transport\",tenant=~\"$tenant\"})",
+              "legendFormat": "{{queue}}/{{tenant}}",
+              "format": "time_series"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Partition Lag",
+          "gridPos": {"x": 0, "y": 16, "w": 24, "h": 8},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "custom": {
+                "lineWidth": 2,
+                "drawStyle": "line",
+                "fillOpacity": 15
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom"
+            },
+            "tooltip": {"mode": "single"}
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "orchestrator_queue_partition_lag{queue=~\"$queue\",transport=~\"$transport\",tenant=~\"$tenant\",partition=~\"$partition\"}",
+              "legendFormat": "{{queue}}/{{tenant}} p{{partition}}",
+              "format": "time_series"
+            }
+          ]
+        }
+      ],
+      "templating": {
+        "list": [
+          {
+            "name": "datasource",
+            "type": "datasource",
+            "query": "prometheus",
+            "label": "Datasource"
+          },
+          {
+            "name": "tenant",
+            "type": "query",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "$datasource"
+            },
+            "query": "label_values(orchestrator_queue_depth, tenant)",
+            "current": {"text": "All", "value": ".*"},
+            "label": "Tenant",
+            "includeAll": true,
+            "allValue": ".*"
+          },
+          {
+            "name": "transport",
+            "type": "query",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "$datasource"
+            },
+            "query": "label_values(orchestrator_queue_depth, transport)",
+            "current": {"text": "All", "value": ".*"},
+            "label": "Transport",
+            "includeAll": true,
+            "allValue": ".*"
+          },
+          {
+            "name": "queue",
+            "type": "query",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "$datasource"
+            },
+            "query": "label_values(orchestrator_queue_depth, queue)",
+            "current": {"text": "All", "value": ".*"},
+            "label": "Queue",
+            "includeAll": true,
+            "allValue": ".*"
+          },
+          {
+            "name": "partition",
+            "type": "query",
+            "datasource": {
+              "type": "prometheus",
+              "uid": "$datasource"
+            },
+            "query": "label_values(orchestrator_queue_partition_lag, partition)",
+            "current": {"text": "All", "value": ".*"},
+            "label": "Partition",
+            "includeAll": true,
+            "allValue": ".*"
+          }
+        ]
+      }
+    }
+{{- end }}

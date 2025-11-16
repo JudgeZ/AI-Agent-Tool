@@ -8,6 +8,120 @@ export const QUEUE_RESULTS_NAME = "orchestrator_queue_results_total";
 export const QUEUE_PROCESSING_SECONDS_NAME = "orchestrator_queue_processing_seconds";
 export const QUEUE_PARTITION_LAG_NAME = "orchestrator_queue_partition_lag";
 export const QUEUE_LAG_NAME = "orchestrator_queue_lag";
+
+// Resolve once at module load. Callers should ensure OTEL_RESOURCE_ATTRIBUTES and
+// METRICS_TENANT_LABEL are configured before importing this module.
+const DEFAULT_TENANT_LABEL = resolveDefaultTenantLabel();
+
+// Allowed characters align with the Prometheus data model for label values
+// (alphanumeric plus `_`, `.`, `:`, and `-`). Everything else is replaced.
+const VALID_LABEL_VALUE = /[^a-zA-Z0-9_.:-]/g;
+
+function sanitizeLabelValue(value: string | undefined, fallback: string): string {
+  if (!value) {
+    return fallback;
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return fallback;
+  }
+  const sanitized = trimmed.replace(VALID_LABEL_VALUE, "_").slice(0, 256);
+  return sanitized;
+}
+
+function parseOtelResourceAttributes(raw: string | undefined): Record<string, string> {
+  if (!raw) {
+    return {};
+  }
+
+  const pairs: Array<{ key: string; value: string }> = [];
+  let current = "";
+  let key = "";
+  let inKey = true;
+  let escape = false;
+
+  const pushPair = (): void => {
+    if (!key && current === "") {
+      return;
+    }
+    const finalKey = key.trim();
+    if (!finalKey) {
+      key = "";
+      current = "";
+      inKey = true;
+      return;
+    }
+    pairs.push({ key: finalKey, value: current.trim() });
+    key = "";
+    current = "";
+    inKey = true;
+  };
+
+  for (let i = 0; i < raw.length; i += 1) {
+    const char = raw[i]!;
+    if (escape) {
+      current += char;
+      escape = false;
+      continue;
+    }
+    if (char === "\\") {
+      escape = true;
+      continue;
+    }
+    if (inKey && char === "=") {
+      key = current;
+      current = "";
+      inKey = false;
+      continue;
+    }
+    if (!inKey && char === ",") {
+      pushPair();
+      continue;
+    }
+    current += char;
+  }
+
+  if (!inKey) {
+    pairs.push({ key: key.trim(), value: current.trim() });
+  } else if (current.trim() !== "") {
+    pairs.push({ key: current.trim(), value: "" });
+  }
+
+  const unescapeOtel = (value: string): string => value.replace(/\\([,=\\])/g, "$1");
+
+  return pairs.reduce<Record<string, string>>((acc, pair) => {
+    const normalizedKey = unescapeOtel(pair.key);
+    if (!normalizedKey) {
+      return acc;
+    }
+    acc[normalizedKey] = unescapeOtel(pair.value);
+    return acc;
+  }, {});
+}
+
+function resolveDefaultTenantLabel(): string {
+  const attributes = parseOtelResourceAttributes(process.env.OTEL_RESOURCE_ATTRIBUTES);
+  const candidate =
+    process.env.METRICS_TENANT_LABEL ??
+    attributes["tenant.id"] ??
+    attributes["deployment.tenant"] ??
+    attributes["service.namespace"];
+  return sanitizeLabelValue(candidate, "unscoped");
+}
+
+export function getDefaultTenantLabel(): string {
+  return DEFAULT_TENANT_LABEL;
+}
+
+export function resolveTenantLabel(candidate?: string): string {
+  // Exported for adapters/tests that might sanitize dynamic overrides when we
+  // support multi-tenant routing beyond the default label.
+  return sanitizeLabelValue(candidate, DEFAULT_TENANT_LABEL);
+}
+
+export const __testUtils = {
+  parseOtelResourceAttributes
+};
 const RATE_LIMIT_HITS_NAME = "limit_hits_total";
 const RATE_LIMIT_BLOCKED_NAME = "limit_blocked_total";
 function getOrCreateRateLimitHitCounter(): Counter<string> {
@@ -42,7 +156,7 @@ function getOrCreateGauge(): Gauge<string> {
   return new Gauge({
     name: QUEUE_DEPTH_NAME,
     help: "Number of messages waiting in orchestrator queues",
-    labelNames: ["queue"]
+    labelNames: ["queue", "transport", "tenant"]
   });
 }
 
@@ -90,7 +204,7 @@ function getOrCreateLagGauge(): Gauge<string> {
   return new Gauge({
     name: QUEUE_LAG_NAME,
     help: "Total consumer lag for orchestrator queues (messages)",
-    labelNames: ["queue"]
+    labelNames: ["queue", "transport", "tenant"]
   });
 }
 
@@ -102,7 +216,7 @@ function getOrCreatePartitionLagGauge(): Gauge<string> {
   return new Gauge({
     name: QUEUE_PARTITION_LAG_NAME,
     help: "Consumer lag for orchestrator queues by partition",
-    labelNames: ["queue", "partition"]
+    labelNames: ["queue", "partition", "transport", "tenant"]
   });
 }
 

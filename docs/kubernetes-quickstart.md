@@ -90,6 +90,15 @@ secrets:
 orchestrator:
   env:
     LOCAL_SECRETS_PASSPHRASE: "change-me"
+    # Surface tenant-aware queue metrics for HPAs and dashboards.
+    # You can include additional attributes (service.name, deployment.environment, etc.).
+    # The tenant label is exported on every queue depth/lag metric.
+    OTEL_RESOURCE_ATTRIBUTES: "tenant.id=demo,service.name=oss-orchestrator"
+    # If OTEL_RESOURCE_ATTRIBUTES is omitted (or none of the configured keys exist),
+    # the tenant label defaults to "unscoped".
+    # Avoid placing sensitive data (API keys, internal URLs, etc.) in OTEL_RESOURCE_ATTRIBUTES
+    # because any attribute referenced by the code (tenant.id, deployment.tenant, service.namespace)
+    # becomes a Prometheus label that surfaces in metrics and dashboards.
 # Optional: direct the keystore somewhere other than /app/config/secrets/local/secrets.json
 #   LOCAL_SECRETS_PATH: /mnt/credentials/secrets.json
 observability:
@@ -97,7 +106,47 @@ observability:
     enabled: true
   langfuse:
     enabled: true
+monitoring:
+  serviceMonitor:
+    enabled: true
+  grafana:
+    enabled: true
+    namespace: monitoring
 ```
+
+The HorizontalPodAutoscaler now defaults to the `orchestrator_queue_lag` metric for both Kafka
+and RabbitMQ, automatically matching the `transport` label to the configured `messaging.type` so
+default installs continue to scale regardless of the backing transport. Override
+`orchestrator.hpa.metricSelector` if you rename topics, operate in
+multiple queue groups, or need to pin the `tenant` label for multi-tenant deployments:
+
+```yaml
+orchestrator:
+  hpa:
+    metricSelector:
+      queue: plan.steps
+      transport: kafka
+      tenant: demo
+```
+
+> **Breaking change:** Existing deployments that customized the HPA metric should ensure the
+> metrics adapter exposes `orchestrator_queue_lag`. Upgrades from earlier chart versions need to
+> set `orchestrator.hpa.metricName=orchestrator_queue_depth` if they prefer the previous scaling
+> signal.
+
+The same metrics power the optional Grafana dashboard (`monitoring.grafana.enabled=true`) and
+Prometheus `ServiceMonitor` (`monitoring.serviceMonitor.enabled=true`).
+
+> **Operational notes**
+> - Each `(queue, transport, tenant)` combination generates a unique Prometheus time series. In
+>   large multi-tenant clusters this can grow quickly, so size your Prometheus retention and
+>   cardinality limits accordingly.
+> - The orchestrator HPA requires the custom metrics pipeline (e.g. prometheus-adapter) and at
+>   least one running orchestrator pod so that `orchestrator_queue_*` metrics exist before the HPA
+>   evaluates.
+> - Grafana dashboards expose the `tenant` label for filtering. Apply RBAC on your Grafana
+>   instance to ensure tenants cannot view each other's metrics if that isolation requirement
+>   exists in your environment.
 
 ### Optional: enable internal mTLS with cert-manager
 
@@ -171,6 +220,7 @@ The chart provisions Deployments and ClusterIP Services for both the gateway API
 * **Secrets rotation:** rotate provider tokens in the referenced secret; the orchestrator reloads them on change.
 * **Upgrades:** use `helm upgrade` with a newer chart version. CI-generated SBOMs and cosign signatures support supply-chain attestation.
 * **Monitoring:** integrate cluster metrics with your observability stack; Jaeger and Langfuse provide tracing and prompt analytics out of the box.
+  * Enable the ServiceMonitor + Grafana dashboard values to scrape `/metrics` and visualize queue depth/lag across tenants.
 
 ## Related documentation
 

@@ -10,6 +10,7 @@ import {
 } from "@opentelemetry/api";
 
 import {
+  getDefaultTenantLabel,
   queueDepthGauge,
   queueProcessingHistogram,
   queueResultCounter,
@@ -72,6 +73,8 @@ const DEFAULT_MAX_RETRIES = 5;
 const DEFAULT_INIT_MAX_ATTEMPTS = 5;
 
 const runtimeConfig = loadConfig();
+const queueTransportLabel = runtimeConfig.messaging.type ?? "rabbitmq";
+const queueTenantLabel = getDefaultTenantLabel();
 const DAY_MS = 24 * 60 * 60 * 1000;
 const planStateRetentionMs =
   runtimeConfig.retention.planStateDays > 0
@@ -628,7 +631,9 @@ async function releaseNextPlanSteps(planId: string): Promise<void> {
 
     if (adapter) {
       const depth = await adapter.getQueueDepth(PLAN_STEPS_QUEUE);
-      queueDepthGauge.labels(PLAN_STEPS_QUEUE).set(depth);
+      queueDepthGauge
+        .labels(PLAN_STEPS_QUEUE, queueTransportLabel, queueTenantLabel)
+        .set(depth);
     }
   });
 }

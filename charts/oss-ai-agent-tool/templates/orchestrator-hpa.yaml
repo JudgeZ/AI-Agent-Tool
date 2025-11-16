@@ -1,6 +1,22 @@
 {{- $root := . -}}
 {{- with $root.Values.orchestrator.hpa }}
 {{- if .enabled }}
+{{- $messagingType := $root.Values.messaging.type | default "rabbitmq" -}}
+{{- $useLagMetric := or (eq $messagingType "kafka") (eq $messagingType "rabbitmq") -}}
+{{- $defaultMetric := ternary "orchestrator_queue_lag" "orchestrator_queue_depth" $useLagMetric -}}
+{{- $metricName := .metricName | default $defaultMetric -}}
+{{- $isQueueMetric := or (eq $metricName "orchestrator_queue_depth") (eq $metricName "orchestrator_queue_lag") (eq $metricName "orchestrator_queue_partition_lag") -}}
+{{- $userMetricSelector := .metricSelector | default dict -}}
+{{- $metricSelector := dict -}}
+{{- range $key, $value := $userMetricSelector }}
+{{- $_ := set $metricSelector $key $value -}}
+{{- end -}}
+{{- if and $isQueueMetric (not (hasKey $metricSelector "queue")) -}}
+{{- $_ := set $metricSelector "queue" "plan.steps" -}}
+{{- end -}}
+{{- if and $isQueueMetric (not (hasKey $metricSelector "transport")) -}}
+{{- $_ := set $metricSelector "transport" $messagingType -}}
+{{- end -}}
 apiVersion: autoscaling/v2
 kind: HorizontalPodAutoscaler
 metadata:
@@ -18,7 +34,14 @@ spec:
     - type: Pods
       pods:
         metric:
-          name: {{ .metricName | default "queue_depth" }}
+          name: {{ $metricName }}
+          {{- if $metricSelector }}
+          selector:
+            matchLabels:
+              {{- range $key, $value := $metricSelector }}
+              {{ $key }}: {{ $value | quote }}
+              {{- end }}
+          {{- end }}
         target:
           type: AverageValue
           averageValue: {{ int (.targetQueueDepth | default 5) }}

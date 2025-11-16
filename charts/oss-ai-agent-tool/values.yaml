@@ -282,7 +282,9 @@ orchestrator:
     min: 2
     max: 10
     targetQueueDepth: 5
-    metricName: orchestrator_queue_depth
+    metricSelector:
+      queue: plan.steps
+      # tenant: demo       # Uncomment to scope the HPA to a specific tenant label.
   resources:
     requests: { cpu: "200m", memory: "256Mi" }
     limits: { cpu: "1", memory: "512Mi" }
@@ -400,6 +402,26 @@ kafka:
     size: 10Gi
     storageClass: ""
   resources: {}
+
+monitoring:
+  serviceMonitor:
+    enabled: false
+    namespace: ""
+    namespaceSelector: {}
+    portName: http         # Must match a named port on the orchestrator Service.
+    interval: 30s
+    scrapeTimeout: 10s
+    scheme: ""
+    tlsConfig: {}
+    relabelings: []
+    metricRelabelings: []
+    additionalLabels: {}
+  grafana:
+    enabled: false
+    namespace: ""
+    folder: OSS AI Agent Tool
+    annotations: {}
+    additionalLabels: {}
 
 jaeger:
   enabled: true

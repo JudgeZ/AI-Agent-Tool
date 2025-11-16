@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { RabbitMQAdapter } from "./RabbitMQAdapter.js";
 import {
+  getDefaultTenantLabel,
   queueAckCounter,
   queueDeadLetterCounter,
   queueDepthGauge,
@@ -156,6 +157,12 @@ describe("RabbitMQAdapter", () => {
   let adapter: RabbitMQAdapter;
   const logger = { info: vi.fn(), warn: vi.fn(), error: vi.fn() };
   const PLAN_ID = "plan-550e8400-e29b-41d4-a716-446655440000";
+  const tenantLabel = getDefaultTenantLabel();
+  const rabbitLabels = () => ({
+    queue: "plan.steps",
+    transport: "rabbitmq",
+    tenant: tenantLabel
+  });
 
   beforeEach(async () => {
     resetMetrics();
@@ -178,9 +185,9 @@ describe("RabbitMQAdapter", () => {
     await flushMicrotasks();
 
     expect(channel.getDepth("plan.steps")).toBe(0);
-    const depthMetric = await getMetricValue(queueDepthGauge, { queue: "plan.steps" });
+    const depthMetric = await getMetricValue(queueDepthGauge, rabbitLabels());
     expect(depthMetric).toBe(0);
-    const lagMetric = await getMetricValue(queueLagGauge, { queue: "plan.steps" });
+    const lagMetric = await getMetricValue(queueLagGauge, rabbitLabels());
     expect(lagMetric).toBe(0);
     const ackMetric = await getMetricValue(queueAckCounter, { queue: "plan.steps" });
     expect(ackMetric).toBe(1);
@@ -371,5 +378,23 @@ describe("RabbitMQAdapter", () => {
     expect(payloads).toHaveLength(2);
     expect(payloads[0].job).toEqual({ id: "job-1", attempt: 0 });
     expect(payloads[1].job).toEqual({ id: "job-1", attempt: 1 });
+  });
+
+  it("resets depth and lag metrics when refreshDepth fails", async () => {
+    queueDepthGauge.labels("plan.steps", "rabbitmq", tenantLabel).set(5);
+    queueLagGauge.labels("plan.steps", "rabbitmq", tenantLabel).set(7);
+
+    const spy = vi
+      .spyOn(adapter, "getQueueDepth")
+      .mockRejectedValueOnce(new Error("depth boom"));
+    const refreshDepth = (adapter as unknown as {
+      refreshDepth(queue: string): Promise<void>;
+    }).refreshDepth.bind(adapter);
+
+    await refreshDepth("plan.steps");
+
+    expect(await getMetricValue(queueDepthGauge, rabbitLabels())).toBe(0);
+    expect(await getMetricValue(queueLagGauge, rabbitLabels())).toBe(0);
+    spy.mockRestore();
   });
 });
