@@ -11,6 +11,8 @@ export const QUEUE_LAG_NAME = "orchestrator_queue_lag";
 
 const DEFAULT_TENANT_LABEL = resolveDefaultTenantLabel();
 
+const VALID_LABEL_VALUE = /[^a-zA-Z0-9_.:-]/g;
+
 function sanitizeLabelValue(value: string | undefined, fallback: string): string {
   if (!value) {
     return fallback;
@@ -19,7 +21,11 @@ function sanitizeLabelValue(value: string | undefined, fallback: string): string
   if (!trimmed) {
     return fallback;
   }
-  return trimmed.slice(0, 256);
+  const sanitized = trimmed.replace(VALID_LABEL_VALUE, "_").slice(0, 256);
+  if (!sanitized) {
+    return fallback;
+  }
+  return sanitized;
 }
 
 // NOTE: This helper intentionally stays simple and does not handle escaped commas or equals
@@ -60,6 +66,10 @@ export function getDefaultTenantLabel(): string {
 export function resolveTenantLabel(candidate?: string): string {
   return sanitizeLabelValue(candidate, DEFAULT_TENANT_LABEL);
 }
+
+export const __testUtils = {
+  parseOtelResourceAttributes
+};
 const RATE_LIMIT_HITS_NAME = "limit_hits_total";
 const RATE_LIMIT_BLOCKED_NAME = "limit_blocked_total";
 function getOrCreateRateLimitHitCounter(): Counter<string> {

@@ -5,17 +5,18 @@
 {{- $useLagMetric := or (eq $messagingType "kafka") (eq $messagingType "rabbitmq") -}}
 {{- $defaultMetric := ternary "orchestrator_queue_lag" "orchestrator_queue_depth" $useLagMetric -}}
 {{- $metricName := .metricName | default $defaultMetric -}}
+{{- $isQueueMetric := or (eq $metricName "orchestrator_queue_depth") (eq $metricName "orchestrator_queue_lag") (eq $metricName "orchestrator_queue_partition_lag") -}}
 {{- $userMetricSelector := .metricSelector | default dict -}}
 {{- $metricSelector := dict -}}
 {{- range $key, $value := $userMetricSelector }}
 {{- $_ := set $metricSelector $key $value -}}
 {{- end -}}
-{{- if not (hasKey $metricSelector "queue") -}}
+{{- if and $isQueueMetric (not (hasKey $metricSelector "queue")) -}}
 {{- $_ := set $metricSelector "queue" "plan.steps" -}}
 {{- end -}}
-{{- if and (not (hasKey $metricSelector "transport")) (eq $messagingType "kafka") -}}
+{{- if and $isQueueMetric (not (hasKey $metricSelector "transport")) (eq $messagingType "kafka") -}}
 {{- $_ := set $metricSelector "transport" "kafka" -}}
-{{- else if and (not (hasKey $metricSelector "transport")) (eq $messagingType "rabbitmq") -}}
+{{- else if and $isQueueMetric (not (hasKey $metricSelector "transport")) (eq $messagingType "rabbitmq") -}}
 {{- $_ := set $metricSelector "transport" "rabbitmq" -}}
 {{- end -}}
 apiVersion: autoscaling/v2

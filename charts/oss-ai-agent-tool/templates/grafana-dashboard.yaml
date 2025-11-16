@@ -75,8 +75,49 @@ data:
         {
           "id": 2,
           "type": "timeseries",
-          "title": "Partition Lag",
+          "title": "Queue Lag",
           "gridPos": {"x": 0, "y": 8, "w": 24, "h": 8},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "decimals": 0,
+              "custom": {
+                "lineWidth": 2,
+                "drawStyle": "line",
+                "fillOpacity": 15
+              }
+            },
+            "overrides": []
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom"
+            },
+            "tooltip": {"mode": "single"}
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "sum by (queue, tenant) (orchestrator_queue_lag{queue=~\"$queue\",transport=~\"$transport\",tenant=~\"$tenant\"})",
+              "legendFormat": "{{queue}}/{{tenant}}",
+              "format": "time_series"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "timeseries",
+          "title": "Partition Lag",
+          "gridPos": {"x": 0, "y": 16, "w": 24, "h": 8},
           "datasource": {
             "type": "prometheus",
             "uid": "$datasource"
@@ -107,7 +148,7 @@ data:
                 "uid": "$datasource"
               },
               "expr": "orchestrator_queue_partition_lag{queue=~\"$queue\",transport=~\"$transport\",tenant=~\"$tenant\",partition=~\"$partition\"}",
-              "legendFormat": "p{{partition}}",
+              "legendFormat": "{{queue}}/{{tenant}} p{{partition}}",
               "format": "time_series"
             }
           ]

@@ -10,6 +10,7 @@ import {
   QUEUE_PROCESSING_SECONDS_NAME,
   QUEUE_RESULTS_NAME,
   QUEUE_RETRY_NAME,
+  __testUtils,
   getDefaultTenantLabel,
   queueAckCounter,
   queueDeadLetterCounter,
@@ -19,7 +20,8 @@ import {
   queueProcessingHistogram,
   queueResultCounter,
   queueRetryCounter,
-  resetMetrics
+  resetMetrics,
+  resolveTenantLabel
 } from "./metrics";
 
 describe("metrics", () => {
@@ -73,5 +75,20 @@ describe("metrics", () => {
     expect((await queueProcessingHistogram.get()).values).toHaveLength(0);
 
     expect(register.getSingleMetric(QUEUE_RETRY_NAME)).toBe(queueRetryCounter);
+  });
+
+  it("sanitizes tenant labels by replacing invalid characters and truncating", () => {
+    const sanitized = resolveTenantLabel("  Demo Tenant!@#  ");
+    expect(sanitized).toBe("Demo_Tenant___");
+
+    const long = "a".repeat(300);
+    expect(resolveTenantLabel(long)).toHaveLength(256);
+  });
+
+  it("parses OTEL attributes with equals signs in the value", () => {
+    const { parseOtelResourceAttributes } = __testUtils;
+    const attrs = parseOtelResourceAttributes("tenant.id=demo,token=base64==");
+    expect(attrs["tenant.id"]).toBe("demo");
+    expect(attrs.token).toBe("base64==");
   });
 });
