@@ -39,7 +39,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
     env:
-      TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
+      TRIVY_CACHE_DIR: ${{ github.workspace }}/.trivy-cache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -74,7 +74,7 @@ jobs:
             context: services/indexer
             dockerfile: services/indexer/Dockerfile
     env:
-      TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
+      TRIVY_CACHE_DIR: ${{ github.workspace }}/.trivy-cache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -112,7 +112,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
     env:
-      TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
+      TRIVY_CACHE_DIR: ${{ github.workspace }}/.trivy-cache
     steps:
       - name: Checkout
         uses: actions/checkout@v4

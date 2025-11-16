@@ -155,22 +155,22 @@ jobs:
           coverage=$(go tool cover -func=coverage.out | awk '/total:/ { gsub("%","",$3); print $3 }')
           echo "Go coverage: ${coverage}%"
           COVERAGE_VALUE="$coverage" python3 <<'PY'
-import os
-import sys
+            import os
+            import sys
 
-raw_coverage = os.environ.get('COVERAGE_VALUE')
-if raw_coverage is None or raw_coverage.strip() == '':
-    print('Coverage value is missing; ensure go tool cover output is parsed correctly.', file=sys.stderr)
-    sys.exit(1)
+            raw_coverage = os.environ.get('COVERAGE_VALUE')
+            if raw_coverage is None or raw_coverage.strip() == '':
+                print('Coverage value is missing; ensure go tool cover output is parsed correctly.', file=sys.stderr)
+                sys.exit(1)
 
-coverage = float(raw_coverage)
-threshold = 60.0
+            coverage = float(raw_coverage)
+            threshold = 60.0
 
-if coverage < threshold:
-    print(f"Coverage {coverage:.2f}% is below threshold {threshold:.2f}%", file=sys.stderr)
-    sys.exit(1)
+            if coverage < threshold:
+                print(f"Coverage {coverage:.2f}% is below threshold {threshold:.2f}%", file=sys.stderr)
+                sys.exit(1)
 
-print(f"Coverage {coverage:.2f}% meets threshold {threshold:.2f}%")
+            print(f"Coverage {coverage:.2f}% meets threshold {threshold:.2f}%")
 PY
 
   typescript:
