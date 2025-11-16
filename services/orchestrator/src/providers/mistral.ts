@@ -1,5 +1,10 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
-import type { ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
+import type {
+  ChatRequest,
+  ChatResponse,
+  ModelProvider,
+  ProviderContext,
+} from "./interfaces.js";
 import {
   callWithRetry,
   ProviderError,
@@ -123,7 +128,7 @@ export class MistralProvider implements ModelProvider {
     }
   }
 
-  async chat(req: ChatRequest): Promise<ChatResponse> {
+  async chat(req: ChatRequest, _context?: ProviderContext): Promise<ChatResponse> {
     const client = await this.getClient();
     const model = req.model ?? this.options.defaultModel ?? "mistral-large-latest";
     const temperature = req.temperature ?? this.options.defaultTemperature;

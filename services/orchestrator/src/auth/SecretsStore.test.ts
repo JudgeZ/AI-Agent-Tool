@@ -168,6 +168,44 @@ describe("VaultStore", () => {
     expect(headers.get("X-Vault-Namespace")).toBe("root/tenants/acme");
   });
 
+  test("skips tenant namespace templating when the identifier is unsafe", async () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+    process.env.VAULT_NAMESPACE = "root";
+    process.env.VAULT_TENANT_NAMESPACE_TEMPLATE = "tenants/{tenant}";
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response("", { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    await store.get("tenant:../provider:openai:apiKey");
+
+    const [, init] = fetchMock.mock.calls[0];
+    const headers = new Headers((init as RequestInit | undefined)?.headers);
+    expect(headers.get("X-Vault-Namespace")).toBe("root");
+  });
+
+  test("skips tenant namespace templating when the identifier contains illegal characters", async () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+    process.env.VAULT_NAMESPACE = "root";
+    process.env.VAULT_TENANT_NAMESPACE_TEMPLATE = "tenants/{tenant}";
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response("", { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    await store.get("tenant:acme@corp:provider:openai:apiKey");
+
+    const [, init] = fetchMock.mock.calls[0];
+    const headers = new Headers((init as RequestInit | undefined)?.headers);
+    expect(headers.get("X-Vault-Namespace")).toBe("root");
+  });
+
   test("raises errors when Vault responds with a 5xx status", async () => {
     process.env.VAULT_ADDR = "https://vault.example.com";
     process.env.VAULT_TOKEN = "token";

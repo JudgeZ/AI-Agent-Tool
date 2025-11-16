@@ -16,6 +16,7 @@ const MAX_SECRET_LABEL_VALUE_LENGTH = 256;
 const MAX_SESSION_ID_LENGTH = 64;
 const MAX_SECRET_LABEL_ENTRIES = 20;
 const MAX_SECRET_VALUE_LENGTH = 8192;
+const MAX_TENANT_ID_LENGTH = 128;
 
 const LEGACY_PLAN_ID_REGEX = /^plan-[0-9a-f]{8}$/i;
 const UUID_PLAN_ID_REGEX =
@@ -170,6 +171,21 @@ const RedirectUriSchema = z
   .trim()
   .url({ message: "redirect_uri must be a valid URL" });
 
+const SecretKeyRegex = /^[A-Za-z0-9._:-]{1,128}$/u;
+const SecretLabelKeyRegex = /^[A-Za-z0-9._:-]{1,64}$/u;
+const TenantIdRegex = /^[A-Za-z0-9._-]{1,128}$/u;
+
+const TenantIdSchema = z
+  .string({ invalid_type_error: "tenant_id must be a string" })
+  .trim()
+  .min(1, { message: "tenant_id is required" })
+  .max(MAX_TENANT_ID_LENGTH, {
+    message: `tenant_id must not exceed ${MAX_TENANT_ID_LENGTH} characters`,
+  })
+  .regex(TenantIdRegex, {
+    message: "tenant_id may only include letters, numbers, '.', '_' or '-'",
+  });
+
 const RawOAuthCallbackSchema = z.object({
   code: z
     .string({ required_error: "code is required" })
@@ -177,13 +193,15 @@ const RawOAuthCallbackSchema = z.object({
     .min(1, { message: "code is required" }),
   code_verifier: CodeVerifierSchema,
   redirect_uri: RedirectUriSchema,
+  tenant_id: TenantIdSchema.optional(),
 });
 
 export const OAuthCallbackSchema = RawOAuthCallbackSchema.transform(
-  ({ code, code_verifier, redirect_uri }) => ({
+  ({ code, code_verifier, redirect_uri, tenant_id }) => ({
     code,
     codeVerifier: code_verifier,
     redirectUri: redirect_uri,
+    tenantId: tenant_id,
   }),
 );
 
@@ -193,18 +211,16 @@ export const OidcCallbackSchema = RawOAuthCallbackSchema.extend({
     .trim()
     .min(1, { message: "state is required" })
     .optional(),
-}).transform(({ code, code_verifier, redirect_uri, state }) => ({
+}).transform(({ code, code_verifier, redirect_uri, state, tenant_id }) => ({
   code,
   codeVerifier: code_verifier,
   redirectUri: redirect_uri,
+  tenantId: tenant_id,
   state: state && state.length > 0 ? state : undefined,
 }));
 
 export type OAuthCallbackPayload = z.infer<typeof OAuthCallbackSchema>;
 export type OidcCallbackPayload = z.infer<typeof OidcCallbackSchema>;
-
-const SecretKeyRegex = /^[A-Za-z0-9._:-]{1,128}$/u;
-const SecretLabelKeyRegex = /^[A-Za-z0-9._:-]{1,64}$/u;
 
 export const SecretKeySchema = z
   .string({ required_error: "secret key is required" })

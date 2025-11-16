@@ -263,6 +263,8 @@ function toSecretDescriptor(key: string): SecretDescriptor {
   return { path: encoded.join("/"), tenantId };
 }
 
+const TENANT_NAMESPACE_SEGMENT_PATTERN = /^[A-Za-z0-9._-]+$/;
+
 function sanitizeNamespaceSegment(value: string | undefined): string | undefined {
   if (!value) {
     return undefined;
@@ -271,8 +273,15 @@ function sanitizeNamespaceSegment(value: string | undefined): string | undefined
   if (!trimmed) {
     return undefined;
   }
-  const normalized = trimmed.replace(/[^A-Za-z0-9._-]/g, "-");
-  return normalized.length > 0 ? normalized : undefined;
+  if (
+    !TENANT_NAMESPACE_SEGMENT_PATTERN.test(trimmed) ||
+    trimmed === "." ||
+    trimmed === ".." ||
+    trimmed.includes("..")
+  ) {
+    return undefined;
+  }
+  return trimmed;
 }
 
 function combineNamespaces(base?: string, tenant?: string): string | undefined {
@@ -285,6 +294,7 @@ function combineNamespaces(base?: string, tenant?: string): string | undefined {
 }
 
 const MAX_VAULT_ERROR_SNIPPET = 256;
+const MAX_VAULT_ERROR_CAPTURE_BYTES = 4096;
 
 function extractVaultErrorDetail(payload: unknown): string | undefined {
   if (!payload || typeof payload !== "object") {
@@ -315,10 +325,18 @@ function extractVaultErrorDetail(payload: unknown): string | undefined {
   return undefined;
 }
 
-async function readVaultErrorMessage(response: Response): Promise<string | undefined> {
+async function readVaultErrorMessage(
+  response: Response,
+): Promise<string | undefined> {
+  if (response.bodyUsed) {
+    return undefined;
+  }
   try {
-    const cloned = await response.clone().text();
-    const trimmed = cloned.trim();
+    const snippet = await readVaultErrorSnippet(response);
+    if (!snippet) {
+      return undefined;
+    }
+    const trimmed = snippet.trim();
     if (!trimmed) {
       return undefined;
     }
@@ -334,6 +352,39 @@ async function readVaultErrorMessage(response: Response): Promise<string | undef
     return trimmed.length > MAX_VAULT_ERROR_SNIPPET
       ? `${trimmed.slice(0, MAX_VAULT_ERROR_SNIPPET)}…`
       : trimmed;
+  } catch {
+    return undefined;
+  }
+}
+
+async function readVaultErrorSnippet(
+  response: Response,
+): Promise<string | undefined> {
+  try {
+    const clone = response.clone();
+    if (!clone.body) {
+      return await clone.text();
+    }
+    const reader = clone.body.getReader();
+    const decoder = new TextDecoder();
+    let result = "";
+    let total = 0;
+    while (total < MAX_VAULT_ERROR_CAPTURE_BYTES) {
+      const { done, value } = await reader.read();
+      if (done) {
+        break;
+      }
+      if (value) {
+        total += value.byteLength;
+        result += decoder.decode(value, { stream: true });
+        if (total >= MAX_VAULT_ERROR_CAPTURE_BYTES) {
+          break;
+        }
+      }
+    }
+    result += decoder.decode();
+    await reader.cancel().catch(() => {});
+    return result;
   } catch {
     return undefined;
   }
@@ -479,7 +530,7 @@ export class VaultStore implements SecretsStore {
       return this.namespace;
     }
     const tenantNamespace = this.tenantNamespaceTemplate.replace(
-      /\{tenant\}/gi,
+      /\{tenant\}/g,
       safeTenant,
     );
     return combineNamespaces(this.namespace, tenantNamespace);

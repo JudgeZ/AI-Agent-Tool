@@ -8,7 +8,13 @@ import {
   type RateLimitBackendConfig,
   type RateLimitStore,
 } from "../rateLimit/store.js";
-import type { ChatRequest, ChatResponse, ModelProvider, RoutingMode } from "./interfaces.js";
+import type {
+  ChatRequest,
+  ChatResponse,
+  ModelProvider,
+  ProviderContext,
+  RoutingMode,
+} from "./interfaces.js";
 import { AzureOpenAIProvider } from "./azureOpenAI.js";
 import { AnthropicProvider } from "./anthropic.js";
 import { BedrockProvider } from "./bedrock.js";
@@ -323,7 +329,10 @@ function determineProviderOrder(req: ChatRequest, cfg: AppConfig): ProviderOrder
   return { providers: orderedProviders, routingMode: selectedRoute };
 }
 
-export async function routeChat(req: ChatRequest): Promise<ChatResponse> {
+export async function routeChat(
+  req: ChatRequest,
+  context?: ProviderContext,
+): Promise<ChatResponse> {
   const cfg = loadConfig();
   const routingHint = req.routing ?? cfg.providers.defaultRoute ?? "balanced";
   return withSpan(
@@ -393,7 +402,7 @@ export async function routeChat(req: ChatRequest): Promise<ChatResponse> {
               attemptSpan.setAttribute("providers.provider", provider.name);
               attemptSpan.setAttribute("providers.routing_mode", routingMode);
               const result = await limiter.schedule(provider.name, () =>
-                breaker.execute(provider.name, () => provider.chat(providerRequest)),
+                breaker.execute(provider.name, () => provider.chat(providerRequest, context)),
               );
               attemptSpan.addEvent("provider_attempt.success", {
                 provider: provider.name,

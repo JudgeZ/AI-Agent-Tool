@@ -75,6 +75,74 @@ describe("GoogleProvider", () => {
     expect(ensure.mock.invocationCallOrder[0]).toBeLessThan(fetchMock.mock.invocationCallOrder[0]!);
   });
 
+  it("uses tenant-scoped OAuth tokens when a tenant context is supplied", async () => {
+    const secrets = new MockSecretsStore({
+      "tenant:acme:oauth:google:tokens": JSON.stringify({
+        access_token: "tenant-token",
+        expires_at: fixedNow + 3600_000,
+      }),
+      "oauth:google:tokens": JSON.stringify({
+        access_token: "global-token",
+        expires_at: fixedNow + 3600_000,
+      }),
+    });
+
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        candidates: [{ content: { parts: [{ text: "tenant" }] } }],
+      }),
+    });
+
+    const provider = new GoogleProvider(secrets, { fetch: fetchMock as typeof fetch, now });
+    const response = await provider.chat(
+      { messages: [{ role: "user", content: "hi" }] },
+      { tenantId: "acme" },
+    );
+
+    expect(response.output).toBe("tenant");
+    const [, init] = fetchMock.mock.calls[0];
+    expect(init?.headers).toMatchObject({ Authorization: "Bearer tenant-token" });
+  });
+
+  it("refreshes tenant-scoped OAuth tokens when expired", async () => {
+    process.env.GOOGLE_OAUTH_CLIENT_ID = "client-id";
+    const secrets = new MockSecretsStore({
+      "tenant:acme:oauth:google:tokens": JSON.stringify({
+        access_token: "expired",
+        refresh_token: "tenant-refresh",
+        expires_at: fixedNow - 1000,
+      }),
+      "tenant:acme:oauth:google:refresh_token": "tenant-refresh",
+    });
+
+    const fetchMock = vi.fn().mockImplementation(async (url: string) => {
+      if (url.includes("oauth2.googleapis.com/token")) {
+        return {
+          ok: true,
+          status: 200,
+          json: async () => ({ access_token: "fresh", expires_in: 3600 }),
+        };
+      }
+      return {
+        ok: true,
+        status: 200,
+        json: async () => ({ candidates: [{ content: { parts: [{ text: "refreshed" }] } }] }),
+      };
+    });
+
+    const provider = new GoogleProvider(secrets, { fetch: fetchMock as typeof fetch, now });
+    const response = await provider.chat(
+      { messages: [{ role: "user", content: "hi" }] },
+      { tenantId: "acme" },
+    );
+
+    expect(response.output).toBe("refreshed");
+    await expect(secrets.get("tenant:acme:oauth:google:access_token")).resolves.toBe("fresh");
+    await expect(secrets.get("oauth:google:access_token")).resolves.toBeUndefined();
+  });
+
   it("falls back to service account credentials when OAuth tokens are absent", async () => {
     const serviceAccount = JSON.stringify({
       client_email: "svc@example.iam.gserviceaccount.com",

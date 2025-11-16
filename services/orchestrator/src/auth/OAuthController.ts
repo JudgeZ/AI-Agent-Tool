@@ -14,6 +14,7 @@ import {
   respondWithValidationError,
 } from "../http/errors.js";
 import { type SecretsStore } from "./SecretsStore.js";
+import { keyForTenant } from "./tenantSecrets.js";
 import { resolveEnv } from "../utils/env.js";
 import { ensureEgressAllowed } from "../network/EgressGuard.js";
 import { logAuditEvent } from "../observability/audit.js";
@@ -47,13 +48,6 @@ type ProviderConfig = {
   redirectUri: string;
   extraParams?: Record<string, string>;
 };
-
-function keyForTenant(tenantId: string | undefined, key: string): string {
-  if (!tenantId) {
-    return key;
-  }
-  return `tenant:${tenantId}:${key}`;
-}
 
 function secrets(): SecretsStore {
   return getSecretsStore();

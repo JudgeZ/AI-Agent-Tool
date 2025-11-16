@@ -1,7 +1,14 @@
 import { createSign } from "node:crypto";
 
 import type { SecretsStore } from "../auth/SecretsStore.js";
-import type { ChatMessage, ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
+import { keyForTenant } from "../auth/tenantSecrets.js";
+import type {
+  ChatMessage,
+  ChatRequest,
+  ChatResponse,
+  ModelProvider,
+  ProviderContext,
+} from "./interfaces.js";
 import { callWithRetry, coalesceText, ProviderError, requireSecret, ensureProviderEgress } from "./utils.js";
 
 const GOOGLE_API_BASE = "https://generativelanguage.googleapis.com/v1beta";
@@ -140,9 +147,9 @@ export class GoogleProvider implements ModelProvider {
     }
   }
 
-  async chat(req: ChatRequest): Promise<ChatResponse> {
+  async chat(req: ChatRequest, context?: ProviderContext): Promise<ChatResponse> {
     const modelId = req.model ?? this.options.defaultModel ?? "gemini-1.5-flash";
-    const auth = await this.resolveAuth();
+    const auth = await this.resolveAuth(context?.tenantId);
 
     const response = await callWithRetry(
       async () => this.invokeGemini(modelId, req.messages, auth),
@@ -173,8 +180,8 @@ export class GoogleProvider implements ModelProvider {
     };
   }
 
-  private async resolveAuth(): Promise<GoogleAuth> {
-    const oauthToken = await this.ensureOAuthAccessToken();
+  private async resolveAuth(tenantId?: string): Promise<GoogleAuth> {
+    const oauthToken = await this.ensureOAuthAccessToken(tenantId);
     if (oauthToken) {
       return { type: "bearer", token: oauthToken, source: "oauth" };
     }
@@ -192,8 +199,10 @@ export class GoogleProvider implements ModelProvider {
     return { type: "apiKey", apiKey };
   }
 
-  private async ensureOAuthAccessToken(): Promise<string | undefined> {
-    const state = await this.loadOAuthState();
+  private async ensureOAuthAccessToken(
+    tenantId?: string,
+  ): Promise<string | undefined> {
+    const state = await this.loadOAuthState(tenantId);
     if (!state) {
       return undefined;
     }
@@ -201,14 +210,19 @@ export class GoogleProvider implements ModelProvider {
       if (!state.refreshToken) {
         return undefined;
       }
-      const refreshed = await this.refreshOAuthToken(state.refreshToken);
+      const refreshed = await this.refreshOAuthToken(state.refreshToken, tenantId);
       return refreshed?.accessToken;
     }
     return state.accessToken;
   }
 
-  private async loadOAuthState(): Promise<OAuthState | undefined> {
-    const storedTokensRaw = await this.secrets.get("oauth:google:tokens");
+  private async loadOAuthState(
+    tenantId?: string,
+  ): Promise<OAuthState | undefined> {
+    const storedTokensRaw = await this.getTenantScopedSecret(
+      "oauth:google:tokens",
+      tenantId,
+    );
     let parsed: OAuthTokenRecord | undefined;
     if (storedTokensRaw) {
       try {
@@ -222,13 +236,17 @@ export class GoogleProvider implements ModelProvider {
     }
 
     const accessToken =
-      parsed?.access_token ?? (await this.secrets.get("oauth:google:access_token")) ?? undefined;
+      parsed?.access_token ??
+      (await this.getTenantScopedSecret("oauth:google:access_token", tenantId)) ??
+      undefined;
     if (!accessToken) {
       return undefined;
     }
 
     const refreshToken =
-      parsed?.refresh_token ?? (await this.secrets.get("oauth:google:refresh_token")) ?? undefined;
+      parsed?.refresh_token ??
+      (await this.getTenantScopedSecret("oauth:google:refresh_token", tenantId)) ??
+      undefined;
     const expiresAt =
       typeof parsed?.expires_at === "number"
         ? parsed.expires_at
@@ -239,7 +257,10 @@ export class GoogleProvider implements ModelProvider {
     return { accessToken, refreshToken, expiresAt };
   }
 
-  private async refreshOAuthToken(refreshToken: string): Promise<OAuthState | undefined> {
+  private async refreshOAuthToken(
+    refreshToken: string,
+    tenantId?: string,
+  ): Promise<OAuthState | undefined> {
     const clientId =
       (await this.secrets.get("provider:google:oauthClientId")) ?? process.env.GOOGLE_OAUTH_CLIENT_ID ?? "";
     if (!clientId) {
@@ -293,26 +314,58 @@ export class GoogleProvider implements ModelProvider {
       expiresAt
     };
 
-    await this.persistOAuthTokens({
-      access_token: state.accessToken,
-      refresh_token: state.refreshToken,
-      expires_at: state.expiresAt
-    });
+    await this.persistOAuthTokens(
+      {
+        access_token: state.accessToken,
+        refresh_token: state.refreshToken,
+        expires_at: state.expiresAt,
+      },
+      tenantId,
+    );
 
     return state;
   }
 
-  private async persistOAuthTokens(tokens: OAuthTokenRecord): Promise<void> {
+  private async persistOAuthTokens(
+    tokens: OAuthTokenRecord,
+    tenantId?: string,
+  ): Promise<void> {
     const entries: Array<Promise<void>> = [
-      this.secrets.set("oauth:google:access_token", tokens.access_token),
-      this.secrets.set("oauth:google:tokens", JSON.stringify(tokens))
+      this.secrets.set(
+        keyForTenant(tenantId, "oauth:google:access_token"),
+        tokens.access_token,
+      ),
+      this.secrets.set(
+        keyForTenant(tenantId, "oauth:google:tokens"),
+        JSON.stringify(tokens),
+      ),
     ];
     if (tokens.refresh_token) {
-      entries.push(this.secrets.set("oauth:google:refresh_token", tokens.refresh_token));
+      entries.push(
+        this.secrets.set(
+          keyForTenant(tenantId, "oauth:google:refresh_token"),
+          tokens.refresh_token,
+        ),
+      );
     } else {
-      entries.push(this.secrets.delete("oauth:google:refresh_token"));
+      entries.push(
+        this.secrets.delete(keyForTenant(tenantId, "oauth:google:refresh_token")),
+      );
     }
     await Promise.all(entries);
+  }
+
+  private async getTenantScopedSecret(
+    key: string,
+    tenantId?: string,
+  ): Promise<string | undefined> {
+    if (tenantId) {
+      const tenantValue = await this.secrets.get(keyForTenant(tenantId, key));
+      if (tenantValue) {
+        return tenantValue;
+      }
+    }
+    return this.secrets.get(key);
   }
 
   private async ensureServiceAccountToken(): Promise<string | undefined> {

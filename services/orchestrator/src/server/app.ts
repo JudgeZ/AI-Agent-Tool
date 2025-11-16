@@ -1477,6 +1477,7 @@ export function createServer(config?: AppConfig): Express {
     try {
       const responsePayload = await routeChat(
         parsed.data as ChatRequestPayload,
+        { tenantId: req.auth?.session?.tenantId ?? undefined },
       );
       const { requestId, traceId } = getRequestIds(res);
       res.json({ response: responsePayload, requestId, traceId });

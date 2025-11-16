@@ -1,5 +1,11 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
-import type { ChatMessage, ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
+import type {
+  ChatMessage,
+  ChatRequest,
+  ChatResponse,
+  ModelProvider,
+  ProviderContext,
+} from "./interfaces.js";
 import {
   callWithRetry,
   coalesceText,
@@ -145,7 +151,7 @@ export class AnthropicProvider implements ModelProvider {
     }
   }
 
-  async chat(req: ChatRequest): Promise<ChatResponse> {
+  async chat(req: ChatRequest, _context?: ProviderContext): Promise<ChatResponse> {
     const client = await this.getClient();
     const systemMessage = req.messages.find(msg => msg.role === "system")?.content;
     const model = req.model ?? this.options.defaultModel ?? "claude-3-sonnet-20240229";

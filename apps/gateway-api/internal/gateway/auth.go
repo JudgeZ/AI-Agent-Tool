@@ -59,7 +59,7 @@ type validationError struct {
 
 type authorizeRequestParams struct {
 	RedirectURI string `validate:"required,uri,max=2048" json:"redirect_uri"`
-	TenantID    string `validate:"omitempty,max=128" json:"tenant_id"`
+	TenantID    string `json:"tenant_id"`
 }
 
 type callbackRequestParams struct {
@@ -259,7 +259,7 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*
 	}
 
 	rawTenant := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
-	tenantHash := hashTenantID(rawTenant)
+	tenantHash := ""
 	params := authorizeRequestParams{
 		RedirectURI: strings.TrimSpace(r.URL.Query().Get("redirect_uri")),
 		TenantID:    rawTenant,

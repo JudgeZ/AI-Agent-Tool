@@ -23,9 +23,13 @@ export type ChatResponse = {
   warnings?: string[];
 };
 
+export type ProviderContext = {
+  tenantId?: string;
+};
+
 export interface ModelProvider {
   name: string;
   supportsOAuth?: boolean;
-  chat(req: ChatRequest): Promise<ChatResponse>;
+  chat(req: ChatRequest, context?: ProviderContext): Promise<ChatResponse>;
   embed?(input: string[] | string): Promise<number[][]>;
 }
