@@ -256,8 +256,11 @@ function toSecretDescriptor(key: string): SecretDescriptor {
     throw new Error("Secret keys must contain at least one valid segment");
   }
   let tenantId: string | undefined;
-  if (segments.length >= 2 && segments[0].toLowerCase() === "tenant") {
-    tenantId = segments[1];
+  for (let i = 0; i < segments.length - 1; i += 1) {
+    if (segments[i].toLowerCase() === "tenant") {
+      tenantId = segments[i + 1];
+      break;
+    }
   }
   const encoded = segments.map((segment) => encodeURIComponent(segment));
   return { path: encoded.join("/"), tenantId };

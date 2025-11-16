@@ -206,6 +206,49 @@ describe("VaultStore", () => {
     expect(headers.get("X-Vault-Namespace")).toBe("root");
   });
 
+  test("applies tenant namespaces when deleting version metadata keys", async () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+    process.env.VAULT_NAMESPACE = "root";
+    process.env.VAULT_TENANT_NAMESPACE_TEMPLATE = "tenants/{tenant}";
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    await store.delete("secretmeta:tenant:acme:oauth:google:refresh_token");
+
+    const [, init] = fetchMock.mock.calls[0];
+    const headers = new Headers((init as RequestInit | undefined)?.headers);
+    expect(headers.get("X-Vault-Namespace")).toBe("root/tenants/acme");
+  });
+
+  test("applies tenant namespaces for versioned secret values", async () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+    process.env.VAULT_NAMESPACE = "root";
+    process.env.VAULT_TENANT_NAMESPACE_TEMPLATE = "tenants/{tenant}";
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ data: { data: { value: "secret-value" } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    await store.get("secretver:tenant:acme:oauth:google:refresh_token:version-1");
+
+    const [, init] = fetchMock.mock.calls[0];
+    const headers = new Headers((init as RequestInit | undefined)?.headers);
+    expect(headers.get("X-Vault-Namespace")).toBe("root/tenants/acme");
+  });
+
   test("raises errors when Vault responds with a 5xx status", async () => {
     process.env.VAULT_ADDR = "https://vault.example.com";
     process.env.VAULT_TOKEN = "token";
