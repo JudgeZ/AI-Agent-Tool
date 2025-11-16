@@ -68,10 +68,14 @@ describe("AzureOpenAIProvider", () => {
     });
 
     expect(clientFactory).toHaveBeenCalledTimes(1);
-    expect(getChatCompletions).toHaveBeenCalledWith("my-deployment", [
-      { role: "system", content: "be helpful" },
-      { role: "user", content: "hi" }
-    ], { temperature: 0.2 });
+    expect(getChatCompletions).toHaveBeenCalledWith(
+      "my-deployment",
+      [
+        { role: "system", content: "be helpful" },
+        { role: "user", content: "hi" }
+      ],
+      expect.objectContaining({ temperature: 0.2, abortSignal: expect.any(AbortSignal) })
+    );
     expect(response).toEqual({
       output: "Hello world",
       provider: "azureopenai",

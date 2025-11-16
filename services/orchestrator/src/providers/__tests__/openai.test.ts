@@ -145,7 +145,8 @@ describe("OpenAIProvider", () => {
     });
 
     expect(create).toHaveBeenCalledWith(
-      expect.objectContaining({ temperature: 1.5 })
+      expect.objectContaining({ temperature: 1.5 }),
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
     );
   });
 });

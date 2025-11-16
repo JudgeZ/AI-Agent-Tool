@@ -19,6 +19,7 @@ interface MistralApiClient {
     model: string;
     messages: ChatRequest["messages"];
     temperature?: number;
+    signal?: AbortSignal;
   }) => Promise<MistralChatResponse>;
 }
 
@@ -136,11 +137,12 @@ export class MistralProvider implements ModelProvider {
       async () => {
         try {
           return await withProviderTimeout(
-            () =>
+            ({ signal }) =>
               client.chat({
                 model,
                 messages: req.messages,
                 temperature,
+                signal,
               }),
             { provider: this.name, timeoutMs: this.options.timeoutMs, action: "chat" },
           );

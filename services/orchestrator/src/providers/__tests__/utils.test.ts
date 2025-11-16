@@ -174,6 +174,22 @@ describe("withProviderTimeout", () => {
     await vi.advanceTimersByTimeAsync(60);
     await expectation;
   });
+
+  it("aborts the provided signal when timing out", async () => {
+    vi.useFakeTimers();
+    const abortSpy = vi.fn();
+    const pending = withProviderTimeout(
+      ({ signal }) => {
+        signal.addEventListener("abort", abortSpy);
+        return new Promise<never>(() => {});
+      },
+      { provider: "test", timeoutMs: 25, action: "call" },
+    );
+    const expectation = expect(pending).rejects.toMatchObject({ code: "timeout" });
+    await vi.advanceTimersByTimeAsync(30);
+    await expectation;
+    expect(abortSpy).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("ensureProviderEgress", () => {

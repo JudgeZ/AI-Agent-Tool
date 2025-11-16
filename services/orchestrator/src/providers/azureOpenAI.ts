@@ -24,7 +24,7 @@ interface AzureOpenAIClient {
   getChatCompletions: (
     deployment: string,
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }> ,
-    options?: { temperature?: number }
+    options?: { temperature?: number; abortSignal?: AbortSignal }
   ) => Promise<AzureChatResponse>;
 }
 
@@ -202,9 +202,10 @@ export class AzureOpenAIProvider implements ModelProvider {
       async () => {
         try {
           return await withProviderTimeout(
-            () =>
+            ({ signal }) =>
               client.getChatCompletions(deployment, toAzureMessages(req.messages), {
                 temperature,
+                abortSignal: signal,
               }),
             { provider: this.name, timeoutMs: this.options.timeoutMs, action: "chat.completions" },
           );

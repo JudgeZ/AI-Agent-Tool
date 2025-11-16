@@ -19,11 +19,14 @@ interface OpenAIChatResponse {
 interface OpenAIClient {
   chat: {
     completions: {
-      create: (payload: {
-        model: string;
-        messages: ChatRequest["messages"];
-        temperature?: number;
-      }) => Promise<OpenAIChatResponse>;
+      create: (
+        payload: {
+          model: string;
+          messages: ChatRequest["messages"];
+          temperature?: number;
+        },
+        options?: { signal?: AbortSignal }
+      ) => Promise<OpenAIChatResponse>;
     };
   };
 }
@@ -135,12 +138,15 @@ export class OpenAIProvider implements ModelProvider {
       async () => {
         try {
           return await withProviderTimeout(
-            () =>
-              client.chat.completions.create({
-                model,
-                messages: req.messages,
-                temperature,
-              }),
+            ({ signal }) =>
+              client.chat.completions.create(
+                {
+                  model,
+                  messages: req.messages,
+                  temperature,
+                },
+                { signal }
+              ),
             { provider: this.name, timeoutMs: this.options.timeoutMs, action: "chat.completions.create" },
           );
         } catch (error) {

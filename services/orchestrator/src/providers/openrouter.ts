@@ -44,7 +44,7 @@ type OpenRouterResponse = OpenRouterResponseSuccess | OpenRouterResponseError | 
 interface OpenRouterClient {
   chat: (
     messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
-    config?: { model?: string; max_tokens?: number; temperature?: number }
+    config?: { model?: string; max_tokens?: number; temperature?: number; signal?: AbortSignal }
   ) => Promise<OpenRouterResponse>;
 }
 
@@ -165,7 +165,7 @@ export class OpenRouterProvider implements ModelProvider {
         let response: OpenRouterResponse;
         try {
           response = await withProviderTimeout(
-            () => client.chat(messages, { model, temperature }),
+            ({ signal }) => client.chat(messages, { model, temperature, signal }),
             { provider: this.name, timeoutMs: this.options.timeoutMs, action: "chat" },
           );
         } catch (error) {
