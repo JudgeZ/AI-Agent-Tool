@@ -37,12 +37,22 @@ export type AuditEvent = {
 };
 
 const serviceName = process.env.ORCHESTRATOR_SERVICE_NAME ?? "orchestrator";
-const hashSalt =
+const configuredAuditSalt =
   process.env.AUDIT_HASH_SALT ??
   process.env.ORCHESTRATOR_AUDIT_SALT ??
   process.env.OSS_AUDIT_SALT ??
   "";
-const identifierHashSalt = hashSalt || `${serviceName}-audit-salt`;
+
+if (!configuredAuditSalt && process.env.NODE_ENV !== "test") {
+  auditLogger.warn(
+    "AUDIT_HASH_SALT is not configured; falling back to a derived default. " +
+      "Set AUDIT_HASH_SALT (or ORCHESTRATOR_AUDIT_SALT / OSS_AUDIT_SALT) to a long, random secret so audit identifiers remain unique per deployment.",
+  );
+}
+
+const identifierHashSalt = configuredAuditSalt || `${serviceName}-audit-salt`;
+// 310k PBKDF2 iterations follows the 2023+ OWASP guidance for password hashing and
+// keeps audit identifier hashes resistant to offline guessing.
 const HASH_ITERATIONS = 310_000;
 const HASH_KEY_LENGTH = 32;
 const HASH_DIGEST = "sha256";
