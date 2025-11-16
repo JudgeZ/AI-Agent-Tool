@@ -245,4 +245,29 @@ describe("AzureOpenAIProvider", () => {
     expect(clientFactory).toHaveBeenCalledTimes(1);
     expect(getChatCompletions).toHaveBeenCalledTimes(2);
   });
+
+  it("throws a descriptive error when cached credentials are unavailable during fallback", async () => {
+    const secrets = new StubSecretsStore({
+      "provider:azureopenai:apiKey": "sk-az",
+      "provider:azureopenai:endpoint": "https://example.openai.azure.com"
+    });
+    const getChatCompletions = vi.fn().mockResolvedValue({ choices: [{ message: { content: "ok" } }] });
+    const client = { getChatCompletions };
+    const clientFactory = vi.fn().mockResolvedValue(client);
+    const provider = new AzureOpenAIProvider(secrets, {
+      clientFactory,
+      defaultDeployment: "dep",
+      retryAttempts: 1
+    });
+
+    await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    secrets.setFailure(new Error("vault unavailable"));
+    (provider as unknown as { clientCredentials?: unknown }).clientCredentials = undefined;
+
+    await expect(provider.chat({ messages: [{ role: "user", content: "hi" }] })).rejects.toMatchObject({
+      message: "Azure OpenAI credentials are not available",
+      status: 500,
+      provider: "azureopenai",
+    });
+  });
 });

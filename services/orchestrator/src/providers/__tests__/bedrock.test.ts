@@ -256,4 +256,31 @@ describe("BedrockProvider", () => {
     expect(clientFactory).toHaveBeenCalledTimes(1);
     expect(invokeModel).toHaveBeenCalledTimes(2);
   });
+
+  it("throws a descriptive error when cached credentials are unavailable during fallback", async () => {
+    const secrets = new StubSecretsStore({
+      "provider:bedrock:accessKeyId": "AKIA",
+      "provider:bedrock:secretAccessKey": "SECRET"
+    });
+    const invokeModel = vi.fn().mockResolvedValue({
+      body: Buffer.from(JSON.stringify({ outputText: "ok" }), "utf-8")
+    });
+    const client = { invokeModel };
+    const clientFactory = vi.fn().mockResolvedValue(client);
+    const provider = new BedrockProvider(secrets, {
+      clientFactory,
+      defaultModel: "model",
+      region: "us-east-1"
+    });
+
+    await provider.chat({ messages: [{ role: "user", content: "hi" }] });
+    secrets.setFailure(new Error("vault unavailable"));
+    (provider as unknown as { clientCredentials?: unknown }).clientCredentials = undefined;
+
+    await expect(provider.chat({ messages: [{ role: "user", content: "hi" }] })).rejects.toMatchObject({
+      message: "Bedrock credentials are not available",
+      status: 500,
+      provider: "bedrock",
+    });
+  });
 });

@@ -78,8 +78,17 @@ export class AzureOpenAIProvider implements ModelProvider {
     try {
       credentials = await this.resolveCredentials();
     } catch (error) {
-      if (currentPromise && this.clientCredentials) {
-        return { client: await currentPromise, credentials: this.clientCredentials };
+      if (currentPromise) {
+        const snapshot = this.clientCredentials;
+        if (!snapshot) {
+          throw new ProviderError("Azure OpenAI credentials are not available", {
+            status: 500,
+            provider: this.name,
+            retryable: false,
+          });
+        }
+        const client = await currentPromise;
+        return { client, credentials: snapshot };
       }
       throw error;
     }
