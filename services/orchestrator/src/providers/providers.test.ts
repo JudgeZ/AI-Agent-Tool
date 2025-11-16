@@ -307,6 +307,58 @@ describe("providers", () => {
     loadConfigSpy.mockRestore();
   });
 
+  it("preserves request temperatures for custom providers not in the capability map", async () => {
+    const baseConfig = config.loadConfig();
+    const loadConfigSpy = vi.spyOn(config, "loadConfig").mockReturnValue({
+      ...baseConfig,
+      providers: {
+        ...baseConfig.providers,
+        enabled: ["custom_provider"],
+      },
+    });
+    const customProvider: ModelProvider = {
+      name: "custom_provider",
+      chat: vi.fn(async request => {
+        expect(request.temperature).toBeCloseTo(0.71);
+        return { output: "ok", provider: "custom_provider" };
+      }),
+    };
+    setProviderOverride("custom_provider", customProvider);
+
+    const response = await routeChat({
+      messages: [{ role: "user", content: "ping" }],
+      temperature: 0.71,
+    });
+
+    expect(response.provider).toBe("custom_provider");
+    expect(customProvider.chat).toHaveBeenCalledWith(
+      expect.objectContaining({ temperature: 0.71 }),
+    );
+    loadConfigSpy.mockRestore();
+  });
+
+  it("rejects temperature overrides outside the allowed range", async () => {
+    const baseConfig = config.loadConfig();
+    const loadConfigSpy = vi.spyOn(config, "loadConfig").mockReturnValue({
+      ...baseConfig,
+      providers: {
+        ...baseConfig.providers,
+        enabled: ["openai"],
+      },
+    });
+    const provider: ModelProvider = {
+      name: "openai",
+      chat: vi.fn(async () => ({ output: "ok", provider: "openai" })),
+    };
+    setProviderOverride("openai", provider);
+
+    await expect(
+      routeChat({ messages: [{ role: "user", content: "ping" }], temperature: 3 })
+    ).rejects.toMatchObject({ status: 400, provider: "router" });
+    expect(provider.chat).not.toHaveBeenCalled();
+    loadConfigSpy.mockRestore();
+  });
+
   it("honors explicit provider selections and rejects unknown providers", async () => {
     process.env.PROVIDERS = "openai,mistral";
     const openaiProvider: ModelProvider = {

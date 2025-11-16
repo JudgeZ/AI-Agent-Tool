@@ -32,6 +32,9 @@ let rateLimitBackendOptions: RateLimitBackendConfig | undefined;
 let circuitBreaker: CircuitBreaker | undefined;
 let circuitBreakerOptions: CircuitBreakerOptions | undefined;
 
+const MIN_REQUEST_TEMPERATURE = 0;
+const MAX_REQUEST_TEMPERATURE = 2;
+
 function cloneRateLimiterOptions(options: RateLimiterOptions): RateLimiterOptions {
   return {
     windowMs: options.windowMs,
@@ -209,6 +212,20 @@ function cloneChatRequest(req: ChatRequest): ChatRequest {
   return { ...req };
 }
 
+function assertRequestTemperature(value: number, providerName: string): number {
+  if (!Number.isFinite(value) || value < MIN_REQUEST_TEMPERATURE || value > MAX_REQUEST_TEMPERATURE) {
+    throw new ProviderError(
+      `Temperature override for provider ${providerName} must be a finite number between ${MIN_REQUEST_TEMPERATURE} and ${MAX_REQUEST_TEMPERATURE} (received ${value})`,
+      {
+        status: 400,
+        provider: "router",
+        retryable: false,
+      },
+    );
+  }
+  return value;
+}
+
 function buildProviderRequest(
   req: ChatRequest,
   providerName: string,
@@ -226,7 +243,7 @@ function buildProviderRequest(
   }
   const existingTemperature = req.temperature;
   if (typeof existingTemperature === "number") {
-    request.temperature = existingTemperature;
+    request.temperature = assertRequestTemperature(existingTemperature, providerName);
     return { request, warnings };
   }
   const providerSetting = getProviderSettings(cfg, providerName);

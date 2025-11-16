@@ -43,7 +43,7 @@ export const DEFAULT_ROUTING_PRIORITY: Record<RoutingMode, string[]> = {
 
 export function getProviderCapabilities(provider: string): ProviderCapabilities {
   const normalized = provider.trim().toLowerCase();
-  return DEFAULT_CAPABILITIES[normalized] ?? { supportsTemperature: false };
+  return DEFAULT_CAPABILITIES[normalized] ?? { supportsTemperature: true };
 }
 
 export function getDefaultProviderCapabilities(): Record<string, ProviderCapabilities> {
