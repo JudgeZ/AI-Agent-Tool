@@ -69,6 +69,15 @@ func TestNormalizeSessionBindingRejectsInvalidCharacters(t *testing.T) {
 	}
 }
 
+func TestNormalizeSessionBindingRejectsWhitespacePadding(t *testing.T) {
+	cases := []string{" binding", "binding ", "\tbinding", "\nbinding", "   "}
+	for _, value := range cases {
+		if _, err := normalizeSessionBinding(value); err == nil {
+			t.Fatalf("expected error for whitespace padding (value=%q)", value)
+		}
+	}
+}
+
 func TestNormalizeSessionBindingRejectsLongValues(t *testing.T) {
 	tooLong := strings.Repeat("a", 300)
 	if _, err := normalizeSessionBinding(tooLong); err == nil {

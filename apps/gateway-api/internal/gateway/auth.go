@@ -191,14 +191,19 @@ func normalizeClientApp(value string) (string, error) {
 }
 
 func normalizeSessionBinding(value string) (string, error) {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
+	if value == "" {
 		return "", nil
 	}
-	if !sessionBindingPattern.MatchString(trimmed) {
+	if strings.TrimSpace(value) == "" {
+		return "", fmt.Errorf("session_binding may not be blank or whitespace")
+	}
+	if strings.TrimSpace(value) != value {
+		return "", fmt.Errorf("session_binding may not include leading or trailing whitespace")
+	}
+	if !sessionBindingPattern.MatchString(value) {
 		return "", fmt.Errorf("session_binding must be 1-256 characters and may only include letters, numbers, '.', '_' or '-'")
 	}
-	return trimmed, nil
+	return value, nil
 }
 
 type oidcDiscovery struct {
@@ -332,7 +337,7 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*
 		RedirectURI: strings.TrimSpace(r.URL.Query().Get("redirect_uri")),
 		TenantID:    rawTenant,
 		ClientApp:   strings.TrimSpace(r.URL.Query().Get("client_app")),
-		BindingID:   strings.TrimSpace(r.URL.Query().Get("session_binding")),
+		BindingID:   r.URL.Query().Get("session_binding"),
 	}
 	if errs := validateRequestParams(params); len(errs) > 0 {
 		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, withTenantHash(map[string]any{
