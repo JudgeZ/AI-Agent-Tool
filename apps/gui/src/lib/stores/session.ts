@@ -1,5 +1,6 @@
 import { writable } from 'svelte/store';
 import {
+  defaultTenantId,
   gatewayOrigin,
   logoutPath,
   oidcAuthorizeUrl,
@@ -26,6 +27,13 @@ export interface SessionState {
   error: string | null;
 }
 
+type OidcCompletePayload = {
+  type: 'oidc:complete';
+  status?: string;
+  error?: string | null;
+  session_binding?: string | null;
+};
+
 const initialState: SessionState = {
   loading: false,
   authenticated: false,
@@ -36,6 +44,91 @@ const initialState: SessionState = {
 const sessionStore = writable<SessionState>({ ...initialState, loading: true });
 
 let messageHandler: ((event: MessageEvent) => void) | null = null;
+const bindingStorageKey = 'oss.oidc.binding';
+let inMemoryBinding: string | null = null;
+
+const safeSessionStorage = () => {
+  if (typeof window === 'undefined') return null;
+  try {
+    return window.sessionStorage ?? null;
+  } catch {
+    return null;
+  }
+};
+
+function setBindingToken(value: string | null): void {
+  inMemoryBinding = value;
+  const storage = safeSessionStorage();
+  if (!storage) return;
+  try {
+    if (value) {
+      storage.setItem(bindingStorageKey, value);
+    } else {
+      storage.removeItem(bindingStorageKey);
+    }
+  } catch {
+    // ignore storage failures
+  }
+}
+
+function getBindingToken(): string | null {
+  if (inMemoryBinding) {
+    return inMemoryBinding;
+  }
+  const storage = safeSessionStorage();
+  if (!storage) {
+    return null;
+  }
+  try {
+    const stored = storage.getItem(bindingStorageKey);
+    if (stored) {
+      inMemoryBinding = stored;
+    }
+    return stored;
+  } catch {
+    return null;
+  }
+}
+
+function generateBindingToken(): string {
+  if (typeof window !== 'undefined' && window.crypto?.randomUUID) {
+    return window.crypto.randomUUID();
+  }
+  if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+  throw new Error('No secure random source available for session binding token generation');
+}
+
+const isOidcCompletePayload = (value: unknown): value is OidcCompletePayload => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (candidate.type !== 'oidc:complete') {
+    return false;
+  }
+  if (candidate.status !== undefined && typeof candidate.status !== 'string') {
+    return false;
+  }
+  if (
+    candidate.error !== undefined &&
+    candidate.error !== null &&
+    typeof candidate.error !== 'string'
+  ) {
+    return false;
+  }
+  if (
+    candidate.session_binding !== undefined &&
+    candidate.session_binding !== null &&
+    typeof candidate.session_binding !== 'string'
+  ) {
+    return false;
+  }
+  return true;
+};
 
 function installMessageListener(): void {
   if (typeof window === 'undefined' || messageHandler) {
@@ -50,16 +143,27 @@ function installMessageListener(): void {
     if (!event.origin || !allowedOrigins.has(event.origin)) {
       return;
     }
-    if (!event?.data || typeof event.data !== 'object') {
+    if (!isOidcCompletePayload(event.data)) {
       return;
     }
-    const payload = event.data as { type?: string; status?: string; error?: string | null };
-    if (payload.type !== 'oidc:complete') {
-      return;
+    const payload = event.data;
+    const expectedBinding = getBindingToken();
+    if (expectedBinding) {
+      if (!payload.session_binding || payload.session_binding !== expectedBinding) {
+        if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+          console.warn('[session] Ignoring message due to session binding mismatch.', {
+            origin: event.origin,
+            type: payload.type
+          });
+        }
+        return;
+      }
     }
     if (payload.status === 'success') {
+      setBindingToken(null);
       void fetchSession();
     } else {
+      setBindingToken(null);
       sessionStore.update((state) => ({ ...state, error: payload.error ?? 'Login was cancelled' }));
     }
   };
@@ -110,8 +214,24 @@ export function login(): void {
     return;
   }
   installMessageListener();
+  let binding: string;
+  try {
+    binding = generateBindingToken();
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Unable to start login flow due to missing secure random source';
+    sessionStore.update((state) => ({ ...state, error: message }));
+    return;
+  }
+  setBindingToken(binding);
   const redirectUri = new URL('/auth/callback', window.location.origin).toString();
-  const authorizeUrl = oidcAuthorizeUrl(redirectUri);
+  const authorizeUrl = oidcAuthorizeUrl(redirectUri, {
+    tenantId: defaultTenantId,
+    clientApp: 'gui',
+    sessionBinding: binding
+  });
   const popup = window.open(
     authorizeUrl,
     'oidc-login',

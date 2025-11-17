@@ -1,5 +1,5 @@
 import { get, type Readable } from 'svelte/store';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 type MessageListener = (event: MessageEvent) => void;
 
@@ -11,8 +11,14 @@ const jsonResponse = (body: unknown, init?: ResponseInit): Response => {
   return new Response(JSON.stringify(body), { ...init, headers });
 };
 
-const authorizeUrlMock = vi.fn((redirectUri: string) =>
-  `https://gateway.example.test/authorize?redirect_uri=${encodeURIComponent(redirectUri)}`
+const authorizeUrlMock = vi.fn(
+  (redirectUri: string, options?: { tenantId?: string | null; clientApp?: string; sessionBinding?: string | null }) => {
+    let url = `https://gateway.example.test/authorize?redirect_uri=${encodeURIComponent(redirectUri)}&client_app=${options?.clientApp ?? 'gui'}`;
+    if (options?.sessionBinding) {
+      url += `&session_binding=${options.sessionBinding}`;
+    }
+    return url;
+  }
 );
 
 vi.mock('$lib/config', () => ({
@@ -20,7 +26,8 @@ vi.mock('$lib/config', () => ({
   logoutPath: '/auth/logout',
   oidcAuthorizeUrl: authorizeUrlMock,
   orchestratorOrigin: 'https://orchestrator.example.test',
-  gatewayOrigin: 'https://gateway.example.test'
+  gatewayOrigin: 'https://gateway.example.test',
+  defaultTenantId: null
 }));
 
 declare global {
@@ -35,12 +42,14 @@ declare global {
 
 describe('session store', () => {
   const listeners: Map<string, MessageListener[]> = new Map();
+  let storageMap: Map<string, string>;
   const fetchMock = vi.fn<typeof fetch>();
   let initializeSession: () => void;
   let fetchSession: () => Promise<void>;
   let login: () => void;
   let logout: () => Promise<void>;
   let session: Readable<unknown>;
+  let warnSpy: ReturnType<typeof vi.spyOn>;
   const flushAsync = async () => {
     await Promise.resolve();
     await Promise.resolve();
@@ -48,6 +57,7 @@ describe('session store', () => {
 
   function installWindowMocks(): void {
     listeners.clear();
+    storageMap = new Map();
     const addEventListener = vi.fn(<K extends keyof WindowEventMap>(
       type: K,
       listener: (this: Window, ev: WindowEventMap[K]) => unknown
@@ -61,6 +71,24 @@ describe('session store', () => {
       addEventListener,
       removeEventListener: vi.fn(),
       open: vi.fn(),
+      sessionStorage: {
+        getItem: vi.fn((key: string) => storageMap.get(key) ?? null),
+        setItem: vi.fn((key: string, value: string) => {
+          storageMap.set(key, value);
+          return null;
+        }),
+        removeItem: vi.fn((key: string) => {
+          storageMap.delete(key);
+          return null;
+        })
+      } as unknown as Storage,
+      crypto: {
+        randomUUID: vi.fn(() => 'uuid-binding'),
+        getRandomValues: vi.fn((buffer: Uint8Array) => {
+          buffer.fill(0xab);
+          return buffer;
+        })
+      } as unknown as Crypto,
       dispatchMessage: (data: unknown, origin = 'https://app.example.test') => {
         const messageListeners = listeners.get('message');
         if (!messageListeners) return;
@@ -89,8 +117,13 @@ describe('session store', () => {
     vi.unstubAllGlobals();
     authorizeUrlMock.mockClear();
     fetchMock.mockReset();
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     installWindowMocks();
     await importSessionModule();
+  });
+
+  afterEach(() => {
+    warnSpy?.mockRestore();
   });
 
   it('initializes by installing listeners and loading the current session', async () => {
@@ -176,6 +209,34 @@ describe('session store', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('ignores oidc completion messages with malformed payloads', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        session: {
+          id: 'abc',
+          subject: 'user',
+          roles: [],
+          scopes: [],
+          issuedAt: 'now',
+          expiresAt: 'later'
+        }
+      })
+    );
+
+    initializeSession();
+    await flushAsync();
+    fetchMock.mockClear();
+
+    (window as typeof window & { dispatchMessage: (data: unknown, origin?: string) => void }).dispatchMessage(
+      { type: 'oidc:complete', status: 123 },
+      'https://app.example.test'
+    );
+    await flushAsync();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
   it('updates state with session info when fetchSession succeeds', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
@@ -220,10 +281,84 @@ describe('session store', () => {
     (window.open as unknown as ReturnType<typeof vi.fn>).mockReturnValueOnce({ focus } as unknown as Window);
 
     login();
-    expect(authorizeUrlMock).toHaveBeenCalledWith('https://app.example.test/auth/callback');
+    expect(authorizeUrlMock).toHaveBeenCalledWith(
+      'https://app.example.test/auth/callback',
+      expect.objectContaining({ clientApp: 'gui', sessionBinding: 'uuid-binding' })
+    );
     expect(focus).toHaveBeenCalled();
+    expect(window.sessionStorage.setItem).toHaveBeenCalledWith('oss.oidc.binding', 'uuid-binding');
     const state = get(session as never) as Record<string, unknown>;
     expect(state.error).toBeNull();
+  });
+
+  it('falls back to crypto.getRandomValues when randomUUID is unavailable', () => {
+    delete (window.crypto as Crypto & { randomUUID?: () => string }).randomUUID;
+    const focus = vi.fn();
+    (window.open as unknown as ReturnType<typeof vi.fn>).mockReturnValueOnce({ focus } as unknown as Window);
+
+    login();
+    const binding = (authorizeUrlMock.mock.calls.at(-1)?.[1] as { sessionBinding?: string })?.sessionBinding;
+    expect(binding).toBe('abababababababababababababababab');
+    expect(focus).toHaveBeenCalled();
+  });
+
+  it('surfaces an error when no secure random source is available', () => {
+    delete (window.crypto as Crypto & { randomUUID?: () => string }).randomUUID;
+    delete (window.crypto as Crypto & { getRandomValues?: (buffer: Uint8Array) => Uint8Array }).getRandomValues;
+
+    login();
+
+    expect(authorizeUrlMock).not.toHaveBeenCalled();
+    const state = get(session as never) as Record<string, unknown>;
+    expect(state.error).toBe('No secure random source available for session binding token generation');
+  });
+
+  it('ignores oidc completion messages when session binding does not match', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        session: {
+          id: 'abc',
+          subject: 'user',
+          roles: [],
+          scopes: [],
+          issuedAt: 'now',
+          expiresAt: 'later'
+        }
+      })
+    );
+    initializeSession();
+    await flushAsync();
+    fetchMock.mockClear();
+
+    const focus = vi.fn();
+    (window.open as unknown as ReturnType<typeof vi.fn>).mockReturnValue({ focus } as unknown as Window);
+    login();
+    const binding = (authorizeUrlMock.mock.calls.at(-1)?.[1] as { sessionBinding?: string })?.sessionBinding;
+    expect(binding).toBe('uuid-binding');
+    fetchMock.mockClear();
+
+    (window as typeof window & { dispatchMessage: (data: unknown, origin?: string) => void }).dispatchMessage(
+      {
+        type: 'oidc:complete',
+        status: 'success',
+        session_binding: 'other-binding'
+      },
+      'https://app.example.test'
+    );
+    await flushAsync();
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalled();
+
+    (window as typeof window & { dispatchMessage: (data: unknown, origin?: string) => void }).dispatchMessage(
+      {
+        type: 'oidc:complete',
+        status: 'success',
+        session_binding: binding
+      },
+      'https://app.example.test'
+    );
+    await flushAsync();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('resets the session state when logout succeeds', async () => {

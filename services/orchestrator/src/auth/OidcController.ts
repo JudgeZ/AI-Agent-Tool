@@ -192,7 +192,12 @@ export async function handleOidcCallback(req: Request, res: Response) {
     respondWithValidationError(res, details);
     return;
   }
-  const { code, codeVerifier, redirectUri, state } = parsedBody.data;
+  const { code, codeVerifier, redirectUri, state, clientId } = parsedBody.data;
+
+  const effectiveOidc =
+    typeof clientId === "string" && clientId.length > 0
+      ? { ...oidc, clientId }
+      : oidc;
 
   if (redirectUri !== oidc.redirectUri) {
     logAuditEvent({
@@ -255,9 +260,9 @@ export async function handleOidcCallback(req: Request, res: Response) {
   }
 
   try {
-    const metadata = await fetchOidcMetadata(oidc);
+    const metadata = await fetchOidcMetadata(effectiveOidc);
     const tokenResponse = await exchangeCodeForTokens(
-      oidc,
+      effectiveOidc,
       metadata,
       code,
       codeVerifier,
@@ -282,7 +287,7 @@ export async function handleOidcCallback(req: Request, res: Response) {
       return;
     }
     const verification = await verifyIdToken(
-      oidc,
+      effectiveOidc,
       metadata,
       tokenResponse.id_token,
     );

@@ -24,11 +24,53 @@ export const gatewayBaseUrl = (() => {
 export const orchestratorOrigin = deriveOrigin(orchestratorBaseUrl);
 export const gatewayOrigin = deriveOrigin(gatewayBaseUrl);
 
+export const defaultTenantId = (() => {
+  const fromEnv = (import.meta.env.VITE_TENANT_ID as string | undefined)?.trim();
+  return fromEnv && fromEnv.length > 0 ? fromEnv : null;
+})();
+
 export const ssePath = (planId: string) => `${orchestratorBaseUrl}/plan/${encodeURIComponent(planId)}/events`;
 export const approvalPath = (planId: string, stepId: string) =>
   `${orchestratorBaseUrl}/plan/${encodeURIComponent(planId)}/steps/${encodeURIComponent(stepId)}/approve`;
 export const sessionPath = `${orchestratorBaseUrl}/auth/session`;
 export const logoutPath = `${orchestratorBaseUrl}/auth/logout`;
 export const oidcConfigPath = `${orchestratorBaseUrl}/auth/oidc/config`;
-export const oidcAuthorizeUrl = (redirectUri: string) =>
-  `${gatewayBaseUrl}/auth/oidc/authorize?redirect_uri=${encodeURIComponent(redirectUri)}`;
+/**
+ * Optional knobs for generating the gateway authorize URL.
+ * `tenantId` defaults to `defaultTenantId`, `clientApp` defaults to `gui`, and
+ * `sessionBinding` is omitted when falsy.
+ */
+interface OidcAuthorizeOptions {
+  tenantId?: string | null;
+  clientApp?: string;
+  sessionBinding?: string | null;
+}
+
+/**
+ * Builds the gateway authorize URL for the GUI/Tauri shell.
+ *
+ * @param redirectUri Absolute callback URL for the GUI shell.
+ * @param options Optional tenant, client app, and session binding overrides.
+ */
+export const oidcAuthorizeUrl = (redirectUri: string, options?: OidcAuthorizeOptions) => {
+  const params = new URLSearchParams();
+  params.set('redirect_uri', redirectUri);
+  const tenant = options?.tenantId ?? defaultTenantId;
+  if (tenant) {
+    params.set('tenant_id', tenant);
+  }
+  const clientApp = options?.clientApp ?? 'gui';
+  params.set('client_app', clientApp);
+  let binding: string | null = null;
+  if (typeof options?.sessionBinding === 'string') {
+    const trimmed = options.sessionBinding.trim();
+    if (trimmed.length === 0) {
+      throw new Error('sessionBinding must not be only whitespace');
+    }
+    binding = trimmed;
+  }
+  if (binding) {
+    params.set('session_binding', binding);
+  }
+  return `${gatewayBaseUrl}/auth/oidc/authorize?${params.toString()}`;
+};

@@ -29,14 +29,6 @@ import (
 	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/audit"
 )
 
-var stateTTL = getDurationEnv("OAUTH_STATE_TTL", 10*time.Minute)
-var orchestratorTimeout = getDurationEnv("ORCHESTRATOR_CALLBACK_TIMEOUT", 10*time.Second)
-var allowedRedirectOrigins = loadAllowedRedirectOrigins()
-var requestValidator = validator.New(validator.WithRequiredStructEnabled())
-var tenantIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
-
-var generateStateAndPKCEFunc = generateStateAndPKCE
-
 const (
 	auditEventAuthorize   = "auth.oauth.authorize"
 	auditEventCallback    = "auth.oauth.callback"
@@ -54,7 +46,20 @@ const (
 	defaultAuthIdentityWindow = time.Minute
 
 	tenantValidationErrorMessage = "tenant_id may only include letters, numbers, '.', '_' or '-'"
+	defaultClientApp             = "gui"
+	maxSessionBindingLength      = 256
+	maxClientIDLength            = 256
 )
+
+var stateTTL = getDurationEnv("OAUTH_STATE_TTL", 10*time.Minute)
+var orchestratorTimeout = getDurationEnv("ORCHESTRATOR_CALLBACK_TIMEOUT", 10*time.Second)
+var allowedRedirectOrigins = loadAllowedRedirectOrigins()
+var requestValidator = validator.New(validator.WithRequiredStructEnabled())
+var tenantIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+var clientAppPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+var sessionBindingPattern = regexp.MustCompile(fmt.Sprintf(`^[A-Za-z0-9._-]{1,%d}$`, maxSessionBindingLength))
+
+var generateStateAndPKCEFunc = generateStateAndPKCE
 
 type validationError struct {
 	Field   string `json:"field"`
@@ -64,6 +69,8 @@ type validationError struct {
 type authorizeRequestParams struct {
 	RedirectURI string `validate:"required,uri,max=2048" json:"redirect_uri"`
 	TenantID    string `json:"tenant_id"`
+	ClientApp   string `validate:"omitempty,max=64" json:"client_app"`
+	BindingID   string `validate:"omitempty,max=256" json:"session_binding"`
 }
 
 type callbackRequestParams struct {
@@ -156,6 +163,13 @@ func hashTenantID(value string) string {
 	return gatewayAuditLogger.HashIdentity("tenant", value)
 }
 
+func normalizeTenantKey(value string) string {
+	if value == "" {
+		return ""
+	}
+	return strings.ToLower(value)
+}
+
 func withTenantHash(details map[string]any, tenantHash string) map[string]any {
 	if tenantHash == "" {
 		return details
@@ -165,6 +179,34 @@ func withTenantHash(details map[string]any, tenantHash string) map[string]any {
 	}
 	details["tenant_id_hash"] = tenantHash
 	return details
+}
+
+func normalizeClientApp(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		trimmed = defaultClientApp
+	}
+	if !clientAppPattern.MatchString(trimmed) {
+		return "", fmt.Errorf("client_app may only include letters, numbers, '.', '_' or '-'")
+	}
+	return strings.ToLower(trimmed), nil
+}
+
+func normalizeSessionBinding(value string) (string, error) {
+	if value == "" {
+		return "", nil
+	}
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", fmt.Errorf("session_binding may not be blank or whitespace")
+	}
+	if trimmed != value {
+		return "", fmt.Errorf("session_binding may not include leading or trailing whitespace")
+	}
+	if !sessionBindingPattern.MatchString(value) {
+		return "", fmt.Errorf("session_binding must be 1-%d characters and may only include letters, numbers, '.', '_' or '-'", maxSessionBindingLength)
+	}
+	return value, nil
 }
 
 type oidcDiscovery struct {
@@ -198,7 +240,37 @@ type stateData struct {
 	ExpiresAt    time.Time
 	State        string
 	TenantID     string
+	ClientApp    string
+	BindingID    string
+	ClientID     string
 }
+
+type oidcClientRegistration struct {
+	TenantID               string
+	AppID                  string
+	ClientID               string
+	RedirectOrigins        []redirectOrigin
+	SessionBindingRequired bool
+}
+
+func (r oidcClientRegistration) allowsRedirect(u *url.URL) bool {
+	if len(r.RedirectOrigins) == 0 {
+		return true
+	}
+	for _, origin := range r.RedirectOrigins {
+		if origin.matches(u) {
+			return true
+		}
+	}
+	return false
+}
+
+var (
+	oidcClientRegistrationsMu   sync.Mutex
+	oidcClientRegistrationsOnce sync.Once
+	oidcClientRegistrations     map[string]map[string]oidcClientRegistration
+	oidcClientRegistrationsErr  error
+)
 
 // AuthRouteConfig captures configuration for the OAuth routes.
 type AuthRouteConfig struct {
@@ -267,6 +339,8 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*
 	params := authorizeRequestParams{
 		RedirectURI: strings.TrimSpace(r.URL.Query().Get("redirect_uri")),
 		TenantID:    rawTenant,
+		ClientApp:   strings.TrimSpace(r.URL.Query().Get("client_app")),
+		BindingID:   r.URL.Query().Get("session_binding"),
 	}
 	if errs := validateRequestParams(params); len(errs) > 0 {
 		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, withTenantHash(map[string]any{
@@ -291,8 +365,52 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*
 	}
 	params.TenantID = tenantID
 	tenantHash = hashTenantID(tenantID)
+
+	clientApp, appErr := normalizeClientApp(params.ClientApp)
+	if appErr != nil {
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, withTenantHash(map[string]any{
+			"provider":          provider,
+			"reason":            appErr.Error(),
+			"redirect_uri_hash": redirectHash(params.RedirectURI),
+		}, tenantHash))
+		writeValidationError(w, r, []validationError{{
+			Field:   "client_app",
+			Message: appErr.Error(),
+		}})
+		return
+	}
+
+	bindingID, bindingErr := normalizeSessionBinding(params.BindingID)
+	if bindingErr != nil {
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, withTenantHash(map[string]any{
+			"provider":          provider,
+			"reason":            bindingErr.Error(),
+			"redirect_uri_hash": redirectHash(params.RedirectURI),
+		}, tenantHash))
+		writeValidationError(w, r, []validationError{{
+			Field:   "session_binding",
+			Message: bindingErr.Error(),
+		}})
+		return
+	}
+
 	redirectURI := params.RedirectURI
-	if redirectErr := validateClientRedirect(redirectURI); redirectErr != nil {
+	redirectURL, parseErr := url.Parse(redirectURI)
+	if parseErr != nil {
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, withTenantHash(map[string]any{
+			"provider":           provider,
+			"reason":             "invalid redirect_uri",
+			"redirect_uri_hash":  redirectHash(redirectURI),
+			"redirect_uri_host":  redirectHost(redirectURI),
+			"validation_failure": true,
+		}, tenantHash))
+		writeValidationError(w, r, []validationError{{
+			Field:   "redirect_uri",
+			Message: "invalid redirect_uri",
+		}})
+		return
+	}
+	if redirectErr := validateClientRedirectURL(redirectURL); redirectErr != nil {
 		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, withTenantHash(map[string]any{
 			"provider":           provider,
 			"reason":             redirectErr.Error(),
@@ -305,6 +423,60 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*
 		})
 		return
 	}
+
+	registration, registrationFound, registrationsConfigured, regErr := getOidcClientRegistration(tenantID, clientApp)
+	if regErr != nil {
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, withTenantHash(map[string]any{
+			"provider":          provider,
+			"reason":            "client_registration_error",
+			"redirect_uri_hash": redirectHash(redirectURI),
+		}, tenantHash))
+		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "failed to load client configuration", nil)
+		return
+	}
+	selectedClientID := cfg.ClientID
+	if registrationFound {
+		if !registration.allowsRedirect(redirectURL) {
+			auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, withTenantHash(map[string]any{
+				"provider":          provider,
+				"reason":            "redirect_not_registered",
+				"redirect_uri_hash": redirectHash(redirectURI),
+				"client_app":        clientApp,
+			}, tenantHash))
+			writeValidationError(w, r, []validationError{{
+				Field:   "redirect_uri",
+				Message: "redirect_uri not registered for client",
+			}})
+			return
+		}
+		if registration.SessionBindingRequired && bindingID == "" {
+			auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, withTenantHash(map[string]any{
+				"provider":          provider,
+				"reason":            "session_binding_required",
+				"redirect_uri_hash": redirectHash(redirectURI),
+				"client_app":        clientApp,
+			}, tenantHash))
+			writeValidationError(w, r, []validationError{{
+				Field:   "session_binding",
+				Message: "session_binding is required for this client",
+			}})
+			return
+		}
+		selectedClientID = registration.ClientID
+	} else if registrationsConfigured {
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, withTenantHash(map[string]any{
+			"provider":          provider,
+			"reason":            "client_not_registered",
+			"redirect_uri_hash": redirectHash(redirectURI),
+			"client_app":        clientApp,
+		}, tenantHash))
+		writeValidationError(w, r, []validationError{{
+			Field:   "client_app",
+			Message: "client_app is not registered",
+		}})
+		return
+	}
+	cfg.ClientID = selectedClientID
 
 	state, codeVerifier, codeChallenge, err := generateStateAndPKCEFunc()
 	if err != nil {
@@ -324,6 +496,9 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*
 		ExpiresAt:    time.Now().Add(stateTTL),
 		State:        state,
 		TenantID:     tenantID,
+		ClientApp:    clientApp,
+		BindingID:    bindingID,
+		ClientID:     selectedClientID,
 	}
 
 	if stateErr := setStateCookie(w, r, trustedProxies, allowInsecureStateCookie, data); stateErr != nil {
@@ -422,10 +597,75 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 		baseDetails = mergeDetails(baseDetails, map[string]any{"tenant_id_hash": tenantHash})
 	}
 
+	clientApp, appErr := normalizeClientApp(data.ClientApp)
+	if appErr != nil {
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, mergeDetails(baseDetails, map[string]any{
+			"reason": "invalid_state_client_app",
+			"state":  params.State,
+		}))
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "invalid or expired state", nil)
+		return
+	}
+	data.ClientApp = clientApp
+	if clientApp != "" {
+		baseDetails = mergeDetails(baseDetails, map[string]any{"client_app": clientApp})
+	}
+
+	bindingID, bindingErr := normalizeSessionBinding(data.BindingID)
+	if bindingErr != nil {
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, mergeDetails(baseDetails, map[string]any{
+			"reason":           "invalid_state_binding",
+			"state":            params.State,
+			"validation_error": bindingErr.Error(),
+		}))
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "invalid or expired state", nil)
+		return
+	}
+	data.BindingID = bindingID
+	stateClientID := strings.TrimSpace(data.ClientID)
+	if len(stateClientID) > maxClientIDLength {
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, mergeDetails(baseDetails, map[string]any{
+			"reason": "invalid_state_client_id",
+			"state":  params.State,
+		}))
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "invalid or expired state", nil)
+		return
+	}
+	data.ClientID = stateClientID
+
+	registration, registrationFound, registrationsConfigured, regErr := getOidcClientRegistration(data.TenantID, clientApp)
+	if regErr != nil {
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, mergeDetails(baseDetails, map[string]any{
+			"reason": "client_registration_error",
+		}))
+		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "failed to load client configuration", nil)
+		return
+	}
+	expectedClientID := cfg.ClientID
+	if registrationFound {
+		expectedClientID = registration.ClientID
+	} else if registrationsConfigured {
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, mergeDetails(baseDetails, map[string]any{
+			"reason": "client_not_registered",
+		}))
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "invalid or expired state", nil)
+		return
+	}
+	if stateClientID != "" && stateClientID != expectedClientID {
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, mergeDetails(baseDetails, map[string]any{
+			"reason":                  "state_client_id_mismatch",
+			"state":                   params.State,
+			"state_client_id_present": true,
+		}))
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "invalid or expired state", nil)
+		return
+	}
+	effectiveClientID := expectedClientID
 	payload := map[string]string{
 		"code":          params.Code,
 		"code_verifier": data.CodeVerifier,
 		"redirect_uri":  cfg.RedirectURI,
+		"client_id":     effectiveClientID,
 	}
 	if data.TenantID != "" {
 		payload["tenant_id"] = data.TenantID
@@ -489,7 +729,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 			details["error_code"] = errorCode
 		}
 		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, details)
-		redirectWithStatus(w, r, data.RedirectURI, data.State, "error", safeError)
+		redirectWithStatus(w, r, data.RedirectURI, data.State, "error", safeError, data.BindingID)
 		return
 	}
 
@@ -514,7 +754,7 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 		"redirect_uri_host": redirectHost(data.RedirectURI),
 	}))
 
-	redirectWithStatus(w, r, data.RedirectURI, data.State, "success", "")
+	redirectWithStatus(w, r, data.RedirectURI, data.State, "success", "", data.BindingID)
 }
 
 func redirectError(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, allowInsecureStateCookie bool, errParam string) {
@@ -546,10 +786,10 @@ func redirectError(w http.ResponseWriter, r *http.Request, trustedProxies []*net
 		details["tenant_id_hash"] = tenantHash
 	}
 	auditRedirectEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, details)
-	redirectWithStatus(w, r, data.RedirectURI, data.State, "error", errParam)
+	redirectWithStatus(w, r, data.RedirectURI, data.State, "error", errParam, data.BindingID)
 }
 
-func redirectWithStatus(w http.ResponseWriter, r *http.Request, redirectURI, state, status, message string) {
+func redirectWithStatus(w http.ResponseWriter, r *http.Request, redirectURI, state, status, message, binding string) {
 	target, err := url.Parse(redirectURI)
 	if err != nil {
 		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "invalid redirect_uri", nil)
@@ -562,6 +802,9 @@ func redirectWithStatus(w http.ResponseWriter, r *http.Request, redirectURI, sta
 	q.Set("status", status)
 	if status == "error" && message != "" {
 		q.Set("error", message)
+	}
+	if binding != "" {
+		q.Set("session_binding", binding)
 	}
 	target.RawQuery = q.Encode()
 	sendRedirect(w, r, target)
@@ -772,6 +1015,13 @@ func validateClientRedirect(redirectURI string) error {
 	if err != nil {
 		return errors.New("invalid redirect_uri")
 	}
+	return validateClientRedirectURL(u)
+}
+
+func validateClientRedirectURL(u *url.URL) error {
+	if u == nil {
+		return errors.New("invalid redirect_uri")
+	}
 
 	if u.Scheme == "http" {
 		host := u.Hostname()
@@ -916,6 +1166,126 @@ func resolveEnvValue(key string) (string, error) {
 func readSecretFile(path string) ([]byte, error) {
 	rootDir := strings.TrimSpace(os.Getenv("GATEWAY_SECRET_FILE_ROOT"))
 	return readFileFromAllowedRoot(path, rootDir)
+}
+
+// resetOidcClientRegistrations clears cached registrations for tests.
+func resetOidcClientRegistrations() {
+	oidcClientRegistrationsMu.Lock()
+	defer oidcClientRegistrationsMu.Unlock()
+	oidcClientRegistrationsOnce = sync.Once{}
+	oidcClientRegistrations = nil
+	oidcClientRegistrationsErr = nil
+}
+
+func loadOidcClientRegistrations() (map[string]map[string]oidcClientRegistration, error) {
+	oidcClientRegistrationsMu.Lock()
+	defer oidcClientRegistrationsMu.Unlock()
+	oidcClientRegistrationsOnce.Do(func() {
+		raw, err := resolveEnvValue("OIDC_CLIENT_REGISTRATIONS")
+		if err != nil {
+			oidcClientRegistrationsErr = fmt.Errorf("failed to load OIDC_CLIENT_REGISTRATIONS: %w", err)
+			return
+		}
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
+			oidcClientRegistrations = map[string]map[string]oidcClientRegistration{}
+			return
+		}
+		parsed, parseErr := parseOidcClientRegistrations(trimmed)
+		if parseErr != nil {
+			oidcClientRegistrationsErr = parseErr
+			return
+		}
+		oidcClientRegistrations = parsed
+	})
+	if oidcClientRegistrationsErr != nil {
+		return nil, oidcClientRegistrationsErr
+	}
+	return oidcClientRegistrations, nil
+}
+
+func parseOidcClientRegistrations(raw string) (map[string]map[string]oidcClientRegistration, error) {
+	type registrationPayload struct {
+		TenantID               string   `json:"tenant_id"`
+		AppID                  string   `json:"app"`
+		ClientID               string   `json:"client_id"`
+		RedirectOrigins        []string `json:"redirect_origins"`
+		SessionBindingRequired bool     `json:"session_binding_required"`
+	}
+
+	var payload []registrationPayload
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		return nil, fmt.Errorf("failed to parse OIDC_CLIENT_REGISTRATIONS: %w", err)
+	}
+
+	result := make(map[string]map[string]oidcClientRegistration)
+	for idx, entry := range payload {
+		tenantID, err := normalizeTenantID(entry.TenantID)
+		if err != nil {
+			return nil, fmt.Errorf("registration %d: %w", idx, err)
+		}
+		appID, err := normalizeClientApp(entry.AppID)
+		if err != nil {
+			return nil, fmt.Errorf("registration %d: %w", idx, err)
+		}
+		clientID := strings.TrimSpace(entry.ClientID)
+		if clientID == "" {
+			return nil, fmt.Errorf("registration %d: client_id is required", idx)
+		}
+		if len(clientID) > maxClientIDLength {
+			return nil, fmt.Errorf("registration %d: client_id must be at most %d characters", idx, maxClientIDLength)
+		}
+		var origins []redirectOrigin
+		for _, rawOrigin := range entry.RedirectOrigins {
+			origin, ok := parseRedirectOrigin(strings.TrimSpace(rawOrigin))
+			if !ok {
+				return nil, fmt.Errorf("registration %d: invalid redirect origin %q", idx, rawOrigin)
+			}
+			origins = append(origins, origin)
+		}
+		tenantKey := normalizeTenantKey(tenantID)
+		if _, ok := result[tenantKey]; !ok {
+			result[tenantKey] = make(map[string]oidcClientRegistration)
+		}
+		reg := oidcClientRegistration{
+			TenantID:               tenantID,
+			AppID:                  appID,
+			ClientID:               clientID,
+			RedirectOrigins:        origins,
+			SessionBindingRequired: entry.SessionBindingRequired,
+		}
+		if _, exists := result[tenantKey][appID]; exists {
+			return nil, fmt.Errorf("registration %d: duplicate entry for tenant %q and app %q", idx, tenantID, appID)
+		}
+		result[tenantKey][appID] = reg
+	}
+
+	return result, nil
+}
+
+func getOidcClientRegistration(tenantID, appID string) (oidcClientRegistration, bool, bool, error) {
+	configs, err := loadOidcClientRegistrations()
+	if err != nil {
+		return oidcClientRegistration{}, false, false, err
+	}
+	configured := len(configs) > 0
+	if !configured {
+		return oidcClientRegistration{}, false, false, nil
+	}
+	tenantKey := normalizeTenantKey(tenantID)
+	if regs, ok := configs[tenantKey]; ok {
+		if reg, ok := regs[appID]; ok {
+			return reg, true, true, nil
+		}
+	}
+	if tenantKey != "" {
+		if regs, ok := configs[""]; ok {
+			if reg, ok := regs[appID]; ok {
+				return reg, true, true, nil
+			}
+		}
+	}
+	return oidcClientRegistration{}, false, true, nil
 }
 
 func setStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []*net.IPNet, allowInsecure bool, data stateData) error {
