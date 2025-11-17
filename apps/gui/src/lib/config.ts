@@ -61,7 +61,17 @@ export const oidcAuthorizeUrl = (redirectUri: string, options?: OidcAuthorizeOpt
   }
   const clientApp = options?.clientApp ?? 'gui';
   params.set('client_app', clientApp);
-  const binding = options?.sessionBinding?.trim();
+  let binding: string | null = null;
+  if (typeof options?.sessionBinding === 'string') {
+    const rawBinding = options.sessionBinding;
+    if (rawBinding.length > 0) {
+      const trimmed = rawBinding.trim();
+      if (trimmed.length === 0) {
+        throw new Error('sessionBinding must not be only whitespace');
+      }
+      binding = trimmed;
+    }
+  }
   if (binding) {
     params.set('session_binding', binding);
   }

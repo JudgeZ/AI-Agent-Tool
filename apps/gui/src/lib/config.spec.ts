@@ -41,4 +41,13 @@ describe('config', () => {
       'http://127.0.0.1:8080/auth/oidc/authorize?redirect_uri=https%3A%2F%2Fapp.example.test%2Fauth%3Fnext%3D%2Fplan%2F1&client_app=gui'
     );
   });
+
+  it('throws when session binding is only whitespace', async () => {
+    const config = await import('./config');
+    expect(() =>
+      config.oidcAuthorizeUrl('https://app.example.test/auth', {
+        sessionBinding: '  '
+      })
+    ).toThrowError('sessionBinding must not be only whitespace');
+  });
 });

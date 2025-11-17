@@ -196,10 +196,11 @@ func normalizeSessionBinding(value string) (string, error) {
 	if value == "" {
 		return "", nil
 	}
-	if strings.TrimSpace(value) == "" {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
 		return "", fmt.Errorf("session_binding may not be blank or whitespace")
 	}
-	if strings.TrimSpace(value) != value {
+	if trimmed != value {
 		return "", fmt.Errorf("session_binding may not include leading or trailing whitespace")
 	}
 	if !sessionBindingPattern.MatchString(value) {
@@ -650,12 +651,16 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "invalid or expired state", nil)
 		return
 	}
-	effectiveClientID := stateClientID
-	if effectiveClientID == "" {
-		effectiveClientID = expectedClientID
-	} else if registrationFound && effectiveClientID != registration.ClientID {
-		baseDetails = mergeDetails(baseDetails, map[string]any{"state_client_id_mismatch": true})
+	if stateClientID != "" && stateClientID != expectedClientID {
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, mergeDetails(baseDetails, map[string]any{
+			"reason":                  "state_client_id_mismatch",
+			"state":                   params.State,
+			"state_client_id_present": true,
+		}))
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "invalid or expired state", nil)
+		return
 	}
+	effectiveClientID := expectedClientID
 	payload := map[string]string{
 		"code":          params.Code,
 		"code_verifier": data.CodeVerifier,

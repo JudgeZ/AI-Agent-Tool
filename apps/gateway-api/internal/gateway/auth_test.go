@@ -914,26 +914,11 @@ func TestCallbackHandlerUsesClientIDFromRegistration(t *testing.T) {
 	}
 }
 
-func TestCallbackHandlerUsesStateClientIDWhenPresent(t *testing.T) {
+func TestCallbackHandlerRejectsStateClientIDMismatch(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
 	allowedRedirectOrigins = loadAllowedRedirectOrigins()
 	setOidcRegistrations(t, `[{"tenant_id":"","app":"gui","client_id":"tenant-client-v2"}]`)
-
-	var capturedBody string
-	SetOrchestratorClientFactory(func() (*http.Client, error) {
-		return &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
-			body, _ := io.ReadAll(req.Body)
-			capturedBody = string(body)
-			resp := &http.Response{
-				StatusCode: http.StatusOK,
-				Body:       io.NopCloser(strings.NewReader("{}")),
-				Header:     make(http.Header),
-			}
-			return resp, nil
-		})}, nil
-	})
-	t.Cleanup(ResetOrchestratorClient)
 
 	data := stateData{
 		Provider:     "openrouter",
@@ -959,11 +944,12 @@ func TestCallbackHandlerUsesStateClientIDWhenPresent(t *testing.T) {
 
 	callbackHandler(rec, req, nil, false)
 
-	if !strings.Contains(capturedBody, `"client_id":"tenant-client-v1"`) {
-		t.Fatalf("expected upstream payload to keep state client_id, got %s", capturedBody)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected callback handler to reject mismatched client_id, got %d", rec.Code)
 	}
-	if rec.Code != http.StatusFound {
-		t.Fatalf("expected callback handler to redirect on success, got %d", rec.Code)
+	resp := decodeErrorResponse(t, rec)
+	if resp.Code != "invalid_request" {
+		t.Fatalf("expected invalid_request error, got %s", resp.Code)
 	}
 }
 
