@@ -31,6 +31,10 @@ spec:
         {{- include "oss-ai-agent-tool.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: redis
     spec:
+      {{- with .Values.redis.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: redis
           image: {{ .Values.redis.image | default "bitnami/redis:7.2.5" }}
@@ -40,6 +44,10 @@ spec:
               value: "yes"
           ports:
             - containerPort: 6379
+          {{- with .Values.redis.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           {{- with .Values.redis.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -47,6 +55,8 @@ spec:
           volumeMounts:
             - name: redis-data
               mountPath: /data
+            - name: redis-tmp
+              mountPath: /tmp
       volumes:
         - name: redis-data
           {{- if .Values.redis.persistence.enabled }}
@@ -55,6 +65,8 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        - name: redis-tmp
+          emptyDir: {}
 {{- if .Values.redis.persistence.enabled }}
 ---
 apiVersion: v1

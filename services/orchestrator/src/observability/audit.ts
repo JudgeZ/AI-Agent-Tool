@@ -37,11 +37,38 @@ export type AuditEvent = {
 };
 
 const serviceName = process.env.ORCHESTRATOR_SERVICE_NAME ?? "orchestrator";
-const hashSalt =
+const configuredAuditSalt =
   process.env.AUDIT_HASH_SALT ??
   process.env.ORCHESTRATOR_AUDIT_SALT ??
   process.env.OSS_AUDIT_SALT ??
   "";
+
+if (!configuredAuditSalt && process.env.NODE_ENV !== "test") {
+  auditLogger.warn(
+    "AUDIT_HASH_SALT is not configured; falling back to a derived default. " +
+      "Set AUDIT_HASH_SALT (or ORCHESTRATOR_AUDIT_SALT / OSS_AUDIT_SALT) to a long, random secret so audit identifiers remain unique per deployment.",
+  );
+}
+
+const identifierHashSalt = configuredAuditSalt || `${serviceName}-audit-salt`;
+// 310k PBKDF2 iterations follows the 2023+ OWASP guidance for password hashing and
+// keeps audit identifier hashes resistant to offline guessing.
+const HASH_ITERATIONS = 310_000;
+const HASH_KEY_LENGTH = 32;
+const HASH_DIGEST = "sha256";
+const HASH_CACHE_LIMIT = 2048;
+
+const hashCache = new Map<string, string>();
+
+function rememberHash(value: string, hash: string): void {
+  hashCache.set(value, hash);
+  if (hashCache.size > HASH_CACHE_LIMIT) {
+    const oldest = hashCache.keys().next().value;
+    if (oldest !== undefined) {
+      hashCache.delete(oldest);
+    }
+  }
+}
 
 const secretKeyPatterns = [
   /token/i,
@@ -65,7 +92,7 @@ function selectLevel(outcome: AuditOutcome): "info" | "warn" | "error" {
   }
 }
 
-function hashIdentifier(value?: string | null): string | undefined {
+export function hashIdentifier(value?: string | null): string | undefined {
   if (!value) {
     return undefined;
   }
@@ -73,10 +100,15 @@ function hashIdentifier(value?: string | null): string | undefined {
   if (!trimmed) {
     return undefined;
   }
-  const hash = crypto.createHash("sha256");
-  hash.update(hashSalt);
-  hash.update(trimmed);
-  return hash.digest("hex");
+  const cached = hashCache.get(trimmed);
+  if (cached) {
+    return cached;
+  }
+  const derived = crypto
+    .pbkdf2Sync(trimmed, identifierHashSalt, HASH_ITERATIONS, HASH_KEY_LENGTH, HASH_DIGEST)
+    .toString("hex");
+  rememberHash(trimmed, derived);
+  return derived;
 }
 
 function shouldMask(key?: string): boolean {
@@ -232,4 +264,8 @@ export function logAuditEvent(event: AuditEvent): void {
       "audit.log_failure"
     );
   }
+}
+
+export function __clearAuditHashCacheForTests(): void {
+  hashCache.clear();
 }

@@ -1,3 +1,5 @@
+import crypto from "node:crypto";
+
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./logger", () => {
@@ -10,7 +12,7 @@ vi.mock("./logger", () => {
   };
 });
 
-import { logAuditEvent } from "./audit.js";
+import { logAuditEvent, __clearAuditHashCacheForTests } from "./audit.js";
 import auditLogger from "./logger.js";
 import { runWithContext } from "./requestContext.js";
 
@@ -27,6 +29,7 @@ describe("logAuditEvent", () => {
     logger.info.mockReset();
     logger.warn.mockReset();
     logger.error.mockReset();
+    __clearAuditHashCacheForTests();
   });
 
   it("emits hashed identifiers and sanitised details", () => {
@@ -139,5 +142,16 @@ describe("logAuditEvent", () => {
     const payload = logger.info.mock.calls[0][0] as Record<string, unknown>;
     expect(payload.actor_id).toBeTypeOf("string");
     expect((payload.actor_id as string).length).toBe(64);
+  });
+
+  it("reuses cached hashes for repeated identifiers", () => {
+    const spy = vi.spyOn(crypto, "pbkdf2Sync");
+    const subject = { sessionId: "session-reuse" };
+
+    logAuditEvent({ action: "plan.create", outcome: "success", subject });
+    logAuditEvent({ action: "plan.update", outcome: "success", subject });
+
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockRestore();
   });
 });

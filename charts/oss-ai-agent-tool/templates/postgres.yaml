@@ -32,6 +32,10 @@ spec:
         {{- include "oss-ai-agent-tool.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: postgres
     spec:
+      {{- with .Values.postgres.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: postgres
           image: {{ .Values.postgres.image | default "postgres:15-alpine" }}
@@ -48,9 +52,17 @@ spec:
                   key: password
           ports:
             - containerPort: 5432
+          {{- with .Values.postgres.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           volumeMounts:
             - name: postgres-data
               mountPath: /var/lib/postgresql/data
+            - name: postgres-tmp
+              mountPath: /tmp
+            - name: postgres-run
+              mountPath: /var/run/postgresql
           {{- with .Values.postgres.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -59,6 +71,10 @@ spec:
         - name: postgres-data
           persistentVolumeClaim:
             claimName: {{ include "oss-ai-agent-tool.fullname" . }}-postgres
+        - name: postgres-tmp
+          emptyDir: {}
+        - name: postgres-run
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: PersistentVolumeClaim

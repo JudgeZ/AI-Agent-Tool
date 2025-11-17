@@ -1,5 +1,10 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
-import type { ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
+import type {
+  ChatRequest,
+  ChatResponse,
+  ModelProvider,
+  ProviderContext,
+} from "./interfaces.js";
 import { callWithRetry, ProviderError, ensureProviderEgress } from "./utils.js";
 
 type FetcherInit = {
@@ -159,7 +164,7 @@ export class OllamaProvider implements ModelProvider {
     return sanitizeBaseUrl(fromSecret ?? fromEnv ?? "http://127.0.0.1:11434");
   }
 
-  async chat(req: ChatRequest): Promise<ChatResponse> {
+  async chat(req: ChatRequest, _context?: ProviderContext): Promise<ChatResponse> {
     const model = req.model ?? this.options.defaultModel ?? "llama3.1";
     const baseUrl = await this.resolveBaseUrl();
     const payload = {

@@ -33,6 +33,10 @@ spec:
         {{- include "oss-ai-agent-tool.selectorLabels" . | nindent 8 }}
         app.kubernetes.io/component: rabbitmq
     spec:
+      {{- with .Values.rabbitmq.podSecurityContext }}
+      securityContext:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
       containers:
         - name: rabbitmq
           image: {{ .Values.rabbitmq.image | default "rabbitmq:3.13-management" }}
@@ -48,9 +52,17 @@ spec:
           ports:
             - containerPort: 5672
             - containerPort: 15672
+          {{- with .Values.rabbitmq.containerSecurityContext }}
+          securityContext:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
           volumeMounts:
             - name: rabbitmq-data
               mountPath: /var/lib/rabbitmq
+            - name: rabbitmq-log
+              mountPath: /var/log/rabbitmq
+            - name: rabbitmq-tmp
+              mountPath: /tmp
           {{- with .Values.rabbitmq.resources }}
           resources:
             {{- toYaml . | nindent 12 }}
@@ -63,6 +75,10 @@ spec:
           {{- else }}
           emptyDir: {}
           {{- end }}
+        - name: rabbitmq-log
+          emptyDir: {}
+        - name: rabbitmq-tmp
+          emptyDir: {}
 ---
 apiVersion: v1
 kind: Secret

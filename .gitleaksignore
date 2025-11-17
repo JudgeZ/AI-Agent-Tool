@@ -1,0 +1,2 @@
+# False positive: synthetic Google service account private key fixture used solely in tests.
+25dafd0dd188b1ea5a58c604b6cc920b3d0359c4:services/orchestrator/src/providers/google.test.ts:private-key:28

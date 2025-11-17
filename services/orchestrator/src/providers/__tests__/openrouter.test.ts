@@ -39,6 +39,59 @@ describe("OpenRouterProvider", () => {
     vi.clearAllMocks();
   });
 
+  it("uses tenant-scoped OAuth tokens when provided in context", async () => {
+    const secrets = new StubSecretsStore({
+      "tenant:acme:oauth:openrouter:access_token": "tenant-token",
+      "oauth:openrouter:access_token": "global-token",
+    });
+    const chat = vi.fn().mockResolvedValue({
+      success: true,
+      data: { choices: [{ message: { content: "ok" } }] },
+    });
+    const clientFactory = vi.fn().mockImplementation(async ({ apiKey }) => {
+      expect(apiKey).toBe("tenant-token");
+      return { chat };
+    });
+    const provider = new OpenRouterProvider(secrets, {
+      clientFactory,
+      defaultModel: "openrouter/test",
+    });
+
+    const response = await provider.chat(
+      { messages: [{ role: "user", content: "hi" }] },
+      { tenantId: "acme" },
+    );
+
+    expect(response.output).toBe("ok");
+    expect(clientFactory).toHaveBeenCalledTimes(1);
+  });
+
+  it("falls back to global OAuth tokens when tenant scope is empty", async () => {
+    const secrets = new StubSecretsStore({
+      "oauth:openrouter:access_token": "global-token",
+    });
+    const chat = vi.fn().mockResolvedValue({
+      success: true,
+      data: { choices: [{ message: { content: "fallback" } }] },
+    });
+    const clientFactory = vi.fn().mockImplementation(async ({ apiKey }) => {
+      expect(apiKey).toBe("global-token");
+      return { chat };
+    });
+    const provider = new OpenRouterProvider(secrets, {
+      clientFactory,
+      defaultModel: "openrouter/test",
+    });
+
+    const response = await provider.chat(
+      { messages: [{ role: "user", content: "hi" }] },
+      { tenantId: "missing" },
+    );
+
+    expect(response.output).toBe("fallback");
+    expect(clientFactory).toHaveBeenCalledTimes(1);
+  });
+
   it("enforces egress policy before issuing chat completions", async () => {
     const secrets = new StubSecretsStore({ "provider:openrouter:apiKey": "sk-test" });
     const chat = vi.fn().mockResolvedValue({

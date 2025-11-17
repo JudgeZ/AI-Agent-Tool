@@ -1,4 +1,3 @@
-import crypto from "node:crypto";
 import type { Request, Response } from "express";
 import { loadConfig } from "../config.js";
 import {
@@ -14,11 +13,13 @@ import {
   respondWithValidationError,
 } from "../http/errors.js";
 import { type SecretsStore } from "./SecretsStore.js";
+import { keyForTenant } from "./tenantSecrets.js";
 import { resolveEnv } from "../utils/env.js";
 import { ensureEgressAllowed } from "../network/EgressGuard.js";
-import { logAuditEvent } from "../observability/audit.js";
+import { hashIdentifier, logAuditEvent } from "../observability/audit.js";
 import { getRequestContext } from "../observability/requestContext.js";
 import { extractAgent, readHeaderValue } from "../http/requestIdentity.js";
+import type { VersionInfo } from "./VersionedSecretsManager.js";
 
 class HttpError extends Error {
   constructor(
@@ -94,13 +95,12 @@ function buildAuditMetadata(req: Request): AuditMetadata {
   return { requestId, traceId, agent };
 }
 
+function buildAuditSubject(tenantId: string | undefined) {
+  return tenantId ? { tenantId } : undefined;
+}
+
 function hashErrorMessage(message: string | undefined): string | undefined {
-  if (!message) {
-    return undefined;
-  }
-  const hash = crypto.createHash("sha256");
-  hash.update(message);
-  return hash.digest("hex");
+  return hashIdentifier(message);
 }
 
 function responseMessageForStatus(status: number): {
@@ -191,7 +191,8 @@ export async function callback(req: Request, res: Response) {
     });
     return;
   }
-  const { code, codeVerifier, redirectUri } = parsedBody.data;
+  const { code, codeVerifier, redirectUri, tenantId } = parsedBody.data;
+  const auditSubject = buildAuditSubject(tenantId);
 
   if (redirectUri !== cfg.redirectUri) {
     respondWithValidationError(res, [
@@ -203,7 +204,12 @@ export async function callback(req: Request, res: Response) {
       requestId: metadata.requestId,
       traceId: metadata.traceId,
       agent: metadata.agent,
-      details: { provider: cfg.name, reason: "redirect_mismatch" },
+      subject: auditSubject,
+      details: {
+        provider: cfg.name,
+        reason: "redirect_mismatch",
+        tenantId,
+      },
     });
     return;
   }
@@ -218,28 +224,34 @@ export async function callback(req: Request, res: Response) {
     if (typeof tokens.expires_in === "number") {
       normalizedTokens.expires_at = Date.now() + tokens.expires_in * 1000;
     }
-
+    const accessKey = keyForTenant(
+      tenantId,
+      `oauth:${provider}:access_token`,
+    );
+    const tokensKey = keyForTenant(tenantId, `oauth:${provider}:tokens`);
+    const refreshKey = keyForTenant(
+      tenantId,
+      `oauth:${provider}:refresh_token`,
+    );
     const operations: Array<Promise<unknown>> = [
-      store.set(`oauth:${provider}:access_token`, tokens.access_token),
-      store.set(`oauth:${provider}:tokens`, JSON.stringify(normalizedTokens)),
+      store.set(accessKey, tokens.access_token),
+      store.set(tokensKey, JSON.stringify(normalizedTokens)),
     ];
+    let refreshOperation: Promise<VersionInfo | undefined>;
 
     if (tokens.refresh_token) {
-      operations.push(
-        rotator.rotate(
-          `oauth:${provider}:refresh_token`,
-          tokens.refresh_token,
-          {
-            retain: 5,
-            labels: { provider },
-          },
-        ),
-      );
+      refreshOperation = rotator.rotate(refreshKey, tokens.refresh_token, {
+        retain: 5,
+        labels: { provider },
+      });
     } else {
-      operations.push(rotator.clear(`oauth:${provider}:refresh_token`));
+      refreshOperation = rotator.clear(refreshKey).then(() => undefined);
     }
+    operations.push(refreshOperation);
 
     await Promise.all(operations);
+    const refreshInfo = await refreshOperation;
+    const refreshVersionId = refreshInfo?.id;
     res.json({ ok: true });
     logAuditEvent({
       action: "auth.oauth.callback",
@@ -247,9 +259,12 @@ export async function callback(req: Request, res: Response) {
       requestId: metadata.requestId,
       traceId: metadata.traceId,
       agent: metadata.agent,
+      subject: auditSubject,
       details: {
         provider: cfg.name,
         refreshTokenStored: Boolean(tokens.refresh_token),
+        tenantId,
+        ...(refreshVersionId ? { refreshTokenVersion: refreshVersionId } : {}),
       },
     });
   } catch (error) {
@@ -275,11 +290,13 @@ export async function callback(req: Request, res: Response) {
       requestId: metadata.requestId,
       traceId: metadata.traceId,
       agent: metadata.agent,
+      subject: auditSubject,
       details: {
         provider: cfg.name,
         status,
         reason: response.reason,
         upstreamErrorHash: hashErrorMessage(message),
+        tenantId,
       },
     });
     respondWithError(res, status, {

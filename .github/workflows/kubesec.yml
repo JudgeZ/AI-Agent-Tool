@@ -70,6 +70,16 @@ jobs:
               extra_args+=(--set)
               extra_args+=("kafka.enabled=true")
               ;;
+            templates/grafana-dashboard.yaml)
+              echo "Detected optional Grafana dashboard; enabling chart for rendering."
+              extra_args+=(--set)
+              extra_args+=("monitoring.grafana.enabled=true")
+              ;;
+            templates/orchestrator-servicemonitor.yaml)
+              echo "Detected optional ServiceMonitor; enabling monitoring flag for rendering."
+              extra_args+=(--set)
+              extra_args+=("monitoring.serviceMonitor.enabled=true")
+              ;;
             templates/langfuse.yaml)
               echo "Detected optional Langfuse manifest; enabling chart with placeholder secrets for rendering."
               extra_args+=(--set)
@@ -77,7 +87,7 @@ jobs:
               extra_args+=(--set-string)
               extra_args+=("langfuse.databaseUrl=postgres://langfuse:password@postgres:5432/langfuse")
               extra_args+=(--set-string)
-              extra_args+=("langfuse.nextAuthSecret=0123456789abcdef0123456789abcdef")
+              extra_args+=("langfuse.nextAuthSecret=langfuse-next-auth-placeholder")
               extra_args+=(--set-string)
               extra_args+=("langfuse.salt=langfuse-dummy-salt")
               ;;

@@ -67,7 +67,7 @@ data:
                 "uid": "$datasource"
               },
               "expr": "sum by (queue, tenant) (orchestrator_queue_depth{queue=~\"$queue\",transport=~\"$transport\",tenant=~\"$tenant\"})",
-              "legendFormat": "{{queue}}/{{tenant}}",
+              "legendFormat": "{{ "{{queue}}" }}/{{ "{{tenant}}" }}",
               "format": "time_series"
             }
           ]
@@ -108,7 +108,7 @@ data:
                 "uid": "$datasource"
               },
               "expr": "sum by (queue, tenant) (orchestrator_queue_lag{queue=~\"$queue\",transport=~\"$transport\",tenant=~\"$tenant\"})",
-              "legendFormat": "{{queue}}/{{tenant}}",
+              "legendFormat": "{{ "{{queue}}" }}/{{ "{{tenant}}" }}",
               "format": "time_series"
             }
           ]
@@ -148,7 +148,7 @@ data:
                 "uid": "$datasource"
               },
               "expr": "orchestrator_queue_partition_lag{queue=~\"$queue\",transport=~\"$transport\",tenant=~\"$tenant\",partition=~\"$partition\"}",
-              "legendFormat": "{{queue}}/{{tenant}} p{{partition}}",
+              "legendFormat": "{{ "{{queue}}" }}/{{ "{{tenant}}" }} p{{ "{{partition}}" }}",
               "format": "time_series"
             }
           ]

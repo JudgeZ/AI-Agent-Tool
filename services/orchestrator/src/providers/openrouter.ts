@@ -1,9 +1,14 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
-import type { ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
+import { keyForTenant } from "../auth/tenantSecrets.js";
+import type {
+  ChatRequest,
+  ChatResponse,
+  ModelProvider,
+  ProviderContext,
+} from "./interfaces.js";
 import {
   callWithRetry,
   ProviderError,
-  requireSecret,
   ensureProviderEgress,
   disposeClient,
   withProviderTimeout,
@@ -79,16 +84,27 @@ export class OpenRouterProvider implements ModelProvider {
 
   constructor(private readonly secrets: SecretsStore, private readonly options: OpenRouterProviderOptions = {}) {}
 
-  private async resolveApiKey(): Promise<string> {
-    const oauthToken = await this.secrets.get("oauth:openrouter:access_token");
+  private async resolveApiKey(context?: ProviderContext): Promise<string> {
+    const oauthPromise = this.getTenantScopedSecret(
+      "oauth:openrouter:access_token",
+      context?.tenantId,
+    );
+    const apiKeyPromise = this.secrets.get("provider:openrouter:apiKey");
+    const oauthToken = await oauthPromise;
     if (oauthToken) {
       return oauthToken;
     }
-    return requireSecret(this.secrets, this.name, {
-      key: "provider:openrouter:apiKey",
-      env: "OPENROUTER_API_KEY",
-      description: "API key"
-    });
+    const apiKeyFromStore = await apiKeyPromise;
+    const apiKey = apiKeyFromStore ?? process.env.OPENROUTER_API_KEY;
+    if (!apiKey) {
+      throw new ProviderError("openrouter API key is not configured", {
+        status: 401,
+        code: "missing_credentials",
+        provider: this.name,
+        retryable: false,
+      });
+    }
+    return apiKey;
   }
 
   private async disposeExistingClient(promise?: Promise<OpenRouterClient>): Promise<void> {
@@ -148,7 +164,7 @@ export class OpenRouterProvider implements ModelProvider {
     }
   }
 
-  async chat(req: ChatRequest): Promise<ChatResponse> {
+  async chat(req: ChatRequest, context?: ProviderContext): Promise<ChatResponse> {
     const model = req.model ?? this.options.defaultModel ?? "openrouter/openai/gpt-4o-mini";
     const messages = toOpenRouterMessages(req.messages);
     const temperature = req.temperature ?? this.options.defaultTemperature;
@@ -158,7 +174,7 @@ export class OpenRouterProvider implements ModelProvider {
           action: "provider.request",
           metadata: { operation: "chat", model }
         });
-        const apiKey = await this.resolveApiKey();
+        const apiKey = await this.resolveApiKey(context);
         const client = await this.getClient(apiKey);
         let response: OpenRouterResponse;
         try {
@@ -253,4 +269,18 @@ export class OpenRouterProvider implements ModelProvider {
       cause: error
     });
   }
+
+  private async getTenantScopedSecret(
+    key: string,
+    tenantId?: string,
+  ): Promise<string | undefined> {
+    if (tenantId) {
+      const tenantValue = await this.secrets.get(keyForTenant(tenantId, key));
+      if (tenantValue) {
+        return tenantValue;
+      }
+    }
+    return this.secrets.get(key);
+  }
 }
+

@@ -16,6 +16,7 @@ import (
 	"net/url"
 	"os"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,6 +33,9 @@ var stateTTL = getDurationEnv("OAUTH_STATE_TTL", 10*time.Minute)
 var orchestratorTimeout = getDurationEnv("ORCHESTRATOR_CALLBACK_TIMEOUT", 10*time.Second)
 var allowedRedirectOrigins = loadAllowedRedirectOrigins()
 var requestValidator = validator.New(validator.WithRequiredStructEnabled())
+var tenantIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+
+var generateStateAndPKCEFunc = generateStateAndPKCE
 
 const (
 	auditEventAuthorize   = "auth.oauth.authorize"
@@ -48,6 +52,8 @@ const (
 	defaultAuthIdentityLimit  = 10
 	defaultAuthIPWindow       = time.Minute
 	defaultAuthIdentityWindow = time.Minute
+
+	tenantValidationErrorMessage = "tenant_id may only include letters, numbers, '.', '_' or '-'"
 )
 
 type validationError struct {
@@ -57,6 +63,7 @@ type validationError struct {
 
 type authorizeRequestParams struct {
 	RedirectURI string `validate:"required,uri,max=2048" json:"redirect_uri"`
+	TenantID    string `json:"tenant_id"`
 }
 
 type callbackRequestParams struct {
@@ -68,6 +75,12 @@ func emitAuthEvent(ctx context.Context, r *http.Request, trusted []*net.IPNet, e
 	actor := hashedActorFromRequest(r, trusted)
 	ctx = audit.WithActor(ctx, actor)
 	sanitised := auditDetails(details)
+	if actor != "" {
+		if sanitised == nil {
+			sanitised = map[string]any{}
+		}
+		sanitised["actor_id"] = actor
+	}
 	event := audit.Event{
 		Name:       eventName,
 		Outcome:    outcome,
@@ -125,6 +138,35 @@ func mergeDetails(base map[string]any, extras map[string]any) map[string]any {
 	return result
 }
 
+func normalizeTenantID(value string) (string, error) {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return "", nil
+	}
+	if !tenantIDPattern.MatchString(trimmed) {
+		return "", fmt.Errorf("tenant_id contains invalid characters")
+	}
+	return trimmed, nil
+}
+
+func hashTenantID(value string) string {
+	if value == "" {
+		return ""
+	}
+	return gatewayAuditLogger.HashIdentity("tenant", value)
+}
+
+func withTenantHash(details map[string]any, tenantHash string) map[string]any {
+	if tenantHash == "" {
+		return details
+	}
+	if details == nil {
+		details = map[string]any{}
+	}
+	details["tenant_id_hash"] = tenantHash
+	return details
+}
+
 type oidcDiscovery struct {
 	authorizationEndpoint string
 }
@@ -155,6 +197,7 @@ type stateData struct {
 	CodeVerifier string
 	ExpiresAt    time.Time
 	State        string
+	TenantID     string
 }
 
 // AuthRouteConfig captures configuration for the OAuth routes.
@@ -219,39 +262,57 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*
 		return
 	}
 
+	rawTenant := strings.TrimSpace(r.URL.Query().Get("tenant_id"))
+	tenantHash := ""
 	params := authorizeRequestParams{
 		RedirectURI: strings.TrimSpace(r.URL.Query().Get("redirect_uri")),
+		TenantID:    rawTenant,
 	}
 	if errs := validateRequestParams(params); len(errs) > 0 {
-		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, map[string]any{
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, withTenantHash(map[string]any{
 			"provider": provider,
 			"reason":   errs[0].Message,
-		})
+		}, tenantHash))
 		writeValidationError(w, r, errs)
 		return
 	}
+	tenantID, tenantErr := normalizeTenantID(params.TenantID)
+	if tenantErr != nil {
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, withTenantHash(map[string]any{
+			"provider":          provider,
+			"reason":            tenantValidationErrorMessage,
+			"redirect_uri_hash": redirectHash(params.RedirectURI),
+		}, tenantHash))
+		writeValidationError(w, r, []validationError{{
+			Field:   "tenant_id",
+			Message: tenantValidationErrorMessage,
+		}})
+		return
+	}
+	params.TenantID = tenantID
+	tenantHash = hashTenantID(tenantID)
 	redirectURI := params.RedirectURI
 	if redirectErr := validateClientRedirect(redirectURI); redirectErr != nil {
-		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, map[string]any{
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, withTenantHash(map[string]any{
 			"provider":           provider,
 			"reason":             redirectErr.Error(),
 			"redirect_uri_hash":  redirectHash(redirectURI),
 			"redirect_uri_host":  redirectHost(redirectURI),
 			"validation_failure": true,
-		})
+		}, tenantHash))
 		writeValidationError(w, r, []validationError{
 			{Field: "redirect_uri", Message: redirectErr.Error()},
 		})
 		return
 	}
 
-	state, codeVerifier, codeChallenge, err := generateStateAndPKCE()
+	state, codeVerifier, codeChallenge, err := generateStateAndPKCEFunc()
 	if err != nil {
-		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, map[string]any{
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, withTenantHash(map[string]any{
 			"provider":          provider,
 			"reason":            "state_generation_failed",
 			"redirect_uri_hash": redirectHash(redirectURI),
-		})
+		}, tenantHash))
 		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "failed to generate state", nil)
 		return
 	}
@@ -262,43 +323,44 @@ func authorizeHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*
 		CodeVerifier: codeVerifier,
 		ExpiresAt:    time.Now().Add(stateTTL),
 		State:        state,
+		TenantID:     tenantID,
 	}
 
 	if stateErr := setStateCookie(w, r, trustedProxies, allowInsecureStateCookie, data); stateErr != nil {
-		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, map[string]any{
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, withTenantHash(map[string]any{
 			"provider":          provider,
 			"reason":            "state_persistence_failed",
 			"redirect_uri_hash": redirectHash(redirectURI),
-		})
+		}, tenantHash))
 		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "failed to persist state", nil)
 		return
 	}
 
 	authURL, err := buildAuthorizeURL(cfg, state, codeChallenge)
 	if err != nil {
-		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, map[string]any{
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, withTenantHash(map[string]any{
 			"provider":          provider,
 			"reason":            "authorize_url_build_failed",
 			"redirect_uri_hash": redirectHash(redirectURI),
-		})
+		}, tenantHash))
 		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "failed to build authorize url", nil)
 		return
 	}
 
 	if err := validateAuthorizeRedirect(authURL, cfg.AuthorizeURL); err != nil {
-		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, map[string]any{
+		auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, withTenantHash(map[string]any{
 			"provider":          provider,
 			"reason":            "authorize_url_validation_failed",
 			"redirect_uri_hash": redirectHash(redirectURI),
-		})
+		}, tenantHash))
 		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "failed to build authorize url", nil)
 		return
 	}
 
-	auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeSuccess, map[string]any{
+	auditAuthorizeEvent(r.Context(), r, trustedProxies, auditOutcomeSuccess, withTenantHash(map[string]any{
 		"provider":          provider,
 		"redirect_uri_host": redirectHost(redirectURI),
-	})
+	}, tenantHash))
 
 	sendRedirect(w, r, authURL)
 }
@@ -345,11 +407,28 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 	}
 
 	deleteStateCookie(w, r, trustedProxies, allowInsecureStateCookie, params.State)
+	tenantID, tenantErr := normalizeTenantID(data.TenantID)
+	if tenantErr != nil {
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, mergeDetails(baseDetails, map[string]any{
+			"reason": "invalid_state_tenant",
+			"state":  params.State,
+		}))
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "invalid or expired state", nil)
+		return
+	}
+	data.TenantID = tenantID
+	tenantHash := hashTenantID(data.TenantID)
+	if tenantHash != "" {
+		baseDetails = mergeDetails(baseDetails, map[string]any{"tenant_id_hash": tenantHash})
+	}
 
 	payload := map[string]string{
 		"code":          params.Code,
 		"code_verifier": data.CodeVerifier,
 		"redirect_uri":  cfg.RedirectURI,
+	}
+	if data.TenantID != "" {
+		payload["tenant_id"] = data.TenantID
 	}
 
 	buf, err := json.Marshal(payload)
@@ -457,11 +536,16 @@ func redirectError(w http.ResponseWriter, r *http.Request, trustedProxies []*net
 		return
 	}
 	deleteStateCookie(w, r, trustedProxies, allowInsecureStateCookie, state)
-	auditRedirectEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, map[string]any{
+	tenantHash := hashTenantID(data.TenantID)
+	details := map[string]any{
 		"reason":            errParam,
 		"state":             state,
 		"redirect_uri_hash": redirectHash(data.RedirectURI),
-	})
+	}
+	if tenantHash != "" {
+		details["tenant_id_hash"] = tenantHash
+	}
+	auditRedirectEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, details)
 	redirectWithStatus(w, r, data.RedirectURI, data.State, "error", errParam)
 }
 

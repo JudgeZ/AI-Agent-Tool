@@ -1,5 +1,11 @@
 import type { SecretsStore } from "../auth/SecretsStore.js";
-import type { ChatMessage, ChatRequest, ChatResponse, ModelProvider } from "./interfaces.js";
+import type {
+  ChatMessage,
+  ChatRequest,
+  ChatResponse,
+  ModelProvider,
+  ProviderContext,
+} from "./interfaces.js";
 import {
   callWithRetry,
   ProviderError,
@@ -174,7 +180,7 @@ export class AzureOpenAIProvider implements ModelProvider {
     }
   }
 
-  async chat(req: ChatRequest): Promise<ChatResponse> {
+  async chat(req: ChatRequest, _context?: ProviderContext): Promise<ChatResponse> {
     const { client, credentials } = await this.getClient();
     const deployment =
       req.model ??

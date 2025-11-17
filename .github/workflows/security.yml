@@ -31,6 +31,8 @@ jobs:
 
       - name: Scan for secrets with Gitleaks
         uses: gitleaks/gitleaks-action@v2
+        with:
+          args: --no-git --redact
         env:
           GITHUB_TOKEN: ${{ secrets.GITLEAKS_OAIT || secrets.GITHUB_TOKEN }}
 
@@ -39,7 +41,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
     env:
-      TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
+      TRIVY_CACHE_DIR: ${{ github.workspace }}/.trivy-cache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -74,7 +76,7 @@ jobs:
             context: services/indexer
             dockerfile: services/indexer/Dockerfile
     env:
-      TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
+      TRIVY_CACHE_DIR: ${{ github.workspace }}/.trivy-cache
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -112,7 +114,7 @@ jobs:
     runs-on: ubuntu-latest
     if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
     env:
-      TRIVY_CACHE_DIR: ${{ runner.temp }}/trivy-cache
+      TRIVY_CACHE_DIR: ${{ github.workspace }}/.trivy-cache
     steps:
       - name: Checkout
         uses: actions/checkout@v4

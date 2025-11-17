@@ -8,6 +8,16 @@ import { GenericContainer, type StartedTestContainer } from "testcontainers";
 import { LocalFileStore, VaultStore } from "./SecretsStore.js";
 import { appLogger } from "../observability/logger.js";
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("LocalFileStore", () => {
   test("persists encrypted secrets to disk", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "secrets-store-"));
@@ -144,6 +154,183 @@ describe("VaultStore", () => {
     expect(init?.dispatcher).toBeInstanceOf(Agent);
   });
 
+  test("applies tenant namespace templates when keys use tenant prefixes", async () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+    process.env.VAULT_NAMESPACE = "root";
+    process.env.VAULT_TENANT_NAMESPACE_TEMPLATE = "tenants/{tenant}";
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ data: { data: { value: "secret-value" } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    await store.get("tenant:acme:provider:openai:apiKey");
+
+    const [, init] = fetchMock.mock.calls[0];
+    const headers = new Headers((init as RequestInit | undefined)?.headers);
+    expect(headers.get("X-Vault-Namespace")).toBe("root/tenants/acme");
+  });
+
+  test("skips tenant namespace templating when the identifier is unsafe", async () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+    process.env.VAULT_NAMESPACE = "root";
+    process.env.VAULT_TENANT_NAMESPACE_TEMPLATE = "tenants/{tenant}";
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response("", { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    await store.get("tenant:../provider:openai:apiKey");
+
+    const [, init] = fetchMock.mock.calls[0];
+    const headers = new Headers((init as RequestInit | undefined)?.headers);
+    expect(headers.get("X-Vault-Namespace")).toBe("root");
+  });
+
+  test("skips tenant namespace templating when the identifier contains illegal characters", async () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+    process.env.VAULT_NAMESPACE = "root";
+    process.env.VAULT_TENANT_NAMESPACE_TEMPLATE = "tenants/{tenant}";
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response("", { status: 404 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    await store.get("tenant:acme@corp:provider:openai:apiKey");
+
+    const [, init] = fetchMock.mock.calls[0];
+    const headers = new Headers((init as RequestInit | undefined)?.headers);
+    expect(headers.get("X-Vault-Namespace")).toBe("root");
+  });
+
+  test("rejects tenant namespace templates without a tenant placeholder", () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+    process.env.VAULT_TENANT_NAMESPACE_TEMPLATE = "tenants/acme";
+
+    expect(() => new VaultStore()).toThrow(
+      /VAULT_TENANT_NAMESPACE_TEMPLATE must include the \{tenant\} placeholder/,
+    );
+  });
+
+  test("rejects tenant namespace templates with traversal segments", () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+    process.env.VAULT_TENANT_NAMESPACE_TEMPLATE =
+      "tenants/{tenant}/../global";
+
+    expect(() => new VaultStore()).toThrow(
+      /VAULT_TENANT_NAMESPACE_TEMPLATE must not include '\.' or '\.\.' segments/,
+    );
+  });
+
+  test("applies tenant namespaces when deleting version metadata keys", async () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+    process.env.VAULT_NAMESPACE = "root";
+    process.env.VAULT_TENANT_NAMESPACE_TEMPLATE = "tenants/{tenant}";
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    await store.delete("secretmeta:tenant:acme:oauth:google:refresh_token");
+
+    const [, init] = fetchMock.mock.calls[0];
+    const headers = new Headers((init as RequestInit | undefined)?.headers);
+    expect(headers.get("X-Vault-Namespace")).toBe("root/tenants/acme");
+  });
+
+  test("applies tenant namespaces for versioned secret values", async () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+    process.env.VAULT_NAMESPACE = "root";
+    process.env.VAULT_TENANT_NAMESPACE_TEMPLATE = "tenants/{tenant}";
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ data: { data: { value: "secret-value" } } }),
+          { status: 200, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    await store.get("secretver:tenant:acme:oauth:google:refresh_token:version-1");
+
+    const [, init] = fetchMock.mock.calls[0];
+    const headers = new Headers((init as RequestInit | undefined)?.headers);
+    expect(headers.get("X-Vault-Namespace")).toBe("root/tenants/acme");
+  });
+
+  test("raises errors when Vault responds with a 5xx status", async () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response("", { status: 500 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    await expect(() => store.get("provider:openai:apiKey")).rejects.toThrow(
+      "Vault request failed with status 500",
+    );
+  });
+
+  test("includes error details from Vault responses when available", async () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(
+        new Response(
+          JSON.stringify({ errors: ["permission denied"] }),
+          { status: 403, headers: { "Content-Type": "application/json" } },
+        ),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    await expect(() =>
+      store.set("provider:openai:apiKey", "secret"),
+    ).rejects.toThrow("Vault request failed with status 403: permission denied");
+  });
+
+  test("truncates oversized Vault error bodies", async () => {
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    process.env.VAULT_TOKEN = "token";
+
+    const longError = "x".repeat(600);
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockResolvedValue(new Response(longError, { status: 502 }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    await expect(() => store.delete("provider:openai:apiKey")).rejects.toThrow(
+      /Vault request failed with status 502: x{256}…/,
+    );
+  });
+
   test("returns undefined when vault returns 404", async () => {
     process.env.VAULT_ADDR = "https://vault.example.com";
     process.env.VAULT_TOKEN = "token";
@@ -263,6 +450,52 @@ describe("VaultStore", () => {
 
     const finalHeaders = new Headers((fetchMock.mock.calls[3][1] as RequestInit | undefined)?.headers);
     expect(finalHeaders.get("X-Vault-Token")).toBe("vault-token-2");
+  });
+
+  test("deduplicates concurrent kubernetes logins", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "vault-k8s-concurrency-"));
+    const jwtPath = path.join(dir, "token");
+    await writeFile(jwtPath, "jwt-token");
+
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    delete process.env.VAULT_TOKEN;
+    process.env.VAULT_KV_MOUNT = "secret";
+    process.env.VAULT_AUTH_METHOD = "kubernetes";
+    process.env.VAULT_ROLE = "orchestrator";
+    process.env.VAULT_K8S_TOKEN_PATH = jwtPath;
+
+    const loginResponse = new Response(
+      JSON.stringify({ auth: { client_token: "vault-token", lease_duration: 120 } }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+    const makeSecretResponse = (value: string) =>
+      new Response(
+        JSON.stringify({ data: { data: { value } } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+
+    const loginDefer = deferred<Response>();
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockImplementationOnce(() => loginDefer.promise)
+      .mockResolvedValueOnce(makeSecretResponse("alpha"))
+      .mockResolvedValueOnce(makeSecretResponse("bravo"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    const first = store.get("provider:openai:apiKey");
+    const second = store.get("provider:anthropic:apiKey");
+
+    await Promise.resolve();
+    loginDefer.resolve(loginResponse);
+
+    const [firstValue, secondValue] = await Promise.all([first, second]);
+    expect(firstValue).toBe("alpha");
+    expect(secondValue).toBe("bravo");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://vault.example.com/v1/auth/kubernetes/login",
+    );
   });
 });
 
