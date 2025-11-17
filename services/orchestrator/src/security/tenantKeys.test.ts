@@ -163,4 +163,11 @@ describe("TenantKeyManager", () => {
       /tenant identifier contains invalid characters/,
     );
   });
+
+  it("rejects artifacts that exceed the maximum supported size", async () => {
+    const oversized = Buffer.alloc(5 * 1024 * 1024 + 1, 1);
+    await expect(manager.encryptArtifact("Tenant-A", oversized)).rejects.toThrow(
+      /maximum supported size/,
+    );
+  });
 });

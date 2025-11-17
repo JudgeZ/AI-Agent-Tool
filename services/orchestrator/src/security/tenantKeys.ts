@@ -10,6 +10,7 @@ const KEY_LENGTH_BYTES = 32;
 const IV_LENGTH_BYTES = 12;
 const ALGORITHM = "aes-256-gcm";
 const GLOBAL_TENANT_ID = "global";
+const MAX_ARTIFACT_BYTES = 5 * 1024 * 1024; // 5 MiB upper bound to keep artifacts bounded in memory.
 const UNBOUNDED_SECRET_VERSION_RETAIN = Number.MAX_SAFE_INTEGER;
 
 export type EncryptedArtifactPayload = {
@@ -39,6 +40,11 @@ export class TenantKeyManager {
     tenantId: string | undefined,
     data: Buffer,
   ): Promise<EncryptedArtifactPayload> {
+    if (data.length > MAX_ARTIFACT_BYTES) {
+      throw new Error(
+        `plan artifact exceeds maximum supported size of ${MAX_ARTIFACT_BYTES} bytes (5 MiB limit)`,
+      );
+    }
     const normalizedTenant = this.normalizeTenantId(tenantId);
     const { key, version } = await this.getOrCreateKey(normalizedTenant);
     const iv = randomBytes(IV_LENGTH_BYTES);
@@ -202,7 +208,7 @@ export class TenantKeyManager {
 
   private redactTenantId(tenantId: string): string {
     const normalized = tenantId || GLOBAL_TENANT_ID;
-    return createHash("sha256").update(normalized).digest("hex").slice(0, 8);
+    return createHash("sha256").update(normalized).digest("hex").slice(0, 16);
   }
 }
 

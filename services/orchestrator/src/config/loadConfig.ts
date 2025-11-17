@@ -3214,13 +3214,30 @@ export function loadConfig(): AppConfig {
       ? DEFAULT_CONFIG.retention.secretLogsDays
       : clampSecretLogRetentionDays(secretLogRetentionSource);
   if (retentionPlanArtifactsDays === 0 && retentionSecretLogsDays !== 0) {
-    // Disable pruning so encryption keys persist for as long as artifacts are retained (indefinitely).
+    appLogger.warn(
+      {
+        event: "config.retention_adjustment",
+        retentionPlanArtifactsDays,
+        previousSecretLogsDays: retentionSecretLogsDays,
+        enforcedSecretLogsDays: 0,
+      },
+      "Disabling secret-log pruning because plan artifacts are retained indefinitely",
+    );
     retentionSecretLogsDays = 0;
   } else if (
     retentionSecretLogsDays > 0 &&
     retentionPlanArtifactsDays > 0 &&
     retentionPlanArtifactsDays > retentionSecretLogsDays
   ) {
+    appLogger.warn(
+      {
+        event: "config.retention_adjustment",
+        retentionPlanArtifactsDays,
+        previousSecretLogsDays: retentionSecretLogsDays,
+        enforcedSecretLogsDays: retentionPlanArtifactsDays,
+      },
+      "Raising secret-log retention to match plan artifact retention window",
+    );
     retentionSecretLogsDays = retentionPlanArtifactsDays;
   }
   const resolvedContentCaptureEnabled =
