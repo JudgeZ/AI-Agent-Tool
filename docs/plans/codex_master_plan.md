@@ -112,22 +112,23 @@ The following capabilities, files, and workflows already exist in the repo and s
 ### Phase 3 — Enterprise Mode & Kafka (⏳ In Progress)
 **Goal:** Multi-tenant, Kafka backbone, Vault secrets, and OIDC SSO.
 
-**Current progress:** Kafka adapter + tests landed in `services/orchestrator/src/queue/KafkaAdapter.ts`, so the remaining focus is observability (lag metrics/HPA wiring), enterprise secrets, and tenant-aware identity/compliance guardrails.
+**Current progress:** Kafka adapter + tests landed in `services/orchestrator/src/queue/KafkaAdapter.ts`, and basic lag gauges are exported through the orchestrator metrics server. Helm values still need to plumb those metrics into Prometheus/Grafana and wire the queue-driven HPAs. Vault store scaffolding exists but is not yet feature-complete, so enterprise secrets + tenant-aware identity/compliance guardrails remain the largest gaps.
 
 **Epics & Tasks**  
 - **E3.1 Kafka Adapter (TypeScript)**
   - ✅ T3.1 Implement **Kafka** adapter using **kafkajs** with compacted topics for job state (`services/orchestrator/src/queue/KafkaAdapter.ts`).
-  - ⏳ T3.2 Add **HPA** metrics (queue depth lag) and dashboards (Helm + Grafana overlays).
-  - **Acceptance:** Swap RabbitMQ↔Kafka via Helm values; queue autoscaling effective.
+  - ⏳ T3.2 Export **queue depth + consumer lag metrics** via OTel/Prometheus (`services/orchestrator/src/queue/metrics.ts`).
+  - ⏳ T3.3 Wire **Helm values + Grafana dashboards** so HPAs can consume the metrics (`charts/oss-ai-agent-tool/templates/hpa-*.yaml`, `charts/oss-ai-agent-tool/templates/grafana-dashboard-configmap.yaml`).
+  - **Acceptance:** Swap RabbitMQ↔Kafka via Helm values; queue autoscaling effective and observable.
 
-- **E3.2 Secrets & Identity**  
-  - T3.3 Implement **Vault** or cloud secrets backend for token storage; rotate tokens.  
-  - T3.4 OIDC SSO for the web/desktop (enterprise).  
-  - **Acceptance:** Tenant‑scoped tokens; audit trails include tenant + actor.
+- **E3.2 Secrets & Identity**
+  - ⏳ T3.4 Implement **Vault** or cloud secrets backend for token storage; rotate tokens (`services/orchestrator/src/auth/VaultStore.ts`, Helm secrets wiring, `infra/policies`).
+  - ⏳ T3.5 Harden OIDC SSO for the web/desktop (enterprise) with tenant-aware sessions (`apps/gateway-api/internal/gateway/auth.go`, `services/orchestrator/src/auth/OidcController.ts`, `apps/gui/src/lib/stores/session.ts`).
+  - **Acceptance:** Tenant-scoped tokens; audit trails include tenant + actor; SSO login flows documented.
 
-- **E3.3 Compliance & Retention**  
-  - T3.5 Enforce **data retention** & **content capture OFF** by default; per‑tenant keys (CMEK).  
-  - T3.6 Produce **system card** & DPIA artifacts in `docs/compliance/`.  
+- **E3.3 Compliance & Retention**
+  - T3.6 Enforce **data retention** & **content capture OFF** by default; per-tenant keys (CMEK) with automated policy tests.
+  - T3.7 Produce **system card** & DPIA artifacts in `docs/compliance/`.
   - **Acceptance:** Compliance checklist passes; retention enforced in CI policy tests.
 
 **CI/CD Operations (Phase 3)**  
@@ -216,11 +217,11 @@ The following capabilities, files, and workflows already exist in the repo and s
 
 ## 7) Immediate Next Work Items (for Codex)
 
-1. **Finish Kafka observability + autoscaling** — expose lag/depth metrics to Prometheus, wire Grafana dashboards, and add Helm values for queue-driven HPAs (`services/orchestrator/src/queue/KafkaAdapter.ts`, `charts/oss-ai-agent-tool/templates/*`).
-2. **Ship Vault-backed SecretsStore** with token rotation + policy enforcement for multi-tenant deployments (`services/orchestrator/src/auth/SecretsStore.ts`, `services/orchestrator/src/auth/VaultStore.ts`, Helm secrets wiring).
+1. **Finish Kafka observability + autoscaling** — expose lag/depth metrics to Prometheus via the orchestrator metrics server, wire Grafana dashboards, and add Helm values for queue-driven HPAs (`services/orchestrator/src/queue/KafkaAdapter.ts`, `services/orchestrator/src/queue/metrics.ts`, `charts/oss-ai-agent-tool/templates/*`).
+2. **Ship Vault-backed SecretsStore** with token rotation + policy enforcement for multi-tenant deployments (`services/orchestrator/src/auth/SecretsStore.ts`, `services/orchestrator/src/auth/VaultStore.ts`, Helm secrets wiring, `infra/policies/`).
 3. **End-to-end OIDC SSO** — connect gateway OIDC helpers, orchestrator session store, and GUI auth surfaces for enterprise sign-on (`apps/gateway-api/internal/gateway/auth.go`, `services/orchestrator/src/auth/OidcController.ts`, `apps/gui/src/lib/stores/session.ts`).
-4. **Retention + tenant isolation guardrails** — enforce 30-day max history for plan artifacts + queue state, encrypt per-tenant data, and add policy tests (`services/orchestrator/src/queue/PlanStateStore.ts`, `services/orchestrator/src/plan/events.ts`).
-5. **Compliance package** — author system card + DPIA under `docs/compliance/`, document audit/a11y controls, and link from `docs/SECURITY-THREAT-MODEL.md`.
+4. **Retention + tenant isolation guardrails** — enforce 30-day max history for plan artifacts + queue state, encrypt per-tenant data, and add policy tests (`services/orchestrator/src/queue/PlanStateStore.ts`, `services/orchestrator/src/plan/events.ts`, `infra/policies/`).
+5. **Compliance package** — author system card + DPIA under `docs/compliance/`, document audit/a11y controls, and link from `docs/SECURITY-THREAT-MODEL.md`; ensure docs reference the new retention controls.
 
 ---
 
