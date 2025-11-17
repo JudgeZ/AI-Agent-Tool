@@ -54,10 +54,10 @@ func extractValidationDetails(t *testing.T, payload httpErrorPayload) []validati
 }
 
 func setOidcRegistrations(t *testing.T, value string) {
-        t.Helper()
-        t.Setenv("OIDC_CLIENT_REGISTRATIONS", value)
-        resetOidcClientRegistrations()
-        t.Cleanup(resetOidcClientRegistrations)
+	t.Helper()
+	t.Setenv("OIDC_CLIENT_REGISTRATIONS", value)
+	resetOidcClientRegistrations()
+	t.Cleanup(resetOidcClientRegistrations)
 }
 
 func TestNormalizeSessionBindingRejectsInvalidCharacters(t *testing.T) {
@@ -104,6 +104,16 @@ func TestResolveEnvValueReturnsErrorWhenFileUnreadable(t *testing.T) {
 func TestParseOidcClientRegistrationsRejectsInvalidJSON(t *testing.T) {
 	if _, err := parseOidcClientRegistrations("not-json"); err == nil {
 		t.Fatal("expected error for malformed registrations payload")
+	}
+}
+
+func TestParseOidcClientRegistrationsRejectsDuplicateTenantApps(t *testing.T) {
+	payload := `[
+  {"tenant_id":"acme","app":"gui","client_id":"client-a"},
+  {"tenant_id":"acme","app":"gui","client_id":"client-b"}
+]`
+	if _, err := parseOidcClientRegistrations(payload); err == nil {
+		t.Fatal("expected error for duplicate tenant/app registrations")
 	}
 }
 
@@ -835,10 +845,11 @@ func TestCallbackHandlerIncludesTenantIDInUpstreamPayload(t *testing.T) {
 	}
 }
 
-func TestCallbackHandlerUsesClientIDFromState(t *testing.T) {
+func TestCallbackHandlerUsesClientIDFromRegistration(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
 	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+	setOidcRegistrations(t, `[{"tenant_id":"","app":"gui","client_id":"tenant-client"}]`)
 
 	var capturedBody string
 	SetOrchestratorClientFactory(func() (*http.Client, error) {
@@ -861,7 +872,7 @@ func TestCallbackHandlerUsesClientIDFromState(t *testing.T) {
 		CodeVerifier: "verifier",
 		ExpiresAt:    time.Now().Add(1 * time.Minute),
 		State:        "state-token",
-		ClientID:     "tenant-client",
+		ClientApp:    "gui",
 	}
 	encoded, err := json.Marshal(data)
 	if err != nil {
@@ -935,6 +946,50 @@ func TestCallbackHandlerPropagatesSessionBinding(t *testing.T) {
 	}
 	if got := parsed.Query().Get("session_binding"); got != "bind-123" {
 		t.Fatalf("expected session_binding to be propagated, got %s (location=%s)", got, location)
+	}
+}
+
+func TestCallbackHandlerRejectsUnregisteredClientWhenRegistrationsExist(t *testing.T) {
+	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
+	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+	setOidcRegistrations(t, `[{"tenant_id":"","app":"gui","client_id":"tenant-client"}]`)
+
+	SetOrchestratorClientFactory(func() (*http.Client, error) {
+		t.Fatalf("orchestrator should not be called for unregistered clients")
+		return nil, nil
+	})
+	t.Cleanup(ResetOrchestratorClient)
+
+	data := stateData{
+		Provider:     "openrouter",
+		RedirectURI:  "https://app.example.com/complete",
+		CodeVerifier: "verifier",
+		ExpiresAt:    time.Now().Add(1 * time.Minute),
+		State:        "state-token",
+		ClientApp:    "desktop",
+	}
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("failed to encode state data: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/callback?code=abc&state=state-token", nil)
+	req.TLS = &tls.ConnectionState{}
+	req.AddCookie(&http.Cookie{
+		Name:  stateCookieName(data.State),
+		Value: base64.RawURLEncoding.EncodeToString(encoded),
+		Path:  "/auth/",
+	})
+	rec := httptest.NewRecorder()
+
+	callbackHandler(rec, req, nil, false)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when registrations exist but client app is not registered, got %d", rec.Code)
+	}
+	resp := decodeErrorResponse(t, rec)
+	if resp.Code != "invalid_request" {
+		t.Fatalf("expected invalid_request, got %s", resp.Code)
 	}
 }
 

@@ -614,9 +614,23 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 	}
 	data.BindingID = bindingID
 
+	registration, registrationFound, registrationsConfigured, regErr := getOidcClientRegistration(data.TenantID, clientApp)
+	if regErr != nil {
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeFailure, mergeDetails(baseDetails, map[string]any{
+			"reason": "client_registration_error",
+		}))
+		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "failed to load client configuration", nil)
+		return
+	}
 	effectiveClientID := cfg.ClientID
-	if data.ClientID != "" {
-		effectiveClientID = data.ClientID
+	if registrationFound {
+		effectiveClientID = registration.ClientID
+	} else if registrationsConfigured {
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, mergeDetails(baseDetails, map[string]any{
+			"reason": "client_not_registered",
+		}))
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "invalid or expired state", nil)
+		return
 	}
 	payload := map[string]string{
 		"code":          params.Code,
