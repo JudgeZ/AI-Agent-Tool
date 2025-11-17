@@ -1174,13 +1174,10 @@ func loadOidcClientRegistrations() (map[string]map[string]oidcClientRegistration
 		}
 		oidcClientRegistrations = parsed
 	})
-	if oidcClientRegistrationsErr != nil {
-		return nil, oidcClientRegistrationsErr
-	}
-	if oidcClientRegistrations == nil {
-		oidcClientRegistrations = map[string]map[string]oidcClientRegistration{}
-	}
-	return oidcClientRegistrations, nil
+        if oidcClientRegistrationsErr != nil {
+                return nil, oidcClientRegistrationsErr
+        }
+        return oidcClientRegistrations, nil
 }
 
 func parseOidcClientRegistrations(raw string) (map[string]map[string]oidcClientRegistration, error) {

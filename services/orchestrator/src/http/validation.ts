@@ -207,7 +207,6 @@ const OptionalClientIdSchema = z.preprocess(
   },
   z
     .string()
-    .trim()
     .min(1, { message: "client_id is required" })
     .max(256, { message: "client_id must not exceed 256 characters" })
     .optional(),

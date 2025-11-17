@@ -125,8 +125,6 @@ function installMessageListener(): void {
       if (!payload.session_binding || payload.session_binding !== expectedBinding) {
         if (typeof console !== 'undefined' && typeof console.warn === 'function') {
           console.warn('[session] Ignoring message due to session binding mismatch.', {
-            expected: expectedBinding,
-            received: payload.session_binding,
             origin: event.origin,
             type: payload.type
           });
