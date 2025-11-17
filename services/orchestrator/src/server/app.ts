@@ -71,6 +71,7 @@ import { SseQuotaManager } from "./SseQuotaManager.js";
 import { sessionStore, type SessionRecord } from "../auth/SessionStore.js";
 import { routeChat } from "../providers/ProviderRegistry.js";
 import { getVersionedSecretsManager } from "../providers/ProviderRegistry.js";
+import { InvalidTenantIdentifierError, normalizeTenantIdInput } from "../tenants/tenantIds.js";
 import {
   authorize as oauthAuthorize,
   callback as oauthCallback,
@@ -438,6 +439,28 @@ function buildAuthFailureAuditDetails(
   return { reason: failure.reason };
 }
 
+function respondWithInvalidTenant(
+  res: Response,
+  action: string,
+  agent: string | undefined,
+  error: InvalidTenantIdentifierError,
+): void {
+  respondWithError(res, 400, {
+    code: "invalid_request",
+    message: error.message,
+  });
+  const { requestId, traceId } = getRequestIds(res);
+  logAuditEvent({
+    action,
+    outcome: "failure",
+    agent,
+    requestId,
+    traceId,
+    details: { reason: "invalid_tenant" },
+    error: error.message,
+  });
+}
+
 async function enforceRateLimit(
   limiter: HttpRateLimiter,
   endpoint: string,
@@ -716,7 +739,7 @@ export function createServer(config?: AppConfig): Express {
   app.post("/plan", async (req: ExtendedRequest, res) => {
     const agent = extractAgent(req);
     const session = req.auth?.session;
-    const auditSubject = toAuditSubject(session);
+    let auditSubject = toAuditSubject(session);
 
     if (appConfig.auth.oidc.enabled && !session) {
       const failure = resolveAuthFailure(req);
@@ -738,7 +761,17 @@ export function createServer(config?: AppConfig): Express {
       return;
     }
 
-    const planSubject = session ? toPlanSubject(session) : undefined;
+    const tenantNormalization = normalizeTenantIdInput(session?.tenantId);
+    if (tenantNormalization.error) {
+      respondWithInvalidTenant(res, "plan.create", agent, tenantNormalization.error);
+      return;
+    }
+    const normalizedSession =
+      session && tenantNormalization.tenantId !== session.tenantId
+        ? { ...session, tenantId: tenantNormalization.tenantId }
+        : session;
+    const planSubject = normalizedSession ? toPlanSubject(normalizedSession) : undefined;
+    auditSubject = normalizedSession ? toAuditSubject(normalizedSession) : auditSubject;
     const identity = createRequestIdentity(req, appConfig, planSubject);
     const requestAgent = identity.agentName ?? agent;
     const rateLimitBuckets = buildRateLimitBuckets(
@@ -796,7 +829,7 @@ export function createServer(config?: AppConfig): Express {
         requiredCapabilities: ["plan.create"],
         agent: requestAgent,
         traceId: getRequestContext()?.traceId,
-        subject: toPolicySubject(session),
+        subject: toPolicySubject(normalizedSession),
         runMode: appConfig.runMode,
       });
     } catch (error) {
@@ -842,6 +875,7 @@ export function createServer(config?: AppConfig): Express {
     try {
       const plan = await createPlan(parsed.data.goal, {
         retentionDays: appConfig.retention.planArtifactsDays,
+        subject: planSubject,
       });
       const { requestId, traceId } = getRequestIds(res);
       if (planSubject) {

@@ -11,12 +11,46 @@ import {
   resetPlanArtifactCleanupSchedulerForTests
 } from "./planner.js";
 import { parsePlan } from "./validation.js";
+import {
+  __setTenantKeyManagerForTests,
+  type EncryptedArtifactPayload,
+  type TenantKeyManager
+} from "../security/tenantKeys.js";
+
+class FakeTenantKeyManager
+  implements Pick<TenantKeyManager, "encryptArtifact" | "rotateTenantKey">
+{
+  public writes: Array<{ tenantId?: string; data: string }> = [];
+  public encryptError: Error | null = null;
+
+  async encryptArtifact(tenantId: string | undefined, data: Buffer): Promise<EncryptedArtifactPayload> {
+    if (this.encryptError) {
+      throw this.encryptError;
+    }
+    this.writes.push({ tenantId, data: data.toString("utf-8") });
+    return {
+      version: 1,
+      algorithm: "aes-256-gcm",
+      tenantId: tenantId ?? "global",
+      keyVersion: "test-version",
+      iv: "iv==",
+      authTag: "tag==",
+      ciphertext: data.toString("base64"),
+      createdAt: new Date().toISOString(),
+    };
+  }
+
+  async rotateTenantKey(): Promise<string> {
+    return "test-version";
+  }
+}
 
 describe("planner", () => {
   const originalCwd = process.cwd();
   let tempDir: string;
   let plansDir: string;
   const symlinkTest = process.platform === "win32" ? it.skip : it;
+  let tenantKeyManager: FakeTenantKeyManager;
 
   beforeEach(() => {
     tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "planner-test-"));
@@ -25,6 +59,8 @@ describe("planner", () => {
     clearPlanHistory();
     fs.rmSync(plansDir, { recursive: true, force: true });
     resetPlanArtifactCleanupSchedulerForTests();
+    tenantKeyManager = new FakeTenantKeyManager();
+    __setTenantKeyManagerForTests(tenantKeyManager as unknown as TenantKeyManager);
   });
 
   afterEach(() => {
@@ -33,6 +69,7 @@ describe("planner", () => {
     resetPlanArtifactCleanupSchedulerForTests();
     process.chdir(originalCwd);
     fs.rmSync(tempDir, { recursive: true, force: true });
+    __setTenantKeyManagerForTests();
   });
 
   it("creates a validated plan with enriched metadata", async () => {
@@ -53,6 +90,20 @@ describe("planner", () => {
     expect(events).toHaveLength(plan.steps.length);
     expect(events[0]?.step.capabilityLabel).toBe(plan.steps[0]?.capabilityLabel);
     expect(events.every(event => Boolean(event.occurredAt))).toBe(true);
+  });
+
+  it("encrypts plan artifacts using the tenant CMEK manager", async () => {
+    const plan = await createPlan("Tenant encryption", { subject: { tenantId: "acme" } });
+    const artifactDir = path.join(plansDir, plan.id);
+    const artifactPath = path.join(artifactDir, "plan.json");
+    expect(fs.existsSync(artifactPath)).toBe(true);
+    const payload = JSON.parse(fs.readFileSync(artifactPath, "utf-8")) as EncryptedArtifactPayload;
+    expect(payload.tenantId).toBe("acme");
+    expect(payload.algorithm).toBe("aes-256-gcm");
+    expect(payload.ciphertext).toBeDefined();
+    expect(tenantKeyManager.writes[0]?.tenantId).toBe("acme");
+    const stats = fs.statSync(artifactPath);
+    expect(stats.mode & 0o777).toBe(0o600);
   });
 
   it("purges plan artifacts older than the retention window", async () => {
@@ -173,6 +224,11 @@ describe("planner", () => {
     await new Promise(resolve => setTimeout(resolve, 25));
 
     expect(fs.existsSync(oldPlanDir)).toBe(true);
+  });
+
+  it("surfaces encryption failures when writing artifacts", async () => {
+    tenantKeyManager.encryptError = new Error("boom");
+    await expect(createPlan("Fails", { subject: { tenantId: "oops" } })).rejects.toThrow(/boom/);
   });
 
   it("creates multiple plans concurrently without blocking the event loop", async () => {

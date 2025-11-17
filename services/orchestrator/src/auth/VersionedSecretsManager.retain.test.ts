@@ -61,4 +61,23 @@ describe("VersionedSecretsManager retention bounds", () => {
     expect(versionIds).not.toContain("v-0");
     expect(versionIds).not.toContain("v-1");
   });
+
+  it("purges non-current versions that exceed the retention window", async () => {
+    let now = Date.UTC(2024, 0, 1);
+    let idCounter = 0;
+    const manager = new VersionedSecretsManager(store, {
+      now: () => new Date(now),
+      idFactory: () => `v-${idCounter++}`,
+      retentionWindowMs: 1_000,
+    });
+
+    await manager.rotate("secret", "value-0");
+    now += 2_000;
+    await manager.rotate("secret", "value-1");
+
+    const versions = await manager.listVersions("secret");
+    expect(versions.versions).toHaveLength(1);
+    expect(versions.versions[0]?.id).toBe("v-1");
+    expect(data.has("secretver:secret:v-0")).toBe(false);
+  });
 });

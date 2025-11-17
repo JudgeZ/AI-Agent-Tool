@@ -1,6 +1,7 @@
 #!/usr/bin/env node
 
 const { spawnSync } = require("node:child_process");
+const { existsSync } = require("node:fs");
 const { resolve } = require("node:path");
 
 const { createLogger } = require("../../scripts/logger");
@@ -11,7 +12,11 @@ const logger = createLogger({ name: "opa-test" });
 (async () => {
   const opaBinary = await ensureOpaBinary({ logger });
   const policyDir = resolve(__dirname);
+  const dataDir = resolve(policyDir, "data");
   const args = ["test", policyDir];
+  if (existsSync(dataDir)) {
+    args.push(dataDir);
+  }
   const result = spawnSync(opaBinary, args, { stdio: "inherit", shell: false });
 
   if (result.error) {

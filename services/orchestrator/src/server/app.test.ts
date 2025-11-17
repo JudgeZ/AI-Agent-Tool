@@ -303,6 +303,42 @@ describe("POST /plan security", () => {
     expect(createPlanMock).not.toHaveBeenCalled();
     expect(submitPlanStepsMock).not.toHaveBeenCalled();
   });
+
+  it("returns 400 when the session tenant id uses unsupported characters", async () => {
+    const config = buildConfig({
+      auth: {
+        oidc: {
+          enabled: true,
+        },
+      },
+    });
+
+    const app = await createServer(config);
+    const session = sessionStore.createSession(
+      {
+        subject: "user-1",
+        tenantId: "acme:prod",
+        roles: ["plan.create"],
+        scopes: [],
+        claims: {},
+      },
+      3600,
+    );
+
+    const response = await request(app)
+      .post("/plan")
+      .set("Cookie", `oss_session=${session.id}`)
+      .send({ goal: "Ship it" })
+      .expect(400);
+
+    expect(response.body).toMatchObject({
+      code: "invalid_request",
+      message: "tenant identifier may only include letters, numbers, period, underscore, or dash",
+    });
+    expect(policyMock.enforceHttpAction).not.toHaveBeenCalled();
+    expect(createPlanMock).not.toHaveBeenCalled();
+    expect(submitPlanStepsMock).not.toHaveBeenCalled();
+  });
 });
 
 describe("security headers and oauth rate limiting", () => {
