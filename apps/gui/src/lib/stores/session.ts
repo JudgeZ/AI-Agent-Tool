@@ -70,25 +70,29 @@ function getBindingToken(): string | null {
   }
   const storage = safeSessionStorage();
   if (!storage) {
-    return inMemoryBinding;
+    return null;
   }
   try {
     const stored = storage.getItem(bindingStorageKey);
     if (stored) {
       inMemoryBinding = stored;
-      return stored;
     }
+    return stored;
   } catch {
-    return inMemoryBinding;
+    return null;
   }
-  return inMemoryBinding;
 }
 
 function generateBindingToken(): string {
   if (typeof window !== 'undefined' && window.crypto?.randomUUID) {
     return window.crypto.randomUUID();
   }
-  return `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 12)}`;
+  if (typeof window !== 'undefined' && window.crypto?.getRandomValues) {
+    const bytes = new Uint8Array(16);
+    window.crypto.getRandomValues(bytes);
+    return Array.from(bytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
+  }
+  throw new Error('No secure random source available for session binding token generation');
 }
 
 function installMessageListener(): void {
@@ -119,6 +123,14 @@ function installMessageListener(): void {
     const expectedBinding = getBindingToken();
     if (expectedBinding) {
       if (!payload.session_binding || payload.session_binding !== expectedBinding) {
+        if (typeof console !== 'undefined' && typeof console.warn === 'function') {
+          console.warn('[session] Ignoring message due to session binding mismatch.', {
+            expected: expectedBinding,
+            received: payload.session_binding,
+            origin: event.origin,
+            type: payload.type
+          });
+        }
         return;
       }
     }
@@ -177,7 +189,17 @@ export function login(): void {
     return;
   }
   installMessageListener();
-  const binding = generateBindingToken();
+  let binding: string;
+  try {
+    binding = generateBindingToken();
+  } catch (error) {
+    const message =
+      error instanceof Error
+        ? error.message
+        : 'Unable to start login flow due to missing secure random source';
+    sessionStore.update((state) => ({ ...state, error: message }));
+    return;
+  }
   setBindingToken(binding);
   const redirectUri = new URL('/auth/callback', window.location.origin).toString();
   const authorizeUrl = oidcAuthorizeUrl(redirectUri, {

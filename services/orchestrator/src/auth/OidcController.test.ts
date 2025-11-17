@@ -511,6 +511,50 @@ describe("OidcController", () => {
     });
   });
 
+  it("uses the client_id supplied in the callback payload", async () => {
+    const exchangeSpy = vi
+      .spyOn(OidcClient, "exchangeCodeForTokens")
+      .mockResolvedValueOnce({
+        id_token: "token",
+        expires_in: 3600,
+        token_type: "Bearer",
+      } as any);
+    const verifySpy = vi
+      .spyOn(OidcClient, "verifyIdToken")
+      .mockResolvedValueOnce({
+        payload: {
+          sub: "user-123",
+          email: "user@example.com",
+          roles: ["admin"],
+          exp: Math.floor(Date.now() / 1000) + 3600,
+        },
+      } as any);
+
+    const app = createApp();
+    const response = await request(app)
+      .post("/auth/oidc/callback")
+      .send({
+        code: "auth-code",
+        code_verifier: "v".repeat(64),
+        redirect_uri: "http://127.0.0.1:8080/auth/oidc/callback",
+        client_id: "tenant-client",
+      });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(200);
+    expect(exchangeSpy).toHaveBeenCalledWith(
+      expect.objectContaining({ clientId: "tenant-client" }),
+      expect.anything(),
+      "auth-code",
+      expect.any(String),
+      expect.any(Number),
+    );
+    expect(verifySpy).toHaveBeenCalledWith(
+      expect.objectContaining({ clientId: "tenant-client" }),
+      expect.anything(),
+      expect.any(String),
+    );
+  });
+
   it("rejects callbacks when the id token payload lacks a subject", async () => {
     vi.mocked(OidcClient.verifyIdToken).mockResolvedValueOnce({
       payload: {

@@ -11,7 +11,12 @@ This app runs in **consumer** (single-user, local-first) and **enterprise** (mul
 
 ## Enterprise
 - **Runtime**: Kubernetes with Helm; multi-tenant orchestrator.
-- **Auth**: OIDC (SSO for users), OAuth/OIDC or provider-native auth for model providers. Multi-tenant deployments provide per-tenant GUI/Tauri client registrations through `OIDC_CLIENT_REGISTRATIONS`, a JSON array of `{ "tenant_id": "acme", "app": "gui", "client_id": "tenant-client", "redirect_origins": ["https://ops.acme.example"] }`. The gateway automatically enforces PKCE, validates that the provided `redirect_uri` matches the registered origins, and requires a `session_binding` token when the registration sets `session_binding_required=true` (recommended for desktop/Tauri shells). GUI/Tauri clients call `/auth/oidc/authorize?client_app=gui|tauri&session_binding=<token>` and the callback page echoes the binding in the query string so the opener can confirm the login belongs to its ephemeral session; tokens never persist beyond the current browser/Tauri session.
+- **Auth**:
+  - OIDC (SSO for users), OAuth/OIDC, or provider-native auth for model providers.
+  - Multi-tenant deployments declare GUI/Tauri client registrations through `OIDC_CLIENT_REGISTRATIONS`, a JSON array of `{ "tenant_id": "acme", "app": "gui", "client_id": "tenant-client", "redirect_origins": ["https://ops.acme.example"] }` records.
+  - The gateway enforces PKCE, validates the requested `redirect_uri` against the registered origins, and requires a `session_binding` token when the registration sets `session_binding_required=true` (recommended for desktop/Tauri shells). Requests for tenants/apps without registrations are rejected when any registrations exist.
+  - GUI/Tauri clients call `/auth/oidc/authorize?client_app=gui|tauri&session_binding=<token>`, and the callback page echoes the binding in the query string so the opener can confirm the login belongs to its ephemeral session.
+  - Session binding tokens remain in memory/session storage and never persist beyond the current browser/Tauri session.
 - **Messaging**: RabbitMQ for now; Kafka support lands with the Phase 3 queue adapter. PLAN_STATE snapshots keep steps durable while Kafka work is underway.
 - **Secrets**: HashiCorp Vault by default (run mode automatically switches from `localfile` → `vault` unless overridden); **CMEK** per tenant; audit logging + OTel traces.
 - **Compliance**: DPIA, data retention, system cards, SBOMs, signed releases.

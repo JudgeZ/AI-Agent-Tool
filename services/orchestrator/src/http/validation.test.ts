@@ -303,6 +303,7 @@ describe("OidcCallbackSchema", () => {
       redirectUri: basePayload.redirect_uri,
       tenantId: undefined,
       state: basePayload.state,
+      clientId: undefined,
     });
   });
 
@@ -312,6 +313,14 @@ describe("OidcCallbackSchema", () => {
       tenant_id: "",
     });
     expect(result.tenantId).toBeUndefined();
+  });
+
+  it("normalizes client_id when provided", () => {
+    const result = OidcCallbackSchema.parse({
+      ...basePayload,
+      client_id: "  tenant-client  ",
+    });
+    expect(result.clientId).toBe("tenant-client");
   });
 });
 

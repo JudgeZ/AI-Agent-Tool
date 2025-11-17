@@ -197,6 +197,22 @@ const OptionalTenantIdSchema = z.preprocess(
   TenantIdSchema.optional(),
 );
 
+const OptionalClientIdSchema = z.preprocess(
+  (value) => {
+    if (typeof value !== "string") {
+      return value;
+    }
+    const trimmed = value.trim();
+    return trimmed.length === 0 ? undefined : trimmed;
+  },
+  z
+    .string()
+    .trim()
+    .min(1, { message: "client_id is required" })
+    .max(256, { message: "client_id must not exceed 256 characters" })
+    .optional(),
+);
+
 const RawOAuthCallbackSchema = z.object({
   code: z
     .string({ required_error: "code is required" })
@@ -222,12 +238,14 @@ export const OidcCallbackSchema = RawOAuthCallbackSchema.extend({
     .trim()
     .min(1, { message: "state is required" })
     .optional(),
-}).transform(({ code, code_verifier, redirect_uri, state, tenant_id }) => ({
+  client_id: OptionalClientIdSchema,
+}).transform(({ code, code_verifier, redirect_uri, state, tenant_id, client_id }) => ({
   code,
   codeVerifier: code_verifier,
   redirectUri: redirect_uri,
   tenantId: tenant_id,
   state: state && state.length > 0 ? state : undefined,
+  clientId: client_id,
 }));
 
 export type OAuthCallbackPayload = z.infer<typeof OAuthCallbackSchema>;

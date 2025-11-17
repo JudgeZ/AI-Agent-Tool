@@ -49,9 +49,7 @@ export const oidcAuthorizeUrl = (redirectUri: string, options?: OidcAuthorizeOpt
     params.set('tenant_id', tenant);
   }
   const clientApp = options?.clientApp ?? 'gui';
-  if (clientApp) {
-    params.set('client_app', clientApp);
-  }
+  params.set('client_app', clientApp);
   const binding = options?.sessionBinding?.trim();
   if (binding) {
     params.set('session_binding', binding);
