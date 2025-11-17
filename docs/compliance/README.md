@@ -5,10 +5,12 @@ This directory contains templates and reference material required by the complia
 
 ## Contents
 - `DPIA-template.md` – Data Protection Impact Assessment template.
+- `dpia.md` – Completed DPIA describing lawful basis, retention, and access controls.
 - `data-inventory.md` – Inventory of personal data processed by the platform.
 - `retention-policy.md` – Default data retention schedules and overrides.
 - `model-card-template.md` – Template for documenting provider models.
 - `data-subject-rights.md` – Procedures for handling user privacy requests.
+- `system-card.md` – Data flow, mitigations, and model usage summary aligned to the STRIDE model.
 
 ## Usage
 1. Copy the templates into tenant-specific or environment-specific folders as needed.

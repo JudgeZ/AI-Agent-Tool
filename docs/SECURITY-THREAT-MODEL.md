@@ -1,6 +1,6 @@
 # Security Threat Model (STRIDE)
 
-This document summarizes the STRIDE analysis for the OSS AI Agent Tool across the gateway, orchestrator, agents, data stores, and deployment surfaces. It complements [Security Scanning](./security-scanning.md) and informs policy decisions in [Agents](./agents.md) and [Configuration](./configuration.md).
+This document summarizes the STRIDE analysis for the OSS AI Agent Tool across the gateway, orchestrator, agents, data stores, and deployment surfaces. It complements [Security Scanning](./security-scanning.md), the [System Card](./compliance/system-card.md), and the [DPIA](./compliance/dpia.md) while informing policy decisions in [Agents](./agents.md) and [Configuration](./configuration.md).
 
 ## Architecture scope
 
