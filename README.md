@@ -59,3 +59,7 @@ See: `docs/agents/README.md`, `docs/consumer-enterprise-modes.md`, `docs/planner
 - Gateway/API incidents: [`docs/runbooks/gateway-api.md`](./docs/runbooks/gateway-api.md)
 - Orchestrator queue/policy incidents: [`docs/runbooks/orchestrator.md`](./docs/runbooks/orchestrator.md)
 - Indexer ingestion incidents: [`docs/runbooks/indexer.md`](./docs/runbooks/indexer.md)
+
+## Compliance documentation
+- System card: [`docs/compliance/system-card.md`](./docs/compliance/system-card.md) – data flows, mitigations, and model usage mapped to the STRIDE analysis.
+- DPIA: [`docs/compliance/dpia.md`](./docs/compliance/dpia.md) – lawful basis, retention alignment, and access control assessment.
