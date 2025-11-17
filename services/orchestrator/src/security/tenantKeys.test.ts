@@ -52,6 +52,17 @@ class StubVersionedSecretsManager
     entry.current = { value, version, createdAt };
   }
 
+  corruptCurrentValue(key: string, value: string): void {
+    const entry = this.ensureEntry(key);
+    if (entry.current) {
+      entry.current.value = value;
+      const stored = entry.versions.get(entry.current.version);
+      if (stored) {
+        stored.value = value;
+      }
+    }
+  }
+
   private ensureEntry(key: string): {
     current?: CurrentSecret;
     versions: Map<string, { value: string; createdAt: string; labels?: Record<string, string> }>;
@@ -110,6 +121,17 @@ describe("TenantKeyManager", () => {
     const buffers = [Buffer.from("a"), Buffer.from("b")];
     await Promise.all(buffers.map((buf) => manager.encryptArtifact("Race", buf)));
     expect(stub.rotations).toEqual(["tenant:race:cmek:plan-artifacts"]);
+  });
+
+  it("rotates a new key when the stored payload becomes invalid", async () => {
+    await manager.encryptArtifact("Tenant-A", Buffer.from("first"));
+    const keyName = "tenant:tenant-a:cmek:plan-artifacts";
+    stub.corruptCurrentValue(keyName, Buffer.from("short").toString("base64"));
+
+    const payload = await manager.encryptArtifact("Tenant-A", Buffer.from("second"));
+
+    expect(payload.keyVersion).toBe("v-1");
+    expect(stub.rotations).toEqual([keyName, keyName]);
   });
 
   it("uses the global tenant when the identifier is omitted", async () => {

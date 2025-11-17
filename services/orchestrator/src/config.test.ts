@@ -1219,7 +1219,7 @@ server:
     expect(config.retention).toEqual({
       planStateDays: 5,
       planArtifactsDays: 10,
-      secretLogsDays: 7,
+      secretLogsDays: 10,
       contentCapture: {
         enabled: true
       }
@@ -1247,6 +1247,20 @@ server:
 
     expect(config.retention.secretLogsDays).toBe(365);
 
+    delete process.env.RETENTION_SECRET_LOG_DAYS;
+  });
+
+  it("raises secret log retention to match the plan artifact window", () => {
+    delete process.env.APP_CONFIG;
+    process.env.RETENTION_PLAN_ARTIFACT_DAYS = "60";
+    process.env.RETENTION_SECRET_LOG_DAYS = "30";
+
+    const config = loadConfig();
+
+    expect(config.retention.planArtifactsDays).toBe(60);
+    expect(config.retention.secretLogsDays).toBe(60);
+
+    delete process.env.RETENTION_PLAN_ARTIFACT_DAYS;
     delete process.env.RETENTION_SECRET_LOG_DAYS;
   });
 });

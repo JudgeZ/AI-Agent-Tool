@@ -34,7 +34,10 @@ export class TenantKeyManager {
     this.manager = manager ?? getVersionedSecretsManager();
   }
 
-  async encryptArtifact(tenantId: string | undefined, data: Buffer): Promise<EncryptedArtifactPayload> {
+  async encryptArtifact(
+    tenantId: string | undefined,
+    data: Buffer,
+  ): Promise<EncryptedArtifactPayload> {
     const normalizedTenant = this.normalizeTenantId(tenantId);
     const { key, version } = await this.getOrCreateKey(normalizedTenant);
     const iv = randomBytes(IV_LENGTH_BYTES);
@@ -98,7 +101,7 @@ export class TenantKeyManager {
   }
 
   private async loadOrCreateKey(tenantId: string): Promise<CachedKey> {
-    const cached = this.cache.get(tenantId);
+    let cached = this.cache.get(tenantId);
     const existing = await this.manager.getCurrentValue(this.keyName(tenantId));
     if (existing?.value) {
       const decoded = this.decodeKey(existing);
@@ -118,6 +121,7 @@ export class TenantKeyManager {
         "invalid CMEK payload encountered; rotating",
       );
       this.cache.delete(tenantId);
+      cached = undefined;
     }
 
     if (cached) {
@@ -154,7 +158,7 @@ export class TenantKeyManager {
     return `tenant:${tenantId}:${ARTIFACT_KEY_SUFFIX}`;
   }
 
-  private normalizeTenantId(candidate: string | undefined): string {
+  private normalizeTenantId(candidate: string | undefined | null): string {
     if (candidate === undefined || candidate === null) {
       return GLOBAL_TENANT_ID;
     }
@@ -163,7 +167,9 @@ export class TenantKeyManager {
       throw new Error("tenant identifier must not be blank");
     }
     if (!TENANT_ID_PATTERN.test(trimmed)) {
-      throw new Error("tenant identifier contains invalid characters");
+      throw new Error(
+        `tenant identifier contains invalid characters (hash: ${this.redactTenantId(trimmed)})`,
+      );
     }
     return trimmed.toLowerCase();
   }

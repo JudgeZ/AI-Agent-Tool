@@ -77,7 +77,7 @@ export class VersionedSecretsManager {
     this.defaultRetain = clampRetain(options?.retain, DEFAULT_RETAIN_COUNT);
     this.now = options?.now ?? (() => new Date());
     this.createId = options?.idFactory ?? (() => randomUUID());
-    this.retentionWindowMs = options?.retentionWindowMs && options.retentionWindowMs > 0 ? options.retentionWindowMs : null;
+    this.retentionWindowMs = (options?.retentionWindowMs ?? 0) > 0 ? options.retentionWindowMs : null;
   }
 
   async rotate(key: string, value: string, options?: RotateOptions): Promise<VersionInfo> {

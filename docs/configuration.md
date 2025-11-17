@@ -419,7 +419,7 @@ When integrating new credentials (e.g. CLI helpers or admin APIs) prefer the man
 - The orchestrator encrypts every plan artifact written to `.plans/<id>` using the `TenantKeyManager`. Keys are stored per tenant under `tenant:<id>:cmek:plan-artifacts` inside the configured `SecretsStore`.
 - Defaults:
   - `RETENTION_PLAN_ARTIFACT_DAYS` / `retention.planArtifactsDays` – limits how long encrypted artifacts remain on disk (30 days by default).
-  - `RETENTION_SECRET_LOG_DAYS` / `retention.secretLogsDays` – prunes version history for tenant CMEK entries so older rotations are deleted after 30 days unless you opt out.
+  - `RETENTION_SECRET_LOG_DAYS` / `retention.secretLogsDays` – prunes version history for tenant CMEK entries. This value is automatically raised (if necessary) to at least the plan artifact retention window so keys stay decryptable for the lifetime of their artifacts. Set the value to `0` to disable pruning entirely.
 - To rotate a tenant’s CMEK without downtime:
 
   ```bash
@@ -428,4 +428,4 @@ When integrating new credentials (e.g. CLI helpers or admin APIs) prefer the man
   ```
 
   The script calls the `TenantKeyManager.rotateTenantKey` helper, writes a new version via the `VersionedSecretsManager`, and immediately activates it for future encryptions. Existing artifacts stay decryptable because previous versions are retained until the secret-log retention window expires.
-- Tenants without an explicit identifier (or invalid IDs) fall back to the `tenant:global:cmek:plan-artifacts` key so even single-tenant consumer deployments keep encryption-at-rest guarantees.
+- Tenants without an explicit identifier fall back to the `tenant:global:cmek:plan-artifacts` key so even single-tenant consumer deployments keep encryption-at-rest guarantees. Blank or malformed tenant identifiers are rejected to avoid accidentally encrypting multi-tenant data with the global key.

@@ -21,8 +21,12 @@ class FakeTenantKeyManager
   implements Pick<TenantKeyManager, "encryptArtifact" | "rotateTenantKey">
 {
   public writes: Array<{ tenantId?: string; data: string }> = [];
+  public encryptError: Error | null = null;
 
   async encryptArtifact(tenantId: string | undefined, data: Buffer): Promise<EncryptedArtifactPayload> {
+    if (this.encryptError) {
+      throw this.encryptError;
+    }
     this.writes.push({ tenantId, data: data.toString("utf-8") });
     return {
       version: 1,
@@ -98,6 +102,8 @@ describe("planner", () => {
     expect(payload.algorithm).toBe("aes-256-gcm");
     expect(payload.ciphertext).toBeDefined();
     expect(tenantKeyManager.writes[0]?.tenantId).toBe("acme");
+    const stats = fs.statSync(artifactPath);
+    expect(stats.mode & 0o777).toBe(0o600);
   });
 
   it("purges plan artifacts older than the retention window", async () => {
@@ -218,6 +224,11 @@ describe("planner", () => {
     await new Promise(resolve => setTimeout(resolve, 25));
 
     expect(fs.existsSync(oldPlanDir)).toBe(true);
+  });
+
+  it("surfaces encryption failures when writing artifacts", async () => {
+    tenantKeyManager.encryptError = new Error("boom");
+    await expect(createPlan("Fails", { subject: { tenantId: "oops" } })).rejects.toThrow(/boom/);
   });
 
   it("creates multiple plans concurrently without blocking the event loop", async () => {

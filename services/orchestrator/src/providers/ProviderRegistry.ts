@@ -123,6 +123,7 @@ export function getVersionedSecretsManager(): VersionedSecretsManager {
   if (!versionedSecretsManager) {
     const cfg = loadConfig();
     const retentionDays = cfg.retention.secretLogsDays;
+    // A retention of 0 disables pruning entirely to preserve historical versions indefinitely.
     const retentionWindowMs = retentionDays > 0 ? retentionDays * DAY_MS : undefined;
     versionedSecretsManager = new VersionedSecretsManager(getSecretsStore(), {
       retentionWindowMs,

@@ -2210,6 +2210,7 @@ function clampSecretLogRetentionDays(value: number): number {
   if (value > 365) {
     return 365;
   }
+  // A value of 0 disables time-based pruning for secret log versions.
   return Math.round(value);
 }
 
@@ -3208,10 +3209,13 @@ export function loadConfig(): AppConfig {
   );
   const secretLogRetentionSource =
     envSecretLogsRetentionDays ?? fileCfg.retention?.secretLogsDays;
-  const retentionSecretLogsDays =
+  let retentionSecretLogsDays =
     secretLogRetentionSource === undefined
       ? DEFAULT_CONFIG.retention.secretLogsDays
       : clampSecretLogRetentionDays(secretLogRetentionSource);
+  if (retentionSecretLogsDays > 0 && retentionPlanArtifactsDays > retentionSecretLogsDays) {
+    retentionSecretLogsDays = retentionPlanArtifactsDays;
+  }
   const resolvedContentCaptureEnabled =
     envContentCaptureEnabled ??
     fileCfg.retention?.contentCapture?.enabled ??

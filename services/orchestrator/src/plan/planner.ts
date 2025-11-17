@@ -209,8 +209,23 @@ async function writeEncryptedArtifact(
   tenantId?: string
 ): Promise<void> {
   const manager = getTenantKeyManager();
-  const payload = await manager.encryptArtifact(tenantId, Buffer.from(content, "utf-8"));
-  await fsPromises.writeFile(targetPath, JSON.stringify(payload, null, 2), { mode: ARTIFACT_FILE_MODE });
+  try {
+    const payload = await manager.encryptArtifact(tenantId, Buffer.from(content, "utf-8"));
+    await fsPromises.writeFile(targetPath, JSON.stringify(payload, null, 2), {
+      mode: ARTIFACT_FILE_MODE,
+    });
+  } catch (error) {
+    appLogger.error(
+      {
+        targetPath,
+        tenantId: tenantId ?? "global",
+        err: normalizeError(error),
+        event: "plan.artifact_write_failed",
+      },
+      "Failed to write encrypted plan artifact",
+    );
+    throw error;
+  }
 }
 
 const CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
