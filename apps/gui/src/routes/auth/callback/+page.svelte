@@ -19,13 +19,15 @@
     const currentUrl = new URL(window.location.href);
     const queryStatus = currentUrl.searchParams.get('status') ?? 'success';
     const queryError = currentUrl.searchParams.get('error');
+    const sessionBinding = currentUrl.searchParams.get('session_binding');
     status = queryStatus;
     errorMessage = queryError;
 
     const payload = {
       type: 'oidc:complete',
       status: queryStatus,
-      error: queryError
+      error: queryError,
+      session_binding: sessionBinding
     };
     const candidateOrigins = [window.location.origin, orchestratorOrigin, gatewayOrigin].filter(
       (origin): origin is string => Boolean(origin)

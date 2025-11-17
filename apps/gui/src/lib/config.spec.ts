@@ -38,7 +38,7 @@ describe('config', () => {
     );
     const authorizeUrl = config.oidcAuthorizeUrl('https://app.example.test/auth?next=/plan/1');
     expect(authorizeUrl).toBe(
-      'http://127.0.0.1:8080/auth/oidc/authorize?redirect_uri=https%3A%2F%2Fapp.example.test%2Fauth%3Fnext%3D%2Fplan%2F1'
+      'http://127.0.0.1:8080/auth/oidc/authorize?redirect_uri=https%3A%2F%2Fapp.example.test%2Fauth%3Fnext%3D%2Fplan%2F1&client_app=gui'
     );
   });
 });

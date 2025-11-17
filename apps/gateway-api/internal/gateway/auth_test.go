@@ -53,6 +53,12 @@ func extractValidationDetails(t *testing.T, payload httpErrorPayload) []validati
 	return details
 }
 
+func setOidcRegistrations(t *testing.T, value string) {
+	t.Helper()
+	t.Setenv("OIDC_CLIENT_REGISTRATIONS", value)
+	resetOidcClientRegistrations()
+}
+
 func TestResolveEnvValueReadsFile(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "")
 	dir := t.TempDir()
@@ -413,6 +419,59 @@ func TestAuthorizeHandlerAllowsExpectedRedirects(t *testing.T) {
 	}
 }
 
+func TestAuthorizeHandlerRequiresSessionBindingForRegisteredClient(t *testing.T) {
+	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
+	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+	setOidcRegistrations(t, `[{"tenant_id":"acme","app":"gui","client_id":"tenant-client","redirect_origins":["https://app.example.com"],"session_binding_required":true}]`)
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/authorize?redirect_uri="+url.QueryEscape("https://app.example.com/complete")+"&tenant_id=acme", nil)
+	req.TLS = &tls.ConnectionState{}
+	rec := httptest.NewRecorder()
+
+	authorizeHandler(rec, req, nil, false)
+
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400 when session_binding missing, got %d", rec.Code)
+	}
+	resp := decodeErrorResponse(t, rec)
+	details := extractValidationDetails(t, resp)
+	if len(details) != 1 || details[0].Field != "session_binding" {
+		t.Fatalf("unexpected validation response: %+v", details)
+	}
+	if !strings.Contains(details[0].Message, "session_binding") {
+		t.Fatalf("expected session_binding error, got %s", details[0].Message)
+	}
+}
+
+func TestAuthorizeHandlerUsesTenantClientRegistration(t *testing.T) {
+	t.Setenv("OPENROUTER_CLIENT_ID", "default-client")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
+	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+	setOidcRegistrations(t, `[{"tenant_id":"acme","app":"gui","client_id":"tenant-client","redirect_origins":["https://app.example.com"],"session_binding_required":false}]`)
+
+	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/authorize?redirect_uri="+url.QueryEscape("https://app.example.com/complete")+"&tenant_id=acme&session_binding=bind-123", nil)
+	req.TLS = &tls.ConnectionState{}
+	rec := httptest.NewRecorder()
+
+	authorizeHandler(rec, req, nil, false)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected redirect, got %d", rec.Code)
+	}
+	location := rec.Result().Header.Get("Location")
+	if location == "" {
+		t.Fatal("expected redirect location header")
+	}
+	parsed, err := url.Parse(location)
+	if err != nil {
+		t.Fatalf("failed to parse redirect: %v", err)
+	}
+	if got := parsed.Query().Get("client_id"); got != "tenant-client" {
+		t.Fatalf("expected tenant client_id, got %s (redirect=%s)", got, location)
+	}
+}
+
 func TestCallbackHandlerRejectsExpiredState(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
@@ -712,6 +771,58 @@ func TestCallbackHandlerIncludesTenantIDInUpstreamPayload(t *testing.T) {
 	}
 	if rec.Code != http.StatusFound {
 		t.Fatalf("expected callback handler to redirect on success, got %d", rec.Code)
+	}
+}
+
+func TestCallbackHandlerPropagatesSessionBinding(t *testing.T) {
+	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
+	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
+	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+
+	SetOrchestratorClientFactory(func() (*http.Client, error) {
+		return &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{
+				StatusCode: http.StatusOK,
+				Body:       io.NopCloser(strings.NewReader("{}")),
+				Header:     make(http.Header),
+			}, nil
+		})}, nil
+	})
+	t.Cleanup(ResetOrchestratorClient)
+
+	data := stateData{
+		Provider:     "openrouter",
+		RedirectURI:  "https://app.example.com/complete",
+		CodeVerifier: "verifier",
+		ExpiresAt:    time.Now().Add(1 * time.Minute),
+		State:        "state-token",
+		BindingID:    "bind-123",
+	}
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		t.Fatalf("failed to encode state data: %v", err)
+	}
+	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/callback?code=abc&state=state-token", nil)
+	req.TLS = &tls.ConnectionState{}
+	req.AddCookie(&http.Cookie{
+		Name:  stateCookieName(data.State),
+		Value: base64.RawURLEncoding.EncodeToString(encoded),
+		Path:  "/auth/",
+	})
+	rec := httptest.NewRecorder()
+
+	callbackHandler(rec, req, nil, false)
+
+	if rec.Code != http.StatusFound {
+		t.Fatalf("expected redirect, got %d", rec.Code)
+	}
+	location := rec.Result().Header.Get("Location")
+	parsed, err := url.Parse(location)
+	if err != nil {
+		t.Fatalf("failed to parse redirect location: %v", err)
+	}
+	if got := parsed.Query().Get("session_binding"); got != "bind-123" {
+		t.Fatalf("expected session_binding to be propagated, got %s (location=%s)", got, location)
 	}
 }
 
