@@ -8,6 +8,16 @@ import { GenericContainer, type StartedTestContainer } from "testcontainers";
 import { LocalFileStore, VaultStore } from "./SecretsStore.js";
 import { appLogger } from "../observability/logger.js";
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((res, rej) => {
+    resolve = res;
+    reject = rej;
+  });
+  return { promise, resolve, reject };
+}
+
 describe("LocalFileStore", () => {
   test("persists encrypted secrets to disk", async () => {
     const dir = await mkdtemp(path.join(tmpdir(), "secrets-store-"));
@@ -440,6 +450,52 @@ describe("VaultStore", () => {
 
     const finalHeaders = new Headers((fetchMock.mock.calls[3][1] as RequestInit | undefined)?.headers);
     expect(finalHeaders.get("X-Vault-Token")).toBe("vault-token-2");
+  });
+
+  test("deduplicates concurrent kubernetes logins", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "vault-k8s-concurrency-"));
+    const jwtPath = path.join(dir, "token");
+    await writeFile(jwtPath, "jwt-token");
+
+    process.env.VAULT_ADDR = "https://vault.example.com";
+    delete process.env.VAULT_TOKEN;
+    process.env.VAULT_KV_MOUNT = "secret";
+    process.env.VAULT_AUTH_METHOD = "kubernetes";
+    process.env.VAULT_ROLE = "orchestrator";
+    process.env.VAULT_K8S_TOKEN_PATH = jwtPath;
+
+    const loginResponse = new Response(
+      JSON.stringify({ auth: { client_token: "vault-token", lease_duration: 120 } }),
+      { status: 200, headers: { "Content-Type": "application/json" } },
+    );
+    const makeSecretResponse = (value: string) =>
+      new Response(
+        JSON.stringify({ data: { data: { value } } }),
+        { status: 200, headers: { "Content-Type": "application/json" } },
+      );
+
+    const loginDefer = deferred<Response>();
+    const fetchMock = vi
+      .fn<typeof fetch>()
+      .mockImplementationOnce(() => loginDefer.promise)
+      .mockResolvedValueOnce(makeSecretResponse("alpha"))
+      .mockResolvedValueOnce(makeSecretResponse("bravo"));
+    vi.stubGlobal("fetch", fetchMock);
+
+    const store = new VaultStore();
+    const first = store.get("provider:openai:apiKey");
+    const second = store.get("provider:anthropic:apiKey");
+
+    await Promise.resolve();
+    loginDefer.resolve(loginResponse);
+
+    const [firstValue, secondValue] = await Promise.all([first, second]);
+    expect(firstValue).toBe("alpha");
+    expect(secondValue).toBe("bravo");
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+    expect(fetchMock.mock.calls[0]?.[0]).toBe(
+      "https://vault.example.com/v1/auth/kubernetes/login",
+    );
   });
 });
 
