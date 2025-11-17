@@ -842,6 +842,7 @@ export function createServer(config?: AppConfig): Express {
     try {
       const plan = await createPlan(parsed.data.goal, {
         retentionDays: appConfig.retention.planArtifactsDays,
+        subject: planSubject,
       });
       const { requestId, traceId } = getRequestIds(res);
       if (planSubject) {

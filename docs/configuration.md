@@ -413,3 +413,19 @@ All services (Gateway API, Orchestrator, Indexer) now emit the same JSON error p
 Clients should rely on the `code` for programmatic handling and treat `message` as a localized, non-stable string. The `details` payload is service-specific but always serialises as JSON.
 
 When integrating new credentials (e.g. CLI helpers or admin APIs) prefer the manager over direct `SecretsStore#set` calls so rotation history is preserved automatically.
+
+### Tenant CMEK for plan artifacts
+
+- The orchestrator encrypts every plan artifact written to `.plans/<id>` using the `TenantKeyManager`. Keys are stored per tenant under `tenant:<id>:cmek:plan-artifacts` inside the configured `SecretsStore`.
+- Defaults:
+  - `RETENTION_PLAN_ARTIFACT_DAYS` / `retention.planArtifactsDays` – limits how long encrypted artifacts remain on disk (30 days by default).
+  - `RETENTION_SECRET_LOG_DAYS` / `retention.secretLogsDays` – prunes version history for tenant CMEK entries so older rotations are deleted after 30 days unless you opt out.
+- To rotate a tenant’s CMEK without downtime:
+
+  ```bash
+  # Ensure LOCAL_SECRETS_PASSPHRASE / Vault credentials are loaded first
+  npx tsx services/orchestrator/scripts/rotate-tenant-cmek.ts --tenant acme
+  ```
+
+  The script calls the `TenantKeyManager.rotateTenantKey` helper, writes a new version via the `VersionedSecretsManager`, and immediately activates it for future encryptions. Existing artifacts stay decryptable because previous versions are retained until the secret-log retention window expires.
+- Tenants without an explicit identifier (or invalid IDs) fall back to the `tenant:global:cmek:plan-artifacts` key so even single-tenant consumer deployments keep encryption-at-rest guarantees.

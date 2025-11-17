@@ -407,6 +407,7 @@ observability:
     expect(config.retention).toEqual({
       planStateDays: 30,
       planArtifactsDays: 30,
+      secretLogsDays: 30,
       contentCapture: {
         enabled: false
       }
@@ -567,6 +568,7 @@ runMode: enterprise
     expect(config.retention).toEqual({
       planStateDays: 30,
       planArtifactsDays: 30,
+      secretLogsDays: 30,
       contentCapture: {
         enabled: false
       }
@@ -1195,6 +1197,7 @@ server:
     });
     process.env.RETENTION_PLAN_STATE_DAYS = "5";
     process.env.RETENTION_PLAN_ARTIFACT_DAYS = "10";
+    process.env.RETENTION_SECRET_LOG_DAYS = "7";
     process.env.CONTENT_CAPTURE_ENABLED = "true";
 
     const config = loadConfig();
@@ -1216,6 +1219,7 @@ server:
     expect(config.retention).toEqual({
       planStateDays: 5,
       planArtifactsDays: 10,
+      secretLogsDays: 7,
       contentCapture: {
         enabled: true
       }
@@ -1231,6 +1235,7 @@ server:
     delete process.env.OIDC_CLIENT_SECRET;
     delete process.env.RETENTION_PLAN_STATE_DAYS;
     delete process.env.RETENTION_PLAN_ARTIFACT_DAYS;
+    delete process.env.RETENTION_SECRET_LOG_DAYS;
     delete process.env.CONTENT_CAPTURE_ENABLED;
   });
 });

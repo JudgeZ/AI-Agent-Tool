@@ -202,6 +202,7 @@ export type PlanStateConfig = {
 export type RetentionConfig = {
   planStateDays: number;
   planArtifactsDays: number;
+  secretLogsDays: number;
   contentCapture: ContentCaptureConfig;
 };
 
@@ -545,6 +546,7 @@ type PartialContentCaptureConfig = {
 type PartialRetentionConfig = {
   planStateDays?: number;
   planArtifactsDays?: number;
+  secretLogsDays?: number;
   contentCapture?: PartialContentCaptureConfig;
 };
 
@@ -744,6 +746,7 @@ export const DEFAULT_CONFIG: AppConfig = {
   retention: {
     planStateDays: 30,
     planArtifactsDays: 30,
+    secretLogsDays: 30,
     contentCapture: {
       enabled: false
     }
@@ -2183,6 +2186,10 @@ function parseRetentionConfigRecord(value: unknown): PartialRetentionConfig | un
   if (planArtifactsDays !== undefined) {
     result.planArtifactsDays = planArtifactsDays;
   }
+  const secretLogsDays = asNumber(record.secretLogsDays ?? record.secret_logs_days ?? record.secretLogDays);
+  if (secretLogsDays !== undefined) {
+    result.secretLogsDays = secretLogsDays;
+  }
   const contentCaptureRecord = asRecord(record.contentCapture ?? record.content_capture ?? record.capture);
   if (contentCaptureRecord) {
     const enabled = asBoolean(contentCaptureRecord.enabled ?? contentCaptureRecord.default);
@@ -2709,6 +2716,7 @@ export function loadConfig(): AppConfig {
   const envOidcSessionTtl = asNumber(process.env.OIDC_SESSION_TTL_SECONDS);
   const envPlanStateRetentionDays = asNumber(process.env.RETENTION_PLAN_STATE_DAYS);
   const envPlanArtifactRetentionDays = asNumber(process.env.RETENTION_PLAN_ARTIFACT_DAYS);
+  const envSecretLogsRetentionDays = asNumber(process.env.RETENTION_SECRET_LOG_DAYS);
   const envPlanStateBackend = asPlanStateBackend(process.env.PLAN_STATE_BACKEND);
   const envContentCaptureEnabled = asBoolean(process.env.CONTENT_CAPTURE_ENABLED);
   const envPostgresMinConnections = asNumber(process.env.POSTGRES_MIN_CONNECTIONS);
@@ -3185,6 +3193,10 @@ export function loadConfig(): AppConfig {
     envPlanArtifactRetentionDays ?? fileCfg.retention?.planArtifactsDays,
     DEFAULT_CONFIG.retention.planArtifactsDays
   );
+  const retentionSecretLogsDays = normalizeRetentionDays(
+    envSecretLogsRetentionDays ?? fileCfg.retention?.secretLogsDays,
+    DEFAULT_CONFIG.retention.secretLogsDays
+  );
   const resolvedContentCaptureEnabled =
     envContentCaptureEnabled ??
     fileCfg.retention?.contentCapture?.enabled ??
@@ -3306,6 +3318,7 @@ export function loadConfig(): AppConfig {
     retention: {
       planStateDays: retentionPlanStateDays,
       planArtifactsDays: retentionPlanArtifactsDays,
+      secretLogsDays: retentionSecretLogsDays,
       contentCapture: {
         enabled: resolvedContentCaptureEnabled
       }

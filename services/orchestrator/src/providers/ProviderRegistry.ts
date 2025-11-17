@@ -37,6 +37,7 @@ let rateLimitStore: RateLimitStore | undefined;
 let rateLimitBackendOptions: RateLimitBackendConfig | undefined;
 let circuitBreaker: CircuitBreaker | undefined;
 let circuitBreakerOptions: CircuitBreakerOptions | undefined;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 const MIN_REQUEST_TEMPERATURE = 0;
 const MAX_REQUEST_TEMPERATURE = 2;
@@ -120,7 +121,12 @@ export function getSecretsStore(): SecretsStore {
 
 export function getVersionedSecretsManager(): VersionedSecretsManager {
   if (!versionedSecretsManager) {
-    versionedSecretsManager = new VersionedSecretsManager(getSecretsStore());
+    const cfg = loadConfig();
+    const retentionDays = cfg.retention.secretLogsDays;
+    const retentionWindowMs = retentionDays > 0 ? retentionDays * DAY_MS : undefined;
+    versionedSecretsManager = new VersionedSecretsManager(getSecretsStore(), {
+      retentionWindowMs,
+    });
   }
   return versionedSecretsManager;
 }

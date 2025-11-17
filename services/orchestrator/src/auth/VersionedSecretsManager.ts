@@ -60,6 +60,7 @@ export class VersionedSecretsManager {
   private readonly defaultRetain: number;
   private readonly now: () => Date;
   private readonly createId: () => string;
+  private readonly retentionWindowMs: number | null;
 
   constructor(
     store: SecretsStore,
@@ -67,16 +68,19 @@ export class VersionedSecretsManager {
       retain?: number;
       now?: () => Date;
       idFactory?: () => string;
+      retentionWindowMs?: number;
     },
   ) {
     this.store = store;
     this.defaultRetain = clampRetain(options?.retain, DEFAULT_RETAIN_COUNT);
     this.now = options?.now ?? (() => new Date());
     this.createId = options?.idFactory ?? (() => randomUUID());
+    this.retentionWindowMs = options?.retentionWindowMs && options.retentionWindowMs > 0 ? options.retentionWindowMs : null;
   }
 
   async rotate(key: string, value: string, options?: RotateOptions): Promise<VersionInfo> {
-    const existingMetadata = await this.readMetadata(key);
+    let existingMetadata = await this.readMetadata(key);
+    existingMetadata = await this.pruneExpiredVersions(key, existingMetadata);
     const retain = clampRetain(
       options?.retain ?? existingMetadata.retain ?? this.defaultRetain,
       this.defaultRetain,
@@ -151,7 +155,8 @@ export class VersionedSecretsManager {
   }
 
   async promote(key: string, versionId: string): Promise<VersionInfo> {
-    const metadata = await this.readMetadata(key);
+    let metadata = await this.readMetadata(key);
+    metadata = await this.pruneExpiredVersions(key, metadata);
     const target = metadata.versions.find((version) => version.id === versionId);
     if (!target) {
       throw new Error(`version ${versionId} not found for secret ${key}`);
@@ -214,7 +219,7 @@ export class VersionedSecretsManager {
     retain: number;
     versions: VersionInfo[];
   }> {
-    const metadata = await this.readMetadata(key);
+    const metadata = await this.pruneExpiredVersions(key, await this.readMetadata(key));
     return {
       currentVersion: metadata.currentVersion,
       retain: metadata.retain,
@@ -223,7 +228,7 @@ export class VersionedSecretsManager {
   }
 
   async getCurrentValue(key: string): Promise<CurrentSecret | undefined> {
-    const metadata = await this.readMetadata(key);
+    const metadata = await this.pruneExpiredVersions(key, await this.readMetadata(key));
     if (!metadata.currentVersion) {
       return undefined;
     }
@@ -241,7 +246,7 @@ export class VersionedSecretsManager {
   }
 
   async clear(key: string): Promise<void> {
-    const metadata = await this.readMetadata(key);
+    const metadata = await this.pruneExpiredVersions(key, await this.readMetadata(key));
     const versionKeys = metadata.versions.map((version) => this.versionKey(key, version.id));
     await Promise.all(
       [
@@ -299,6 +304,40 @@ export class VersionedSecretsManager {
   private async writeMetadata(key: string, metadata: StoredMetadata): Promise<void> {
     const payload = JSON.stringify(metadata);
     await this.store.set(this.metadataKey(key), payload);
+  }
+
+  private async pruneExpiredVersions(key: string, metadata: StoredMetadata): Promise<StoredMetadata> {
+    if (this.retentionWindowMs === null) {
+      return metadata;
+    }
+    const cutoff = this.now().getTime() - this.retentionWindowMs;
+    const retained: StoredVersion[] = [];
+    const expired: StoredVersion[] = [];
+    for (const version of metadata.versions) {
+      if (version.id === metadata.currentVersion) {
+        retained.push(version);
+        continue;
+      }
+      const createdAt = Date.parse(version.createdAt ?? "");
+      if (!Number.isFinite(createdAt) || createdAt >= cutoff) {
+        retained.push(version);
+        continue;
+      }
+      expired.push(version);
+    }
+    if (expired.length === 0) {
+      return metadata;
+    }
+    const updated: StoredMetadata = {
+      currentVersion: metadata.currentVersion,
+      versions: retained,
+      retain: metadata.retain,
+    };
+    await this.writeMetadata(key, updated);
+    await Promise.all(
+      expired.map((version) => this.store.delete(this.versionKey(key, version.id)).catch(() => undefined)),
+    );
+    return updated;
   }
 
   private toVersionInfo(version: StoredVersion, currentVersionId: string | undefined): VersionInfo {

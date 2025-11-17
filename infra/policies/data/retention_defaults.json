@@ -1,0 +1,8 @@
+{
+  "retention_defaults": {
+    "plan_state_days": 30,
+    "plan_artifacts_days": 30,
+    "secret_logs_days": 30,
+    "content_capture_enabled": false
+  }
+}

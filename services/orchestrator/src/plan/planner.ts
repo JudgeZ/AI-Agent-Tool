@@ -6,12 +6,20 @@ import crypto from "crypto";
 import { publishPlanStepEvent } from "./events.js";
 import { startSpan } from "../observability/tracing.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
-import { parsePlan, PlanStepSchema, type Plan, type PlanStep } from "./validation.js";
+import { getTenantKeyManager } from "../security/tenantKeys.js";
+import {
+  parsePlan,
+  PlanStepSchema,
+  type Plan,
+  type PlanStep,
+  type PlanSubject
+} from "./validation.js";
 
 export type { Plan, PlanStep, PlanSubject } from "./validation.js";
 
 const DEFAULT_PLAN_ARTIFACT_RETENTION_DAYS = 30;
 const MILLIS_PER_DAY = 24 * 60 * 60 * 1000;
+const ARTIFACT_FILE_MODE = 0o600;
 
 function getRealpath(): (target: string) => Promise<string> {
   const withNative = fsPromises.realpath as typeof fsPromises.realpath & {
@@ -193,6 +201,16 @@ async function cleanupPlanArtifacts(baseDir: string, retentionDays: number): Pro
   }
 }
 
+async function writeEncryptedArtifact(
+  targetPath: string,
+  content: string,
+  tenantId?: string
+): Promise<void> {
+  const manager = getTenantKeyManager();
+  const payload = await manager.encryptArtifact(tenantId, Buffer.from(content, "utf-8"));
+  await fsPromises.writeFile(targetPath, JSON.stringify(payload, null, 2), { mode: ARTIFACT_FILE_MODE });
+}
+
 const CLEANUP_INTERVAL_MS = 6 * 60 * 60 * 1000;
 
 type CleanupState = {
@@ -291,7 +309,10 @@ export function resetPlanArtifactCleanupSchedulerForTests(): void {
   cleanupState.pending = null;
 }
 
-export async function createPlan(goal: string, options?: { retentionDays?: number }): Promise<Plan> {
+export async function createPlan(
+  goal: string,
+  options?: { retentionDays?: number; subject?: PlanSubject }
+): Promise<Plan> {
   const span = startSpan("planner.createPlan", { goal });
   try {
     const id = `plan-${crypto.randomUUID()}`;
@@ -309,9 +330,10 @@ export async function createPlan(goal: string, options?: { retentionDays?: numbe
     const plansRoot = path.join(process.cwd(), ".plans");
     const dir = path.join(plansRoot, id);
     await fsPromises.mkdir(dir, { recursive: true });
+    const artifactTenantId = options?.subject?.tenantId;
     await Promise.all([
-      fsPromises.writeFile(path.join(dir, "plan.json"), JSON.stringify(plan, null, 2)),
-      fsPromises.writeFile(
+      writeEncryptedArtifact(path.join(dir, "plan.json"), JSON.stringify(plan, null, 2), artifactTenantId),
+      writeEncryptedArtifact(
         path.join(dir, "plan.md"),
         `# Plan ${id}\n\nGoal: ${goal}\n\nSteps:\n` +
           plan.steps
@@ -320,7 +342,8 @@ export async function createPlan(goal: string, options?: { retentionDays?: numbe
                 step.approvalRequired ? "required" : "auto"
               }`
             )
-            .join("\n")
+            .join("\n"),
+        artifactTenantId
       )
     ]);
 
