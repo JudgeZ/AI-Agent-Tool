@@ -1238,4 +1238,15 @@ server:
     delete process.env.RETENTION_SECRET_LOG_DAYS;
     delete process.env.CONTENT_CAPTURE_ENABLED;
   });
+
+  it("clamps secret log retention days from environment variables", () => {
+    delete process.env.APP_CONFIG;
+    process.env.RETENTION_SECRET_LOG_DAYS = "999";
+
+    const config = loadConfig();
+
+    expect(config.retention.secretLogsDays).toBe(365);
+
+    delete process.env.RETENTION_SECRET_LOG_DAYS;
+  });
 });

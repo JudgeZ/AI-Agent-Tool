@@ -117,6 +117,7 @@ export class TenantKeyManager {
         },
         "invalid CMEK payload encountered; rotating",
       );
+      this.cache.delete(tenantId);
     }
 
     if (cached) {
@@ -154,15 +155,15 @@ export class TenantKeyManager {
   }
 
   private normalizeTenantId(candidate: string | undefined): string {
-    if (!candidate) {
+    if (candidate === undefined || candidate === null) {
       return GLOBAL_TENANT_ID;
     }
     const trimmed = candidate.trim();
     if (!trimmed) {
-      return GLOBAL_TENANT_ID;
+      throw new Error("tenant identifier must not be blank");
     }
     if (!TENANT_ID_PATTERN.test(trimmed)) {
-      return GLOBAL_TENANT_ID;
+      throw new Error("tenant identifier contains invalid characters");
     }
     return trimmed.toLowerCase();
   }

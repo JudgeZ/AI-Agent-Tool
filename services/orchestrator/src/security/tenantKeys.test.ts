@@ -112,10 +112,22 @@ describe("TenantKeyManager", () => {
     expect(stub.rotations).toEqual(["tenant:race:cmek:plan-artifacts"]);
   });
 
-  it("falls back to the global tenant when the identifier is invalid", async () => {
-    const payload = await manager.encryptArtifact("   ", Buffer.from("global"));
+  it("uses the global tenant when the identifier is omitted", async () => {
+    const payload = await manager.encryptArtifact(undefined, Buffer.from("global"));
     expect(payload.tenantId).toBe("global");
     const stored = await stub.getCurrentValue("tenant:global:cmek:plan-artifacts");
     expect(stored).toBeDefined();
+  });
+
+  it("rejects blank tenant identifiers", async () => {
+    await expect(manager.encryptArtifact("   ", Buffer.from("bad"))).rejects.toThrow(
+      /tenant identifier must not be blank/,
+    );
+  });
+
+  it("rejects tenant identifiers with invalid characters", async () => {
+    await expect(manager.encryptArtifact("tenant@acme", Buffer.from("bad"))).rejects.toThrow(
+      /tenant identifier contains invalid characters/,
+    );
   });
 });

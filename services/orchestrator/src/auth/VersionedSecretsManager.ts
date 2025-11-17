@@ -82,8 +82,8 @@ export class VersionedSecretsManager {
 
   async rotate(key: string, value: string, options?: RotateOptions): Promise<VersionInfo> {
     const metadataBeforePrune = await this.readMetadata(key);
-    const previousMetadata = this.cloneMetadata(metadataBeforePrune);
     const existingMetadata = await this.pruneExpiredVersions(key, metadataBeforePrune);
+    const previousMetadata = this.cloneMetadata(existingMetadata);
     const retain = clampRetain(
       options?.retain ?? existingMetadata.retain ?? this.defaultRetain,
       this.defaultRetain,

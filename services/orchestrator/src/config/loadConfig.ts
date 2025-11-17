@@ -3206,10 +3206,12 @@ export function loadConfig(): AppConfig {
     envPlanArtifactRetentionDays ?? fileCfg.retention?.planArtifactsDays,
     DEFAULT_CONFIG.retention.planArtifactsDays
   );
-  const retentionSecretLogsDays = normalizeRetentionDays(
-    envSecretLogsRetentionDays ?? fileCfg.retention?.secretLogsDays,
-    DEFAULT_CONFIG.retention.secretLogsDays
-  );
+  const secretLogRetentionSource =
+    envSecretLogsRetentionDays ?? fileCfg.retention?.secretLogsDays;
+  const retentionSecretLogsDays =
+    secretLogRetentionSource === undefined
+      ? DEFAULT_CONFIG.retention.secretLogsDays
+      : clampSecretLogRetentionDays(secretLogRetentionSource);
   const resolvedContentCaptureEnabled =
     envContentCaptureEnabled ??
     fileCfg.retention?.contentCapture?.enabled ??
