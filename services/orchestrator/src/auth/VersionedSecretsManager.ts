@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 
-import { appLogger } from "../observability/logger.js";
+import { appLogger, normalizeError } from "../observability/logger.js";
 import type { SecretsStore } from "./SecretsStore.js";
 
 type Labels = Record<string, string>;
@@ -350,7 +350,7 @@ export class VersionedSecretsManager {
           return { versionId, deleted: true } as const;
         } catch (error) {
           this.logger.warn(
-            { key, versionId, err: (error as Error).message },
+            { key, versionId, err: normalizeError(error) },
             "failed to delete expired secret version",
           );
           return { versionId, deleted: false } as const;

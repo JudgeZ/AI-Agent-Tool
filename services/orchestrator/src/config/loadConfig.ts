@@ -3214,7 +3214,7 @@ export function loadConfig(): AppConfig {
       ? DEFAULT_CONFIG.retention.secretLogsDays
       : clampSecretLogRetentionDays(secretLogRetentionSource);
   if (retentionPlanArtifactsDays === 0 && retentionSecretLogsDays !== 0) {
-    // Keep encryption keys available for as long as plan artifacts exist.
+    // Disable pruning so encryption keys persist for as long as artifacts are retained (indefinitely).
     retentionSecretLogsDays = 0;
   } else if (
     retentionSecretLogsDays > 0 &&

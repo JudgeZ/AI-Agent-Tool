@@ -188,7 +188,10 @@ export class TenantKeyManager {
   private async getKeyForVersion(tenantId: string, versionId: string): Promise<Buffer> {
     const secret = await this.manager.getValue(this.keyName(tenantId), versionId);
     if (!secret?.value) {
-      throw new Error(`encryption key version ${versionId} is unavailable for tenant ${tenantId}`);
+      const tenantHash = this.redactTenantId(tenantId);
+      throw new Error(
+        `encryption key version ${versionId} is unavailable for tenant hash ${tenantHash}`,
+      );
     }
     const decoded = this.decodeKey(secret);
     if (!decoded) {
