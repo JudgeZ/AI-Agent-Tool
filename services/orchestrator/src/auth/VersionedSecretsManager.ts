@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 
+import { appLogger } from "../observability/logger.js";
 import type { SecretsStore } from "./SecretsStore.js";
 
 type Labels = Record<string, string>;
@@ -61,6 +62,7 @@ export class VersionedSecretsManager {
   private readonly now: () => Date;
   private readonly createId: () => string;
   private readonly retentionWindowMs: number | null;
+  private readonly logger = appLogger.child({ component: "versioned-secrets-manager" });
 
   constructor(
     store: SecretsStore,
@@ -79,8 +81,9 @@ export class VersionedSecretsManager {
   }
 
   async rotate(key: string, value: string, options?: RotateOptions): Promise<VersionInfo> {
-    let existingMetadata = await this.readMetadata(key);
-    existingMetadata = await this.pruneExpiredVersions(key, existingMetadata);
+    const metadataBeforePrune = await this.readMetadata(key);
+    const previousMetadata = this.cloneMetadata(metadataBeforePrune);
+    const existingMetadata = await this.pruneExpiredVersions(key, metadataBeforePrune);
     const retain = clampRetain(
       options?.retain ?? existingMetadata.retain ?? this.defaultRetain,
       this.defaultRetain,
@@ -108,16 +111,6 @@ export class VersionedSecretsManager {
       versions: retainedVersions,
       retain,
     };
-    const previousMetadata: StoredMetadata = {
-      currentVersion: existingMetadata.currentVersion,
-      versions: existingMetadata.versions.map((version) => ({
-        id: version.id,
-        createdAt: version.createdAt,
-        ...(version.labels ? { labels: { ...version.labels } } : {}),
-      })),
-      retain: existingMetadata.retain,
-    };
-
     try {
       await this.writeMetadata(key, updatedMetadata);
       try {
@@ -245,6 +238,24 @@ export class VersionedSecretsManager {
     };
   }
 
+  async getValue(key: string, versionId: string): Promise<CurrentSecret | undefined> {
+    const metadata = await this.pruneExpiredVersions(key, await this.readMetadata(key));
+    const version = metadata.versions.find((entry) => entry.id === versionId);
+    if (!version) {
+      return undefined;
+    }
+    const value = await this.store.get(this.versionKey(key, versionId));
+    if (value === undefined) {
+      return undefined;
+    }
+    return {
+      value,
+      version: versionId,
+      createdAt: version.createdAt,
+      labels: version.labels,
+    };
+  }
+
   async clear(key: string): Promise<void> {
     const metadata = await this.pruneExpiredVersions(key, await this.readMetadata(key));
     const versionKeys = metadata.versions.map((version) => this.versionKey(key, version.id));
@@ -311,32 +322,53 @@ export class VersionedSecretsManager {
       return metadata;
     }
     const cutoff = this.now().getTime() - this.retentionWindowMs;
-    const retained: StoredVersion[] = [];
-    const expired: StoredVersion[] = [];
+    const expired = new Set<string>();
     for (const version of metadata.versions) {
       if (version.id === metadata.currentVersion) {
-        retained.push(version);
         continue;
       }
       const createdAt = Date.parse(version.createdAt ?? "");
-      if (!Number.isFinite(createdAt) || createdAt >= cutoff) {
-        retained.push(version);
+      if (!Number.isFinite(createdAt)) {
+        this.logger.warn(
+          { key, versionId: version.id },
+          "invalid createdAt timestamp for secret version; pruning entry",
+        );
+        expired.add(version.id);
         continue;
       }
-      expired.push(version);
+      if (createdAt < cutoff) {
+        expired.add(version.id);
+      }
     }
-    if (expired.length === 0) {
+    if (expired.size === 0) {
+      return metadata;
+    }
+    const deletionResults = await Promise.all(
+      Array.from(expired).map(async (versionId) => {
+        try {
+          await this.store.delete(this.versionKey(key, versionId));
+          return { versionId, deleted: true } as const;
+        } catch (error) {
+          this.logger.warn(
+            { key, versionId, err: (error as Error).message },
+            "failed to delete expired secret version",
+          );
+          return { versionId, deleted: false } as const;
+        }
+      }),
+    );
+    const removed = new Set(
+      deletionResults.filter((result) => result.deleted).map((result) => result.versionId),
+    );
+    if (removed.size === 0) {
       return metadata;
     }
     const updated: StoredMetadata = {
       currentVersion: metadata.currentVersion,
-      versions: retained,
+      versions: metadata.versions.filter((version) => !removed.has(version.id)),
       retain: metadata.retain,
     };
     await this.writeMetadata(key, updated);
-    await Promise.all(
-      expired.map((version) => this.store.delete(this.versionKey(key, version.id)).catch(() => undefined)),
-    );
     return updated;
   }
 
@@ -344,6 +376,18 @@ export class VersionedSecretsManager {
     return {
       ...version,
       isCurrent: currentVersionId === version.id,
+    };
+  }
+
+  private cloneMetadata(metadata: StoredMetadata): StoredMetadata {
+    return {
+      currentVersion: metadata.currentVersion,
+      retain: metadata.retain,
+      versions: metadata.versions.map((version) => ({
+        id: version.id,
+        createdAt: version.createdAt,
+        ...(version.labels ? { labels: { ...version.labels } } : {}),
+      })),
     };
   }
 }

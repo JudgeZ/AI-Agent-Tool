@@ -2188,7 +2188,7 @@ function parseRetentionConfigRecord(value: unknown): PartialRetentionConfig | un
   }
   const secretLogsDays = asNumber(record.secretLogsDays ?? record.secret_logs_days ?? record.secretLogDays);
   if (secretLogsDays !== undefined) {
-    result.secretLogsDays = secretLogsDays;
+    result.secretLogsDays = clampSecretLogRetentionDays(secretLogsDays);
   }
   const contentCaptureRecord = asRecord(record.contentCapture ?? record.content_capture ?? record.capture);
   if (contentCaptureRecord) {
@@ -2198,6 +2198,19 @@ function parseRetentionConfigRecord(value: unknown): PartialRetentionConfig | un
     }
   }
   return Object.keys(result).length > 0 ? result : undefined;
+}
+
+function clampSecretLogRetentionDays(value: number): number {
+  if (!Number.isFinite(value) || Number.isNaN(value)) {
+    return DEFAULT_CONFIG.retention.secretLogsDays;
+  }
+  if (value < 0) {
+    return 0;
+  }
+  if (value > 365) {
+    return 365;
+  }
+  return Math.round(value);
 }
 
 function parsePostgresDatabaseRecord(value: unknown): PartialPostgresDatabaseConfig | undefined {

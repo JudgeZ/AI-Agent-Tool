@@ -1,4 +1,4 @@
-import { createDecipheriv } from "node:crypto";
+import { randomBytes } from "node:crypto";
 
 import { beforeEach, describe, expect, it } from "vitest";
 
@@ -6,25 +6,62 @@ import type { CurrentSecret, VersionInfo, VersionedSecretsManager } from "../aut
 import { TenantKeyManager } from "./tenantKeys.js";
 
 class StubVersionedSecretsManager
-  implements Pick<VersionedSecretsManager, "getCurrentValue" | "rotate">
+  implements Pick<VersionedSecretsManager, "getCurrentValue" | "getValue" | "rotate">
 {
-  private readonly values = new Map<string, { value: string; version: string; labels?: Record<string, string> }>();
+  private readonly values = new Map<
+    string,
+    {
+      current?: CurrentSecret;
+      versions: Map<string, { value: string; createdAt: string; labels?: Record<string, string> }>;
+    }
+  >();
   public readonly rotations: string[] = [];
+  private versionCounter = 0;
 
   async rotate(key: string, value: string, options?: { labels?: Record<string, string> }): Promise<VersionInfo> {
-    const version = `v-${this.rotations.length}`;
+    const entry = this.ensureEntry(key);
+    const version = `v-${this.versionCounter++}`;
     this.rotations.push(key);
     const createdAt = new Date().toISOString();
-    this.values.set(key, { value, version, labels: options?.labels });
+    entry.versions.set(version, { value, createdAt, labels: options?.labels });
+    entry.current = { value, version, createdAt, labels: options?.labels };
     return { id: version, createdAt, isCurrent: true, labels: options?.labels };
   }
 
   async getCurrentValue(key: string): Promise<CurrentSecret | undefined> {
+    return this.values.get(key)?.current;
+  }
+
+  async getValue(key: string, versionId: string): Promise<CurrentSecret | undefined> {
     const entry = this.values.get(key);
     if (!entry) {
       return undefined;
     }
-    return { value: entry.value, version: entry.version, labels: entry.labels };
+    const version = entry.versions.get(versionId);
+    if (!version) {
+      return undefined;
+    }
+    return { value: version.value, version: versionId, createdAt: version.createdAt, labels: version.labels };
+  }
+
+  async simulateExternalRotation(key: string, value: string): Promise<void> {
+    const entry = this.ensureEntry(key);
+    const version = `external-${this.versionCounter++}`;
+    const createdAt = new Date().toISOString();
+    entry.versions.set(version, { value, createdAt });
+    entry.current = { value, version, createdAt };
+  }
+
+  private ensureEntry(key: string): {
+    current?: CurrentSecret;
+    versions: Map<string, { value: string; createdAt: string; labels?: Record<string, string> }>;
+  } {
+    let entry = this.values.get(key);
+    if (!entry) {
+      entry = { versions: new Map() };
+      this.values.set(key, entry);
+    }
+    return entry;
   }
 }
 
@@ -37,7 +74,7 @@ describe("TenantKeyManager", () => {
     manager = new TenantKeyManager(stub as unknown as VersionedSecretsManager);
   });
 
-  it("encrypts artifacts with tenant-specific keys", async () => {
+  it("encrypts and decrypts artifacts with tenant-specific keys", async () => {
     const payload = await manager.encryptArtifact("Tenant-A", Buffer.from("secret-data"));
     expect(payload.tenantId).toBe("tenant-a");
     expect(payload.algorithm).toBe("aes-256-gcm");
@@ -45,13 +82,7 @@ describe("TenantKeyManager", () => {
     const stored = await stub.getCurrentValue("tenant:tenant-a:cmek:plan-artifacts");
     expect(stored?.version).toBe(payload.keyVersion);
     expect(stored).toBeDefined();
-    const key = Buffer.from(stored!.value, "base64");
-    const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(payload.iv, "base64"));
-    decipher.setAuthTag(Buffer.from(payload.authTag, "base64"));
-    const plaintext = Buffer.concat([
-      decipher.update(Buffer.from(payload.ciphertext, "base64")),
-      decipher.final()
-    ]);
+    const plaintext = await manager.decryptArtifact(payload);
     expect(plaintext.toString("utf-8")).toBe("secret-data");
   });
 
@@ -62,6 +93,23 @@ describe("TenantKeyManager", () => {
 
     await manager.encryptArtifact("ACME", Buffer.from("data"));
     expect(stub.rotations).toHaveLength(1);
+  });
+
+  it("refreshes cached keys when an external rotation occurs", async () => {
+    const first = await manager.encryptArtifact("Tenant-A", Buffer.from("data-1"));
+    expect(first.keyVersion).toBe("v-0");
+
+    const newKey = randomBytes(32).toString("base64");
+    await stub.simulateExternalRotation("tenant:tenant-a:cmek:plan-artifacts", newKey);
+
+    const second = await manager.encryptArtifact("Tenant-A", Buffer.from("data-2"));
+    expect(second.keyVersion).not.toBe(first.keyVersion);
+  });
+
+  it("avoids duplicate rotations when concurrent requests arrive", async () => {
+    const buffers = [Buffer.from("a"), Buffer.from("b")];
+    await Promise.all(buffers.map((buf) => manager.encryptArtifact("Race", buf)));
+    expect(stub.rotations).toEqual(["tenant:race:cmek:plan-artifacts"]);
   });
 
   it("falls back to the global tenant when the identifier is invalid", async () => {

@@ -18,13 +18,14 @@ function parseTenantArg(): string | undefined {
 
 async function main(): Promise<void> {
   const tenantId = parseTenantArg();
-  if (!tenantId) {
+  if (!tenantId || !tenantId.trim()) {
     console.error("Usage: tsx services/orchestrator/scripts/rotate-tenant-cmek.ts --tenant <TENANT_ID>");
     process.exit(1);
   }
+  const normalizedTenant = tenantId.trim();
   const manager = new TenantKeyManager();
-  const version = await manager.rotateTenantKey(tenantId);
-  console.log(`Rotated CMEK for tenant ${tenantId.trim()} (active version ${version}).`);
+  const version = await manager.rotateTenantKey(normalizedTenant);
+  console.log(`Rotated CMEK for tenant ${normalizedTenant} (active version ${version}).`);
 }
 
 main().catch(error => {

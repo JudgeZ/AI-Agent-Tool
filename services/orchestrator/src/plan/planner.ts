@@ -19,6 +19,8 @@ export type { Plan, PlanStep, PlanSubject } from "./validation.js";
 
 const DEFAULT_PLAN_ARTIFACT_RETENTION_DAYS = 30;
 const MILLIS_PER_DAY = 24 * 60 * 60 * 1000;
+// Restrict artifact readability to the orchestrator user; encryption keys live out of process so
+// there is no need for group/world access.
 const ARTIFACT_FILE_MODE = 0o600;
 
 function getRealpath(): (target: string) => Promise<string> {
