@@ -29,16 +29,6 @@ import (
 	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/audit"
 )
 
-var stateTTL = getDurationEnv("OAUTH_STATE_TTL", 10*time.Minute)
-var orchestratorTimeout = getDurationEnv("ORCHESTRATOR_CALLBACK_TIMEOUT", 10*time.Second)
-var allowedRedirectOrigins = loadAllowedRedirectOrigins()
-var requestValidator = validator.New(validator.WithRequiredStructEnabled())
-var tenantIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
-var clientAppPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
-var sessionBindingPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,256}$`)
-
-var generateStateAndPKCEFunc = generateStateAndPKCE
-
 const (
 	auditEventAuthorize   = "auth.oauth.authorize"
 	auditEventCallback    = "auth.oauth.callback"
@@ -57,7 +47,19 @@ const (
 
 	tenantValidationErrorMessage = "tenant_id may only include letters, numbers, '.', '_' or '-'"
 	defaultClientApp             = "gui"
+	maxSessionBindingLength      = 256
+	maxClientIDLength            = 256
 )
+
+var stateTTL = getDurationEnv("OAUTH_STATE_TTL", 10*time.Minute)
+var orchestratorTimeout = getDurationEnv("ORCHESTRATOR_CALLBACK_TIMEOUT", 10*time.Second)
+var allowedRedirectOrigins = loadAllowedRedirectOrigins()
+var requestValidator = validator.New(validator.WithRequiredStructEnabled())
+var tenantIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+var clientAppPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
+var sessionBindingPattern = regexp.MustCompile(fmt.Sprintf(`^[A-Za-z0-9._-]{1,%d}$`, maxSessionBindingLength))
+
+var generateStateAndPKCEFunc = generateStateAndPKCE
 
 type validationError struct {
 	Field   string `json:"field"`
@@ -201,7 +203,7 @@ func normalizeSessionBinding(value string) (string, error) {
 		return "", fmt.Errorf("session_binding may not include leading or trailing whitespace")
 	}
 	if !sessionBindingPattern.MatchString(value) {
-		return "", fmt.Errorf("session_binding must be 1-256 characters and may only include letters, numbers, '.', '_' or '-'")
+		return "", fmt.Errorf("session_binding must be 1-%d characters and may only include letters, numbers, '.', '_' or '-'", maxSessionBindingLength)
 	}
 	return value, nil
 }
@@ -611,13 +613,24 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 	bindingID, bindingErr := normalizeSessionBinding(data.BindingID)
 	if bindingErr != nil {
 		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, mergeDetails(baseDetails, map[string]any{
-			"reason": "invalid_state_binding",
-			"state":  params.State,
+			"reason":           "invalid_state_binding",
+			"state":            params.State,
+			"validation_error": bindingErr.Error(),
 		}))
 		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "invalid or expired state", nil)
 		return
 	}
 	data.BindingID = bindingID
+	stateClientID := strings.TrimSpace(data.ClientID)
+	if len(stateClientID) > maxClientIDLength {
+		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, mergeDetails(baseDetails, map[string]any{
+			"reason": "invalid_state_client_id",
+			"state":  params.State,
+		}))
+		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "invalid or expired state", nil)
+		return
+	}
+	data.ClientID = stateClientID
 
 	registration, registrationFound, registrationsConfigured, regErr := getOidcClientRegistration(data.TenantID, clientApp)
 	if regErr != nil {
@@ -627,15 +640,21 @@ func callbackHandler(w http.ResponseWriter, r *http.Request, trustedProxies []*n
 		writeErrorResponse(w, r, http.StatusInternalServerError, "internal_server_error", "failed to load client configuration", nil)
 		return
 	}
-	effectiveClientID := cfg.ClientID
+	expectedClientID := cfg.ClientID
 	if registrationFound {
-		effectiveClientID = registration.ClientID
+		expectedClientID = registration.ClientID
 	} else if registrationsConfigured {
 		auditCallbackEvent(r.Context(), r, trustedProxies, auditOutcomeDenied, mergeDetails(baseDetails, map[string]any{
 			"reason": "client_not_registered",
 		}))
 		writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "invalid or expired state", nil)
 		return
+	}
+	effectiveClientID := stateClientID
+	if effectiveClientID == "" {
+		effectiveClientID = expectedClientID
+	} else if registrationFound && effectiveClientID != registration.ClientID {
+		baseDetails = mergeDetails(baseDetails, map[string]any{"state_client_id_mismatch": true})
 	}
 	payload := map[string]string{
 		"code":          params.Code,
@@ -1174,10 +1193,10 @@ func loadOidcClientRegistrations() (map[string]map[string]oidcClientRegistration
 		}
 		oidcClientRegistrations = parsed
 	})
-        if oidcClientRegistrationsErr != nil {
-                return nil, oidcClientRegistrationsErr
-        }
-        return oidcClientRegistrations, nil
+	if oidcClientRegistrationsErr != nil {
+		return nil, oidcClientRegistrationsErr
+	}
+	return oidcClientRegistrations, nil
 }
 
 func parseOidcClientRegistrations(raw string) (map[string]map[string]oidcClientRegistration, error) {
@@ -1207,6 +1226,9 @@ func parseOidcClientRegistrations(raw string) (map[string]map[string]oidcClientR
 		clientID := strings.TrimSpace(entry.ClientID)
 		if clientID == "" {
 			return nil, fmt.Errorf("registration %d: client_id is required", idx)
+		}
+		if len(clientID) > maxClientIDLength {
+			return nil, fmt.Errorf("registration %d: client_id must be at most %d characters", idx, maxClientIDLength)
 		}
 		var origins []redirectOrigin
 		for _, rawOrigin := range entry.RedirectOrigins {

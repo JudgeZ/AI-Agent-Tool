@@ -35,12 +35,23 @@ export const approvalPath = (planId: string, stepId: string) =>
 export const sessionPath = `${orchestratorBaseUrl}/auth/session`;
 export const logoutPath = `${orchestratorBaseUrl}/auth/logout`;
 export const oidcConfigPath = `${orchestratorBaseUrl}/auth/oidc/config`;
+/**
+ * Optional knobs for generating the gateway authorize URL.
+ * `tenantId` defaults to `defaultTenantId`, `clientApp` defaults to `gui`, and
+ * `sessionBinding` is omitted when falsy.
+ */
 interface OidcAuthorizeOptions {
   tenantId?: string | null;
   clientApp?: string;
   sessionBinding?: string | null;
 }
 
+/**
+ * Builds the gateway authorize URL for the GUI/Tauri shell.
+ *
+ * @param redirectUri Absolute callback URL for the GUI shell.
+ * @param options Optional tenant, client app, and session binding overrides.
+ */
 export const oidcAuthorizeUrl = (redirectUri: string, options?: OidcAuthorizeOptions) => {
   const params = new URLSearchParams();
   params.set('redirect_uri', redirectUri);

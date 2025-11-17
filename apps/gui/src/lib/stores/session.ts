@@ -27,6 +27,13 @@ export interface SessionState {
   error: string | null;
 }
 
+type OidcCompletePayload = {
+  type: 'oidc:complete';
+  status?: string;
+  error?: string | null;
+  session_binding?: string | null;
+};
+
 const initialState: SessionState = {
   loading: false,
   authenticated: false,
@@ -95,6 +102,34 @@ function generateBindingToken(): string {
   throw new Error('No secure random source available for session binding token generation');
 }
 
+const isOidcCompletePayload = (value: unknown): value is OidcCompletePayload => {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+  const candidate = value as Record<string, unknown>;
+  if (candidate.type !== 'oidc:complete') {
+    return false;
+  }
+  if (candidate.status !== undefined && typeof candidate.status !== 'string') {
+    return false;
+  }
+  if (
+    candidate.error !== undefined &&
+    candidate.error !== null &&
+    typeof candidate.error !== 'string'
+  ) {
+    return false;
+  }
+  if (
+    candidate.session_binding !== undefined &&
+    candidate.session_binding !== null &&
+    typeof candidate.session_binding !== 'string'
+  ) {
+    return false;
+  }
+  return true;
+};
+
 function installMessageListener(): void {
   if (typeof window === 'undefined' || messageHandler) {
     return;
@@ -108,18 +143,10 @@ function installMessageListener(): void {
     if (!event.origin || !allowedOrigins.has(event.origin)) {
       return;
     }
-    if (!event?.data || typeof event.data !== 'object') {
+    if (!isOidcCompletePayload(event.data)) {
       return;
     }
-    const payload = event.data as {
-      type?: string;
-      status?: string;
-      error?: string | null;
-      session_binding?: string | null;
-    };
-    if (payload.type !== 'oidc:complete') {
-      return;
-    }
+    const payload = event.data;
     const expectedBinding = getBindingToken();
     if (expectedBinding) {
       if (!payload.session_binding || payload.session_binding !== expectedBinding) {

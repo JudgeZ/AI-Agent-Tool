@@ -209,6 +209,34 @@ describe('session store', () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  it('ignores oidc completion messages with malformed payloads', async () => {
+    fetchMock.mockResolvedValueOnce(
+      jsonResponse({
+        session: {
+          id: 'abc',
+          subject: 'user',
+          roles: [],
+          scopes: [],
+          issuedAt: 'now',
+          expiresAt: 'later'
+        }
+      })
+    );
+
+    initializeSession();
+    await flushAsync();
+    fetchMock.mockClear();
+
+    (window as typeof window & { dispatchMessage: (data: unknown, origin?: string) => void }).dispatchMessage(
+      { type: 'oidc:complete', status: 123 },
+      'https://app.example.test'
+    );
+    await flushAsync();
+
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
+  });
+
   it('updates state with session info when fetchSession succeeds', async () => {
     fetchMock.mockResolvedValueOnce(
       jsonResponse({
