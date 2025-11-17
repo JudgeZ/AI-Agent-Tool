@@ -195,16 +195,8 @@ func normalizeSessionBinding(value string) (string, error) {
 	if trimmed == "" {
 		return "", nil
 	}
-	for _, r := range trimmed {
-		if unicode.IsControl(r) {
-			return "", fmt.Errorf("session_binding contains invalid characters")
-		}
-	}
 	if !sessionBindingPattern.MatchString(trimmed) {
-		return "", fmt.Errorf("session_binding may only include letters, numbers, '.', '_' or '-'")
-	}
-	if len(trimmed) > 256 {
-		return "", fmt.Errorf("session_binding must be at most 256 characters")
+		return "", fmt.Errorf("session_binding must be 1-256 characters and may only include letters, numbers, '.', '_' or '-'")
 	}
 	return trimmed, nil
 }
