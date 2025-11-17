@@ -36,7 +36,7 @@ class FakeTenantKeyManager
       iv: "iv==",
       authTag: "tag==",
       ciphertext: data.toString("base64"),
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
     };
   }
 

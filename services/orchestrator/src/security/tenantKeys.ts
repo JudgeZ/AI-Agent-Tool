@@ -1,7 +1,7 @@
 import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:crypto";
 
 import { getVersionedSecretsManager } from "../providers/ProviderRegistry.js";
-import { appLogger } from "../observability/logger.js";
+import { appLogger, normalizeError } from "../observability/logger.js";
 import type { CurrentSecret, VersionInfo, VersionedSecretsManager } from "../auth/VersionedSecretsManager.js";
 import { TENANT_ID_PATTERN } from "../tenants/tenantIds.js";
 
@@ -10,6 +10,7 @@ const KEY_LENGTH_BYTES = 32;
 const IV_LENGTH_BYTES = 12;
 const ALGORITHM = "aes-256-gcm";
 const GLOBAL_TENANT_ID = "global";
+const UNBOUNDED_SECRET_VERSION_RETAIN = Number.MAX_SAFE_INTEGER;
 
 export type EncryptedArtifactPayload = {
   version: 1;
@@ -53,7 +54,7 @@ export class TenantKeyManager {
       iv: iv.toString("base64"),
       authTag: authTag.toString("base64"),
       ciphertext: ciphertext.toString("base64"),
-      createdAt: new Date().toISOString()
+      createdAt: new Date().toISOString(),
     };
   }
 
@@ -146,7 +147,7 @@ export class TenantKeyManager {
       this.logger.warn(
         {
           tenantIdHash: this.redactTenantId(secret.labels?.tenant ?? GLOBAL_TENANT_ID),
-          err: (error as Error).message
+          err: normalizeError(error),
         },
         "failed to decode tenant CMEK"
       );
@@ -177,7 +178,8 @@ export class TenantKeyManager {
   private async writeNewVersion(tenantId: string, key: Buffer): Promise<VersionInfo> {
     const payload = key.toString("base64");
     const version = await this.manager.rotate(this.keyName(tenantId), payload, {
-      labels: { tenant: tenantId }
+      labels: { tenant: tenantId },
+      retain: UNBOUNDED_SECRET_VERSION_RETAIN,
     });
     this.cache.set(tenantId, { key, version: version.id });
     return version;

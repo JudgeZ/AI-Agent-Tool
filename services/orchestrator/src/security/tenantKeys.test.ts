@@ -17,11 +17,17 @@ class StubVersionedSecretsManager
   >();
   public readonly rotations: string[] = [];
   private versionCounter = 0;
+  public lastRetain?: number;
 
-  async rotate(key: string, value: string, options?: { labels?: Record<string, string> }): Promise<VersionInfo> {
+  async rotate(
+    key: string,
+    value: string,
+    options?: { labels?: Record<string, string>; retain?: number },
+  ): Promise<VersionInfo> {
     const entry = this.ensureEntry(key);
     const version = `v-${this.versionCounter++}`;
     this.rotations.push(key);
+    this.lastRetain = options?.retain;
     const createdAt = new Date().toISOString();
     entry.versions.set(version, { value, createdAt, labels: options?.labels });
     entry.current = { value, version, createdAt, labels: options?.labels };
@@ -104,6 +110,11 @@ describe("TenantKeyManager", () => {
 
     await manager.encryptArtifact("ACME", Buffer.from("data"));
     expect(stub.rotations).toHaveLength(1);
+  });
+
+  it("sets an effectively unbounded retain count for tenant CMEK versions", async () => {
+    await manager.encryptArtifact("Tenant-A", Buffer.from("payload"));
+    expect(stub.lastRetain).toBe(Number.MAX_SAFE_INTEGER);
   });
 
   it("refreshes cached keys when an external rotation occurs", async () => {
