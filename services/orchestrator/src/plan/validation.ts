@@ -1,5 +1,7 @@
 import { z } from "zod";
 
+import { TENANT_ID_PATTERN } from "../tenants/tenantIds.js";
+
 export const CapabilityLabelSchema = z.object({
   id: z.string(),
   name: z.string(),
@@ -87,9 +89,17 @@ export const ToolEventSchema = z.object({
   attempt: z.number().int().nonnegative().optional()
 });
 
+const TenantIdentifierSchema = z
+  .string()
+  .min(1)
+  .regex(
+    TENANT_ID_PATTERN,
+    "tenantId may only include letters, numbers, period, underscore, or dash",
+  );
+
 export const PlanSubjectSchema = z.object({
   sessionId: z.string().min(1).optional(),
-  tenantId: z.string().min(1).optional(),
+  tenantId: TenantIdentifierSchema.optional(),
   userId: z.string().min(1).optional(),
   email: z.string().min(1).optional(),
   name: z.string().min(1).optional(),

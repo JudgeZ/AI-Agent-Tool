@@ -418,8 +418,8 @@ When integrating new credentials (e.g. CLI helpers or admin APIs) prefer the man
 
 - The orchestrator encrypts every plan artifact written to `.plans/<id>` using the `TenantKeyManager`. Keys are stored per tenant under `tenant:<id>:cmek:plan-artifacts` inside the configured `SecretsStore`.
 - Defaults:
-  - `RETENTION_PLAN_ARTIFACT_DAYS` / `retention.planArtifactsDays` – limits how long encrypted artifacts remain on disk (30 days by default).
-  - `RETENTION_SECRET_LOG_DAYS` / `retention.secretLogsDays` – prunes version history for tenant CMEK entries. This value is automatically raised (if necessary) to at least the plan artifact retention window so keys stay decryptable for the lifetime of their artifacts. Set the value to `0` to disable pruning entirely.
+- `RETENTION_PLAN_ARTIFACT_DAYS` / `retention.planArtifactsDays` – limits how long encrypted artifacts remain on disk (30 days by default). Set to `0` to keep artifacts indefinitely.
+- `RETENTION_SECRET_LOG_DAYS` / `retention.secretLogsDays` – prunes version history for tenant CMEK entries. This value is automatically raised (if necessary) to at least the plan artifact retention window so keys stay decryptable for the lifetime of their artifacts. When plan artifacts are retained indefinitely (`0` days), this value is automatically forced to `0` as well so encryption keys are preserved for as long as their artifacts exist. Set the value to `0` directly to disable pruning entirely.
 - To rotate a tenant’s CMEK without downtime:
 
   ```bash

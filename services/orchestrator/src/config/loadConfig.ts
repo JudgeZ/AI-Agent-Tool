@@ -3213,7 +3213,14 @@ export function loadConfig(): AppConfig {
     secretLogRetentionSource === undefined
       ? DEFAULT_CONFIG.retention.secretLogsDays
       : clampSecretLogRetentionDays(secretLogRetentionSource);
-  if (retentionSecretLogsDays > 0 && retentionPlanArtifactsDays > retentionSecretLogsDays) {
+  if (retentionPlanArtifactsDays === 0 && retentionSecretLogsDays !== 0) {
+    // Keep encryption keys available for as long as plan artifacts exist.
+    retentionSecretLogsDays = 0;
+  } else if (
+    retentionSecretLogsDays > 0 &&
+    retentionPlanArtifactsDays > 0 &&
+    retentionPlanArtifactsDays > retentionSecretLogsDays
+  ) {
     retentionSecretLogsDays = retentionPlanArtifactsDays;
   }
   const resolvedContentCaptureEnabled =

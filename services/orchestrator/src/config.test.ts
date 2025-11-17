@@ -1263,4 +1263,18 @@ server:
     delete process.env.RETENTION_PLAN_ARTIFACT_DAYS;
     delete process.env.RETENTION_SECRET_LOG_DAYS;
   });
+
+  it("disables secret log pruning when plan artifacts are retained indefinitely", () => {
+    delete process.env.APP_CONFIG;
+    process.env.RETENTION_PLAN_ARTIFACT_DAYS = "0";
+    process.env.RETENTION_SECRET_LOG_DAYS = "45";
+
+    const config = loadConfig();
+
+    expect(config.retention.planArtifactsDays).toBe(0);
+    expect(config.retention.secretLogsDays).toBe(0);
+
+    delete process.env.RETENTION_PLAN_ARTIFACT_DAYS;
+    delete process.env.RETENTION_SECRET_LOG_DAYS;
+  });
 });

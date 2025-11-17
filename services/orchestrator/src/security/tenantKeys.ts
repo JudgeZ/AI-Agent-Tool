@@ -3,12 +3,12 @@ import { createCipheriv, createDecipheriv, createHash, randomBytes } from "node:
 import { getVersionedSecretsManager } from "../providers/ProviderRegistry.js";
 import { appLogger } from "../observability/logger.js";
 import type { CurrentSecret, VersionInfo, VersionedSecretsManager } from "../auth/VersionedSecretsManager.js";
+import { TENANT_ID_PATTERN } from "../tenants/tenantIds.js";
 
 const ARTIFACT_KEY_SUFFIX = "cmek:plan-artifacts";
 const KEY_LENGTH_BYTES = 32;
 const IV_LENGTH_BYTES = 12;
 const ALGORITHM = "aes-256-gcm";
-const TENANT_ID_PATTERN = /^[A-Za-z0-9._-]+$/;
 const GLOBAL_TENANT_ID = "global";
 
 export type EncryptedArtifactPayload = {
