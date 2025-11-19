@@ -15,6 +15,7 @@ Local-first, auditable, multi-agent coding assistant with a desktop GUI.
 ## Quick start (dev)
 ```bash
 cp env.example .env
+# IMPORTANT: Set GATEWAY_COOKIE_HASH_KEY and GATEWAY_COOKIE_BLOCK_KEY in .env
 docker compose -f compose.dev.yaml up --build
 ```
 
@@ -32,12 +33,12 @@ The development Compose file builds the in-repo services and starts the full dep
 | `jaeger` | Image default (`/go/bin/all-in-one`) | OTLP collector and UI for traces. |
 | `langfuse` | Image default (`docker-entrypoint.sh start`) | Observability dashboard for LLM interactions. |
 
-Visit [Docker Quickstart](./docs/docker-quickstart.md) for credentials, health checks, and optional profiles.
+Visit [Docker Quickstart](./docs/runbooks/docker-quickstart.md) for credentials, health checks, and optional profiles.
 
 ## New: Consumer ↔ Enterprise flexibility
 - Message bus: **RabbitMQ** or **Kafka** (toggle in Helm values).
 - Providers: **OpenAI, Anthropic, Google, Azure OpenAI, AWS Bedrock, Mistral, OpenRouter, Local (Ollama)**.
-- Auth: **API keys** and **OAuth** (where supported). See `docs/model-authentication.md`.
+- Auth: **API keys**, **OAuth**, and **Secure Cookies** (signed & encrypted). See `docs/reference/model-authentication.md`.
 
 ## Agent profiles
 Create per-agent guides under `agents/<name>/agent.md` or via CLI:
@@ -47,19 +48,20 @@ npm --workspace apps/cli run build
 ./node_modules/.bin/aidt new-agent planner
 ```
 
-See: `docs/agents/README.md`, `docs/consumer-enterprise-modes.md`, `docs/planner.md`.
+See: `docs/agents/README.md`, `docs/architecture/deployment-modes.md`, `docs/architecture/planner-logic.md`.
 
 ## FAQ & Troubleshooting
-- Common fixes and coverage tips live in [`docs/faq-troubleshooting.md`](./docs/faq-troubleshooting.md).
+- Common fixes and coverage tips live in [`docs/runbooks/faq-troubleshooting.md`](./docs/runbooks/faq-troubleshooting.md).
 - Contribution process: see [`CONTRIBUTING.md`](./CONTRIBUTING.md).
 - Code of conduct: see [`CODE_OF_CONDUCT.md`](./CODE_OF_CONDUCT.md).
-- Looking for your first task? See [`docs/good-first-issues.md`](./docs/good-first-issues.md).
+- Looking for your first task? See [`docs/contributing/good-first-issues.md`](./docs/contributing/good-first-issues.md).
 
 ## Oncall Runbooks
-- Gateway/API incidents: [`docs/runbooks/gateway-api.md`](./docs/runbooks/gateway-api.md)
-- Orchestrator queue/policy incidents: [`docs/runbooks/orchestrator.md`](./docs/runbooks/orchestrator.md)
-- Indexer ingestion incidents: [`docs/runbooks/indexer.md`](./docs/runbooks/indexer.md)
+- Gateway/API incidents: [`docs/runbooks/alert-response-guide.md`](./docs/runbooks/alert-response-guide.md)
+- Orchestrator queue/policy incidents: [`docs/runbooks/queue-operations.md`](./docs/runbooks/queue-operations.md)
+- Indexer ingestion incidents: [`docs/runbooks/indexer-operations.md`](./docs/runbooks/indexer-operations.md)
 
 ## Compliance documentation
 - System card: [`docs/compliance/system-card.md`](./docs/compliance/system-card.md) – data flows, mitigations, and model usage mapped to the STRIDE analysis.
 - DPIA: [`docs/compliance/dpia.md`](./docs/compliance/dpia.md) – lawful basis, retention alignment, and access control assessment.
+- License Compliance: [`LICENSE_COMPLIANCE.md`](./LICENSE_COMPLIANCE.md) – SBOM and license risk analysis.
