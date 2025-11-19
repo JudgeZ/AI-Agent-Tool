@@ -1,0 +1,145 @@
+{{- if .Values.security.cmek.rotation.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "oss-ai-agent-tool.fullname" . }}-cmek-rotation
+  labels:
+    {{- include "oss-ai-agent-tool.labels" . | nindent 4 }}
+    app.kubernetes.io/component: security
+spec:
+  schedule: {{ .Values.security.cmek.rotation.schedule | quote }}
+  successfulJobsHistoryLimit: {{ .Values.security.cmek.rotation.successfulJobsHistoryLimit | default 3 }}
+  failedJobsHistoryLimit: {{ .Values.security.cmek.rotation.failedJobsHistoryLimit | default 5 }}
+  concurrencyPolicy: {{ .Values.security.cmek.rotation.concurrencyPolicy | default "Forbid" }}
+  startingDeadlineSeconds: {{ .Values.security.cmek.rotation.startingDeadlineSeconds | default 300 }}
+  jobTemplate:
+    metadata:
+      labels:
+        {{- include "oss-ai-agent-tool.labels" . | nindent 8 }}
+        app.kubernetes.io/component: security
+        job-name: cmek-rotation
+    spec:
+      backoffLimit: {{ .Values.security.cmek.rotation.backoffLimit | default 3 }}
+      activeDeadlineSeconds: {{ .Values.security.cmek.rotation.activeDeadlineSeconds | default 600 }}
+      template:
+        metadata:
+          labels:
+            {{- include "oss-ai-agent-tool.labels" . | nindent 12 }}
+            app.kubernetes.io/component: security
+            job-name: cmek-rotation
+          annotations:
+            {{- with .Values.security.cmek.rotation.podAnnotations }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+        spec:
+          restartPolicy: OnFailure
+          {{- if .Values.security.cmek.rotation.serviceAccountName }}
+          serviceAccountName: {{ .Values.security.cmek.rotation.serviceAccountName }}
+          {{- else if .Values.vault.serviceAccountName }}
+          serviceAccountName: {{ .Values.vault.serviceAccountName }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: cmek-rotator
+              image: "{{ .Values.image.repo }}/orchestrator:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  echo "Starting CMEK rotation job..."
+
+                  {{- if .Values.security.cmek.rotation.rotateAllTenants }}
+                  # Rotate keys for all tenants
+                  echo "Rotating CMEK for all tenants..."
+                  node /app/services/orchestrator/scripts/rotate-all-tenant-cmek.js
+                  {{- else }}
+                  # Rotate keys for specific tenants
+                  {{- range .Values.security.cmek.rotation.tenants }}
+                  echo "Rotating CMEK for tenant: {{ . }}"
+                  node /app/services/orchestrator/scripts/rotate-tenant-cmek.js --tenant "{{ . }}"
+                  {{- end }}
+                  {{- end }}
+
+                  echo "CMEK rotation completed successfully"
+              env:
+                # Vault configuration
+                {{- if .Values.vault.enabled }}
+                - name: VAULT_ENABLED
+                  value: "true"
+                - name: VAULT_ADDR
+                  value: {{ .Values.vault.address | quote }}
+                - name: VAULT_AUTH_METHOD
+                  value: {{ .Values.vault.authMethod | quote }}
+                {{- if eq .Values.vault.authMethod "kubernetes" }}
+                - name: VAULT_ROLE
+                  value: {{ .Values.vault.role | quote }}
+                {{- end }}
+                {{- if .Values.vault.namespace }}
+                - name: VAULT_NAMESPACE
+                  value: {{ .Values.vault.namespace | quote }}
+                {{- end }}
+                {{- end }}
+
+                # Audit logging
+                - name: AUDIT_ENABLED
+                  value: {{ .Values.security.cmek.rotation.auditEnabled | default "true" | quote }}
+
+                # Rotation settings
+                - name: CMEK_RETENTION_VERSIONS
+                  value: {{ .Values.security.cmek.retentionVersions | default "3" | quote }}
+
+                # Additional environment variables
+                {{- with .Values.security.cmek.rotation.extraEnv }}
+                  {{- toYaml . | nindent 16 }}
+                {{- end }}
+              {{- if .Values.security.cmek.rotation.resources }}
+              resources:
+                {{- toYaml .Values.security.cmek.rotation.resources | nindent 16 }}
+              {{- end }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+                {{- if .Values.vault.enabled }}
+                {{- if and (eq .Values.vault.authMethod "kubernetes") .Values.vault.kubernetes.jwtPath }}
+                - name: vault-token
+                  mountPath: {{ dir .Values.vault.kubernetes.jwtPath }}
+                  readOnly: true
+                {{- end }}
+                {{- end }}
+                {{- with .Values.security.cmek.rotation.extraVolumeMounts }}
+                  {{- toYaml . | nindent 16 }}
+                {{- end }}
+          volumes:
+            - name: tmp
+              emptyDir: {}
+            {{- if .Values.vault.enabled }}
+            {{- if and (eq .Values.vault.authMethod "kubernetes") .Values.vault.kubernetes.jwtPath }}
+            - name: vault-token
+              projected:
+                sources:
+                  - serviceAccountToken:
+                      path: {{ base .Values.vault.kubernetes.jwtPath }}
+                      expirationSeconds: 3600
+            {{- end }}
+            {{- end }}
+            {{- with .Values.security.cmek.rotation.extraVolumes }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.security.cmek.rotation.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.security.cmek.rotation.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.security.cmek.rotation.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

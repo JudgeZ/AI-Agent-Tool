@@ -1,0 +1,111 @@
+# Indexer Configuration Example
+# Copy this file to config.toml and customize for your environment
+
+[server]
+# HTTP API listen address
+http_addr = "0.0.0.0:9200"
+# gRPC service listen address
+grpc_addr = "0.0.0.0:9201"
+
+[embeddings]
+# Primary embedding provider configuration
+# Options: "orchestrator", "local", "mock"
+provider = "orchestrator"
+
+# Orchestrator provider settings (when provider = "orchestrator")
+[embeddings.orchestrator]
+# Endpoint for the orchestrator's embedding API
+endpoint = "http://localhost:8080/api/embeddings"
+# Optional API key for authentication
+api_key = ""
+# Model to use for embeddings
+# Options: "text-embedding-3-small" (1536 dims), "text-embedding-3-large" (3072 dims), "text-embedding-ada-002" (1536 dims)
+model = "text-embedding-3-small"
+# Embedding dimensions (must match the model)
+dimensions = 1536
+
+# Local provider settings (when provider = "local") - NOT YET IMPLEMENTED
+[embeddings.local]
+# Path to ONNX model file
+model_path = "./models/all-MiniLM-L6-v2.onnx"
+# Path to tokenizer configuration
+tokenizer_path = "./models/all-MiniLM-L6-v2/tokenizer.json"
+# Embedding dimensions (must match the model)
+dimensions = 384
+
+# Cache configuration
+[embeddings.cache]
+# Maximum number of cached embeddings
+max_entries = 10000
+# TTL for cache entries in seconds
+ttl_secs = 3600
+
+# Batch processing configuration
+[embeddings.batch]
+# Maximum batch size for embedding requests
+size = 100
+# Request timeout in seconds
+timeout_secs = 30
+
+[storage]
+# Storage backend: "memory", "sqlite", "postgres"
+backend = "sqlite"
+
+# SQLite configuration (when backend = "sqlite")
+[storage.sqlite]
+path = "./data/indexer.db"
+# Enable WAL mode for better concurrent performance
+wal_mode = true
+
+# PostgreSQL configuration (when backend = "postgres")
+[storage.postgres]
+host = "localhost"
+port = 5432
+database = "indexer"
+username = "indexer"
+password = ""
+# Connection pool settings
+max_connections = 10
+min_connections = 2
+
+[semantic]
+# Maximum number of documents to keep in memory
+max_documents = 10000
+# Enable semantic search
+enabled = true
+
+[security]
+# ACL configuration
+[security.acl]
+enabled = true
+# Default access level: "none", "read", "write"
+default_access = "read"
+
+# DLP configuration
+[security.dlp]
+enabled = true
+# Redact sensitive patterns in indexed content
+redact_patterns = [
+    "password\\s*=\\s*[\"'][^\"']+[\"']",
+    "api[_-]?key\\s*=\\s*[\"'][^\"']+[\"']",
+    "secret\\s*=\\s*[\"'][^\"']+[\"']"
+]
+
+[telemetry]
+# Enable OpenTelemetry tracing
+enabled = true
+# Service name for traces
+service_name = "indexer"
+# OTLP endpoint for trace export
+otlp_endpoint = "http://localhost:4318"
+# Sample ratio (0.0-1.0)
+sample_ratio = 0.1
+
+# Environment variable overrides:
+# - INDEXER_LISTEN_ADDR: Override http_addr
+# - INDEXER_GRPC_ADDR: Override grpc_addr
+# - ORCHESTRATOR_EMBEDDING_ENDPOINT: Override embeddings.orchestrator.endpoint
+# - ORCHESTRATOR_API_KEY: Override embeddings.orchestrator.api_key
+# - EMBEDDING_MODEL: Override embeddings.orchestrator.model
+# - EMBEDDING_DIMENSIONS: Override embeddings.orchestrator.dimensions
+# - SEMANTIC_STORE_MAX_DOCUMENTS: Override semantic.max_documents

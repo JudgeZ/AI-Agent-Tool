@@ -1,0 +1,853 @@
+{{- $root := . -}}
+{{- $grafana := $root.Values.monitoring.grafana | default dict -}}
+{{- if $grafana.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "oss-ai-agent-tool.fullname" $root }}-grafana-providers
+  namespace: {{ $grafana.namespace | default $root.Release.Namespace }}
+  labels:
+    {{- include "oss-ai-agent-tool.labels" $root | nindent 4 }}
+    grafana_dashboard: "1"
+    {{- with $grafana.additionalLabels }}
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- if or $grafana.folder $grafana.annotations }}
+  annotations:
+    {{- if $grafana.folder }}
+    grafana_folder: {{ $grafana.folder | quote }}
+    {{- end }}
+    {{- with $grafana.annotations }}
+      {{- toYaml . | nindent 4 }}
+    {{- end }}
+  {{- end }}
+data:
+  orchestrator-providers.json: |
+    {
+      "schemaVersion": 39,
+      "title": "OSS Agent Tool / Provider Metrics & Health",
+      "uid": "ossaat-provider-metrics",
+      "version": 1,
+      "editable": true,
+      "refresh": "30s",
+      "templating": {
+        "list": [
+          {
+            "name": "datasource",
+            "type": "datasource",
+            "query": "prometheus",
+            "current": {
+              "selected": false,
+              "text": "Prometheus",
+              "value": "prometheus"
+            },
+            "hide": 0,
+            "includeAll": false,
+            "multi": false,
+            "refresh": 1
+          },
+          {
+            "name": "namespace",
+            "type": "query",
+            "datasource": "$datasource",
+            "query": "label_values(orchestrator_provider_requests_total, namespace)",
+            "current": {
+              "selected": false,
+              "text": "{{ $root.Release.Namespace }}",
+              "value": "{{ $root.Release.Namespace }}"
+            },
+            "hide": 0,
+            "includeAll": false,
+            "multi": false,
+            "refresh": 1
+          },
+          {
+            "name": "provider",
+            "type": "query",
+            "datasource": "$datasource",
+            "query": "label_values(orchestrator_provider_requests_total{namespace=\"$namespace\"}, provider)",
+            "current": {
+              "selected": false,
+              "text": "All",
+              "value": "$__all"
+            },
+            "hide": 0,
+            "includeAll": true,
+            "multi": true,
+            "refresh": 1
+          },
+          {
+            "name": "model",
+            "type": "query",
+            "datasource": "$datasource",
+            "query": "label_values(orchestrator_provider_requests_total{namespace=\"$namespace\"}, model)",
+            "current": {
+              "selected": false,
+              "text": "All",
+              "value": "$__all"
+            },
+            "hide": 0,
+            "includeAll": true,
+            "multi": true,
+            "refresh": 1
+          }
+        ]
+      },
+      "panels": [
+        {
+          "id": 1,
+          "type": "row",
+          "title": "Provider Health Overview",
+          "gridPos": {"x": 0, "y": 0, "w": 24, "h": 1},
+          "collapsed": false
+        },
+        {
+          "id": 2,
+          "type": "stat",
+          "title": "Provider Availability",
+          "gridPos": {"x": 0, "y": 1, "w": 6, "h": 4},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "decimals": 2,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"value": null, "color": "red"},
+                  {"value": 0.95, "color": "yellow"},
+                  {"value": 0.99, "color": "green"}
+                ]
+              }
+            }
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": ""
+            },
+            "colorMode": "background",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "1 - (rate(orchestrator_provider_requests_total{namespace=\"$namespace\",provider=~\"$provider\",status=\"error\"}[5m]) / rate(orchestrator_provider_requests_total{namespace=\"$namespace\",provider=~\"$provider\"}[5m]))",
+              "legendFormat": "Availability",
+              "format": "time_series"
+            }
+          ]
+        },
+        {
+          "id": 3,
+          "type": "stat",
+          "title": "Active Providers",
+          "gridPos": {"x": 6, "y": 1, "w": 6, "h": 4},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"value": null, "color": "red"},
+                  {"value": 1, "color": "yellow"},
+                  {"value": 3, "color": "green"}
+                ]
+              }
+            }
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": ""
+            },
+            "colorMode": "value",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "count(up{job=\"orchestrator\",namespace=\"$namespace\"} == 1 and rate(orchestrator_provider_requests_total{namespace=\"$namespace\"}[5m]) > 0) by (provider)",
+              "legendFormat": "Active Providers",
+              "format": "time_series"
+            }
+          ]
+        },
+        {
+          "id": 4,
+          "type": "stat",
+          "title": "Circuit Breakers Open",
+          "gridPos": {"x": 12, "y": 1, "w": 6, "h": 4},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "none",
+              "decimals": 0,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"value": null, "color": "green"},
+                  {"value": 1, "color": "yellow"},
+                  {"value": 2, "color": "red"}
+                ]
+              }
+            }
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": ""
+            },
+            "colorMode": "background",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "sum(orchestrator_provider_circuit_breaker_state{namespace=\"$namespace\",state=\"open\"})",
+              "legendFormat": "Open Circuit Breakers",
+              "format": "time_series"
+            }
+          ]
+        },
+        {
+          "id": 5,
+          "type": "stat",
+          "title": "Total Request Rate",
+          "gridPos": {"x": 18, "y": 1, "w": 6, "h": 4},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "decimals": 2,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"value": null, "color": "green"},
+                  {"value": 100, "color": "yellow"},
+                  {"value": 500, "color": "red"}
+                ]
+              }
+            }
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": ""
+            },
+            "colorMode": "value",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "sum(rate(orchestrator_provider_requests_total{namespace=\"$namespace\",provider=~\"$provider\"}[5m]))",
+              "legendFormat": "Request Rate",
+              "format": "time_series"
+            }
+          ]
+        },
+        {
+          "id": 6,
+          "type": "row",
+          "title": "Provider Request Metrics",
+          "gridPos": {"x": 0, "y": 5, "w": 24, "h": 1},
+          "collapsed": false
+        },
+        {
+          "id": 7,
+          "type": "timeseries",
+          "title": "Request Rate by Provider",
+          "gridPos": {"x": 0, "y": 6, "w": 12, "h": 8},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "reqps",
+              "decimals": 2,
+              "custom": {
+                "lineWidth": 2,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "opacity",
+                "spanNulls": false,
+                "showPoints": "never",
+                "stacking": {
+                  "mode": "none"
+                }
+              }
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": ["mean", "max", "lastNotNull"]
+            },
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "sum(rate(orchestrator_provider_requests_total{namespace=\"$namespace\",provider=~\"$provider\"}[5m])) by (provider)",
+              "legendFormat": "{{ "{{provider}}" }}",
+              "format": "time_series"
+            }
+          ]
+        },
+        {
+          "id": 8,
+          "type": "timeseries",
+          "title": "Error Rate by Provider",
+          "gridPos": {"x": 12, "y": 6, "w": 12, "h": 8},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "decimals": 2,
+              "custom": {
+                "lineWidth": 2,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "opacity"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"value": null, "color": "green"},
+                  {"value": 0.01, "color": "yellow"},
+                  {"value": 0.05, "color": "red"}
+                ]
+              }
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": ["mean", "max", "lastNotNull"]
+            },
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "rate(orchestrator_provider_requests_total{namespace=\"$namespace\",provider=~\"$provider\",status=\"error\"}[5m]) / rate(orchestrator_provider_requests_total{namespace=\"$namespace\",provider=~\"$provider\"}[5m])",
+              "legendFormat": "{{ "{{provider}}" }} Error Rate",
+              "format": "time_series"
+            }
+          ]
+        },
+        {
+          "id": 9,
+          "type": "row",
+          "title": "Provider Latency",
+          "gridPos": {"x": 0, "y": 14, "w": 24, "h": 1},
+          "collapsed": false
+        },
+        {
+          "id": 10,
+          "type": "timeseries",
+          "title": "Response Latency (P50, P95, P99)",
+          "gridPos": {"x": 0, "y": 15, "w": 12, "h": 8},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "s",
+              "decimals": 2,
+              "custom": {
+                "lineWidth": 2,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {"id": "byRegexp", "options": "/.*P99.*/"},
+                "properties": [
+                  {"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}
+                ]
+              },
+              {
+                "matcher": {"id": "byRegexp", "options": "/.*P95.*/"},
+                "properties": [
+                  {"id": "color", "value": {"mode": "fixed", "fixedColor": "yellow"}}
+                ]
+              },
+              {
+                "matcher": {"id": "byRegexp", "options": "/.*P50.*/"},
+                "properties": [
+                  {"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": ["mean", "max", "lastNotNull"]
+            },
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "histogram_quantile(0.50, sum(rate(orchestrator_provider_latency_seconds_bucket{namespace=\"$namespace\",provider=~\"$provider\"}[5m])) by (provider, le))",
+              "legendFormat": "{{ "{{provider}}" }} P50",
+              "format": "time_series"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "histogram_quantile(0.95, sum(rate(orchestrator_provider_latency_seconds_bucket{namespace=\"$namespace\",provider=~\"$provider\"}[5m])) by (provider, le))",
+              "legendFormat": "{{ "{{provider}}" }} P95",
+              "format": "time_series"
+            },
+            {
+              "refId": "C",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "histogram_quantile(0.99, sum(rate(orchestrator_provider_latency_seconds_bucket{namespace=\"$namespace\",provider=~\"$provider\"}[5m])) by (provider, le))",
+              "legendFormat": "{{ "{{provider}}" }} P99",
+              "format": "time_series"
+            }
+          ]
+        },
+        {
+          "id": 11,
+          "type": "heatmap",
+          "title": "Latency Heatmap",
+          "gridPos": {"x": 12, "y": 15, "w": 12, "h": 8},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "custom": {
+                "hideFrom": {
+                  "tooltip": false,
+                  "viz": false,
+                  "legend": false
+                },
+                "scaleDistribution": {
+                  "type": "linear"
+                }
+              }
+            }
+          },
+          "options": {
+            "calculate": false,
+            "yAxis": {
+              "unit": "s",
+              "decimals": 2
+            },
+            "color": {
+              "mode": "scheme",
+              "scheme": "Spectral",
+              "steps": 128
+            },
+            "cellGap": 2,
+            "filterValues": {
+              "le": 1e-09
+            },
+            "legend": {
+              "show": true
+            }
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "sum(rate(orchestrator_provider_latency_seconds_bucket{namespace=\"$namespace\",provider=~\"$provider\"}[5m])) by (le)",
+              "format": "heatmap",
+              "legendFormat": "{{ "{{le}}" }}"
+            }
+          ]
+        },
+        {
+          "id": 12,
+          "type": "row",
+          "title": "Token Usage & Cost",
+          "gridPos": {"x": 0, "y": 23, "w": 24, "h": 1},
+          "collapsed": false
+        },
+        {
+          "id": 13,
+          "type": "timeseries",
+          "title": "Token Usage by Model",
+          "gridPos": {"x": 0, "y": 24, "w": 12, "h": 8},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "decimals": 0,
+              "custom": {
+                "lineWidth": 2,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "opacity",
+                "stacking": {
+                  "mode": "normal"
+                }
+              }
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": ["sum", "mean", "lastNotNull"]
+            },
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "sum(rate(orchestrator_provider_tokens_total{namespace=\"$namespace\",provider=~\"$provider\",model=~\"$model\"}[5m])) by (model, type)",
+              "legendFormat": "{{ "{{model}}" }} {{ "{{type}}" }}",
+              "format": "time_series"
+            }
+          ]
+        },
+        {
+          "id": 14,
+          "type": "timeseries",
+          "title": "Estimated Cost Rate ($/hour)",
+          "gridPos": {"x": 12, "y": 24, "w": 12, "h": 8},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "currencyUSD",
+              "decimals": 2,
+              "custom": {
+                "lineWidth": 2,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "opacity",
+                "stacking": {
+                  "mode": "normal"
+                }
+              }
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": ["sum", "mean", "lastNotNull"]
+            },
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "sum(rate(orchestrator_provider_cost_dollars_total{namespace=\"$namespace\",provider=~\"$provider\",model=~\"$model\"}[5m]) * 3600) by (provider, model)",
+              "legendFormat": "{{ "{{provider}}" }} - {{ "{{model}}" }}",
+              "format": "time_series"
+            }
+          ]
+        },
+        {
+          "id": 15,
+          "type": "row",
+          "title": "Circuit Breaker & Resilience",
+          "gridPos": {"x": 0, "y": 32, "w": 24, "h": 1},
+          "collapsed": false
+        },
+        {
+          "id": 16,
+          "type": "timeseries",
+          "title": "Circuit Breaker State",
+          "gridPos": {"x": 0, "y": 33, "w": 12, "h": 8},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "short",
+              "decimals": 0,
+              "custom": {
+                "lineWidth": 2,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "opacity"
+              },
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"value": null, "color": "green"},
+                  {"value": 0.5, "color": "yellow"},
+                  {"value": 1, "color": "red"}
+                ]
+              }
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": ["lastNotNull"]
+            },
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "orchestrator_provider_circuit_breaker_state{namespace=\"$namespace\",provider=~\"$provider\"}",
+              "legendFormat": "{{ "{{provider}}" }} - {{ "{{state}}" }}",
+              "format": "time_series"
+            }
+          ]
+        },
+        {
+          "id": 17,
+          "type": "timeseries",
+          "title": "Retry & Timeout Rate",
+          "gridPos": {"x": 12, "y": 33, "w": 12, "h": 8},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "decimals": 2,
+              "custom": {
+                "lineWidth": 2,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "opacity"
+              }
+            }
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": ["mean", "max", "lastNotNull"]
+            },
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "sum(rate(orchestrator_provider_retries_total{namespace=\"$namespace\",provider=~\"$provider\"}[5m])) by (provider) / sum(rate(orchestrator_provider_requests_total{namespace=\"$namespace\",provider=~\"$provider\"}[5m])) by (provider)",
+              "legendFormat": "{{ "{{provider}}" }} Retry Rate",
+              "format": "time_series"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "sum(rate(orchestrator_provider_timeouts_total{namespace=\"$namespace\",provider=~\"$provider\"}[5m])) by (provider) / sum(rate(orchestrator_provider_requests_total{namespace=\"$namespace\",provider=~\"$provider\"}[5m])) by (provider)",
+              "legendFormat": "{{ "{{provider}}" }} Timeout Rate",
+              "format": "time_series"
+            }
+          ]
+        },
+        {
+          "id": 18,
+          "type": "row",
+          "title": "Cache Performance",
+          "gridPos": {"x": 0, "y": 41, "w": 24, "h": 1},
+          "collapsed": false
+        },
+        {
+          "id": 19,
+          "type": "stat",
+          "title": "Cache Hit Rate",
+          "gridPos": {"x": 0, "y": 42, "w": 6, "h": 4},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "percentunit",
+              "decimals": 2,
+              "thresholds": {
+                "mode": "absolute",
+                "steps": [
+                  {"value": null, "color": "red"},
+                  {"value": 0.5, "color": "yellow"},
+                  {"value": 0.8, "color": "green"}
+                ]
+              }
+            }
+          },
+          "options": {
+            "reduceOptions": {
+              "calcs": ["lastNotNull"],
+              "fields": ""
+            },
+            "colorMode": "background",
+            "textMode": "auto"
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "sum(rate(orchestrator_provider_cache_hits_total{namespace=\"$namespace\"}[5m])) / (sum(rate(orchestrator_provider_cache_hits_total{namespace=\"$namespace\"}[5m])) + sum(rate(orchestrator_provider_cache_misses_total{namespace=\"$namespace\"}[5m])))",
+              "legendFormat": "Cache Hit Rate",
+              "format": "time_series"
+            }
+          ]
+        },
+        {
+          "id": 20,
+          "type": "timeseries",
+          "title": "Cache Hits vs Misses",
+          "gridPos": {"x": 6, "y": 42, "w": 18, "h": 8},
+          "datasource": {
+            "type": "prometheus",
+            "uid": "$datasource"
+          },
+          "fieldConfig": {
+            "defaults": {
+              "unit": "ops",
+              "decimals": 2,
+              "custom": {
+                "lineWidth": 2,
+                "drawStyle": "line",
+                "fillOpacity": 10,
+                "gradientMode": "opacity"
+              }
+            },
+            "overrides": [
+              {
+                "matcher": {"id": "byRegexp", "options": "/.*Hits.*/"},
+                "properties": [
+                  {"id": "color", "value": {"mode": "fixed", "fixedColor": "green"}}
+                ]
+              },
+              {
+                "matcher": {"id": "byRegexp", "options": "/.*Misses.*/"},
+                "properties": [
+                  {"id": "color", "value": {"mode": "fixed", "fixedColor": "red"}}
+                ]
+              }
+            ]
+          },
+          "options": {
+            "legend": {
+              "displayMode": "table",
+              "placement": "bottom",
+              "calcs": ["mean", "sum", "lastNotNull"]
+            },
+            "tooltip": {"mode": "multi", "sort": "desc"}
+          },
+          "targets": [
+            {
+              "refId": "A",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "sum(rate(orchestrator_provider_cache_hits_total{namespace=\"$namespace\",provider=~\"$provider\"}[5m])) by (provider)",
+              "legendFormat": "{{ "{{provider}}" }} Cache Hits",
+              "format": "time_series"
+            },
+            {
+              "refId": "B",
+              "datasource": {
+                "type": "prometheus",
+                "uid": "$datasource"
+              },
+              "expr": "sum(rate(orchestrator_provider_cache_misses_total{namespace=\"$namespace\",provider=~\"$provider\"}[5m])) by (provider)",
+              "legendFormat": "{{ "{{provider}}" }} Cache Misses",
+              "format": "time_series"
+            }
+          ]
+        }
+      ]
+    }
+{{- end }}

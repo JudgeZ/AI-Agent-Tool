@@ -1,0 +1,342 @@
+{{- if .Values.monitoring.prometheus.alerts.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "oss-ai-agent-tool.fullname" . }}-prometheus-provider-alerts
+  labels:
+    {{- include "oss-ai-agent-tool.labels" . | nindent 4 }}
+    app.kubernetes.io/component: monitoring
+    prometheus_rule: "1"
+data:
+  provider-alerts.yml: |
+    groups:
+      - name: orchestrator_provider_health
+        interval: {{ .Values.monitoring.prometheus.alerts.evaluationInterval | default "30s" }}
+        rules:
+          # ========================================
+          # Provider Availability Alerts
+          # ========================================
+
+          - alert: ProviderHighErrorRate
+            expr: |
+              (
+                sum(rate(orchestrator_provider_requests_total{status="error"}[5m])) by (provider)
+                / sum(rate(orchestrator_provider_requests_total[5m])) by (provider)
+              ) > {{ .Values.monitoring.prometheus.alerts.thresholds.providerErrorRate | default 0.05 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.providerErrorRate | default "5m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: availability
+              subsystem: provider
+            annotations:
+              summary: "Provider {{ `{{` }} $labels.provider {{ `}}` }} has high error rate"
+              description: |
+                Provider {{ `{{` }} $labels.provider {{ `}}` }} has {{ `{{` }} $value | humanizePercentage {{ `}}` }} error rate.
+                This may indicate:
+                - API service issues
+                - Authentication/authorization problems
+                - Rate limiting from the provider
+                - Network connectivity issues
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/provider-error-rate.md"
+              dashboard_url: "{{ .Values.monitoring.grafana.url }}/d/ossaat-provider-metrics"
+
+          - alert: ProviderDown
+            expr: |
+              sum(rate(orchestrator_provider_requests_total[5m])) by (provider) == 0
+              and sum(increase(orchestrator_provider_requests_total[1h] offset 5m)) by (provider) > 0
+            for: {{ .Values.monitoring.prometheus.alerts.durations.providerDown | default "5m" }}
+            labels:
+              severity: critical
+              component: orchestrator
+              alert_type: availability
+              subsystem: provider
+            annotations:
+              summary: "Provider {{ `{{` }} $labels.provider {{ `}}` }} is not receiving requests"
+              description: |
+                Provider {{ `{{` }} $labels.provider {{ `}}` }} has not received any requests in the last 5 minutes but was active in the previous hour.
+                This may indicate:
+                - Provider has been disabled or removed from configuration
+                - Circuit breaker is open
+                - Routing/load balancing issues
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/provider-down.md"
+
+          - alert: AllProvidersDown
+            expr: |
+              sum(rate(orchestrator_provider_requests_total{status="success"}[5m])) == 0
+              and sum(rate(orchestrator_provider_requests_total[5m])) > 0
+            for: {{ .Values.monitoring.prometheus.alerts.durations.allProvidersDown | default "2m" }}
+            labels:
+              severity: critical
+              component: orchestrator
+              alert_type: availability
+              subsystem: provider
+              pager: "true"
+            annotations:
+              summary: "All AI providers are failing"
+              description: |
+                No successful requests to any AI provider in the last {{ .Values.monitoring.prometheus.alerts.durations.allProvidersDown | default "2m" }}.
+                Complete service outage - all AI functionality is unavailable.
+                Immediate action required!
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/all-providers-down.md"
+
+          # ========================================
+          # Provider Latency Alerts
+          # ========================================
+
+          - alert: ProviderHighLatency
+            expr: |
+              histogram_quantile(0.95,
+                sum(rate(orchestrator_provider_latency_seconds_bucket[5m])) by (provider, le)
+              ) > {{ .Values.monitoring.prometheus.alerts.thresholds.providerLatencyP95 | default 5 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.providerLatency | default "10m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: performance
+              subsystem: provider
+            annotations:
+              summary: "Provider {{ `{{` }} $labels.provider {{ `}}` }} has high latency"
+              description: |
+                Provider {{ `{{` }} $labels.provider {{ `}}` }} P95 latency is {{ `{{` }} $value | humanizeDuration {{ `}}` }}.
+                This may impact user experience and cause timeouts.
+                Consider:
+                - Checking provider service status
+                - Reviewing request complexity
+                - Evaluating network path to provider
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/provider-latency.md"
+
+          - alert: ProviderTimeoutRate
+            expr: |
+              (
+                sum(rate(orchestrator_provider_timeouts_total[5m])) by (provider)
+                / sum(rate(orchestrator_provider_requests_total[5m])) by (provider)
+              ) > {{ .Values.monitoring.prometheus.alerts.thresholds.providerTimeoutRate | default 0.01 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.providerTimeout | default "5m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: performance
+              subsystem: provider
+            annotations:
+              summary: "Provider {{ `{{` }} $labels.provider {{ `}}` }} experiencing timeouts"
+              description: |
+                Provider {{ `{{` }} $labels.provider {{ `}}` }} has {{ `{{` }} $value | humanizePercentage {{ `}}` }} timeout rate.
+                Timeouts indicate the provider is not responding within the configured timeout period.
+                Consider:
+                - Increasing timeout values if appropriate
+                - Checking provider service health
+                - Reviewing request size/complexity
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/provider-timeouts.md"
+
+          # ========================================
+          # Circuit Breaker Alerts
+          # ========================================
+
+          - alert: ProviderCircuitBreakerOpen
+            expr: |
+              orchestrator_provider_circuit_breaker_state{state="open"} == 1
+            for: {{ .Values.monitoring.prometheus.alerts.durations.circuitBreakerOpen | default "1m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: reliability
+              subsystem: provider
+            annotations:
+              summary: "Circuit breaker open for provider {{ `{{` }} $labels.provider {{ `}}` }}"
+              description: |
+                Circuit breaker for {{ `{{` }} $labels.provider {{ `}}` }} has been open for {{ .Values.monitoring.prometheus.alerts.durations.circuitBreakerOpen | default "1m" }}.
+                The provider has been temporarily disabled due to excessive failures.
+                The circuit breaker will attempt to close after the configured timeout.
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/circuit-breaker-open.md"
+
+          - alert: MultipleCircuitBreakersOpen
+            expr: |
+              sum(orchestrator_provider_circuit_breaker_state{state="open"}) >= 2
+            for: {{ .Values.monitoring.prometheus.alerts.durations.multipleCircuitBreakers | default "2m" }}
+            labels:
+              severity: critical
+              component: orchestrator
+              alert_type: reliability
+              subsystem: provider
+            annotations:
+              summary: "Multiple provider circuit breakers are open"
+              description: |
+                {{ `{{` }} $value {{ `}}` }} provider circuit breakers are currently open.
+                This significantly reduces available AI provider capacity.
+                Service degradation is likely.
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/multiple-circuit-breakers.md"
+
+          # ========================================
+          # Retry & Resilience Alerts
+          # ========================================
+
+          - alert: ProviderHighRetryRate
+            expr: |
+              (
+                sum(rate(orchestrator_provider_retries_total[5m])) by (provider)
+                / sum(rate(orchestrator_provider_requests_total[5m])) by (provider)
+              ) > {{ .Values.monitoring.prometheus.alerts.thresholds.providerRetryRate | default 0.1 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.providerRetryRate | default "10m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: reliability
+              subsystem: provider
+            annotations:
+              summary: "Provider {{ `{{` }} $labels.provider {{ `}}` }} has high retry rate"
+              description: |
+                Provider {{ `{{` }} $labels.provider {{ `}}` }} has {{ `{{` }} $value | humanizePercentage {{ `}}` }} retry rate.
+                This indicates transient failures that succeed on retry.
+                While the resilience layer is handling these, it may indicate:
+                - Provider service instability
+                - Network issues
+                - Rate limiting
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/provider-retry-rate.md"
+
+          # ========================================
+          # Token Usage & Cost Alerts
+          # ========================================
+
+          - alert: ProviderTokenUsageSpike
+            expr: |
+              (
+                sum(rate(orchestrator_provider_tokens_total[5m])) by (provider)
+                / sum(rate(orchestrator_provider_tokens_total[1h] offset 5m)) by (provider)
+              ) > {{ .Values.monitoring.prometheus.alerts.thresholds.tokenUsageSpike | default 3 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.tokenUsageSpike | default "5m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: cost
+              subsystem: provider
+            annotations:
+              summary: "Token usage spike for provider {{ `{{` }} $labels.provider {{ `}}` }}"
+              description: |
+                Token usage for {{ `{{` }} $labels.provider {{ `}}` }} is {{ `{{` }} $value | humanize {{ `}}` }}x higher than the hourly average.
+                This may indicate:
+                - Unusually large requests
+                - Potential abuse or misconfiguration
+                - Legitimate traffic spike
+                Review recent requests and consider rate limiting if necessary.
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/token-usage-spike.md"
+
+          - alert: ProviderCostRateHigh
+            expr: |
+              sum(rate(orchestrator_provider_cost_dollars_total[5m]) * 3600 * 24 * 30) by (provider)
+              > {{ .Values.monitoring.prometheus.alerts.thresholds.monthlyCostRate | default 1000 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.highCostRate | default "15m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: cost
+              subsystem: provider
+            annotations:
+              summary: "High cost rate for provider {{ `{{` }} $labels.provider {{ `}}` }}"
+              description: |
+                Provider {{ `{{` }} $labels.provider {{ `}}` }} is projecting ${{ `{{` }} $value | humanize {{ `}}` }}/month at current usage rate.
+                This exceeds the threshold of ${{ .Values.monitoring.prometheus.alerts.thresholds.monthlyCostRate | default 1000 }}/month.
+                Review:
+                - Token usage patterns
+                - Model selection (consider cheaper alternatives)
+                - Caching effectiveness
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/high-cost-rate.md"
+
+          # ========================================
+          # Cache Performance Alerts
+          # ========================================
+
+          - alert: ProviderCacheHitRateLow
+            expr: |
+              (
+                sum(rate(orchestrator_provider_cache_hits_total[5m])) by (provider)
+                / (sum(rate(orchestrator_provider_cache_hits_total[5m])) by (provider) + sum(rate(orchestrator_provider_cache_misses_total[5m])) by (provider))
+              ) < {{ .Values.monitoring.prometheus.alerts.thresholds.cacheHitRate | default 0.3 }}
+              and (sum(rate(orchestrator_provider_cache_hits_total[5m])) by (provider) + sum(rate(orchestrator_provider_cache_misses_total[5m])) by (provider)) > 0.1
+            for: {{ .Values.monitoring.prometheus.alerts.durations.lowCacheHitRate | default "30m" }}
+            labels:
+              severity: info
+              component: orchestrator
+              alert_type: performance
+              subsystem: provider
+            annotations:
+              summary: "Low cache hit rate for provider {{ `{{` }} $labels.provider {{ `}}` }}"
+              description: |
+                Cache hit rate for {{ `{{` }} $labels.provider {{ `}}` }} is {{ `{{` }} $value | humanizePercentage {{ `}}` }}.
+                This may indicate:
+                - Cache TTL is too short
+                - Request patterns are not cacheable
+                - Cache size is too small
+                Consider reviewing cache configuration to reduce provider costs.
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/low-cache-hit-rate.md"
+
+          # ========================================
+          # Provider Health Check Alerts
+          # ========================================
+
+          - alert: ProviderHealthCheckFailing
+            expr: |
+              orchestrator_provider_health_status{} == 0
+            for: {{ .Values.monitoring.prometheus.alerts.durations.healthCheckFailing | default "3m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: availability
+              subsystem: provider
+            annotations:
+              summary: "Health check failing for provider {{ `{{` }} $labels.provider {{ `}}` }}"
+              description: |
+                Health check for provider {{ `{{` }} $labels.provider {{ `}}` }} has been failing for {{ .Values.monitoring.prometheus.alerts.durations.healthCheckFailing | default "3m" }}.
+                The provider may be experiencing issues or may be misconfigured.
+                Check:
+                - Provider API credentials
+                - Network connectivity
+                - Provider service status page
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/health-check-failing.md"
+
+      - name: orchestrator_provider_slo
+        interval: {{ .Values.monitoring.prometheus.alerts.evaluationInterval | default "30s" }}
+        rules:
+          # ========================================
+          # Provider SLO Alerts
+          # ========================================
+
+          - alert: ProviderAvailabilitySLOViolation
+            expr: |
+              (
+                1 - (
+                  sum(rate(orchestrator_provider_requests_total{status="error"}[30m])) by (provider)
+                  / sum(rate(orchestrator_provider_requests_total[30m])) by (provider)
+                )
+              ) < {{ .Values.monitoring.prometheus.alerts.thresholds.providerAvailabilitySLO | default 0.995 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.sloViolation | default "15m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: slo
+              subsystem: provider
+            annotations:
+              summary: "Provider {{ `{{` }} $labels.provider {{ `}}` }} SLO violation"
+              description: |
+                Provider {{ `{{` }} $labels.provider {{ `}}` }} availability is {{ `{{` }} $value | humanizePercentage {{ `}}` }} (target: {{ .Values.monitoring.prometheus.alerts.thresholds.providerAvailabilitySLO | default 0.995 | mul 100 }}%).
+                SLO requires {{ .Values.monitoring.prometheus.alerts.thresholds.providerAvailabilitySLO | default 0.995 | mul 100 }}% availability over 30-minute windows.
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/provider-slo-violation.md"
+
+          - alert: ProviderLatencySLOViolation
+            expr: |
+              histogram_quantile(0.99,
+                sum(rate(orchestrator_provider_latency_seconds_bucket[30m])) by (provider, le)
+              ) > {{ .Values.monitoring.prometheus.alerts.thresholds.providerLatencySLO | default 10 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.latencySLO | default "15m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: slo
+              subsystem: provider
+            annotations:
+              summary: "Provider {{ `{{` }} $labels.provider {{ `}}` }} latency SLO violation"
+              description: |
+                Provider {{ `{{` }} $labels.provider {{ `}}` }} P99 latency is {{ `{{` }} $value | humanizeDuration {{ `}}` }} (target: {{ .Values.monitoring.prometheus.alerts.thresholds.providerLatencySLO | default 10 }}s).
+                SLO requires P99 latency under {{ .Values.monitoring.prometheus.alerts.thresholds.providerLatencySLO | default 10 }} seconds.
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/provider-latency-slo.md"
+{{- end }}

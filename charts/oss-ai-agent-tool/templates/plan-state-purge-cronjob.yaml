@@ -1,0 +1,151 @@
+{{- if .Values.retention.planState.purge.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "oss-ai-agent-tool.fullname" . }}-plan-state-purge
+  labels:
+    {{- include "oss-ai-agent-tool.labels" . | nindent 4 }}
+    app.kubernetes.io/component: maintenance
+spec:
+  schedule: {{ .Values.retention.planState.purge.schedule | quote }}
+  successfulJobsHistoryLimit: {{ .Values.retention.planState.purge.successfulJobsHistoryLimit | default 3 }}
+  failedJobsHistoryLimit: {{ .Values.retention.planState.purge.failedJobsHistoryLimit | default 5 }}
+  concurrencyPolicy: {{ .Values.retention.planState.purge.concurrencyPolicy | default "Forbid" }}
+  startingDeadlineSeconds: {{ .Values.retention.planState.purge.startingDeadlineSeconds | default 300 }}
+  jobTemplate:
+    metadata:
+      labels:
+        {{- include "oss-ai-agent-tool.labels" . | nindent 8 }}
+        app.kubernetes.io/component: maintenance
+        job-name: plan-state-purge
+    spec:
+      backoffLimit: {{ .Values.retention.planState.purge.backoffLimit | default 3 }}
+      activeDeadlineSeconds: {{ .Values.retention.planState.purge.activeDeadlineSeconds | default 3600 }}
+      template:
+        metadata:
+          labels:
+            {{- include "oss-ai-agent-tool.labels" . | nindent 12 }}
+            app.kubernetes.io/component: maintenance
+            job-name: plan-state-purge
+          annotations:
+            {{- with .Values.retention.planState.purge.podAnnotations }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+        spec:
+          restartPolicy: OnFailure
+          {{- if .Values.retention.planState.purge.serviceAccountName }}
+          serviceAccountName: {{ .Values.retention.planState.purge.serviceAccountName }}
+          {{- else if .Values.orchestrator.serviceAccount.name }}
+          serviceAccountName: {{ .Values.orchestrator.serviceAccount.name }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: plan-state-purger
+              image: "{{ .Values.image.repo }}/orchestrator:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  echo "Starting plan state purge job..."
+
+                  {{- if .Values.retention.planState.purge.dryRun }}
+                  echo "Running in DRY RUN mode - no data will be deleted"
+                  {{- end }}
+
+                  node /app/services/orchestrator/scripts/purge-expired-plan-states.js
+
+                  echo "Plan state purge completed successfully"
+              env:
+                # Database configuration
+                {{- if .Values.postgres.enabled }}
+                - name: DATABASE_URL
+                  {{- if .Values.postgres.urlSecretName }}
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.postgres.urlSecretName }}
+                      key: {{ .Values.postgres.urlSecretKey | default "url" }}
+                  {{- else if .Values.postgres.url }}
+                  value: {{ .Values.postgres.url | quote }}
+                  {{- else }}
+                  value: "postgresql://{{ .Values.postgres.username }}:{{ .Values.postgres.password }}@{{ include "oss-ai-agent-tool.fullname" . }}-postgres:5432/{{ .Values.postgres.database }}"
+                  {{- end }}
+                {{- end }}
+
+                # Retention settings
+                - name: PLAN_RETENTION_DAYS
+                  value: {{ .Values.retention.planState.retentionDays | default "30" | quote }}
+
+                - name: DRY_RUN
+                  value: {{ .Values.retention.planState.purge.dryRun | default "false" | quote }}
+
+                # Storage backend
+                - name: STORAGE_BACKEND
+                  value: {{ .Values.retention.planState.backend | default "postgres" | quote }}
+
+                {{- if eq (.Values.retention.planState.backend | default "postgres") "file" }}
+                - name: PLAN_STATE_BASE_PATH
+                  value: {{ .Values.retention.planState.basePath | default "/app/data/plan-state" | quote }}
+                {{- end }}
+
+                # Metrics and audit
+                - name: METRICS_ENABLED
+                  value: {{ .Values.retention.planState.purge.metricsEnabled | default "true" | quote }}
+
+                - name: AUDIT_ENABLED
+                  value: {{ .Values.retention.planState.purge.auditEnabled | default "true" | quote }}
+
+                # Batch processing
+                - name: BATCH_SIZE
+                  value: {{ .Values.retention.planState.purge.batchSize | default "1000" | quote }}
+
+                # Additional environment variables
+                {{- with .Values.retention.planState.purge.extraEnv }}
+                  {{- toYaml . | nindent 16 }}
+                {{- end }}
+              {{- if .Values.retention.planState.purge.resources }}
+              resources:
+                {{- toYaml .Values.retention.planState.purge.resources | nindent 16 }}
+              {{- end }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+                {{- if eq (.Values.retention.planState.backend | default "postgres") "file" }}
+                - name: plan-state-data
+                  mountPath: {{ .Values.retention.planState.basePath | default "/app/data/plan-state" }}
+                {{- end }}
+                {{- with .Values.retention.planState.purge.extraVolumeMounts }}
+                  {{- toYaml . | nindent 16 }}
+                {{- end }}
+          volumes:
+            - name: tmp
+              emptyDir: {}
+            {{- if eq (.Values.retention.planState.backend | default "postgres") "file" }}
+            - name: plan-state-data
+              {{- if .Values.retention.planState.persistence.enabled }}
+              persistentVolumeClaim:
+                claimName: {{ .Values.retention.planState.persistence.existingClaim | default (printf "%s-plan-state" (include "oss-ai-agent-tool.fullname" .)) }}
+              {{- else }}
+              emptyDir: {}
+              {{- end }}
+            {{- end }}
+            {{- with .Values.retention.planState.purge.extraVolumes }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.retention.planState.purge.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.retention.planState.purge.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.retention.planState.purge.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

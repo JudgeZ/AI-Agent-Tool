@@ -1,0 +1,176 @@
+{{- if .Values.retention.artifacts.purge.enabled }}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "oss-ai-agent-tool.fullname" . }}-artifact-purge
+  labels:
+    {{- include "oss-ai-agent-tool.labels" . | nindent 4 }}
+    app.kubernetes.io/component: maintenance
+spec:
+  schedule: {{ .Values.retention.artifacts.purge.schedule | quote }}
+  successfulJobsHistoryLimit: {{ .Values.retention.artifacts.purge.successfulJobsHistoryLimit | default 3 }}
+  failedJobsHistoryLimit: {{ .Values.retention.artifacts.purge.failedJobsHistoryLimit | default 5 }}
+  concurrencyPolicy: {{ .Values.retention.artifacts.purge.concurrencyPolicy | default "Forbid" }}
+  startingDeadlineSeconds: {{ .Values.retention.artifacts.purge.startingDeadlineSeconds | default 300 }}
+  jobTemplate:
+    metadata:
+      labels:
+        {{- include "oss-ai-agent-tool.labels" . | nindent 8 }}
+        app.kubernetes.io/component: maintenance
+        job-name: artifact-purge
+    spec:
+      backoffLimit: {{ .Values.retention.artifacts.purge.backoffLimit | default 3 }}
+      activeDeadlineSeconds: {{ .Values.retention.artifacts.purge.activeDeadlineSeconds | default 7200 }}
+      template:
+        metadata:
+          labels:
+            {{- include "oss-ai-agent-tool.labels" . | nindent 12 }}
+            app.kubernetes.io/component: maintenance
+            job-name: artifact-purge
+          annotations:
+            {{- with .Values.retention.artifacts.purge.podAnnotations }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+        spec:
+          restartPolicy: OnFailure
+          {{- if .Values.retention.artifacts.purge.serviceAccountName }}
+          serviceAccountName: {{ .Values.retention.artifacts.purge.serviceAccountName }}
+          {{- else if .Values.orchestrator.serviceAccount.name }}
+          serviceAccountName: {{ .Values.orchestrator.serviceAccount.name }}
+          {{- end }}
+          securityContext:
+            {{- toYaml .Values.podSecurityContext | nindent 12 }}
+          containers:
+            - name: artifact-purger
+              image: "{{ .Values.image.repo }}/orchestrator:{{ .Values.image.tag | default .Chart.AppVersion }}"
+              imagePullPolicy: {{ .Values.image.pullPolicy }}
+              securityContext:
+                {{- toYaml .Values.containerSecurityContext | nindent 16 }}
+              command:
+                - /bin/sh
+                - -c
+                - |
+                  set -e
+                  echo "Starting artifact purge job..."
+
+                  {{- if .Values.retention.artifacts.purge.dryRun }}
+                  echo "Running in DRY RUN mode - no data will be deleted"
+                  {{- end }}
+
+                  node /app/services/orchestrator/scripts/purge-expired-artifacts.js
+
+                  echo "Artifact purge completed successfully"
+              env:
+                # Retention settings
+                - name: ARTIFACT_RETENTION_DAYS
+                  value: {{ .Values.retention.artifacts.retentionDays | default "90" | quote }}
+
+                - name: DRY_RUN
+                  value: {{ .Values.retention.artifacts.purge.dryRun | default "false" | quote }}
+
+                # Storage backend
+                - name: STORAGE_BACKEND
+                  value: {{ .Values.retention.artifacts.backend | default "file" | quote }}
+
+                {{- if eq (.Values.retention.artifacts.backend | default "file") "file" }}
+                # File backend settings
+                - name: ARTIFACT_BASE_PATH
+                  value: {{ .Values.retention.artifacts.basePath | default "/app/data/artifacts" | quote }}
+                {{- end }}
+
+                {{- if eq (.Values.retention.artifacts.backend | default "file") "s3" }}
+                # S3 backend settings
+                - name: S3_BUCKET
+                  value: {{ .Values.retention.artifacts.s3.bucket | quote }}
+                - name: S3_REGION
+                  value: {{ .Values.retention.artifacts.s3.region | default "us-east-1" | quote }}
+                - name: S3_PREFIX
+                  value: {{ .Values.retention.artifacts.s3.prefix | default "artifacts/" | quote }}
+                {{- if .Values.retention.artifacts.s3.accessKeySecretName }}
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.retention.artifacts.s3.accessKeySecretName }}
+                      key: {{ .Values.retention.artifacts.s3.accessKeyKey | default "access-key-id" }}
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.retention.artifacts.s3.secretKeySecretName | default .Values.retention.artifacts.s3.accessKeySecretName }}
+                      key: {{ .Values.retention.artifacts.s3.secretKeyKey | default "secret-access-key" }}
+                {{- end }}
+                {{- end }}
+
+                {{- if eq (.Values.retention.artifacts.backend | default "file") "azure" }}
+                # Azure backend settings
+                - name: AZURE_STORAGE_ACCOUNT
+                  value: {{ .Values.retention.artifacts.azure.account | quote }}
+                - name: AZURE_CONTAINER
+                  value: {{ .Values.retention.artifacts.azure.container | default "artifacts" | quote }}
+                - name: AZURE_PREFIX
+                  value: {{ .Values.retention.artifacts.azure.prefix | default "" | quote }}
+                {{- if .Values.retention.artifacts.azure.keySecretName }}
+                - name: AZURE_STORAGE_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.retention.artifacts.azure.keySecretName }}
+                      key: {{ .Values.retention.artifacts.azure.keySecretKey | default "storage-key" }}
+                {{- end }}
+                {{- end }}
+
+                # Metrics and audit
+                - name: METRICS_ENABLED
+                  value: {{ .Values.retention.artifacts.purge.metricsEnabled | default "true" | quote }}
+
+                - name: AUDIT_ENABLED
+                  value: {{ .Values.retention.artifacts.purge.auditEnabled | default "true" | quote }}
+
+                # Batch processing
+                - name: BATCH_SIZE
+                  value: {{ .Values.retention.artifacts.purge.batchSize | default "100" | quote }}
+
+                # Additional environment variables
+                {{- with .Values.retention.artifacts.purge.extraEnv }}
+                  {{- toYaml . | nindent 16 }}
+                {{- end }}
+              {{- if .Values.retention.artifacts.purge.resources }}
+              resources:
+                {{- toYaml .Values.retention.artifacts.purge.resources | nindent 16 }}
+              {{- end }}
+              volumeMounts:
+                - name: tmp
+                  mountPath: /tmp
+                {{- if eq (.Values.retention.artifacts.backend | default "file") "file" }}
+                - name: artifact-data
+                  mountPath: {{ .Values.retention.artifacts.basePath | default "/app/data/artifacts" }}
+                {{- end }}
+                {{- with .Values.retention.artifacts.purge.extraVolumeMounts }}
+                  {{- toYaml . | nindent 16 }}
+                {{- end }}
+          volumes:
+            - name: tmp
+              emptyDir: {}
+            {{- if eq (.Values.retention.artifacts.backend | default "file") "file" }}
+            - name: artifact-data
+              {{- if .Values.retention.artifacts.persistence.enabled }}
+              persistentVolumeClaim:
+                claimName: {{ .Values.retention.artifacts.persistence.existingClaim | default (printf "%s-artifacts" (include "oss-ai-agent-tool.fullname" .)) }}
+              {{- else }}
+              emptyDir: {}
+              {{- end }}
+            {{- end }}
+            {{- with .Values.retention.artifacts.purge.extraVolumes }}
+              {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.retention.artifacts.purge.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.retention.artifacts.purge.affinity }}
+          affinity:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.retention.artifacts.purge.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

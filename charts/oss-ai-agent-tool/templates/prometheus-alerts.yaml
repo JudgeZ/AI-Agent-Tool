@@ -1,0 +1,445 @@
+{{- if .Values.monitoring.prometheus.alerts.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "oss-ai-agent-tool.fullname" . }}-prometheus-alerts
+  labels:
+    {{- include "oss-ai-agent-tool.labels" . | nindent 4 }}
+    app.kubernetes.io/component: monitoring
+data:
+  orchestrator-alerts.yml: |
+    groups:
+      - name: orchestrator_queue_health
+        interval: {{ .Values.monitoring.prometheus.alerts.evaluationInterval | default "30s" }}
+        rules:
+          # ========================================
+          # Queue Depth / Lag Alerts
+          # ========================================
+
+          - alert: QueueDepthHigh
+            expr: |
+              orchestrator_queue_depth{queue="plan.steps"} > {{ .Values.monitoring.prometheus.alerts.thresholds.queueDepthHigh | default 100 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.queueDepthHigh | default "5m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: capacity
+            annotations:
+              summary: "High queue depth detected"
+              description: |
+                Queue {{ `{{` }} $labels.queue {{ `}}` }} has {{ `{{` }} $value {{ `}}` }} messages pending (transport: {{ `{{` }} $labels.transport {{ `}}` }}).
+                This indicates orchestrator pods may be under-scaled or experiencing performance issues.
+                Current HPA target is {{ .Values.orchestrator.hpa.targetQueueDepth | default 5 }} messages per pod.
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/queue-depth-high.md"
+              dashboard_url: "{{ .Values.monitoring.grafana.url }}/d/orchestrator-queue-health"
+
+          - alert: QueueDepthCritical
+            expr: |
+              orchestrator_queue_depth{queue="plan.steps"} > {{ .Values.monitoring.prometheus.alerts.thresholds.queueDepthCritical | default 500 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.queueDepthCritical | default "2m" }}
+            labels:
+              severity: critical
+              component: orchestrator
+              alert_type: capacity
+              pager: "true"
+            annotations:
+              summary: "Critical queue backlog detected"
+              description: |
+                Queue {{ `{{` }} $labels.queue {{ `}}` }} has {{ `{{` }} $value {{ `}}` }} messages pending (transport: {{ `{{` }} $labels.transport {{ `}}` }}).
+                Immediate action required - service degradation likely.
+                HPA may have hit max replicas ({{ .Values.orchestrator.hpa.max | default 10 }}) or pods are failing.
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/queue-depth-critical.md"
+
+          - alert: KafkaConsumerLagHigh
+            expr: |
+              orchestrator_queue_lag{transport="kafka",queue="plan.steps"} > {{ .Values.monitoring.prometheus.alerts.thresholds.kafkaLagHigh | default 100 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.kafkaLagHigh | default "5m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: capacity
+              transport: kafka
+            annotations:
+              summary: "Kafka consumer lag is high"
+              description: |
+                Kafka consumer group lag for queue {{ `{{` }} $labels.queue {{ `}}` }} is {{ `{{` }} $value {{ `}}` }} messages.
+                Consumer is falling behind producers. Consider scaling up orchestrator replicas.
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/kafka-lag-high.md"
+
+          - alert: KafkaPartitionLagImbalanced
+            expr: |
+              max(orchestrator_queue_partition_lag{transport="kafka",queue="plan.steps"}) by (queue)
+              - min(orchestrator_queue_partition_lag{transport="kafka",queue="plan.steps"}) by (queue)
+              > {{ .Values.monitoring.prometheus.alerts.thresholds.partitionLagImbalance | default 50 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.partitionLagImbalance | default "10m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: performance
+              transport: kafka
+            annotations:
+              summary: "Kafka partition lag is imbalanced"
+              description: |
+                Partition lag variance for {{ `{{` }} $labels.queue {{ `}}` }} is {{ `{{` }} $value {{ `}}` }} messages.
+                Some partitions are lagging significantly more than others, indicating uneven consumer distribution.
+                Review consumer group rebalancing and partition assignment strategy.
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/partition-imbalance.md"
+
+          # ========================================
+          # Processing Performance Alerts
+          # ========================================
+
+          - alert: QueueProcessingSlowdown
+            expr: |
+              rate(orchestrator_queue_processing_seconds_sum[5m])
+              / rate(orchestrator_queue_processing_seconds_count[5m])
+              > {{ .Values.monitoring.prometheus.alerts.thresholds.processingSlowdown | default 30 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.processingSlowdown | default "10m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: performance
+            annotations:
+              summary: "Queue message processing is slow"
+              description: |
+                Average processing time for {{ `{{` }} $labels.queue {{ `}}` }} messages is {{ `{{` }} $value | humanizeDuration {{ `}}` }}.
+                This may indicate:
+                - Tool execution timeouts
+                - Slow external API calls (LLM providers)
+                - Resource constraints (CPU/memory)
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/processing-slowdown.md"
+
+          - alert: HighDeadLetterRate
+            expr: |
+              rate(orchestrator_queue_dead_letters_total[5m]) > {{ .Values.monitoring.prometheus.alerts.thresholds.deadLetterRate | default 1 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.deadLetterRate | default "5m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: reliability
+            annotations:
+              summary: "High rate of messages being dead-lettered"
+              description: |
+                Dead letter rate for {{ `{{` }} $labels.queue {{ `}}` }} is {{ `{{` }} $value | humanize {{ `}}` }} messages/second.
+                Messages are failing repeatedly and being moved to dead letter queue.
+                Check orchestrator logs for errors and review dead letter queue contents.
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/high-dead-letter-rate.md"
+
+          - alert: HighRetryRate
+            expr: |
+              rate(orchestrator_queue_retries_total[5m])
+              / rate(orchestrator_queue_acks_total[5m])
+              > {{ .Values.monitoring.prometheus.alerts.thresholds.retryRatePercent | default 0.2 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.retryRate | default "10m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: reliability
+            annotations:
+              summary: "High message retry rate detected"
+              description: |
+                {{ `{{` }} $value | humanizePercentage {{ `}}` }} of messages on {{ `{{` }} $labels.queue {{ `}}` }} are being retried.
+                This indicates transient failures in message processing.
+                Common causes:
+                - Intermittent network issues with external services
+                - Tool execution timeouts
+                - Rate limiting from LLM providers
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/high-retry-rate.md"
+
+          # ========================================
+          # HPA Health & Autoscaling Alerts
+          # ========================================
+
+          - alert: HPAAtMaxReplicas
+            expr: |
+              kube_horizontalpodautoscaler_status_current_replicas{horizontalpodautoscaler="{{ include "oss-ai-agent-tool.fullname" . }}-orchestrator"}
+              >= kube_horizontalpodautoscaler_spec_max_replicas{horizontalpodautoscaler="{{ include "oss-ai-agent-tool.fullname" . }}-orchestrator"}
+              and orchestrator_queue_depth{queue="plan.steps"} > {{ .Values.orchestrator.hpa.targetQueueDepth | default 5 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.hpaMaxReplicas | default "10m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: capacity
+            annotations:
+              summary: "HPA has reached maximum replica count"
+              description: |
+                Orchestrator HPA is at max replicas ({{ `{{` }} $value {{ `}}` }}) but queue depth is still above target.
+                Consider increasing HPA max replicas or investigating performance issues.
+                Current queue depth: {{ `{{` }} query "orchestrator_queue_depth{queue='plan.steps'}" | first | value {{ `}}` }}
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/hpa-at-max.md"
+
+          - alert: HPAScalingDisabled
+            expr: |
+              kube_horizontalpodautoscaler_status_condition{horizontalpodautoscaler="{{ include "oss-ai-agent-tool.fullname" . }}-orchestrator",condition="ScalingActive",status="false"} == 1
+            for: {{ .Values.monitoring.prometheus.alerts.durations.hpaDisabled | default "5m" }}
+            labels:
+              severity: critical
+              component: orchestrator
+              alert_type: availability
+            annotations:
+              summary: "HPA scaling is disabled or failing"
+              description: |
+                Orchestrator HPA is not scaling despite being configured.
+                This prevents autoscaling and may cause service degradation.
+                Check HPA status: kubectl describe hpa {{ include "oss-ai-agent-tool.fullname" . }}-orchestrator
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/hpa-disabled.md"
+
+          - alert: HPAMetricsMissing
+            expr: |
+              absent(orchestrator_queue_depth{queue="plan.steps"}) == 1
+              or absent(orchestrator_queue_lag{queue="plan.steps"}) == 1
+            for: {{ .Values.monitoring.prometheus.alerts.durations.metricsAbsent | default "5m" }}
+            labels:
+              severity: critical
+              component: orchestrator
+              alert_type: monitoring
+            annotations:
+              summary: "HPA target metrics are missing"
+              description: |
+                Required metrics for HPA autoscaling are not being reported.
+                HPA cannot make scaling decisions without metrics.
+                Check:
+                - Orchestrator pods are running and healthy
+                - Metrics endpoint is accessible: /metrics
+                - Prometheus is scraping orchestrator pods
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/metrics-missing.md"
+
+          - alert: HPACPUThresholdExceeded
+            expr: |
+              avg(rate(container_cpu_usage_seconds_total{namespace="{{ .Release.Namespace }}",pod=~"{{ include "oss-ai-agent-tool.fullname" . }}-orchestrator-.*"}[5m])) > {{ .Values.monitoring.prometheus.alerts.thresholds.hpaCPUTarget | default 0.8 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.cpuThreshold | default "5m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: capacity
+            annotations:
+              summary: "CPU usage exceeds HPA scaling threshold"
+              description: |
+                Average CPU usage is {{ `{{` }} $value | humanizePercentage {{ `}}` }} (threshold: {{ .Values.monitoring.prometheus.alerts.thresholds.hpaCPUTarget | default 0.8 | mul 100 }}%).
+                HPA should be scaling up replicas. If not scaling:
+                - Check if HPA is at max replicas
+                - Verify HPA is configured for CPU-based scaling
+                - Review pod resource requests/limits
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/cpu-threshold.md"
+
+          - alert: HPAMemoryThresholdExceeded
+            expr: |
+              avg(container_memory_working_set_bytes{namespace="{{ .Release.Namespace }}",pod=~"{{ include "oss-ai-agent-tool.fullname" . }}-orchestrator-.*"}
+              / container_spec_memory_limit_bytes{namespace="{{ .Release.Namespace }}",pod=~"{{ include "oss-ai-agent-tool.fullname" . }}-orchestrator-.*"}) > {{ .Values.monitoring.prometheus.alerts.thresholds.hpaMemoryTarget | default 0.8 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.memoryThreshold | default "5m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: capacity
+            annotations:
+              summary: "Memory usage exceeds HPA scaling threshold"
+              description: |
+                Average memory usage is {{ `{{` }} $value | humanizePercentage {{ `}}` }} (threshold: {{ .Values.monitoring.prometheus.alerts.thresholds.hpaMemoryTarget | default 0.8 | mul 100 }}%).
+                HPA should be scaling up replicas. If not scaling:
+                - Check if HPA is at max replicas
+                - Verify HPA is configured for memory-based scaling
+                - Review pod memory limits
+                - Consider memory leak investigation if persistent
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/memory-threshold.md"
+
+          - alert: HPAFrequentScaling
+            expr: |
+              changes(kube_horizontalpodautoscaler_status_current_replicas{horizontalpodautoscaler="{{ include "oss-ai-agent-tool.fullname" . }}-orchestrator"}[30m]) > {{ .Values.monitoring.prometheus.alerts.thresholds.scalingFrequency | default 10 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.frequentScaling | default "5m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: stability
+            annotations:
+              summary: "HPA is scaling too frequently (thrashing)"
+              description: |
+                HPA has scaled {{ `{{` }} $value {{ `}}` }} times in the last 30 minutes.
+                This indicates:
+                - Workload is highly variable
+                - HPA settings may need tuning (scale-down stabilization)
+                - Target metrics may be too sensitive
+                Consider adjusting HPA behavior settings or target thresholds.
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/hpa-thrashing.md"
+
+          - alert: HPAScaleDownBlocked
+            expr: |
+              kube_horizontalpodautoscaler_status_desired_replicas{horizontalpodautoscaler="{{ include "oss-ai-agent-tool.fullname" . }}-orchestrator"}
+              < kube_horizontalpodautoscaler_status_current_replicas{horizontalpodautoscaler="{{ include "oss-ai-agent-tool.fullname" . }}-orchestrator"}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.scaleDownBlocked | default "15m" }}
+            labels:
+              severity: info
+              component: orchestrator
+              alert_type: capacity
+            annotations:
+              summary: "HPA scale-down is delayed"
+              description: |
+                HPA wants {{ `{{` }} $labels.desired_replicas {{ `}}` }} replicas but has {{ `{{` }} $labels.current_replicas {{ `}}` }}.
+                Scale-down is likely in stabilization period (default: 5 minutes).
+                This is normal behavior to prevent flapping.
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/scale-down-delay.md"
+
+          - alert: HPATargetUtilizationMismatch
+            expr: |
+              abs(kube_horizontalpodautoscaler_status_current_metrics_value{horizontalpodautoscaler="{{ include "oss-ai-agent-tool.fullname" . }}-orchestrator",metric_name="cpu"}
+              - kube_horizontalpodautoscaler_spec_target_metric{horizontalpodautoscaler="{{ include "oss-ai-agent-tool.fullname" . }}-orchestrator",metric_name="cpu"})
+              / kube_horizontalpodautoscaler_spec_target_metric{horizontalpodautoscaler="{{ include "oss-ai-agent-tool.fullname" . }}-orchestrator",metric_name="cpu"} > 0.2
+              and kube_horizontalpodautoscaler_status_current_replicas{horizontalpodautoscaler="{{ include "oss-ai-agent-tool.fullname" . }}-orchestrator"}
+              == kube_horizontalpodautoscaler_status_desired_replicas{horizontalpodautoscaler="{{ include "oss-ai-agent-tool.fullname" . }}-orchestrator"}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.utilizationMismatch | default "10m" }}
+            labels:
+              severity: info
+              component: orchestrator
+              alert_type: tuning
+            annotations:
+              summary: "HPA target utilization not being maintained"
+              description: |
+                Current CPU utilization ({{ `{{` }} $labels.current_value {{ `}}` }}%) differs from target ({{ `{{` }} $labels.target_value {{ `}}` }}%) by more than 20%.
+                HPA is not scaling to maintain target utilization.
+                This may indicate:
+                - HPA is at min/max replica bounds
+                - Metrics calculation delay
+                - Need to adjust target utilization
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/utilization-mismatch.md"
+
+          - alert: HPAScalingLimited
+            expr: |
+              kube_horizontalpodautoscaler_status_condition{horizontalpodautoscaler="{{ include "oss-ai-agent-tool.fullname" . }}-orchestrator",condition="ScalingLimited",status="true"} == 1
+            for: {{ .Values.monitoring.prometheus.alerts.durations.scalingLimited | default "5m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: capacity
+            annotations:
+              summary: "HPA scaling is limited"
+              description: |
+                HPA scaling is limited by configuration or resource constraints.
+                Common causes:
+                - Reached min/max replica limits
+                - Insufficient cluster resources for new pods
+                - Pod disruption budget preventing scale operations
+                Check HPA events: kubectl describe hpa {{ include "oss-ai-agent-tool.fullname" . }}-orchestrator
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/scaling-limited.md"
+
+          # ========================================
+          # Queue Backend Health Alerts
+          # ========================================
+
+          - alert: KafkaConnectionFailure
+            expr: |
+              rate(orchestrator_queue_results_total{queue="plan.steps",result="error"}[5m]) > 0.5
+              and on() kube_deployment_spec_replicas{deployment="{{ include "oss-ai-agent-tool.fullname" . }}-orchestrator"} > 0
+            for: {{ .Values.monitoring.prometheus.alerts.durations.backendConnectionFailure | default "2m" }}
+            labels:
+              severity: critical
+              component: orchestrator
+              alert_type: availability
+              transport: kafka
+            annotations:
+              summary: "Kafka connection failures detected"
+              description: |
+                Orchestrator is experiencing errors connecting to or using Kafka.
+                This will prevent message processing and plan execution.
+                Check Kafka cluster health and network connectivity.
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/kafka-connection-failure.md"
+
+          - alert: RabbitMQConnectionFailure
+            expr: |
+              rate(orchestrator_queue_results_total{queue="plan.steps",result="error"}[5m]) > 0.5
+              and on() kube_deployment_spec_replicas{deployment="{{ include "oss-ai-agent-tool.fullname" . }}-orchestrator"} > 0
+            for: {{ .Values.monitoring.prometheus.alerts.durations.backendConnectionFailure | default "2m" }}
+            labels:
+              severity: critical
+              component: orchestrator
+              alert_type: availability
+              transport: rabbitmq
+            annotations:
+              summary: "RabbitMQ connection failures detected"
+              description: |
+                Orchestrator is experiencing errors connecting to or using RabbitMQ.
+                This will prevent message processing and plan execution.
+                Check RabbitMQ cluster health and network connectivity.
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/rabbitmq-connection-failure.md"
+
+          # ========================================
+          # Orchestrator Pod Health Alerts
+          # ========================================
+
+          - alert: OrchestratorPodCrashLooping
+            expr: |
+              rate(kube_pod_container_status_restarts_total{pod=~"{{ include "oss-ai-agent-tool.fullname" . }}-orchestrator-.*"}[15m]) > 0
+            for: {{ .Values.monitoring.prometheus.alerts.durations.podCrashLoop | default "5m" }}
+            labels:
+              severity: critical
+              component: orchestrator
+              alert_type: availability
+            annotations:
+              summary: "Orchestrator pod is crash looping"
+              description: |
+                Pod {{ `{{` }} $labels.pod {{ `}}` }} is restarting repeatedly.
+                This reduces available capacity and may indicate:
+                - Configuration errors
+                - Resource exhaustion (OOM)
+                - Startup probe failures
+                Check pod logs: kubectl logs {{ `{{` }} $labels.pod {{ `}}` }} -n {{ `{{` }} $labels.namespace {{ `}}` }}
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/pod-crash-loop.md"
+
+          - alert: OrchestratorPodsNotReady
+            expr: |
+              kube_deployment_status_replicas_unavailable{deployment="{{ include "oss-ai-agent-tool.fullname" . }}-orchestrator"} > 0
+            for: {{ .Values.monitoring.prometheus.alerts.durations.podsNotReady | default "5m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: availability
+            annotations:
+              summary: "Orchestrator pods are not ready"
+              description: |
+                {{ `{{` }} $value {{ `}}` }} orchestrator pods are unavailable.
+                This reduces processing capacity and may cause queue backlog.
+                Check pod status: kubectl get pods -l app=orchestrator -n {{ `{{` }} $labels.namespace {{ `}}` }}
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/pods-not-ready.md"
+
+      - name: orchestrator_sla
+        interval: {{ .Values.monitoring.prometheus.alerts.evaluationInterval | default "30s" }}
+        rules:
+          # ========================================
+          # SLA / SLO Alerts
+          # ========================================
+
+          - alert: MessageProcessingSLOViolation
+            expr: |
+              (
+                rate(orchestrator_queue_acks_total{queue="plan.steps"}[5m])
+                / (rate(orchestrator_queue_acks_total{queue="plan.steps"}[5m]) + rate(orchestrator_queue_dead_letters_total{queue="plan.steps"}[5m]))
+              ) < {{ .Values.monitoring.prometheus.alerts.thresholds.messageSLO | default 0.99 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.sloViolation | default "10m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: slo
+            annotations:
+              summary: "Message processing SLO violation"
+              description: |
+                Message success rate is {{ `{{` }} $value | humanizePercentage {{ `}}` }} (target: {{ .Values.monitoring.prometheus.alerts.thresholds.messageSLO | default 0.99 | mul 100 }}%).
+                SLO requires successful processing of at least {{ .Values.monitoring.prometheus.alerts.thresholds.messageSLO | default 0.99 | mul 100 }}% of messages.
+                Review dead letter queue and error logs.
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/slo-violation.md"
+
+          - alert: QueueProcessingLatencySLOViolation
+            expr: |
+              histogram_quantile(0.95,
+                rate(orchestrator_queue_processing_seconds_bucket{queue="plan.steps"}[5m])
+              ) > {{ .Values.monitoring.prometheus.alerts.thresholds.latencySLO | default 60 }}
+            for: {{ .Values.monitoring.prometheus.alerts.durations.latencySLO | default "10m" }}
+            labels:
+              severity: warning
+              component: orchestrator
+              alert_type: slo
+            annotations:
+              summary: "Queue processing latency SLO violation"
+              description: |
+                P95 processing latency is {{ `{{` }} $value | humanizeDuration {{ `}}` }} (target: {{ .Values.monitoring.prometheus.alerts.thresholds.latencySLO | default 60 }}s).
+                Messages are taking longer than expected to process.
+                This may impact user experience and plan execution times.
+              runbook_url: "https://github.com/your-org/oss-ai-agent-tool/blob/main/docs/runbooks/latency-slo.md"
+{{- end }}

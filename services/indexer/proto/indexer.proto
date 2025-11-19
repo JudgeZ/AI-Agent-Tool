@@ -1,0 +1,198 @@
+syntax = "proto3";
+
+package indexer;
+
+service IndexerService {
+  rpc IndexDocument(IndexDocumentRequest) returns (IndexDocumentResponse);
+  rpc IndexSymbols(IndexSymbolsRequest) returns (IndexSymbolsResponse);
+  rpc SearchDocuments(SearchDocumentsRequest) returns (SearchDocumentsResponse);
+  rpc SearchSymbols(SearchSymbolsRequest) returns (SearchSymbolsResponse);
+  
+  // Code Navigation
+  rpc GetSymbolGraph(GetSymbolGraphRequest) returns (GetSymbolGraphResponse);
+  rpc GetReferences(GetReferencesRequest) returns (GetReferencesResponse);
+  rpc GetDefinitions(GetDefinitionsRequest) returns (GetDefinitionsResponse);
+  
+  // Temporal
+  rpc GetSymbolHistory(GetSymbolHistoryRequest) returns (GetSymbolHistoryResponse);
+  rpc GetSymbolAtCommit(GetSymbolAtCommitRequest) returns (GetSymbolAtCommitResponse);
+  
+  // Intelligence
+  rpc CorrelateFailure(CorrelateFailureRequest) returns (CorrelateFailureResponse);
+}
+
+message IndexDocumentRequest {
+  string path = 1;
+  string content = 2;
+  optional string commit_id = 3;
+}
+
+message IndexDocumentResponse {
+  string document_id = 1;
+  int32 embedding_dim = 2;
+}
+
+message IndexSymbolsRequest {
+  string path = 1;
+  string content = 2;
+  string language = 3;
+  optional string commit_id = 4;
+}
+
+message IndexSymbolsResponse {
+  int32 symbol_count = 1;
+}
+
+message SearchDocumentsRequest {
+  string query = 1;
+  int32 top_k = 2;
+  optional string path_prefix = 3;
+  optional string commit_id = 4;
+}
+
+message SearchDocumentsResponse {
+  repeated SearchResult results = 1;
+}
+
+message SearchSymbolsRequest {
+  string query = 1;
+  int32 top_k = 2;
+  optional string path_prefix = 3;
+  optional string commit_id = 4;
+}
+
+message SearchSymbolsResponse {
+  repeated SearchResult results = 1;
+}
+
+message SearchResult {
+  string id = 1;
+  string path = 2;
+  float score = 3;
+  string snippet = 4;
+  optional string commit_id = 5;
+}
+
+// Code Navigation Messages
+
+message Position {
+  uint32 line = 1;
+  uint32 character = 2;
+}
+
+message Range {
+  Position start = 1;
+  Position end = 2;
+}
+
+message Location {
+  string path = 1;
+  Range range = 2;
+}
+
+message GetSymbolGraphRequest {
+  string path = 1;
+  optional string commit_id = 2;
+}
+
+message GraphNode {
+  string id = 1;
+  string name = 2;
+  string kind = 3;
+  string path = 4;
+}
+
+message GraphEdge {
+  string from_id = 1;
+  string to_id = 2;
+  string relation = 3; // "calls", "imports", "defines"
+}
+
+message GetSymbolGraphResponse {
+  repeated GraphNode nodes = 1;
+  repeated GraphEdge edges = 2;
+}
+
+message GetReferencesRequest {
+  string path = 1;
+  uint32 line = 2;
+  uint32 character = 3;
+  optional string commit_id = 4;
+  bool include_declaration = 5;
+}
+
+message GetReferencesResponse {
+  repeated Location locations = 1;
+}
+
+message GetDefinitionsRequest {
+  string path = 1;
+  uint32 line = 2;
+  uint32 character = 3;
+  optional string commit_id = 4;
+}
+
+message GetDefinitionsResponse {
+  repeated Location locations = 1;
+}
+
+// Temporal Messages
+
+message GetSymbolHistoryRequest {
+  string path = 1;
+}
+
+message SymbolVersion {
+  string symbol_id = 1;
+  string commit_id = 2;
+  string timestamp = 3; // ISO 8601
+  string change_type = 4; // Added, Modified, Deleted, Renamed
+  string author = 5;
+  string commit_message = 6;
+  optional string previous_path = 7;
+}
+
+message GetSymbolHistoryResponse {
+  repeated SymbolVersion versions = 1;
+}
+
+message GetSymbolAtCommitRequest {
+  string path = 1;
+  string commit_id = 2;
+}
+
+message GetSymbolAtCommitResponse {
+  optional Symbol symbol = 1;
+}
+
+message Symbol {
+  string id = 1;
+  string path = 2;
+  string name = 3;
+  string kind = 4;
+  string content = 5;
+  string commit_id = 6;
+  int32 start_line = 7;
+  int32 end_line = 8;
+  string language = 9;
+}
+
+// Intelligence Messages
+
+message CorrelateFailureRequest {
+  string test_name = 1;
+  string failure_message = 2;
+  string commit_id = 3;
+  optional string previous_commit_id = 4;
+}
+
+message SuspectChange {
+  Symbol symbol = 1;
+  float relevance_score = 2;
+  string reason = 3;
+  string change_type = 4;
+}
+
+message CorrelateFailureResponse {
+  repeated SuspectChange suspects = 1;
+}

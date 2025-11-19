@@ -1,0 +1,28 @@
+{
+  "name": "oss-ai-agent-tool",
+  "version": "1.0.0",
+  "description": "[CI](https://github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/actions/workflows/ci.yml)\r [Release Images](https://github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/actions/workflows/release-images.yml)\r [Release Helm Charts](https://github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/actions/workflows/release-charts.yml)\r [Security Scans](https://github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/actions/workflows/security.yml)",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/JudgeZ/OSS-AI-Agent-Tool.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/JudgeZ/OSS-AI-Agent-Tool/issues"
+  },
+  "homepage": "https://github.com/JudgeZ/OSS-AI-Agent-Tool#readme",
+  "devDependencies": {
+    "@playwright/test": "^1.56.1",
+    "playwright": "^1.56.1"
+  }
+}

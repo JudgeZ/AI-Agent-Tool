@@ -1,15 +1,23 @@
 use std::net::{AddrParseError, SocketAddr};
+use std::sync::Arc;
 
 use axum::{routing::get, Json, Router};
 use serde_json::{json, Value};
 use thiserror::Error;
+use tonic::transport::Server;
 use tracing::{info, warn};
 
-use crate::semantic::SemanticStore;
+use crate::grpc_service::{
+    proto::indexer_service_server::IndexerServiceServer, IndexerServiceImpl,
+};
+use crate::storage::{create_storage, StorageConfig};
 use crate::telemetry;
+use crate::temporal::{TemporalConfig, TemporalIndex};
 
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:9200";
 const LISTEN_ADDR_ENV: &str = "INDEXER_LISTEN_ADDR";
+const DEFAULT_GRPC_ADDR: &str = "0.0.0.0:9201";
+const GRPC_ADDR_ENV: &str = "INDEXER_GRPC_ADDR";
 
 #[derive(Debug, Error)]
 pub enum IndexerError {
@@ -21,30 +29,90 @@ pub enum IndexerError {
     Bind(#[from] std::io::Error),
     #[error("server error: {0}")]
     Server(#[from] hyper::Error),
+    #[error("storage error: {0}")]
+    Storage(String),
+    #[error("temporal index error: {0}")]
+    Temporal(#[from] crate::temporal::TemporalError),
+    #[error("gRPC server error: {0}")]
+    GrpcServer(#[from] tonic::transport::Error),
 }
 
 pub async fn run() -> Result<(), IndexerError> {
     telemetry::init_tracing()?;
 
-    let addr = resolve_listen_addr()?;
-    let store = SemanticStore::new();
+    let http_addr = resolve_listen_addr()?;
+    let grpc_addr = resolve_grpc_addr()?;
 
+    // Initialize storage
+    let storage_config = StorageConfig::from_env()
+        .map_err(|e| IndexerError::Storage(e.to_string()))?;
+    let storage = create_storage(storage_config)
+        .await
+        .map_err(|e| IndexerError::Storage(e.to_string()))?;
+
+    info!("Storage initialized successfully");
+
+    // Initialize temporal index
+    let temporal_config = TemporalConfig::from_env();
+    let temporal_index = Arc::new(TemporalIndex::new(temporal_config, storage.clone())?);
+
+    info!("Temporal index initialized successfully");
+
+    // Create gRPC service
+    let grpc_service = IndexerServiceImpl::new(storage.clone(), temporal_index);
+    let grpc_server = IndexerServiceServer::new(grpc_service);
+
+    // Create HTTP service (legacy support / health check)
     let app = Router::new()
-        .route("/healthz", get(health_check))
-        .with_state(store);
+        .route("/healthz", get(health_check));
 
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    info!("indexer listening on {addr}");
+    // Spawn HTTP server
+    let http_handle = {
+        let listener = tokio::net::TcpListener::bind(http_addr).await?;
+        info!("HTTP server listening on {http_addr}");
 
-    axum::serve(listener, app.into_make_service())
-        .with_graceful_shutdown(shutdown_signal())
-        .await?;
+        tokio::spawn(async move {
+            axum::serve(listener, app.into_make_service())
+                .with_graceful_shutdown(shutdown_signal())
+                .await
+        })
+    };
+
+    // Spawn gRPC server
+    let grpc_handle = {
+        info!("gRPC server listening on {grpc_addr}");
+
+        tokio::spawn(async move {
+            Server::builder()
+                .add_service(grpc_server)
+                .serve_with_shutdown(grpc_addr, shutdown_signal())
+                .await
+        })
+    };
+
+    // Wait for both servers
+    let (http_result, grpc_result) = tokio::join!(http_handle, grpc_handle);
+
+    // Check for errors
+    if let Err(e) = http_result {
+        warn!("HTTP server task failed: {}", e);
+    }
+
+    if let Err(e) = grpc_result {
+        warn!("gRPC server task failed: {}", e);
+    }
 
     Ok(())
 }
 
 fn resolve_listen_addr() -> Result<SocketAddr, IndexerError> {
     let raw = std::env::var(LISTEN_ADDR_ENV).unwrap_or_else(|_| DEFAULT_LISTEN_ADDR.to_string());
+    raw.parse()
+        .map_err(|error| IndexerError::InvalidListenAddr(raw, error))
+}
+
+fn resolve_grpc_addr() -> Result<SocketAddr, IndexerError> {
+    let raw = std::env::var(GRPC_ADDR_ENV).unwrap_or_else(|_| DEFAULT_GRPC_ADDR.to_string());
     raw.parse()
         .map_err(|error| IndexerError::InvalidListenAddr(raw, error))
 }

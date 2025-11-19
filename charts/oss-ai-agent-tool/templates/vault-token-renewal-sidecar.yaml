@@ -1,0 +1,283 @@
+{{- if and .Values.vault.enabled .Values.vault.tokenRenewal.sidecar.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "oss-ai-agent-tool.fullname" . }}-vault-renewal
+  labels:
+    {{- include "oss-ai-agent-tool.labels" . | nindent 4 }}
+    app.kubernetes.io/component: security
+data:
+  renewal.js: |
+    /**
+     * Vault Token Renewal Sidecar
+     *
+     * Standalone sidecar process that renews Vault tokens for the main application.
+     * Writes renewed tokens to a shared volume that the main app can read.
+     */
+    const fs = require('fs');
+    const https = require('https');
+    const http = require('http');
+
+    const VAULT_ADDR = process.env.VAULT_ADDR || 'https://vault.default.svc:8200';
+    const TOKEN_PATH = process.env.VAULT_TOKEN_PATH || '/vault/secrets/token';
+    const RENEW_INTERVAL = parseInt(process.env.RENEW_INTERVAL_SECONDS || '300', 10) * 1000;
+    const RENEWAL_THRESHOLD = parseFloat(process.env.RENEWAL_THRESHOLD || '0.8');
+
+    let currentToken = null;
+    let tokenExpiry = null;
+
+    function log(level, message, meta = {}) {
+      console.log(JSON.stringify({
+        timestamp: new Date().toISOString(),
+        level,
+        message,
+        ...meta
+      }));
+    }
+
+    function readToken() {
+      try {
+        const token = fs.readFileSync(TOKEN_PATH, 'utf8').trim();
+        if (!token) {
+          throw new Error('Token file is empty');
+        }
+        currentToken = token;
+        log('info', 'Loaded Vault token from file', { path: TOKEN_PATH });
+        return token;
+      } catch (error) {
+        log('error', 'Failed to read token file', { error: error.message, path: TOKEN_PATH });
+        throw error;
+      }
+    }
+
+    function writeToken(token) {
+      try {
+        fs.writeFileSync(TOKEN_PATH, token, { mode: 0o600 });
+        log('info', 'Wrote renewed token to file', { path: TOKEN_PATH });
+      } catch (error) {
+        log('error', 'Failed to write token file', { error: error.message, path: TOKEN_PATH });
+        throw error;
+      }
+    }
+
+    async function vaultRequest(path, options = {}) {
+      return new Promise((resolve, reject) => {
+        const url = new URL(path, VAULT_ADDR);
+        const client = url.protocol === 'https:' ? https : http;
+
+        const requestOptions = {
+          method: options.method || 'GET',
+          headers: {
+            'X-Vault-Token': currentToken,
+            ...options.headers
+          }
+        };
+
+        const req = client.request(url, requestOptions, (res) => {
+          let data = '';
+          res.on('data', chunk => data += chunk);
+          res.on('end', () => {
+            if (res.statusCode >= 200 && res.statusCode < 300) {
+              try {
+                resolve(JSON.parse(data));
+              } catch {
+                resolve(data);
+              }
+            } else {
+              reject(new Error(`Vault request failed: ${res.statusCode} ${data}`));
+            }
+          });
+        });
+
+        req.on('error', reject);
+
+        if (options.body) {
+          req.write(JSON.stringify(options.body));
+        }
+
+        req.end();
+      });
+    }
+
+    async function lookupToken() {
+      try {
+        const response = await vaultRequest('/v1/auth/token/lookup-self');
+
+        if (!response.data) {
+          throw new Error('Invalid token lookup response');
+        }
+
+        const ttl = response.data.ttl || 0;
+        tokenExpiry = Date.now() + (ttl * 1000);
+
+        log('info', 'Token lookup successful', {
+          ttl,
+          expiryTimestamp: tokenExpiry,
+          renewable: response.data.renewable
+        });
+
+        return response.data;
+      } catch (error) {
+        log('error', 'Failed to lookup token', { error: error.message });
+        throw error;
+      }
+    }
+
+    async function renewToken() {
+      try {
+        log('info', 'Attempting token renewal');
+
+        const response = await vaultRequest('/v1/auth/token/renew-self', {
+          method: 'POST'
+        });
+
+        if (!response.auth) {
+          throw new Error('Invalid token renewal response');
+        }
+
+        const newToken = response.auth.client_token;
+        const leaseDuration = response.auth.lease_duration || 0;
+
+        tokenExpiry = Date.now() + (leaseDuration * 1000);
+
+        log('info', 'Token renewed successfully', {
+          leaseDuration,
+          expiryTimestamp: tokenExpiry
+        });
+
+        // Update token file
+        currentToken = newToken;
+        writeToken(newToken);
+
+        return response.auth;
+      } catch (error) {
+        log('error', 'Failed to renew token', { error: error.message });
+        throw error;
+      }
+    }
+
+    async function checkAndRenew() {
+      try {
+        if (!tokenExpiry) {
+          await lookupToken();
+        }
+
+        const now = Date.now();
+        const timeUntilExpiry = tokenExpiry - now;
+        const timeUntilExpirySeconds = Math.max(0, timeUntilExpiry / 1000);
+
+        if (timeUntilExpiry <= 0) {
+          log('warn', 'Token has expired', { timeUntilExpirySeconds });
+          await renewToken();
+          return;
+        }
+
+        // Calculate if we should renew based on threshold
+        const tokenInfo = await lookupToken();
+        const originalTTL = tokenInfo.ttl || 0;
+        const renewalThresholdTime = originalTTL * RENEWAL_THRESHOLD;
+
+        if (timeUntilExpirySeconds <= renewalThresholdTime) {
+          log('info', 'Renewal threshold reached', {
+            timeUntilExpirySeconds,
+            renewalThresholdSeconds: renewalThresholdTime,
+            threshold: RENEWAL_THRESHOLD
+          });
+          await renewToken();
+        } else {
+          log('debug', 'Token is valid, no renewal needed', {
+            timeUntilExpirySeconds,
+            renewalThresholdSeconds: renewalThresholdTime
+          });
+        }
+      } catch (error) {
+        log('error', 'Error in check and renew cycle', { error: error.message });
+      }
+    }
+
+    async function main() {
+      log('info', 'Starting Vault token renewal sidecar', {
+        vaultAddr: VAULT_ADDR,
+        tokenPath: TOKEN_PATH,
+        renewIntervalSeconds: RENEW_INTERVAL / 1000,
+        renewalThreshold: RENEWAL_THRESHOLD
+      });
+
+      // Load initial token
+      readToken();
+
+      // Perform initial lookup
+      await lookupToken();
+
+      // Start renewal loop
+      setInterval(async () => {
+        await checkAndRenew();
+      }, RENEW_INTERVAL);
+
+      log('info', 'Token renewal sidecar started successfully');
+    }
+
+    main().catch(error => {
+      log('error', 'Fatal error in renewal sidecar', { error: error.message });
+      process.exit(1);
+    });
+{{- end }}
+---
+{{- if and .Values.vault.enabled .Values.vault.tokenRenewal.sidecar.enabled }}
+# Add sidecar container to orchestrator deployment via patch
+# This is applied as a strategic merge patch to the orchestrator deployment
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "oss-ai-agent-tool.fullname" . }}-vault-renewal-patch
+  labels:
+    {{- include "oss-ai-agent-tool.labels" . | nindent 4 }}
+    app.kubernetes.io/component: security
+  annotations:
+    "helm.sh/hook": pre-install,pre-upgrade
+    "helm.sh/hook-weight": "-5"
+data:
+  patch.yaml: |
+    spec:
+      template:
+        spec:
+          volumes:
+            - name: vault-token
+              emptyDir:
+                medium: Memory
+            - name: vault-renewal-script
+              configMap:
+                name: {{ include "oss-ai-agent-tool.fullname" . }}-vault-renewal
+                defaultMode: 0755
+          containers:
+            - name: vault-token-renewal
+              image: node:20-alpine
+              imagePullPolicy: IfNotPresent
+              command:
+                - node
+                - /scripts/renewal.js
+              env:
+                - name: VAULT_ADDR
+                  value: {{ .Values.vault.address | quote }}
+                - name: VAULT_TOKEN_PATH
+                  value: /vault/secrets/token
+                - name: RENEW_INTERVAL_SECONDS
+                  value: {{ .Values.vault.tokenRenewal.sidecar.renewIntervalSeconds | default 300 | quote }}
+                - name: RENEWAL_THRESHOLD
+                  value: {{ .Values.vault.tokenRenewal.sidecar.renewalThreshold | default 0.8 | quote }}
+              volumeMounts:
+                - name: vault-token
+                  mountPath: /vault/secrets
+                - name: vault-renewal-script
+                  mountPath: /scripts
+              resources:
+                {{- toYaml .Values.vault.tokenRenewal.sidecar.resources | nindent 16 }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: true
+                runAsNonRoot: true
+                runAsUser: 65534
+                capabilities:
+                  drop:
+                    - ALL
+{{- end }}

@@ -1,0 +1,304 @@
+syntax = "proto3";
+
+package indexer.v1;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+// IndexerService provides semantic and symbolic code indexing capabilities
+service IndexerService {
+  // Symbol operations
+  rpc IndexSymbols(IndexSymbolsRequest) returns (IndexSymbolsResponse);
+  rpc GetSymbol(GetSymbolRequest) returns (Symbol);
+  rpc QuerySymbols(QuerySymbolsRequest) returns (stream Symbol);
+  rpc SearchSymbols(SearchSymbolsRequest) returns (stream SearchResult);
+
+  // Document operations
+  rpc IndexDocument(IndexDocumentRequest) returns (IndexDocumentResponse);
+  rpc GetDocument(GetDocumentRequest) returns (Document);
+  rpc SearchDocuments(SearchDocumentsRequest) returns (stream SearchResult);
+
+  // Graph operations
+  rpc GetSymbolGraph(GetSymbolGraphRequest) returns (SymbolGraph);
+  rpc GetReferences(GetReferencesRequest) returns (stream Reference);
+  rpc GetDefinitions(GetDefinitionsRequest) returns (stream Symbol);
+
+  // Temporal operations (git integration)
+  rpc GetSymbolHistory(GetSymbolHistoryRequest) returns (stream SymbolVersion);
+  rpc GetSymbolAtCommit(GetSymbolAtCommitRequest) returns (Symbol);
+  rpc CorrelateFailure(CorrelateFailureRequest) returns (CorrelateFailureResponse);
+
+  // Maintenance operations
+  rpc DeleteByPath(DeleteByPathRequest) returns (DeleteByPathResponse);
+  rpc Checkpoint(google.protobuf.Empty) returns (google.protobuf.Empty);
+  rpc GetStats(google.protobuf.Empty) returns (IndexStats);
+  rpc HealthCheck(google.protobuf.Empty) returns (HealthResponse);
+}
+
+// Symbol represents a code symbol (function, class, variable, etc.)
+message Symbol {
+  string id = 1;
+  string path = 2;
+  string name = 3;
+  SymbolKind kind = 4;
+  string content = 5;
+  repeated float embedding = 6;
+  optional string commit_id = 7;
+  int32 start_line = 8;
+  int32 end_line = 9;
+  map<string, string> metadata = 10;
+  google.protobuf.Timestamp created_at = 11;
+  google.protobuf.Timestamp updated_at = 12;
+}
+
+// SymbolKind enumerates the types of code symbols
+enum SymbolKind {
+  SYMBOL_KIND_UNSPECIFIED = 0;
+  SYMBOL_KIND_FUNCTION = 1;
+  SYMBOL_KIND_CLASS = 2;
+  SYMBOL_KIND_INTERFACE = 3;
+  SYMBOL_KIND_STRUCT = 4;
+  SYMBOL_KIND_ENUM = 5;
+  SYMBOL_KIND_VARIABLE = 6;
+  SYMBOL_KIND_CONSTANT = 7;
+  SYMBOL_KIND_METHOD = 8;
+  SYMBOL_KIND_PROPERTY = 9;
+  SYMBOL_KIND_MODULE = 10;
+  SYMBOL_KIND_NAMESPACE = 11;
+  SYMBOL_KIND_TYPE = 12;
+  SYMBOL_KIND_MACRO = 13;
+}
+
+// Document represents a full document with semantic embedding
+message Document {
+  string id = 1;
+  string path = 2;
+  string content = 3;
+  repeated float embedding = 4;
+  optional string commit_id = 5;
+  map<string, string> metadata = 6;
+  google.protobuf.Timestamp created_at = 7;
+  google.protobuf.Timestamp updated_at = 8;
+}
+
+// IndexSymbolsRequest indexes multiple symbols in batch
+message IndexSymbolsRequest {
+  repeated Symbol symbols = 1;
+  optional string tenant_id = 2;
+  optional string trace_id = 3;
+}
+
+message IndexSymbolsResponse {
+  int32 indexed_count = 1;
+  repeated string failed_ids = 2;
+}
+
+// GetSymbolRequest retrieves a symbol by ID
+message GetSymbolRequest {
+  string id = 1;
+  optional string tenant_id = 2;
+}
+
+// QuerySymbolsRequest queries symbols by path or other criteria
+message QuerySymbolsRequest {
+  optional string path = 1;
+  optional string path_prefix = 2;
+  optional string commit_id = 3;
+  repeated SymbolKind kinds = 4;
+  optional string tenant_id = 5;
+}
+
+// SearchSymbolsRequest performs semantic search on symbols
+message SearchSymbolsRequest {
+  string query = 1;
+  int32 top_k = 2;
+  optional string path_prefix = 3;
+  optional string commit_id = 4;
+  repeated SymbolKind kinds = 5;
+  float similarity_threshold = 6;
+  optional string tenant_id = 7;
+}
+
+// SearchResult represents a search result with relevance score
+message SearchResult {
+  oneof result {
+    Symbol symbol = 1;
+    Document document = 2;
+  }
+  float score = 3;
+  string snippet = 4;
+}
+
+// IndexDocumentRequest indexes a single document
+message IndexDocumentRequest {
+  Document document = 1;
+  optional string tenant_id = 2;
+  optional string trace_id = 3;
+}
+
+message IndexDocumentResponse {
+  string document_id = 1;
+  int32 embedding_dim = 2;
+}
+
+// GetDocumentRequest retrieves a document by ID
+message GetDocumentRequest {
+  string id = 1;
+  optional string tenant_id = 2;
+}
+
+// SearchDocumentsRequest performs semantic search on documents
+message SearchDocumentsRequest {
+  string query = 1;
+  int32 top_k = 2;
+  optional string path_prefix = 3;
+  optional string commit_id = 4;
+  float similarity_threshold = 5;
+  optional string tenant_id = 6;
+}
+
+// SymbolGraph represents relationships between symbols
+message SymbolGraph {
+  repeated SymbolNode nodes = 1;
+  repeated SymbolEdge edges = 2;
+}
+
+message SymbolNode {
+  string id = 1;
+  string name = 2;
+  SymbolKind kind = 3;
+  string path = 4;
+}
+
+message SymbolEdge {
+  string from_id = 1;
+  string to_id = 2;
+  EdgeKind kind = 3;
+}
+
+enum EdgeKind {
+  EDGE_KIND_UNSPECIFIED = 0;
+  EDGE_KIND_CALLS = 1;
+  EDGE_KIND_IMPLEMENTS = 2;
+  EDGE_KIND_EXTENDS = 3;
+  EDGE_KIND_IMPORTS = 4;
+  EDGE_KIND_REFERENCES = 5;
+  EDGE_KIND_DEFINES = 6;
+}
+
+// GetSymbolGraphRequest retrieves the symbol graph for a path
+message GetSymbolGraphRequest {
+  string path = 1;
+  optional string commit_id = 2;
+  int32 depth = 3;
+  optional string tenant_id = 4;
+}
+
+// GetReferencesRequest finds all references to a symbol
+message GetReferencesRequest {
+  string symbol_id = 1;
+  optional string tenant_id = 2;
+}
+
+message Reference {
+  string path = 1;
+  int32 line = 2;
+  int32 column = 3;
+  string context = 4;
+}
+
+// GetDefinitionsRequest finds definitions for a symbol at a location
+message GetDefinitionsRequest {
+  string path = 1;
+  int32 line = 2;
+  int32 column = 3;
+  optional string tenant_id = 4;
+}
+
+// SymbolVersion represents a symbol at a specific point in time
+message SymbolVersion {
+  Symbol symbol = 1;
+  string commit_id = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  ChangeType change_type = 4;
+  optional string author = 5;
+  optional string commit_message = 6;
+}
+
+enum ChangeType {
+  CHANGE_TYPE_UNSPECIFIED = 0;
+  CHANGE_TYPE_ADDED = 1;
+  CHANGE_TYPE_MODIFIED = 2;
+  CHANGE_TYPE_DELETED = 3;
+  CHANGE_TYPE_RENAMED = 4;
+}
+
+// GetSymbolHistoryRequest retrieves the history of a symbol
+message GetSymbolHistoryRequest {
+  string path = 1;
+  string symbol_name = 2;
+  optional string start_commit = 3;
+  optional string end_commit = 4;
+  optional string tenant_id = 5;
+}
+
+// GetSymbolAtCommitRequest retrieves a symbol at a specific commit
+message GetSymbolAtCommitRequest {
+  string symbol_id = 1;
+  string commit_id = 2;
+  optional string tenant_id = 3;
+}
+
+// CorrelateFailureRequest correlates a CI/CD failure with code changes
+message CorrelateFailureRequest {
+  string test_name = 1;
+  string failure_message = 2;
+  string commit_id = 3;
+  optional string previous_commit_id = 4;
+  optional string tenant_id = 5;
+}
+
+message CorrelateFailureResponse {
+  repeated SuspectChange suspects = 1;
+  float confidence = 2;
+}
+
+message SuspectChange {
+  Symbol symbol = 1;
+  float relevance_score = 2;
+  string reason = 3;
+}
+
+// DeleteByPathRequest deletes all indexed data for a path
+message DeleteByPathRequest {
+  string path = 1;
+  optional string tenant_id = 2;
+}
+
+message DeleteByPathResponse {
+  int32 symbols_deleted = 1;
+  int32 documents_deleted = 2;
+}
+
+// IndexStats provides statistics about the index
+message IndexStats {
+  int64 total_symbols = 1;
+  int64 total_documents = 2;
+  int64 total_size_bytes = 3;
+  int64 index_size_bytes = 4;
+  map<string, int64> symbols_by_kind = 5;
+}
+
+// HealthResponse indicates the health status of the indexer
+message HealthResponse {
+  HealthStatus status = 1;
+  string version = 2;
+  optional string message = 3;
+}
+
+enum HealthStatus {
+  HEALTH_STATUS_UNSPECIFIED = 0;
+  HEALTH_STATUS_HEALTHY = 1;
+  HEALTH_STATUS_DEGRADED = 2;
+  HEALTH_STATUS_UNHEALTHY = 3;
+}

@@ -5,3 +5,20 @@ target/
 .cursor/
 infra/policies/dist/
 infra/policies/.cache/
+
+# Generated files and temporary directories
+nul
+cache/
+apps/*/coverage/
+apps/gateway-api/coverage*.html
+apps/gateway-api/coverage*.out
+apps/gateway-api/coverage.sh
+apps/cli/coverage/
+apps/gui/src-tauri/gen/
+services/*/coverage/
+services/orchestrator/.env.cache
+services/orchestrator/full_test_results.txt
+services/orchestrator/test-output.txt
+services/orchestrator/test_results.txt
+protoc/
+protoc.zip
