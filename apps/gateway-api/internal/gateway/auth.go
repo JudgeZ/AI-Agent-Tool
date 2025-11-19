@@ -25,6 +25,7 @@ import (
 	"unicode"
 
 	"github.com/go-playground/validator/v10"
+	"github.com/gorilla/securecookie"
 
 	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/audit"
 )
@@ -54,6 +55,31 @@ const (
 var stateTTL = getDurationEnv("OAUTH_STATE_TTL", 10*time.Minute)
 var orchestratorTimeout = getDurationEnv("ORCHESTRATOR_CALLBACK_TIMEOUT", 10*time.Second)
 var allowedRedirectOrigins = loadAllowedRedirectOrigins()
+var cookieHandler *securecookie.SecureCookie
+var cookieHandlerOnce sync.Once
+
+func getCookieHandler() *securecookie.SecureCookie {
+	cookieHandlerOnce.Do(func() {
+		hashKey, err := resolveEnvValue("GATEWAY_COOKIE_HASH_KEY")
+		if err != nil || hashKey == "" {
+			hashKey = string(securecookie.GenerateRandomKey(64))
+		}
+
+		blockKey, err := resolveEnvValue("GATEWAY_COOKIE_BLOCK_KEY")
+		if err != nil || blockKey == "" {
+			blockKey = string(securecookie.GenerateRandomKey(32))
+		}
+
+		cookieHandler = securecookie.New([]byte(hashKey), []byte(blockKey))
+	})
+	return cookieHandler
+}
+
+func ResetCookieHandler() {
+	cookieHandlerOnce = sync.Once{}
+	cookieHandler = nil
+}
+
 var requestValidator = validator.New(validator.WithRequiredStructEnabled())
 var tenantIDPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 var clientAppPattern = regexp.MustCompile(`^[A-Za-z0-9._-]{1,64}$`)
@@ -1294,14 +1320,14 @@ func setStateCookie(w http.ResponseWriter, r *http.Request, trustedProxies []*ne
 		return errors.New("refusing to issue state cookie over insecure request")
 	}
 
-	encoded, err := json.Marshal(data)
+	encoded, err := getCookieHandler().Encode(stateCookieName(data.State), data)
 	if err != nil {
 		return err
 	}
 
 	cookie := &http.Cookie{
 		Name:     stateCookieName(data.State),
-		Value:    base64.RawURLEncoding.EncodeToString(encoded),
+		Value:    encoded,
 		Path:     "/auth/",
 		Expires:  data.ExpiresAt,
 		MaxAge:   int(stateTTL.Seconds()),
@@ -1324,13 +1350,8 @@ func readStateCookie(r *http.Request, state string) (stateData, error) {
 		return stateData{}, err
 	}
 
-	decoded, err := base64.RawURLEncoding.DecodeString(cookie.Value)
-	if err != nil {
-		return stateData{}, err
-	}
-
 	var data stateData
-	if err := json.Unmarshal(decoded, &data); err != nil {
+	if err := getCookieHandler().Decode(stateCookieName(state), cookie.Value, &data); err != nil {
 		return stateData{}, err
 	}
 
@@ -1538,6 +1559,7 @@ func forwardedProto(r *http.Request) (string, bool) {
 func RegisterAuthRoutes(mux *http.ServeMux, cfg AuthRouteConfig) {
 	trustedProxies, err := parseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs)
 	if err != nil {
+		// panic: startup-only
 		panic(fmt.Sprintf("invalid trusted proxy configuration: %v", err))
 	}
 

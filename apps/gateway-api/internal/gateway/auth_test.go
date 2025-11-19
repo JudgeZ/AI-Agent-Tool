@@ -60,6 +60,14 @@ func setOidcRegistrations(t *testing.T, value string) {
 	t.Cleanup(resetOidcClientRegistrations)
 }
 
+func setupTestCookies(t *testing.T) {
+	t.Helper()
+	t.Setenv("GATEWAY_COOKIE_HASH_KEY", "12345678901234567890123456789012") // 32 bytes
+	t.Setenv("GATEWAY_COOKIE_BLOCK_KEY", "1234567890123456")                 // 16 bytes
+	ResetCookieHandler()
+	getCookieHandler() // Ensure initialization
+}
+
 func TestNormalizeSessionBindingRejectsInvalidCharacters(t *testing.T) {
 	if _, err := normalizeSessionBinding("bad\nvalue"); err == nil {
 		t.Fatal("expected error for control characters")
@@ -274,6 +282,7 @@ func TestAuthorizeHandlerGeneratesPKCEChallenge(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
 	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+	setupTestCookies(t)
 
 	req := httptest.NewRequest(http.MethodGet, "/auth/openrouter/authorize?redirect_uri=https://app.example.com/complete", nil)
 	req.TLS = &tls.ConnectionState{}
@@ -306,13 +315,9 @@ func TestAuthorizeHandlerGeneratesPKCEChallenge(t *testing.T) {
 		t.Fatal("expected state cookie to be set")
 	}
 
-	decoded, err := base64.RawURLEncoding.DecodeString(stateCookie.Value)
-	if err != nil {
-		t.Fatalf("failed to decode state cookie: %v", err)
-	}
 	var stored stateData
-	if err := json.Unmarshal(decoded, &stored); err != nil {
-		t.Fatalf("failed to unmarshal state data: %v", err)
+	if err := getCookieHandler().Decode(stateCookie.Name, stateCookie.Value, &stored); err != nil {
+		t.Fatalf("failed to decode state cookie: %v", err)
 	}
 
 	if stored.RedirectURI != "https://app.example.com/complete" {
@@ -341,6 +346,7 @@ func TestAuthorizeHandlerPersistsTenantIDInState(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
 	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+	setupTestCookies(t)
 
 	req := httptest.NewRequest(
 		http.MethodGet,
@@ -365,13 +371,9 @@ func TestAuthorizeHandlerPersistsTenantIDInState(t *testing.T) {
 	if stateCookie == nil {
 		t.Fatal("expected state cookie to be set")
 	}
-	decoded, err := base64.RawURLEncoding.DecodeString(stateCookie.Value)
-	if err != nil {
-		t.Fatalf("failed to decode state cookie: %v", err)
-	}
 	var stored stateData
-	if err := json.Unmarshal(decoded, &stored); err != nil {
-		t.Fatalf("failed to unmarshal state data: %v", err)
+	if err := getCookieHandler().Decode(stateCookie.Name, stateCookie.Value, &stored); err != nil {
+		t.Fatalf("failed to decode state cookie: %v", err)
 	}
 	if stored.TenantID != "acme" {
 		t.Fatalf("expected tenant id to be propagated, got %q", stored.TenantID)
@@ -561,6 +563,7 @@ func TestCallbackHandlerRejectsExpiredState(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
 	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+	setupTestCookies(t)
 
 	data := stateData{
 		Provider:     "openrouter",
@@ -569,7 +572,7 @@ func TestCallbackHandlerRejectsExpiredState(t *testing.T) {
 		ExpiresAt:    time.Now().Add(-1 * time.Minute),
 		State:        "state-token",
 	}
-	encoded, err := json.Marshal(data)
+	encoded, err := getCookieHandler().Encode(stateCookieName(data.State), data)
 	if err != nil {
 		t.Fatalf("failed to encode state data: %v", err)
 	}
@@ -578,7 +581,7 @@ func TestCallbackHandlerRejectsExpiredState(t *testing.T) {
 	req.TLS = &tls.ConnectionState{}
 	req.AddCookie(&http.Cookie{
 		Name:  stateCookieName(data.State),
-		Value: base64.RawURLEncoding.EncodeToString(encoded),
+		Value: encoded,
 		Path:  "/auth/",
 	})
 	rec := httptest.NewRecorder()
@@ -725,6 +728,7 @@ func TestCallbackHandlerRejectsStateMismatch(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
 	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+	setupTestCookies(t)
 
 	data := stateData{
 		Provider:     "openrouter",
@@ -733,7 +737,7 @@ func TestCallbackHandlerRejectsStateMismatch(t *testing.T) {
 		ExpiresAt:    time.Now().Add(1 * time.Minute),
 		State:        "original-state",
 	}
-	encoded, err := json.Marshal(data)
+	encoded, err := getCookieHandler().Encode(stateCookieName(data.State), data)
 	if err != nil {
 		t.Fatalf("failed to encode state data: %v", err)
 	}
@@ -742,7 +746,7 @@ func TestCallbackHandlerRejectsStateMismatch(t *testing.T) {
 	req.TLS = &tls.ConnectionState{}
 	req.AddCookie(&http.Cookie{
 		Name:  stateCookieName(data.State),
-		Value: base64.RawURLEncoding.EncodeToString(encoded),
+		Value: encoded,
 		Path:  "/auth/",
 	})
 	rec := httptest.NewRecorder()
@@ -765,6 +769,7 @@ func TestCallbackHandlerHandlesOrchestratorContactFailure(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
 	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+	setupTestCookies(t)
 
 	SetOrchestratorClientFactory(func() (*http.Client, error) {
 		return &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -780,7 +785,7 @@ func TestCallbackHandlerHandlesOrchestratorContactFailure(t *testing.T) {
 		ExpiresAt:    time.Now().Add(1 * time.Minute),
 		State:        "state-token",
 	}
-	encoded, err := json.Marshal(data)
+	encoded, err := getCookieHandler().Encode(stateCookieName(data.State), data)
 	if err != nil {
 		t.Fatalf("failed to encode state data: %v", err)
 	}
@@ -789,7 +794,7 @@ func TestCallbackHandlerHandlesOrchestratorContactFailure(t *testing.T) {
 	req.TLS = &tls.ConnectionState{}
 	req.AddCookie(&http.Cookie{
 		Name:  stateCookieName(data.State),
-		Value: base64.RawURLEncoding.EncodeToString(encoded),
+		Value: encoded,
 		Path:  "/auth/",
 	})
 	rec := httptest.NewRecorder()
@@ -812,6 +817,7 @@ func TestCallbackHandlerIncludesTenantIDInUpstreamPayload(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
 	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+	setupTestCookies(t)
 
 	var capturedBody string
 	SetOrchestratorClientFactory(func() (*http.Client, error) {
@@ -836,7 +842,7 @@ func TestCallbackHandlerIncludesTenantIDInUpstreamPayload(t *testing.T) {
 		State:        "state-token",
 		TenantID:     "acme",
 	}
-	encoded, err := json.Marshal(data)
+	encoded, err := getCookieHandler().Encode(stateCookieName(data.State), data)
 	if err != nil {
 		t.Fatalf("failed to encode state data: %v", err)
 	}
@@ -844,7 +850,7 @@ func TestCallbackHandlerIncludesTenantIDInUpstreamPayload(t *testing.T) {
 	req.TLS = &tls.ConnectionState{}
 	req.AddCookie(&http.Cookie{
 		Name:  stateCookieName(data.State),
-		Value: base64.RawURLEncoding.EncodeToString(encoded),
+		Value: encoded,
 		Path:  "/auth/",
 	})
 	rec := httptest.NewRecorder()
@@ -867,6 +873,7 @@ func TestCallbackHandlerUsesClientIDFromRegistration(t *testing.T) {
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
 	allowedRedirectOrigins = loadAllowedRedirectOrigins()
 	setOidcRegistrations(t, `[{"tenant_id":"","app":"gui","client_id":"tenant-client"}]`)
+	setupTestCookies(t)
 
 	var capturedBody string
 	SetOrchestratorClientFactory(func() (*http.Client, error) {
@@ -891,7 +898,7 @@ func TestCallbackHandlerUsesClientIDFromRegistration(t *testing.T) {
 		State:        "state-token",
 		ClientApp:    "gui",
 	}
-	encoded, err := json.Marshal(data)
+	encoded, err := getCookieHandler().Encode(stateCookieName(data.State), data)
 	if err != nil {
 		t.Fatalf("failed to encode state data: %v", err)
 	}
@@ -899,7 +906,7 @@ func TestCallbackHandlerUsesClientIDFromRegistration(t *testing.T) {
 	req.TLS = &tls.ConnectionState{}
 	req.AddCookie(&http.Cookie{
 		Name:  stateCookieName(data.State),
-		Value: base64.RawURLEncoding.EncodeToString(encoded),
+		Value: encoded,
 		Path:  "/auth/",
 	})
 	rec := httptest.NewRecorder()
@@ -919,6 +926,7 @@ func TestCallbackHandlerRejectsStateClientIDMismatch(t *testing.T) {
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
 	allowedRedirectOrigins = loadAllowedRedirectOrigins()
 	setOidcRegistrations(t, `[{"tenant_id":"","app":"gui","client_id":"tenant-client-v2"}]`)
+	setupTestCookies(t)
 
 	data := stateData{
 		Provider:     "openrouter",
@@ -929,7 +937,7 @@ func TestCallbackHandlerRejectsStateClientIDMismatch(t *testing.T) {
 		ClientApp:    "gui",
 		ClientID:     "tenant-client-v1",
 	}
-	encoded, err := json.Marshal(data)
+	encoded, err := getCookieHandler().Encode(stateCookieName(data.State), data)
 	if err != nil {
 		t.Fatalf("failed to encode state data: %v", err)
 	}
@@ -937,7 +945,7 @@ func TestCallbackHandlerRejectsStateClientIDMismatch(t *testing.T) {
 	req.TLS = &tls.ConnectionState{}
 	req.AddCookie(&http.Cookie{
 		Name:  stateCookieName(data.State),
-		Value: base64.RawURLEncoding.EncodeToString(encoded),
+		Value: encoded,
 		Path:  "/auth/",
 	})
 	rec := httptest.NewRecorder()
@@ -957,6 +965,7 @@ func TestCallbackHandlerPropagatesSessionBinding(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
 	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+	setupTestCookies(t)
 
 	SetOrchestratorClientFactory(func() (*http.Client, error) {
 		return &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -977,7 +986,7 @@ func TestCallbackHandlerPropagatesSessionBinding(t *testing.T) {
 		State:        "state-token",
 		BindingID:    "bind-123",
 	}
-	encoded, err := json.Marshal(data)
+	encoded, err := getCookieHandler().Encode(stateCookieName(data.State), data)
 	if err != nil {
 		t.Fatalf("failed to encode state data: %v", err)
 	}
@@ -985,7 +994,7 @@ func TestCallbackHandlerPropagatesSessionBinding(t *testing.T) {
 	req.TLS = &tls.ConnectionState{}
 	req.AddCookie(&http.Cookie{
 		Name:  stateCookieName(data.State),
-		Value: base64.RawURLEncoding.EncodeToString(encoded),
+		Value: encoded,
 		Path:  "/auth/",
 	})
 	rec := httptest.NewRecorder()
@@ -1010,6 +1019,7 @@ func TestCallbackHandlerRejectsUnregisteredClientWhenRegistrationsExist(t *testi
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
 	allowedRedirectOrigins = loadAllowedRedirectOrigins()
 	setOidcRegistrations(t, `[{"tenant_id":"","app":"gui","client_id":"tenant-client"}]`)
+	setupTestCookies(t)
 
 	SetOrchestratorClientFactory(func() (*http.Client, error) {
 		t.Fatalf("orchestrator should not be called for unregistered clients")
@@ -1025,7 +1035,7 @@ func TestCallbackHandlerRejectsUnregisteredClientWhenRegistrationsExist(t *testi
 		State:        "state-token",
 		ClientApp:    "desktop",
 	}
-	encoded, err := json.Marshal(data)
+	encoded, err := getCookieHandler().Encode(stateCookieName(data.State), data)
 	if err != nil {
 		t.Fatalf("failed to encode state data: %v", err)
 	}
@@ -1033,7 +1043,7 @@ func TestCallbackHandlerRejectsUnregisteredClientWhenRegistrationsExist(t *testi
 	req.TLS = &tls.ConnectionState{}
 	req.AddCookie(&http.Cookie{
 		Name:  stateCookieName(data.State),
-		Value: base64.RawURLEncoding.EncodeToString(encoded),
+		Value: encoded,
 		Path:  "/auth/",
 	})
 	rec := httptest.NewRecorder()
@@ -1053,6 +1063,7 @@ func TestCallbackHandlerRejectsTamperedTenantID(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
 	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+	setupTestCookies(t)
 
 	SetOrchestratorClientFactory(func() (*http.Client, error) {
 		t.Fatalf("orchestrator should not be contacted when tenant_id is invalid")
@@ -1068,7 +1079,7 @@ func TestCallbackHandlerRejectsTamperedTenantID(t *testing.T) {
 		State:        "state-token",
 		TenantID:     "acme@corp",
 	}
-	encoded, err := json.Marshal(data)
+	encoded, err := getCookieHandler().Encode(stateCookieName(data.State), data)
 	if err != nil {
 		t.Fatalf("failed to encode state data: %v", err)
 	}
@@ -1076,7 +1087,7 @@ func TestCallbackHandlerRejectsTamperedTenantID(t *testing.T) {
 	req.TLS = &tls.ConnectionState{}
 	req.AddCookie(&http.Cookie{
 		Name:  stateCookieName(data.State),
-		Value: base64.RawURLEncoding.EncodeToString(encoded),
+		Value: encoded,
 		Path:  "/auth/",
 	})
 	rec := httptest.NewRecorder()
@@ -1099,6 +1110,7 @@ func TestCallbackHandlerRedirectsOnOrchestratorError(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
 	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+	setupTestCookies(t)
 
 	originalTimeout := orchestratorTimeout
 	orchestratorTimeout = 150 * time.Millisecond
@@ -1130,7 +1142,7 @@ func TestCallbackHandlerRedirectsOnOrchestratorError(t *testing.T) {
 		ExpiresAt:    time.Now().Add(1 * time.Minute),
 		State:        "state-token",
 	}
-	encoded, err := json.Marshal(data)
+	encoded, err := getCookieHandler().Encode(stateCookieName(data.State), data)
 	if err != nil {
 		t.Fatalf("failed to encode state data: %v", err)
 	}
@@ -1140,7 +1152,7 @@ func TestCallbackHandlerRedirectsOnOrchestratorError(t *testing.T) {
 	req.TLS = &tls.ConnectionState{}
 	req.AddCookie(&http.Cookie{
 		Name:  stateCookieName(data.State),
-		Value: base64.RawURLEncoding.EncodeToString(encoded),
+		Value: encoded,
 		Path:  "/auth/",
 	})
 	rec := httptest.NewRecorder()
@@ -1188,6 +1200,7 @@ func TestCallbackHandlerSuccessPropagatesCookies(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
 	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+	setupTestCookies(t)
 
 	var requestCount int32
 	SetOrchestratorClientFactory(func() (*http.Client, error) {
@@ -1213,7 +1226,7 @@ func TestCallbackHandlerSuccessPropagatesCookies(t *testing.T) {
 		ExpiresAt:    time.Now().Add(1 * time.Minute),
 		State:        "state-token",
 	}
-	encoded, err := json.Marshal(data)
+	encoded, err := getCookieHandler().Encode(stateCookieName(data.State), data)
 	if err != nil {
 		t.Fatalf("failed to encode state data: %v", err)
 	}
@@ -1222,7 +1235,7 @@ func TestCallbackHandlerSuccessPropagatesCookies(t *testing.T) {
 	req.TLS = &tls.ConnectionState{}
 	req.AddCookie(&http.Cookie{
 		Name:  stateCookieName(data.State),
-		Value: base64.RawURLEncoding.EncodeToString(encoded),
+		Value: encoded,
 		Path:  "/auth/",
 	})
 	rec := httptest.NewRecorder()
@@ -1299,6 +1312,7 @@ func TestCallbackHandlerDropsInsecureUpstreamCookie(t *testing.T) {
 	t.Setenv("OPENROUTER_CLIENT_ID", "client-id")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
 	allowedRedirectOrigins = loadAllowedRedirectOrigins()
+	setupTestCookies(t)
 
 	SetOrchestratorClientFactory(func() (*http.Client, error) {
 		return &http.Client{Transport: roundTripperFunc(func(req *http.Request) (*http.Response, error) {
@@ -1330,7 +1344,7 @@ func TestCallbackHandlerDropsInsecureUpstreamCookie(t *testing.T) {
 		ExpiresAt:    time.Now().Add(1 * time.Minute),
 		State:        "state-token",
 	}
-	encoded, err := json.Marshal(data)
+	encoded, err := getCookieHandler().Encode(stateCookieName(data.State), data)
 	if err != nil {
 		t.Fatalf("failed to encode state data: %v", err)
 	}
@@ -1339,7 +1353,7 @@ func TestCallbackHandlerDropsInsecureUpstreamCookie(t *testing.T) {
 	req.TLS = &tls.ConnectionState{}
 	req.AddCookie(&http.Cookie{
 		Name:  stateCookieName(data.State),
-		Value: base64.RawURLEncoding.EncodeToString(encoded),
+		Value: encoded,
 		Path:  "/auth/",
 	})
 	rec := httptest.NewRecorder()
@@ -1545,6 +1559,7 @@ func TestGenerateStateAndPKCE(t *testing.T) {
 }
 
 func TestSetAndReadStateCookie(t *testing.T) {
+	setupTestCookies(t)
 	data := stateData{
 		Provider:     "openrouter",
 		RedirectURI:  "https://app.example.com/complete",
@@ -1589,6 +1604,7 @@ func TestSetAndReadStateCookie(t *testing.T) {
 }
 
 func TestSetStateCookieRejectsInsecureRequestsByDefault(t *testing.T) {
+	setupTestCookies(t)
 	data := stateData{
 		Provider:     "openrouter",
 		RedirectURI:  "https://app.example.com/complete",
@@ -1605,6 +1621,7 @@ func TestSetStateCookieRejectsInsecureRequestsByDefault(t *testing.T) {
 }
 
 func TestSetStateCookieAllowsInsecureWhenConfigured(t *testing.T) {
+	setupTestCookies(t)
 	data := stateData{
 		Provider:     "openrouter",
 		RedirectURI:  "https://app.example.com/complete",

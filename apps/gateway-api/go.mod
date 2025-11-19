@@ -1,6 +1,6 @@
 module github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api
 
-go 1.24
+go 1.24.0
 
 toolchain go1.24.10
 
@@ -21,6 +21,7 @@ require (
 	github.com/go-logr/stdr v1.2.2 // indirect
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
+	github.com/gorilla/securecookie v1.1.2 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect
