@@ -87,6 +87,12 @@ secrets:
   backend: localfile
   mounts:
     providerCredentials: secret/provider-tokens
+gateway:
+  env:
+    # Required for secure OAuth state cookies.
+    # Generate with: openssl rand -hex 64 (hash) and openssl rand -hex 32 (block)
+    GATEWAY_COOKIE_HASH_KEY: "change-me-to-64-byte-hex"
+    GATEWAY_COOKIE_BLOCK_KEY: "change-me-to-32-byte-hex"
 orchestrator:
   env:
     LOCAL_SECRETS_PASSPHRASE: "change-me"

@@ -6,7 +6,7 @@ The system combines a low-latency **inner loop** (gRPC/HTTP + SSE) with a durabl
 flowchart LR
   GUI((Desktop GUI / VS Code)) -->|SSE| GW[Gateway API]
   GW -->|gRPC/HTTP| ORCH[Orchestrator]
-  ORCH --> IDX[Indexing Svc]
+  GW -->|gRPC/HTTP| IDX[Indexing Svc]
   ORCH --> PRV[Model Provider Registry]
 
   subgraph Data Plane

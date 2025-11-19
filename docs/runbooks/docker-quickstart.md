@@ -26,7 +26,7 @@ secrets:
 EOF
 ```
 
-Edit `config/app.yaml` (or set environment variables) to match your provider credentials and messaging preferences. See [Configuration](./configuration.md) for the full schema.
+Edit `config/app.yaml` (or set environment variables) to match your provider credentials and messaging preferences. See [Configuration](../reference/configuration.md) for the full schema.
 
 The orchestrator stores encrypted provider tokens at `config/secrets/local/secrets.json` (mounted as `/app/config/secrets/local/secrets.json` inside the container). `compose.dev.yaml` seeds a development-friendly passphrase (`dev-local-passphrase`) automatically. Override the passphrase and/or storage location by exporting environment variables (or by placing them in a `.env` file consumed by Compose):
 
@@ -34,6 +34,10 @@ The orchestrator stores encrypted provider tokens at `config/secrets/local/secre
 # export LOCAL_SECRETS_PASSPHRASE="choose-a-strong-passphrase"
 # Optional: override the keystore location
 # export LOCAL_SECRETS_PATH="$(pwd)/config/secrets/local/secrets.json"
+
+# Required for secure OAuth flows (Gateway):
+# export GATEWAY_COOKIE_HASH_KEY="<64-byte-hex>"
+# export GATEWAY_COOKIE_BLOCK_KEY="<32-byte-hex>"
 ```
 
 If the passphrase resolves to an empty string, the orchestrator container exits with `LocalFileStore requires LOCAL_SECRETS_PASSPHRASE to be set` during initialization.

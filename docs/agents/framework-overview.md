@@ -1,6 +1,6 @@
 # OSS-AI-Agent-Tool – Agents & Engineering Guidelines
 
-> This document defines how humans and AI agents ("Codex" / Code Writer, Reviewers, etc.) work on this repo.  
+> This document defines how humans and AI agents ("Gemini" / Code Writer, Reviewers, etc.) work on this repo.  
 > It encodes our expectations for security, reliability, and review. If something conflicts with this file, this file wins.
 
 ---
@@ -16,7 +16,7 @@
 
 ## 2. Agents
 
-### 2.1 Code Writer (Codex)
+### 2.1 Code Writer (Gemini)
 
 **Mission:** Implement small, safe, reviewable changes to this repository.
 

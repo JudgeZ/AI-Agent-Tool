@@ -168,6 +168,8 @@ Relevant environment overrides:
 | `SSE_KEEP_ALIVE_MS` | Interval in milliseconds for server-sent event keep-alive pings (defaults to `25000`). Increase or decrease based on load balancer idling behaviour. |
 | `OAUTH_STATE_TTL` | Gateway OAuth state cookie TTL duration (e.g. `10m`, defaults to `10m`). |
 | `ORCHESTRATOR_CALLBACK_TIMEOUT` | Gateway timeout for posting OAuth codes to the orchestrator (duration string, defaults to `10s`). |
+| `GATEWAY_COOKIE_HASH_KEY` | **Required.** 64-byte hex or string key used to sign OAuth state cookies. Prevents tampering. |
+| `GATEWAY_COOKIE_BLOCK_KEY` | **Required.** 32-byte hex or string key used to encrypt OAuth state cookies. Prevents reading sensitive state data. |
 | `OPENROUTER_CLIENT_ID` / `OPENROUTER_CLIENT_SECRET` | OpenRouter OAuth credentials when using OpenRouter provider with OAuth flow. |
 | `GATEWAY_TRUSTED_PROXY_CIDRS` | Comma-separated list of CIDR ranges or individual IPs that terminate TLS in front of the gateway. Only these sources can supply `X-Forwarded-Proto`/`Forwarded` headers to mark requests as HTTPS. |
 
@@ -213,7 +215,8 @@ Vault-backed deployments benefit from improved error surfacing. The Vault client
 | `ORCHESTRATOR_TLS_ENABLED` | Enable TLS for the gateway → orchestrator client. Requires the client cert/key variables below. |
 | `ORCHESTRATOR_CLIENT_CERT` / `ORCHESTRATOR_CLIENT_KEY` | PEM paths for the gateway client certificate and key delivered to the orchestrator. |
 | `ORCHESTRATOR_CA_CERT` | Optional CA bundle path used by the gateway to validate the orchestrator certificate. |
-| `ORCHESTRATOR_TLS_SERVER_NAME` | Overrides the server name (SNI) used by the gateway when connecting to the orchestrator over TLS. |
+| `ORCHESTRATOR_TLS_SERVER_NAME` | Optional server name override for TLS verification when using IP-based URLs. |
+| `INDEXER_URL` | URL of the Indexer service (e.g. `http://indexer:7070`). Used by the Gateway to route indexing requests. |
 | `mtls.*` (Helm values) | `mtls.enabled=true` provisions orchestrator and gateway certificates via cert-manager. Configure `mtls.certManager.issuerRef` and optional SAN overrides. |
 
 ### Security headers

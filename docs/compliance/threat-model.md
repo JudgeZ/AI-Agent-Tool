@@ -19,7 +19,7 @@ Attack surfaces include REST/gRPC endpoints, CLI tooling, Helm/Kubernetes manife
 
 | Component | Spoofing | Tampering | Repudiation | Information Disclosure | Denial of Service | Elevation of Privilege |
 | --- | --- | --- | --- | --- | --- | --- |
-| Gateway API | Enforce OAuth 2.1 + PKCE; mutual TLS for internal calls. | Immutable containers; validate plan/job IDs; input validation on query params. | Structured logs with request IDs, forwarded to OpenTelemetry/Jaeger. | Default-deny CORS; sanitize SSE payloads; DLP on responses. | Rate limits per token/IP; health probes; autoscaling. | Run as non-root; limit capabilities in container; OPA policy before proxying sensitive routes. |
+| Gateway API | Enforce OAuth 2.1 + PKCE; mutual TLS for internal calls. | Immutable containers; **signed & encrypted OAuth state cookies**; validate plan/job IDs; input validation. | Structured logs with request IDs, forwarded to OpenTelemetry/Jaeger. | Default-deny CORS; sanitize SSE payloads; DLP on responses. | Rate limits per token/IP; health probes; autoscaling. | Run as non-root; limit capabilities in container; OPA policy before proxying sensitive routes. |
 | Orchestrator | mTLS between gateway/orchestrator; signed JWTs for CLI actions. | Zod schema validation on plan/tool payloads; config checksums. | Append-only audit trail in Postgres; Langfuse traces with actor metadata. | Secrets fetched via scoped tokens; redaction before logging. | Circuit breakers on provider calls; queue backpressure metrics. | Capability-based agent execution; sandboxing for tools; least-privilege IAM for provider SDKs. |
 | Message Bus | SASL/SCRAM (Kafka) or user/pass (RabbitMQ) with TLS. | Durable queues protected by policy (no arbitrary exchange binding). | Persisted message ACK/NACK with actor IDs. | Encrypt at rest (Kafka) or run in VPC; disable management UI in prod. | Connection limits; dead-letter queues; consumer heartbeats. | Per-queue credentials; deny arbitrary exchange creation. |
 | Agents & Tools | Signed plan tokens identifying orchestrator. | Immutable container images; read-only rootfs for tool sandboxes. | Tool execution logs stored with trace IDs. | Secrets mounted read-only; apply DLP/secret scan before context sharing. | CPU/memory quotas per tool pod/container; watchdog timers. | Capabilities gate repo.write/network.egress; human approval required for privileged actions. |
@@ -30,6 +30,7 @@ Attack surfaces include REST/gRPC endpoints, CLI tooling, Helm/Kubernetes manife
 
 1. **Identity & Access Management**
    * OAuth 2.1 with PKCE for user login.
+   * **Secure cookies** using HMAC-SHA256 signing and AES encryption to prevent state tampering.
    * Service-to-service calls use mTLS certificates rotated via Helm secrets.
    * Queue credentials scoped per environment (RabbitMQ user, Kafka SASL user).
 
@@ -54,6 +55,7 @@ Attack surfaces include REST/gRPC endpoints, CLI tooling, Helm/Kubernetes manife
 
 6. **Supply-chain integrity**
    * GitHub Actions sign container images with cosign (keyless).
+   * **License compliance:** Automated scanning (`scripts/generate-compliance-report.js`) ensures permissive licensing (Apache-2.0/MIT) and generates SBOMs.
    * CycloneDX SBOMs published for each release; verify against policy.
    * Renovate-managed dependency updates reviewed via CI + security scans.
 
