@@ -456,19 +456,28 @@ export async function setupCollaborationServer(
     const ip = clientIp(request);
     const hashedIp = hashIdentifier(ip);
     const origin = headerValue(request.headers["origin"]);
-    if (allowedOrigins.size > 0 && origin && !allowedOrigins.has(origin)) {
-      logger.warn({ origin }, "rejecting collaboration connection due to disallowed origin");
-      logAuditEvent({
-        action: "collaboration.connection",
-        outcome: "denied",
-        resource: "collaboration.websocket",
-        requestId: identifiers.requestId,
-        traceId: identifiers.traceId,
-        details: { reason: "origin_not_allowed", origin },
-      });
-      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
-      socket.destroy();
-      return;
+    if (allowedOrigins.size > 0) {
+      let originDenialReason: "origin_missing" | "origin_not_allowed" | null = null;
+      if (!origin) {
+        originDenialReason = "origin_missing";
+      } else if (!allowedOrigins.has(origin)) {
+        originDenialReason = "origin_not_allowed";
+      }
+
+      if (originDenialReason) {
+        logger.warn({ origin }, "rejecting collaboration connection due to disallowed origin");
+        logAuditEvent({
+          action: "collaboration.connection",
+          outcome: "denied",
+          resource: "collaboration.websocket",
+          requestId: identifiers.requestId,
+          traceId: identifiers.traceId,
+          details: { reason: originDenialReason, origin },
+        });
+        socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+        socket.destroy();
+        return;
+      }
     }
     if (!incrementConnection(ip, connectionLimitPerIp)) {
       logger.warn({ ip: hashedIp }, "rejecting collaboration connection due to per-IP limit");
@@ -567,6 +576,11 @@ export async function setupCollaborationServer(
       setupWSConnection(ws, request, { docName: derived.roomId, gc: true, getYDoc: () => room.doc });
     });
   });
+}
+
+// Exported for tests only.
+export function resetIpConnectionCountsForTesting(): void {
+  ipConnectionCounts.clear();
 }
 
 // Exported for tests only.

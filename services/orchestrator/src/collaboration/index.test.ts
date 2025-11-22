@@ -8,6 +8,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest
 import { WebSocket } from "ws";
 
 const CLOSE_CODE_UNAUTHORIZED = 4401;
+const ALLOWED_ORIGIN = "https://collab.example.com";
 
 vi.mock(
   "y-websocket/bin/utils",
@@ -105,6 +106,7 @@ import {
   applyAgentEditToRoom,
   getRoomStateForTesting,
   isRoomBusy,
+  resetIpConnectionCountsForTesting,
   runRoomMaintenanceForTesting,
   setupCollaborationServer,
 } from "./index.js";
@@ -136,10 +138,12 @@ function createSessionHeaders({
   tenantId = "tenant-a",
   projectId = "project-a",
   sessionHeaderId,
+  includeOrigin = true,
 }: {
   tenantId?: string;
   projectId?: string;
   sessionHeaderId?: string;
+  includeOrigin?: boolean;
 } = {}) {
   const session = sessionStore.createSession(
     {
@@ -158,6 +162,7 @@ function createSessionHeaders({
     "x-tenant-id": tenantId,
     "x-project-id": projectId,
     "x-session-id": sessionHeaderId ?? session.id,
+    ...(includeOrigin ? { Origin: ALLOWED_ORIGIN } : {}),
   } as Record<string, string>;
 }
 
@@ -171,7 +176,7 @@ describe("collaboration server", () => {
     process.env.COLLAB_WS_IP_LIMIT = "1";
     server = http.createServer();
     const config = structuredClone(DEFAULT_CONFIG);
-    config.server.cors.allowedOrigins = ["https://collab.example.com"];
+    config.server.cors.allowedOrigins = [ALLOWED_ORIGIN];
     await setupCollaborationServer(server, config);
     await new Promise<void>((resolve) => {
       server.listen(0, "127.0.0.1", () => {
@@ -187,6 +192,7 @@ describe("collaboration server", () => {
   afterEach(() => {
     sessionStore.clear();
     vi.mocked(logAuditEvent).mockClear();
+    resetIpConnectionCountsForTesting();
   });
 
   afterAll(async () => {
@@ -204,7 +210,9 @@ describe("collaboration server", () => {
   });
 
   it("rejects connections without identity headers", async () => {
-    const client = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=test.txt`);
+    const client = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=test.txt`, {
+      headers: { Origin: ALLOWED_ORIGIN },
+    });
 
     const error = await new Promise<Error>((resolve) => {
       client.on("error", (err) => resolve(err as Error));
@@ -223,6 +231,7 @@ describe("collaboration server", () => {
       "x-session-id": "session-auth-missing",
       authorization: `Bearer ${randomUUID()}`,
       Cookie: `${DEFAULT_CONFIG.auth.oidc.session.cookieName}=${randomUUID()}`,
+      Origin: ALLOWED_ORIGIN,
     };
 
     const client = new WebSocket(
@@ -413,6 +422,21 @@ describe("collaboration server", () => {
     const client = new WebSocket(
       `ws://127.0.0.1:${port}/collaboration/ws?filePath=origin.txt`,
       { headers: { ...headers, Origin: "https://evil.example.com" } },
+    );
+
+    const error = await new Promise<Error>((resolve) => {
+      client.on("error", (err) => resolve(err as Error));
+    });
+
+    expect(error.message).toContain("403");
+    client.close();
+  });
+
+  it("rejects connections without an origin when allowlist is configured", async () => {
+    const headers = createSessionHeaders({ includeOrigin: false });
+    const client = new WebSocket(
+      `ws://127.0.0.1:${port}/collaboration/ws?filePath=missing-origin.txt`,
+      { headers },
     );
 
     const error = await new Promise<Error>((resolve) => {
