@@ -2,6 +2,8 @@ import { createClient, type RedisClientType } from "redis";
 import { appLogger, normalizeError } from "../observability/logger.js";
 import { randomUUID } from "node:crypto";
 
+let sharedInstance: DistributedLockService | undefined;
+
 export class DistributedLockService {
   private readonly client: RedisClientType;
   private connected = false;
@@ -56,5 +58,19 @@ export class DistributedLockService {
     }
     throw new Error(`Failed to acquire lock for resource ${resource} after ${retryCount} attempts`);
   }
+}
+
+export function getDistributedLockService(redisUrl?: string): DistributedLockService {
+  if (!sharedInstance) {
+    const url =
+      redisUrl ?? process.env.REDIS_URL ?? process.env.LOCK_REDIS_URL ?? "redis://localhost:6379";
+    sharedInstance = new DistributedLockService(url);
+  }
+  return sharedInstance;
+}
+
+// Exported for tests
+export function resetDistributedLockService(): void {
+  sharedInstance = undefined;
 }
 

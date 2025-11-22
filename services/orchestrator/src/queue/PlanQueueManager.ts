@@ -10,10 +10,11 @@ import { StepConsumer, PLAN_STEPS_QUEUE } from "./StepConsumer.js";
 import { CompletionConsumer, PLAN_COMPLETIONS_QUEUE } from "./CompletionConsumer.js";
 import { PlanStateService } from "../services/PlanStateService.js";
 import { createPlanStateStore } from "./PlanStateStore.js";
-import { DistributedLockService } from "../services/DistributedLockService.js";
+import { getDistributedLockService } from "../services/DistributedLockService.js";
 import { getPolicyEnforcer, PolicyViolationError } from "../policy/PolicyEnforcer.js";
 import { getPostgresPool } from "../database/Postgres.js";
 import { publishPlanStepEvent } from "../plan/events.js";
+import { fileLockManager } from "../services/FileLockManager.js";
 
 import type { Plan, PlanStep, PlanSubject } from "../plan/planner.js";
 import type { PlanJob, ToolEvent } from "../plan/validation.js";
@@ -38,6 +39,8 @@ export class PlanQueueManager {
   private stepConsumer!: StepConsumer;
   private completionConsumer!: CompletionConsumer;
   private queueAdapter: QueueAdapter | undefined;
+  private readonly fileLockManager = fileLockManager;
+  private readonly planSessions = new Map<string, string>();
 
   private config: AppConfig; // Remove readonly to allow updates
   private readonly queueLogger = appLogger.child({ component: "plan-queue-manager" });
@@ -50,7 +53,7 @@ export class PlanQueueManager {
     const pool = this.config.planState.backend === "postgres" ? getPostgresPool() : undefined;
     
     const redisUrl = this.config.server.rateLimits.backend.redisUrl ?? process.env.REDIS_URL ?? "redis://localhost:6379";
-    const lockService = new DistributedLockService(redisUrl);
+    const lockService = getDistributedLockService(redisUrl);
     const store = createPlanStateStore({
         backend: this.config.planState.backend,
         retentionMs: this.config.retention.planStateDays > 0 ? this.config.retention.planStateDays * 24 * 60 * 60 * 1000 : undefined,
@@ -123,6 +126,19 @@ export class PlanQueueManager {
   // ... rest of methods ...
   async submitPlanSteps(plan: Plan, traceId: string, requestId?: string, subject?: PlanSubject): Promise<void> {
       await this.initialize();
+
+      const sessionId = subject?.sessionId;
+      if (sessionId) {
+          this.planSessions.set(plan.id, sessionId);
+          await this.fileLockManager.restoreSessionLocks(sessionId).catch((err) =>
+            this.queueLogger.warn(
+              { err: normalizeError(err), planId: plan.id, sessionId },
+              "failed to restore session locks",
+            ),
+          );
+      } else {
+          this.planSessions.delete(plan.id);
+      }
 
       if (subject) {
           this.stateService!.setPlanSubject(plan.id, subject);
@@ -387,6 +403,10 @@ export class PlanQueueManager {
         metadata.nextStepIndex += 1;
       }
       
+      const completed =
+        metadata.nextStepIndex >= metadata.steps.length &&
+        metadata.lastCompletedIndex >= metadata.steps.length - 1;
+
       if (metadata.nextStepIndex >= metadata.steps.length) {
           if (metadata.lastCompletedIndex >= metadata.steps.length - 1) {
                await this.stateService!.forgetPlanMetadata(planId);
@@ -395,6 +415,19 @@ export class PlanQueueManager {
           }
       } else {
           await this.stateService!.rememberPlanMetadata(planId, metadata);
+      }
+
+      if (completed) {
+        const sessionId = this.planSessions.get(planId);
+        if (sessionId) {
+          await this.fileLockManager.releaseSessionLocks(sessionId).catch((err) =>
+            this.queueLogger.warn(
+              { err: normalizeError(err), planId, sessionId },
+              "failed to release session locks",
+            ),
+          );
+          this.planSessions.delete(planId);
+        }
       }
       
       if (this.queueAdapter) {
@@ -406,11 +439,24 @@ export class PlanQueueManager {
 
   async rehydratePendingSteps(): Promise<void> {
       const pendingSteps = await this.stateService!.listActiveSteps();
+      const restoredSessions = new Set<string>();
       for (const persisted of pendingSteps) {
           const key = persisted.idempotencyKey;
           const metadata = this.stateService!.getRegistryEntry(persisted.planId, persisted.step.id);
           if (metadata) {
               continue;
+          }
+
+          const sessionId = persisted.subject?.sessionId;
+          if (sessionId && !restoredSessions.has(sessionId)) {
+            restoredSessions.add(sessionId);
+            this.planSessions.set(persisted.planId, sessionId);
+            await this.fileLockManager.restoreSessionLocks(sessionId).catch((err) =>
+              this.queueLogger.warn(
+                { err: normalizeError(err), sessionId, planId: persisted.planId },
+                "failed to restore session locks during rehydrate",
+              ),
+            );
           }
           
           const job: PlanJob = {
