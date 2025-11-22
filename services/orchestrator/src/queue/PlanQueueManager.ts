@@ -624,7 +624,7 @@ export class PlanQueueManager {
         this.initializationPromise = null;
         // Reload config and setup services again to pick up env changes in tests
         this.config = loadConfig();
-        this.setupServices();
+        await this.setupServices();
     }
 
     hasPendingPlanStep(planId: string, stepId: string): boolean {

@@ -30,7 +30,7 @@ vi.mock("../../services/FileLockManager.js", () => ({
 vi.mock("../../collaboration/index.js", () => ({ applyAgentEditToRoom: mocks.applyAgentEditToRoomMock }));
 
 vi.mock("../../observability/logger.js", () => ({
-  appLogger: { error: vi.fn(), warn: vi.fn() },
+  appLogger: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
   normalizeError: (err: unknown) => ({ message: err instanceof Error ? err.message : String(err) }),
 }));
 
@@ -133,6 +133,22 @@ describe("FileSystemTool", () => {
     expect(result.metadata?.reason).toEqual({ reason: "locked" });
   });
 
+  it("reports infrastructure errors when locks are unavailable", async () => {
+    acquireLockMock.mockRejectedValueOnce(
+      new MockFileLockError("Redis down", "unavailable", { reason: "connection_failed" }),
+    );
+    const tool = new FileSystemTool(testLogger, { projectRoot });
+
+    const result = await tool.execute(
+      { path: "blocked.txt", action: "write", content: "data", sessionId: "s2" },
+      { requestId: "req-2" } as any,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.metadata?.reason).toEqual({ reason: "connection_failed" });
+    expect(result.error).toContain("File lock manager unavailable");
+  });
+
   it("requests approval for critical changes and releases lock on rejection", async () => {
     const criticalFile = "package-lock.json";
     const tool = new FileSystemTool(testLogger, { projectRoot });
@@ -145,6 +161,21 @@ describe("FileSystemTool", () => {
 
     expect(result.success).toBe(false);
     expect(requestApprovalMock).toHaveBeenCalled();
+    expect(releaseMock).toHaveBeenCalled();
+  });
+
+  it("deletes files with audit logging", async () => {
+    const target = path.join(projectRoot, "remove.txt");
+    await fs.writeFile(target, "to-delete");
+    const tool = new FileSystemTool(testLogger, { projectRoot });
+
+    const result = await tool.execute(
+      { path: "remove.txt", action: "delete", sessionId: "s4", agentId: "agent" },
+      { requestId: "req-4" } as any,
+    );
+
+    await expect(fs.stat(target)).rejects.toThrow();
+    expect(result.success).toBe(true);
     expect(releaseMock).toHaveBeenCalled();
   });
 });

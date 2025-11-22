@@ -110,11 +110,19 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
       const resolvedPath = this.resolvePath(input.path);
       const sessionId = input.sessionId ?? context.requestId ?? "anonymous-session";
       const roomId = this.roomIdForPath(resolvedPath);
+      const auditContext = {
+        sessionId,
+        agentId: input.agentId,
+        requestId: context.requestId,
+        path: resolvedPath,
+        action: input.action,
+      };
 
       if (input.action === "read") {
         lock = await fileLockManager.acquireLock(sessionId, resolvedPath, input.agentId);
         try {
           const content = await fs.readFile(resolvedPath, "utf-8");
+          appLogger.info({ ...auditContext }, "filesystem read completed");
           return {
             success: true,
             data: { path: resolvedPath, content },
@@ -142,6 +150,11 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
         }
 
         if (!approved) {
+          await lock.release().catch((releaseError) => {
+            appLogger.warn({ err: normalizeError(releaseError), ...auditContext }, "failed to release filesystem lock");
+          });
+          lock = undefined;
+          appLogger.info({ ...auditContext, requiresReview, approved }, "filesystem change rejected");
           return {
             success: false,
             error: "Change requires approval and was not approved",
@@ -158,6 +171,8 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
         applyAgentEditToRoom(roomId, resolvedPath, content);
         await fs.writeFile(resolvedPath, content, "utf-8");
       }
+
+      appLogger.info({ ...auditContext, requiresReview, approved }, "filesystem operation completed");
 
       return {
         success: true,

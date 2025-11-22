@@ -29,9 +29,9 @@ describe("DistributedLockService", () => {
   describe("instance", () => {
     let lockService: DistributedLockService;
 
-    beforeEach(() => {
+    beforeEach(async () => {
       vi.clearAllMocks();
-      resetDistributedLockService();
+      await resetDistributedLockService();
       lockService = new DistributedLockService("redis://localhost:6379");
     });
 
@@ -85,19 +85,19 @@ describe("DistributedLockService", () => {
     let originalRedisUrl: string | undefined;
     let originalLockRedisUrl: string | undefined;
 
-    beforeEach(() => {
+    beforeEach(async () => {
       vi.clearAllMocks();
-      resetDistributedLockService();
+      await resetDistributedLockService();
       originalRedisUrl = process.env.REDIS_URL;
       originalLockRedisUrl = process.env.LOCK_REDIS_URL;
       delete process.env.REDIS_URL;
       delete process.env.LOCK_REDIS_URL;
     });
 
-    afterEach(() => {
+    afterEach(async () => {
       process.env.REDIS_URL = originalRedisUrl;
       process.env.LOCK_REDIS_URL = originalLockRedisUrl;
-      resetDistributedLockService();
+      await resetDistributedLockService();
     });
 
     it("reuses the singleton when the url matches", async () => {

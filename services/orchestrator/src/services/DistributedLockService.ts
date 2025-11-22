@@ -77,11 +77,13 @@ export async function getDistributedLockService(redisUrl?: string): Promise<Dist
 }
 
 // Exported for tests
-export function resetDistributedLockService(): void {
+export async function resetDistributedLockService(): Promise<void> {
   for (const instance of instances.values()) {
-    void instance.disconnect().catch((error) =>
-      appLogger.warn({ err: normalizeError(error) }, "failed to close lock service client during reset"),
-    );
+    try {
+      await instance.disconnect();
+    } catch (error) {
+      appLogger.warn({ err: normalizeError(error) }, "failed to close lock service client during reset");
+    }
   }
   instances.clear();
 }
