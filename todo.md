@@ -5,6 +5,7 @@
 - When a task is completed and merged, remove its row entirely; keep only outstanding work here.
 - Preserve the column structure and concise descriptions so tasks remain actionable with locations and testing expectations.
 - When adding a task, include enough detail in `notes` to implement later and set `test_impact` based on expected changes.
+- Before adding a new task, check for duplicates or overlaps; consolidate related items into a single entry and update the `source`/`notes` fields to reference all relevant comments.
 
 | id | status | description | source | location | test_impact | notes |
 | --- | --- | --- | --- | --- | --- | --- |
