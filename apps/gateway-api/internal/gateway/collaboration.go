@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"net/http"
 	"net/http/httputil"
 	"net/url"
@@ -24,15 +25,29 @@ var (
 	collaborationFilePathLimit = 4096
 )
 
+// CollaborationRouteConfig captures configuration for the collaboration proxy wiring.
+type CollaborationRouteConfig struct {
+	TrustedProxyCIDRs []string
+}
+
 // RegisterCollaborationRoutes wires the collaboration WebSocket proxy into the gateway mux.
-func RegisterCollaborationRoutes(mux *http.ServeMux) {
+func RegisterCollaborationRoutes(mux *http.ServeMux, cfg CollaborationRouteConfig) {
 	orchestratorURL := GetEnv("ORCHESTRATOR_URL", "http://127.0.0.1:4000")
 	target, err := url.Parse(orchestratorURL)
 	if err != nil {
 		panic(fmt.Sprintf("invalid orchestrator url: %v", err))
 	}
 	proxy := newCollaborationProxy(target)
-	mux.Handle("/collaboration/ws", collaborationAuthMiddleware(proxy))
+
+	trustedProxies, err := ParseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs)
+	if err != nil {
+		panic(fmt.Sprintf("invalid trusted proxy configuration: %v", err))
+	}
+
+	maxConnections := GetIntEnv("GATEWAY_COLLAB_MAX_CONNECTIONS_PER_IP", 12)
+	limiter := newConnectionLimiter(maxConnections)
+
+	mux.Handle("/collaboration/ws", collaborationConnectionLimiter(trustedProxies, limiter, collaborationAuthMiddleware(proxy)))
 }
 
 func newCollaborationProxy(target *url.URL) *httputil.ReverseProxy {
@@ -60,6 +75,7 @@ func newCollaborationProxy(target *url.URL) *httputil.ReverseProxy {
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
+		slog.WarnContext(r.Context(), "collaboration proxy error", slog.Any("error", err))
 		writeErrorResponse(w, r, http.StatusBadGateway, "upstream_error", "failed to contact orchestrator", nil)
 	}
 
@@ -135,7 +151,7 @@ func validateCollaborationIdentity(r *http.Request) (string, string, string, str
 		return "", "", "", "", false
 	}
 
-	if len(filePath) > collaborationFilePathLimit || strings.Contains(filePath, "\x00") {
+	if len(filePath) > collaborationFilePathLimit || strings.Contains(filePath, "\x00") || strings.HasPrefix(filePath, "/") || strings.Contains(filePath, "..") {
 		return "", "", "", "", false
 	}
 
@@ -178,4 +194,17 @@ func recordCollaborationAudit(ctx context.Context, r *http.Request, outcome stri
 	if reqID := audit.RequestID(ctx); reqID != "" {
 		slog.DebugContext(ctx, "collaboration.websocket.audit", slog.String("request_id", reqID), slog.Any("details", event.Details))
 	}
+}
+
+func collaborationConnectionLimiter(trusted []*net.IPNet, limiter *connectionLimiter, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := ClientIP(r, trusted)
+		if !limiter.Acquire(ip) {
+			recordCollaborationAudit(r.Context(), r, auditOutcomeDenied, map[string]any{"reason": "ip_rate_limited", "ip": gatewayAuditLogger.HashIdentity(ip)})
+			writeErrorResponse(w, r, http.StatusTooManyRequests, "rate_limited", "too many connections", map[string]any{"retry_after": 60})
+			return
+		}
+		defer limiter.Release(ip)
+		next.ServeHTTP(w, r)
+	})
 }

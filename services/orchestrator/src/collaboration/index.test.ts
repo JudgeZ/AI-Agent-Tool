@@ -113,27 +113,31 @@ describe("collaboration server", () => {
   });
 
   it("enforces per-IP connection limits", async () => {
-    process.env.COLLAB_WS_IP_LIMIT = "1";
-    const headers = {
-      "x-tenant-id": "tenant-limit",
-      "x-project-id": "project-limit",
-      "x-session-id": "session-limit",
-    };
+    const originalIpLimit = process.env.COLLAB_WS_IP_LIMIT;
+    try {
+      process.env.COLLAB_WS_IP_LIMIT = "1";
+      const headers = {
+        "x-tenant-id": "tenant-limit",
+        "x-project-id": "project-limit",
+        "x-session-id": "session-limit",
+      };
 
-    const first = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=limited.txt`, { headers });
-    await new Promise<void>((resolve) => {
-      first.on("open", () => resolve());
-    });
+      const first = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=limited.txt`, { headers });
+      await new Promise<void>((resolve) => {
+        first.on("open", () => resolve());
+      });
 
-    const second = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=limited.txt`, { headers });
+      const second = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=limited.txt`, { headers });
 
-    const error = await new Promise<Error>((resolve) => {
-      second.on("error", (err) => resolve(err as Error));
-    });
+      const error = await new Promise<Error>((resolve) => {
+        second.on("error", (err) => resolve(err as Error));
+      });
 
-    expect(error.message).toContain("429");
-    first.close();
-    process.env.COLLAB_WS_IP_LIMIT = undefined;
+      expect(error.message).toContain("429");
+      first.close();
+    } finally {
+      process.env.COLLAB_WS_IP_LIMIT = originalIpLimit;
+    }
   });
 
   it("allows authenticated clients to connect", async () => {
