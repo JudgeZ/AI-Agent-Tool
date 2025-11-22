@@ -99,6 +99,27 @@ func TestCollaborationAuthMiddlewareRejectsTenantMismatch(t *testing.T) {
 	}
 }
 
+func TestCollaborationAuthMiddlewareRejectsSessionMismatch(t *testing.T) {
+	validator := func(ctx context.Context, authHeader, cookieHeader, requestID string) (collaborationSession, int, error) {
+		return collaborationSession{ID: "session-expected"}, http.StatusOK, nil
+	}
+
+	handler := collaborationAuthMiddleware(validator, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.local/collaboration/ws?filePath=example.txt", nil)
+	req.Header.Set("X-Tenant-Id", "tenant-1")
+	req.Header.Set("X-Project-Id", "project-1")
+	req.Header.Set("X-Session-Id", "different-session")
+	req.Header.Set("Authorization", "Bearer abc")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusForbidden {
+		t.Fatalf("expected status %d, got %d", http.StatusForbidden, rr.Code)
+	}
+}
+
 func TestNewCollaborationSessionValidatorPropagatesHeaders(t *testing.T) {
 	var capturedAuth, capturedCookie, capturedRequestID string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

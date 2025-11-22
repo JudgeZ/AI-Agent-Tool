@@ -22,6 +22,7 @@ const COMPACTION_ORIGIN = "compaction";
 const ROOM_IDLE_THRESHOLD_MS = 5 * 60 * 1000;
 const ROOM_EVICTION_THRESHOLD_MS = 15 * 60 * 1000;
 const ROOM_CHECK_INTERVAL_MS = 60 * 1000;
+const MAX_WS_PAYLOAD_BYTES = 1024 * 1024;
 const CLOSE_CODE_UNAUTHORIZED = 4401;
 
 const TEXT_FIELD = "content";
@@ -38,7 +39,15 @@ type RoomState = {
 const rooms = new Map<string, RoomState>();
 const ipConnectionCounts = new Map<string, number>();
 
+function validatePersistenceDir(): void {
+  const rootPath = path.parse(PERSISTENCE_DIR).root;
+  if (PERSISTENCE_DIR === rootPath) {
+    throw new Error("collaboration persistence directory must not be the filesystem root");
+  }
+}
+
 function ensurePersistenceDir(): Promise<void> {
+  validatePersistenceDir();
   return fs.mkdir(PERSISTENCE_DIR, { recursive: true, mode: 0o700 });
 }
 
@@ -54,13 +63,6 @@ function headerValue(value: string | string[] | undefined): string | undefined {
 }
 
 function clientIp(req: IncomingMessage): string {
-  const forwarded = headerValue(req.headers["x-forwarded-for"]);
-  if (forwarded) {
-    const parts = forwarded.split(",").map((token) => token.trim()).filter((token) => token.length > 0);
-    if (parts.length > 0) {
-      return parts[0];
-    }
-  }
   const realIp = headerValue(req.headers["x-real-ip"]);
   if (realIp) {
     return realIp;
@@ -405,7 +407,7 @@ export function setupCollaborationServer(
   httpServer: http.Server | https.Server,
   config: AppConfig,
 ): void {
-  const wss = new WebSocketServer({ noServer: true });
+  const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD_BYTES });
   scheduleCompaction(httpServer);
   const sessionCookieName = config.auth.oidc.session.cookieName;
   const connectionLimitPerIp = resolveConnectionLimitFromEnv();
