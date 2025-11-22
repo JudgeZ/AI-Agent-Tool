@@ -684,10 +684,12 @@ export async function setupCollaborationServer(
       }
 
       const room = existingRoom ?? getRoomState(derived.roomId, derived.filePath);
-      try {
-        await loadRoomFromDisk(derived.roomId, room, logger);
-      } catch (error) {
-        logger.warn({ err: normalizeError(error), roomId: derived.roomId }, "failed to hydrate room from disk");
+      if (!existingRoom) {
+        try {
+          await loadRoomFromDisk(derived.roomId, room, logger);
+        } catch (error) {
+          logger.warn({ err: normalizeError(error), roomId: derived.roomId }, "failed to hydrate room from disk");
+        }
       }
 
       room.clients.add(ws);

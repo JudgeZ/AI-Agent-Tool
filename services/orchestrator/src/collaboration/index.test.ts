@@ -556,6 +556,41 @@ describe("collaboration server", () => {
     expect(getTrackedIpCountForTesting()).toBe(0);
   });
 
+  it("preserves active room state instead of reloading stale snapshots", async () => {
+    const roomId = "stale-room";
+    const filePath = "stale-room.txt";
+    const originalDir = process.env.COLLAB_PERSISTENCE_DIR;
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "collab-stale-"));
+    const headers = createSessionHeaders({ tenantId: "tenant-stale", projectId: "project-stale" });
+
+    try {
+      process.env.COLLAB_PERSISTENCE_DIR = tempDir;
+      applyAgentEditToRoom(roomId, filePath, "live edits");
+      await fs.writeFile(path.join(tempDir, `${roomId}.txt`), "persisted snapshot", "utf8");
+
+      await new Promise<void>((resolve, reject) => {
+        const client = new WebSocket(
+          `ws://127.0.0.1:${port}/collaboration/ws?filePath=${filePath}`,
+          { headers },
+        );
+
+        client.on("open", () => client.close());
+        client.on("close", () => resolve());
+        client.on("error", (error) => reject(error));
+      });
+
+      const room = getRoomStateForTesting(roomId);
+      expect(room?.doc.getText("content").toString()).toBe("live edits");
+    } finally {
+      if (originalDir === undefined) {
+        delete process.env.COLLAB_PERSISTENCE_DIR;
+      } else {
+        process.env.COLLAB_PERSISTENCE_DIR = originalDir;
+      }
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
   it("rejects path traversal attempts", async () => {
     const headers = createSessionHeaders();
     const client = new WebSocket(
