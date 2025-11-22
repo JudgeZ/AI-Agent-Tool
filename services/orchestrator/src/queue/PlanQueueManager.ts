@@ -603,28 +603,49 @@ export class PlanQueueManager {
         }
     }
     
-    getPlanSubject(planId: string) {
-        if (!this.stateService) return undefined;
-        return this.stateService.getPlanSubject(planId) ?? this.stateService.getRetainedPlanSubject(planId);
+  getPlanSubject(planId: string) {
+      if (!this.stateService) return undefined;
+      return this.stateService.getPlanSubject(planId) ?? this.stateService.getRetainedPlanSubject(planId);
+  }
+
+  async getPersistedPlanStep(planId: string, stepId: string) {
+      if (!this.stateService) return undefined;
+      return this.stateService.getEntry(planId, stepId);
+  }
+
+  private async releaseTrackedSessionLocks(): Promise<void> {
+    const sessionIds = new Set<string>();
+    for (const sessionId of this.sessionRefCounts.keys()) {
+      sessionIds.add(sessionId);
     }
-    
-    async getPersistedPlanStep(planId: string, stepId: string) {
-        if (!this.stateService) return undefined;
-        return this.stateService.getEntry(planId, stepId);
+    for (const sessionId of this.planSessions.values()) {
+      sessionIds.add(sessionId);
     }
-    
-    async stop(): Promise<void> {
-        if (this.stepConsumer) {
-          this.stepConsumer.stop();
-        }
+
+    for (const sessionId of sessionIds) {
+      await this.fileLockManager.releaseSessionLocks(sessionId).catch((err) =>
+        this.queueLogger.warn(
+          { err: normalizeError(err), sessionId },
+          "failed to release session locks during shutdown",
+        ),
+      );
+    }
+  }
+
+  async stop(): Promise<void> {
+    if (this.stepConsumer) {
+      this.stepConsumer.stop();
+    }
         if (this.completionConsumer) {
-          this.completionConsumer.stop();
-        }
-        
-        if (this.stateService) {
-            // Close without clearing to preserve state for restart tests
-            await this.stateService.close().catch(() => {});
-        }
+      this.completionConsumer.stop();
+    }
+
+    await this.releaseTrackedSessionLocks();
+
+    if (this.stateService) {
+        // Close without clearing to preserve state for restart tests
+        await this.stateService.close().catch(() => {});
+    }
         this.stateService = undefined;
         this.initialized = false;
         this.initializationPromise = null;
@@ -637,13 +658,15 @@ export class PlanQueueManager {
           this.stepConsumer.stop();
         }
         if (this.completionConsumer) {
-          this.completionConsumer.stop();
-        }
-        
-        if (this.stateService) {
-            this.stateService.clearAll();
-            // Ensure persistence is closed to avoid race conditions in tests
-            await this.stateService.close().catch(() => {});
+      this.completionConsumer.stop();
+    }
+
+    await this.releaseTrackedSessionLocks();
+
+    if (this.stateService) {
+        this.stateService.clearAll();
+        // Ensure persistence is closed to avoid race conditions in tests
+        await this.stateService.close().catch(() => {});
         }
         this.stateService = undefined;
         this.initialized = false;

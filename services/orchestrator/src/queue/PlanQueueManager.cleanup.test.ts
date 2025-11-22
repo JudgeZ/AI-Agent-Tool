@@ -20,6 +20,7 @@ describe("PlanQueueManager cleanup", () => {
       stepConsumer?: { stop: () => void };
       completionConsumer?: { stop: () => void };
       stateService?: { close: () => Promise<void> };
+      fileLockManager: { releaseSessionLocks: (sessionId: string) => Promise<void> };
     };
 
     anyManager.planSessions.set("plan-1", "session-1");
@@ -27,11 +28,13 @@ describe("PlanQueueManager cleanup", () => {
     anyManager.stepConsumer = { stop: vi.fn() };
     anyManager.completionConsumer = { stop: vi.fn() };
     anyManager.stateService = { close: vi.fn().mockResolvedValue(undefined) };
+    anyManager.fileLockManager = { releaseSessionLocks: vi.fn().mockResolvedValue(undefined) } as any;
 
     await manager.stop();
 
     expect(anyManager.planSessions.size).toBe(0);
     expect(anyManager.sessionRefCounts.size).toBe(0);
+    expect(anyManager.fileLockManager.releaseSessionLocks).toHaveBeenCalledWith("session-1");
   });
 
   it("clears session tracking on reset", async () => {
@@ -42,6 +45,7 @@ describe("PlanQueueManager cleanup", () => {
       completionConsumer?: { stop: () => void };
       stateService?: { clearAll: () => void; close: () => Promise<void> };
       setupServices: () => Promise<void>;
+      fileLockManager: { releaseSessionLocks: (sessionId: string) => Promise<void> };
     };
 
     anyManager.planSessions.set("plan-1", "session-1");
@@ -53,10 +57,12 @@ describe("PlanQueueManager cleanup", () => {
       close: vi.fn().mockResolvedValue(undefined),
     };
     vi.spyOn(anyManager, "setupServices").mockResolvedValue(undefined);
+    anyManager.fileLockManager = { releaseSessionLocks: vi.fn().mockResolvedValue(undefined) } as any;
 
     await manager.reset();
 
     expect(anyManager.planSessions.size).toBe(0);
     expect(anyManager.sessionRefCounts.size).toBe(0);
+    expect(anyManager.fileLockManager.releaseSessionLocks).toHaveBeenCalledWith("session-1");
   });
 });
