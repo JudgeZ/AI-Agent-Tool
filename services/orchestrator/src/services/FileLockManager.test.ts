@@ -31,6 +31,14 @@ const mocks = vi.hoisted(() => {
       mockAcquireLock: vi.fn(async (_resource: string) => vi.fn(async () => {})),
       mockIsRoomBusy: vi.fn(() => false),
       mockConnect: vi.fn(async () => {}),
+      startSpanMock: vi.fn(() => ({
+        context: { traceId: "trace-id", spanId: "span-id" },
+        attributes: {},
+        setAttribute: vi.fn(),
+        addEvent: vi.fn(),
+        recordException: vi.fn(),
+        end: vi.fn(),
+      })),
     };
 });
 
@@ -48,12 +56,22 @@ vi.mock("./DistributedLockService.js", async () => {
     }),
   };
 });
+vi.mock("../observability/tracing.js", () => ({
+  startSpan: mocks.startSpanMock,
+}));
 
 // Import after mocks are set up
 import { FileLockError, FileLockManager } from "./FileLockManager.js";
 import { LockAcquisitionError } from "./DistributedLockService.js";
 
-const { store: mockStore, setOptions: mockSetOptions, redisClient: mockRedisClient, mockAcquireLock, mockIsRoomBusy } = mocks;
+const {
+  store: mockStore,
+  setOptions: mockSetOptions,
+  redisClient: mockRedisClient,
+  mockAcquireLock,
+  mockIsRoomBusy,
+  startSpanMock,
+} = mocks;
 const sessionKey = (sessionId: string) => `session:locks:${sessionId}`;
 
 describe("FileLockManager", () => {
@@ -62,6 +80,7 @@ describe("FileLockManager", () => {
     vi.clearAllMocks();
     mockRedisClient.isOpen = false;
     mockIsRoomBusy.mockReturnValue(false);
+    mockAcquireLock.mockImplementation(async () => vi.fn(async () => {}));
   });
 
   it("acquires locks with normalized keys and persists history", async () => {
@@ -69,7 +88,11 @@ describe("FileLockManager", () => {
     const lock = await manager.acquireLock("s1", "project/file.txt", "agent-1");
 
     expect(lock.path).toBe("/project/file.txt");
-    expect(mockAcquireLock).toHaveBeenCalledWith("file:/project/file.txt", 30_000, undefined, undefined, undefined);
+    expect(mockAcquireLock).toHaveBeenCalledWith("file:/project/file.txt", 30_000, undefined, undefined, {
+      traceId: "trace-id",
+      spanId: "span-id",
+      requestId: undefined,
+    });
 
     const stored = JSON.parse(mockStore.get(sessionKey("s1")) ?? "[]");
     expect(stored).toEqual(["/project/file.txt"]);
@@ -98,7 +121,11 @@ describe("FileLockManager", () => {
       300_000,
       undefined,
       undefined,
-      undefined,
+      {
+        traceId: "trace-id",
+        spanId: "span-id",
+        requestId: undefined,
+      },
     );
   });
 
@@ -108,8 +135,16 @@ describe("FileLockManager", () => {
 
     await manager.restoreSessionLocks("rehydrate");
 
-    expect(mockAcquireLock).toHaveBeenCalledWith("file:/foo.txt", 30_000, undefined, undefined, undefined);
-    expect(mockAcquireLock).toHaveBeenCalledWith("file:/bar/baz.md", 30_000, undefined, undefined, undefined);
+    expect(mockAcquireLock).toHaveBeenCalledWith("file:/foo.txt", 30_000, undefined, undefined, {
+      traceId: "trace-id",
+      spanId: "span-id",
+      requestId: undefined,
+    });
+    expect(mockAcquireLock).toHaveBeenCalledWith("file:/bar/baz.md", 30_000, undefined, undefined, {
+      traceId: "trace-id",
+      spanId: "span-id",
+      requestId: undefined,
+    });
   });
 
   it("returns busy errors when room is active", async () => {
@@ -145,7 +180,11 @@ describe("FileLockManager", () => {
     mockAcquireLock.mockRejectedValueOnce(new Error("redis unavailable"));
 
     await expect(manager.restoreSessionLocks("rehydrate")).resolves.not.toThrow();
-    expect(mockAcquireLock).toHaveBeenCalledWith("file:/foo.txt", 30_000, undefined, undefined, undefined);
+    expect(mockAcquireLock).toHaveBeenCalledWith("file:/foo.txt", 30_000, undefined, undefined, {
+      traceId: "trace-id",
+      spanId: "span-id",
+      requestId: undefined,
+    });
   });
 
   it("wraps connection errors during restore acquisitions", async () => {
@@ -197,5 +236,68 @@ describe("FileLockManager", () => {
       code: "busy",
       details: { reason: "lock_timeout" },
     });
+  });
+
+  it("propagates span context into distributed lock requests", async () => {
+    startSpanMock.mockReturnValueOnce({
+      context: { traceId: "span-trace", spanId: "span-child" },
+      attributes: {},
+      setAttribute: vi.fn(),
+      addEvent: vi.fn(),
+      recordException: vi.fn(),
+      end: vi.fn(),
+    } as any);
+    const manager = new FileLockManager("redis://example");
+
+    await manager.acquireLock("trace-session", "project/file.txt", "agent-1", { requestId: "req-123" });
+
+    expect(startSpanMock).toHaveBeenCalledWith("file_lock.acquire", {
+      path: "/project/file.txt",
+      sessionId: "trace-session",
+      agentId: "agent-1",
+    });
+    expect(mockAcquireLock).toHaveBeenCalledWith("file:/project/file.txt", 30_000, undefined, undefined, {
+      traceId: "span-trace",
+      spanId: "span-child",
+      requestId: "req-123",
+    });
+  });
+
+  it("rejects concurrent acquisitions while a lock is active", async () => {
+    const manager = new FileLockManager("redis://example");
+    const release = vi.fn(async () => {});
+    mockAcquireLock
+      .mockResolvedValueOnce(release)
+      .mockRejectedValueOnce(new LockAcquisitionError("busy", "busy"))
+      .mockResolvedValueOnce(vi.fn(async () => {}));
+
+    await manager.acquireLock("s1", "project/shared.txt");
+    await expect(manager.acquireLock("s2", "project/shared.txt")).rejects.toMatchObject({ code: "busy" });
+    await release();
+  });
+
+  it("allows reacquisition after TTL expiry", async () => {
+    vi.useFakeTimers();
+    let allowReacquire = false;
+    mockAcquireLock.mockImplementation(async () => {
+      if (mockAcquireLock.mock.calls.length > 0 && !allowReacquire) {
+        throw new LockAcquisitionError("contended", "busy");
+      }
+      return vi.fn(async () => {});
+    });
+
+    const manager = new FileLockManager("redis://example", 1_000);
+
+    try {
+      await manager.acquireLock("ttl-session-1", "project/temp.txt");
+      await expect(manager.acquireLock("ttl-session-2", "project/temp.txt")).rejects.toMatchObject({ code: "busy" });
+
+      vi.advanceTimersByTime(1_100);
+      allowReacquire = true;
+
+      await expect(manager.acquireLock("ttl-session-2", "project/temp.txt")).resolves.toBeDefined();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

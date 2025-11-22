@@ -23,6 +23,13 @@ const mocks = vi.hoisted(() => {
     acquireLockMock: vi.fn(async () => ({ release: releaseMock })),
     applyAgentEditToRoomMock: vi.fn(),
     requestApprovalMock: vi.fn(),
+    startSpanMock: vi.fn(() => ({
+      context: { traceId: "trace-123", spanId: "span-456" },
+      setAttribute: vi.fn(),
+      addEvent: vi.fn(),
+      recordException: vi.fn(),
+      end: vi.fn(),
+    })),
   };
 });
 
@@ -37,11 +44,14 @@ vi.mock("../../observability/logger.js", () => ({
   appLogger: { error: vi.fn(), warn: vi.fn(), info: vi.fn() },
   normalizeError: (err: unknown) => ({ message: err instanceof Error ? err.message : String(err) }),
 }));
+vi.mock("../../observability/tracing.js", () => ({
+  startSpan: mocks.startSpanMock,
+}));
 
 import { FileSystemTool } from "./FileSystemTool.js";
 
 let projectRoot: string;
-const { releaseMock, acquireLockMock, applyAgentEditToRoomMock, requestApprovalMock, MockFileLockError } = mocks;
+const { releaseMock, acquireLockMock, applyAgentEditToRoomMock, requestApprovalMock, MockFileLockError, startSpanMock } = mocks;
 const testLogger = {
   child: vi.fn(function () {
     return this;
@@ -58,6 +68,7 @@ beforeEach(async () => {
   releaseMock.mockClear();
   applyAgentEditToRoomMock.mockClear();
   requestApprovalMock.mockReset();
+  startSpanMock.mockClear();
 });
 
 afterEach(async () => {
@@ -121,7 +132,8 @@ describe("FileSystemTool", () => {
     expect(result.success).toBe(true);
     expect(acquireLockMock).toHaveBeenCalledWith("s1", resolved, "agent", {
       requestId: "req-123",
-      traceId: "req-123",
+      traceId: "trace-123",
+      spanId: "span-456",
     });
     expect(applyAgentEditToRoomMock).toHaveBeenCalledWith(roomId, resolved, "hello world");
     expect(releaseMock).toHaveBeenCalled();

@@ -5,6 +5,7 @@ import path from "node:path";
 
 import { applyAgentEditToRoom } from "../../collaboration/index.js";
 import { appLogger, normalizeError } from "../../observability/logger.js";
+import { startSpan } from "../../observability/tracing.js";
 import { FileLockError, fileLockManager } from "../../services/FileLockManager.js";
 import { PerSessionRateLimiter } from "../../services/RateLimiter.js";
 import { SandboxCapabilities, SandboxType } from "../../sandbox/index.js";
@@ -129,26 +130,40 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
     const logs: string[] = [];
 
     let lock: { release: () => Promise<void> } | undefined;
+    let span: ReturnType<typeof startSpan> | undefined;
     try {
       const resolvedPath = this.resolvePath(input.path);
       const sessionId = input.sessionId ?? context.requestId ?? "anonymous-session";
       this.enforceOperationLimit(sessionId);
       const roomId = this.roomIdForPath(resolvedPath);
+      span = startSpan("filesystem.tool", {
+        path: resolvedPath,
+        action: input.action,
+        sessionId,
+        agentId: input.agentId,
+        requestId: context.requestId,
+      });
       const auditContext = {
         sessionId,
         agentId: input.agentId,
         requestId: context.requestId,
-        traceId: context.requestId,
+        traceId: span.context.traceId ?? context.requestId,
+        spanId: span.context.spanId,
         path: resolvedPath,
         action: input.action,
       };
-      const traceContext = { traceId: context.requestId, requestId: context.requestId };
+      const traceContext = {
+        traceId: span.context.traceId ?? context.requestId,
+        requestId: context.requestId,
+        spanId: span.context.spanId,
+      };
 
       if (input.action === "read") {
         lock = await fileLockManager.acquireLock(sessionId, resolvedPath, input.agentId, traceContext);
         try {
           const content = await fs.readFile(resolvedPath, "utf-8");
           appLogger.info({ ...auditContext }, "filesystem read completed");
+          span.addEvent("filesystem.read.complete");
           return {
             success: true,
             data: { path: resolvedPath, content },
@@ -199,6 +214,7 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
       }
 
       appLogger.info({ ...auditContext, requiresReview, approved }, "filesystem operation completed");
+      span.addEvent("filesystem.write.complete", { requiresReview, approved });
 
       return {
         success: true,
@@ -209,6 +225,9 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
     } catch (error) {
       const normalizedError = normalizeError(error);
       logs.push(JSON.stringify(normalizedError));
+      if (error instanceof Error) {
+        span?.recordException(error);
+      }
       if (error instanceof FileLockError && error.code === "busy") {
         return {
           success: false,
@@ -235,10 +254,14 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
         };
       }
 
-      appLogger.error({ err: normalizedError }, "filesystem tool error");
+      appLogger.error(
+        { err: normalizedError, traceId: span?.context.traceId, spanId: span?.context.spanId },
+        "filesystem tool error",
+      );
       return { success: false, error: (error as Error).message, duration: Date.now() - started, logs };
     }
     finally {
+      span?.end();
       if (lock) {
         await lock.release().catch((releaseError) => {
           appLogger.warn({ err: normalizeError(releaseError) }, "failed to release filesystem lock");
