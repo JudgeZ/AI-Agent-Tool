@@ -205,10 +205,22 @@ func collaborationAuthMiddleware(validate func(context.Context, string, string, 
 			writeErrorResponse(w, r, status, "unauthorized", "session validation failed", nil)
 			return
 		}
+		if session.ID != "" && session.ID != sessionID {
+			recordCollaborationAudit(ctx, r, auditOutcomeDenied, map[string]any{"reason": "session_mismatch"})
+			writeErrorResponse(w, r, http.StatusForbidden, "forbidden", "session mismatch", nil)
+			return
+		}
 		if session.TenantID != nil && *session.TenantID != tenantID {
 			recordCollaborationAudit(ctx, r, auditOutcomeDenied, map[string]any{"reason": "tenant_mismatch", "session_tenant_hash": gatewayAuditLogger.HashIdentity("tenant", *session.TenantID)})
 			writeErrorResponse(w, r, http.StatusForbidden, "forbidden", "tenant mismatch", nil)
 			return
+		}
+
+		if session.ID != "" {
+			r.Header.Set("X-Session-Id", session.ID)
+		}
+		if session.TenantID != nil {
+			r.Header.Set("X-Tenant-Id", *session.TenantID)
 		}
 
 		recordCollaborationAudit(r.Context(), r, auditOutcomeSuccess, map[string]any{"reason": "authorized"})

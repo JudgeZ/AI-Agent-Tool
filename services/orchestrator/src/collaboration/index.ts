@@ -406,6 +406,7 @@ export function setupCollaborationServer(
   scheduleCompaction(httpServer);
   const sessionCookieName = config.auth.oidc.session.cookieName;
   const connectionLimitPerIp = resolveConnectionLimitFromEnv();
+  const allowedOrigins = new Set(config.server.cors.allowedOrigins ?? []);
 
   httpServer.on("upgrade", (request, socket, head) => {
     const { pathname } = new URL(request.url ?? "", "http://localhost");
@@ -417,6 +418,21 @@ export function setupCollaborationServer(
     const logger = loggerWithTrace(request);
     const identifiers = requestIdentifiers(request);
     const ip = clientIp(request);
+    const origin = headerValue(request.headers["origin"]);
+    if (allowedOrigins.size > 0 && origin && !allowedOrigins.has(origin)) {
+      logger.warn({ origin }, "rejecting collaboration connection due to disallowed origin");
+      logAuditEvent({
+        action: "collaboration.connection",
+        outcome: "denied",
+        resource: "collaboration.websocket",
+        requestId: identifiers.requestId,
+        traceId: identifiers.traceId,
+        details: { reason: "origin_not_allowed", origin },
+      });
+      socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      return;
+    }
     if (!incrementConnection(ip, connectionLimitPerIp)) {
       logger.warn({ ip }, "rejecting collaboration connection due to per-IP limit");
       logAuditEvent({

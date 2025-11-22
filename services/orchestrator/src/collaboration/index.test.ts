@@ -119,7 +119,9 @@ describe("collaboration server", () => {
     vi.useFakeTimers();
     process.env.COLLAB_WS_IP_LIMIT = "1";
     server = http.createServer();
-    setupCollaborationServer(server, DEFAULT_CONFIG);
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.server.cors.allowedOrigins = ["https://collab.example.com"];
+    setupCollaborationServer(server, config);
     await new Promise<void>((resolve) => {
       server.listen(0, "127.0.0.1", () => {
         const address = server.address();
@@ -282,6 +284,21 @@ describe("collaboration server", () => {
 
     const message = result.error?.message ?? "";
     expect(message.includes("401") || result.closeCode === CLOSE_CODE_UNAUTHORIZED).toBe(true);
+    client.close();
+  });
+
+  it("rejects connections from disallowed origins when configured", async () => {
+    const headers = createSessionHeaders();
+    const client = new WebSocket(
+      `ws://127.0.0.1:${port}/collaboration/ws?filePath=origin.txt`,
+      { headers: { ...headers, Origin: "https://evil.example.com" } },
+    );
+
+    const error = await new Promise<Error>((resolve) => {
+      client.on("error", (err) => resolve(err as Error));
+    });
+
+    expect(error.message).toContain("403");
     client.close();
   });
 
