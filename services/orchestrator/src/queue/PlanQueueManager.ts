@@ -604,6 +604,8 @@ export class PlanQueueManager {
         this.stateService = undefined;
         this.initialized = false;
         this.initializationPromise = null;
+        this.planSessions.clear();
+        this.sessionRefCounts.clear();
     }
 
     async reset(): Promise<void> {
@@ -625,6 +627,8 @@ export class PlanQueueManager {
         // Reload config and setup services again to pick up env changes in tests
         this.config = loadConfig();
         await this.setupServices();
+        this.planSessions.clear();
+        this.sessionRefCounts.clear();
     }
 
     hasPendingPlanStep(planId: string, stepId: string): boolean {
