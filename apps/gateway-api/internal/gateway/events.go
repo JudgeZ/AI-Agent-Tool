@@ -466,6 +466,9 @@ func validateForwardedCookie(value string) error {
 		if len(trimmed) > maxForwardedCookieValueLen {
 			return fmt.Errorf("cookie component exceeds %d bytes", maxForwardedCookieValueLen)
 		}
+		if !strings.Contains(trimmed, "=") {
+			return errors.New("cookie component missing key/value pair")
+		}
 	}
 	return nil
 }

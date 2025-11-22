@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"net/url"
 	"testing"
+	"time"
 )
 
 func TestCollaborationProxyPreservesQuery(t *testing.T) {
@@ -34,7 +35,7 @@ func TestCollaborationAuthMiddlewareValidatesSession(t *testing.T) {
 		return collaborationSession{ID: "session-123"}, http.StatusOK, nil
 	}
 
-	handler := collaborationAuthMiddleware(validator, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	handler := collaborationAuthMiddleware(validator, nil, rateLimitBucket{}, nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusNoContent)
 	}))
@@ -61,7 +62,7 @@ func TestCollaborationAuthMiddlewareRejectsInvalidSession(t *testing.T) {
 		return collaborationSession{}, http.StatusUnauthorized, nil
 	}
 
-	handler := collaborationAuthMiddleware(validator, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	handler := collaborationAuthMiddleware(validator, nil, rateLimitBucket{}, nil, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.local/collaboration/ws?filePath=example.txt", nil)
 	req.Header.Set("X-Tenant-Id", "tenant-1")
@@ -83,7 +84,7 @@ func TestCollaborationAuthMiddlewareRejectsTenantMismatch(t *testing.T) {
 		return collaborationSession{ID: "session-123", TenantID: &mismatch}, http.StatusOK, nil
 	}
 
-	handler := collaborationAuthMiddleware(validator, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	handler := collaborationAuthMiddleware(validator, nil, rateLimitBucket{}, nil, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.local/collaboration/ws?filePath=example.txt", nil)
 	req.Header.Set("X-Tenant-Id", "tenant-1")
@@ -104,7 +105,7 @@ func TestCollaborationAuthMiddlewareRejectsSessionMismatch(t *testing.T) {
 		return collaborationSession{ID: "session-expected"}, http.StatusOK, nil
 	}
 
-	handler := collaborationAuthMiddleware(validator, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	handler := collaborationAuthMiddleware(validator, nil, rateLimitBucket{}, nil, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.local/collaboration/ws?filePath=example.txt", nil)
 	req.Header.Set("X-Tenant-Id", "tenant-1")
@@ -169,7 +170,7 @@ func TestCollaborationAuthMiddlewareRejectsMissingAuth(t *testing.T) {
 		return collaborationSession{ID: "session-123"}, http.StatusOK, nil
 	}
 
-	handler := collaborationAuthMiddleware(validator, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	handler := collaborationAuthMiddleware(validator, nil, rateLimitBucket{}, nil, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.local/collaboration/ws?filePath=example.txt", nil)
 	req.Header.Set("X-Tenant-Id", "tenant-1")
@@ -189,7 +190,7 @@ func TestCollaborationAuthMiddlewareRejectsPathTraversal(t *testing.T) {
 		return collaborationSession{ID: "session-123"}, http.StatusOK, nil
 	}
 
-	handler := collaborationAuthMiddleware(validator, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	handler := collaborationAuthMiddleware(validator, nil, rateLimitBucket{}, nil, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.local/collaboration/ws?filePath=../etc/passwd", nil)
 	req.Header.Set("X-Tenant-Id", "tenant-1")
@@ -210,7 +211,7 @@ func TestCollaborationAuthMiddlewareRejectsInvalidCookie(t *testing.T) {
 		return collaborationSession{ID: "session-123"}, http.StatusOK, nil
 	}
 
-	handler := collaborationAuthMiddleware(validator, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+	handler := collaborationAuthMiddleware(validator, nil, rateLimitBucket{}, nil, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
 
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.local/collaboration/ws?filePath=example.txt", nil)
 	req.Header.Set("X-Tenant-Id", "tenant-1")
@@ -224,6 +225,41 @@ func TestCollaborationAuthMiddlewareRejectsInvalidCookie(t *testing.T) {
 
 	if rr.Code != http.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rr.Code)
+	}
+}
+
+func TestCollaborationAuthMiddlewareRateLimitsFailedAuth(t *testing.T) {
+	base := time.Now()
+	limiter := newRateLimiter()
+	limiter.now = func() time.Time { return base }
+
+	validator := func(ctx context.Context, authHeader, cookieHeader, requestID string) (collaborationSession, int, error) {
+		return collaborationSession{}, http.StatusUnauthorized, nil
+	}
+
+	handler := collaborationAuthMiddleware(validator, limiter, rateLimitBucket{Endpoint: "collaboration.auth_failure", IdentityType: "ip", Window: time.Minute, Limit: 2}, nil, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+
+	for i := 0; i < 3; i++ {
+		req := httptest.NewRequest(http.MethodGet, "http://gateway.local/collaboration/ws?filePath=example.txt", nil)
+		req.Header.Set("X-Tenant-Id", "tenant-1")
+		req.Header.Set("X-Project-Id", "project-1")
+		req.Header.Set("X-Session-Id", "session-123")
+		req.Header.Set("Authorization", "Bearer token")
+		req.RemoteAddr = "192.0.2.50:1234"
+		rr := httptest.NewRecorder()
+
+		handler.ServeHTTP(rr, req)
+
+		if i < 2 {
+			if rr.Code != http.StatusUnauthorized {
+				t.Fatalf("expected status %d on attempt %d, got %d", http.StatusUnauthorized, i+1, rr.Code)
+			}
+			continue
+		}
+
+		if rr.Code != http.StatusTooManyRequests {
+			t.Fatalf("expected rate limit status %d on attempt %d, got %d", http.StatusTooManyRequests, i+1, rr.Code)
+		}
 	}
 }
 
