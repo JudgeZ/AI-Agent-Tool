@@ -10,7 +10,7 @@ import { setupWSConnection } from "y-websocket/bin/utils.js";
 import * as Y from "yjs";
 
 import type { AppConfig } from "../config.js";
-import { sessionStore } from "../auth/SessionStore.js";
+import { SessionRecord, sessionStore } from "../auth/SessionStore.js";
 import { validateSessionId, type SessionExtractionResult, type SessionSource } from "../auth/sessionValidation.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
 import { normalizeTenantIdInput } from "../tenants/tenantIds.js";
@@ -38,7 +38,7 @@ const rooms = new Map<string, RoomState>();
 const ipConnectionCounts = new Map<string, number>();
 
 function ensurePersistenceDir(): Promise<void> {
-  return fs.mkdir(PERSISTENCE_DIR, { recursive: true });
+  return fs.mkdir(PERSISTENCE_DIR, { recursive: true, mode: 0o700 });
 }
 
 function headerValue(value: string | string[] | undefined): string | undefined {
@@ -138,7 +138,9 @@ function extractSessionIdFromUpgrade(
 function authenticateCollaborationRequest(
   req: IncomingMessage,
   cookieName: string,
-): { status: "ok" } | { status: "error"; reason: string; source?: SessionSource } {
+):
+  | { status: "ok"; session: SessionRecord; sessionId: string; source?: SessionSource }
+  | { status: "error"; reason: string; source?: SessionSource } {
   sessionStore.cleanupExpired();
   const sessionResult = extractSessionIdFromUpgrade(req, cookieName);
   if (sessionResult.status === "invalid") {
@@ -151,7 +153,7 @@ function authenticateCollaborationRequest(
   if (!session) {
     return { status: "error", reason: "unknown session", source: sessionResult.source };
   }
-  return { status: "ok" };
+  return { status: "ok", session, sessionId: sessionResult.sessionId, source: sessionResult.source };
 }
 
 function loggerWithTrace(req: IncomingMessage) {
@@ -162,7 +164,11 @@ function loggerWithTrace(req: IncomingMessage) {
   return appLogger.child({ trace_id: traceId });
 }
 
-function deriveRoomId(req: IncomingMessage): {
+function deriveRoomId(
+  req: IncomingMessage,
+  validatedSession: SessionRecord,
+  validatedSessionId: string,
+): {
   roomId?: string;
   filePath?: string;
   error?: string;
@@ -186,12 +192,25 @@ function deriveRoomId(req: IncomingMessage): {
     return { error: "missing identity or file path" };
   }
 
+  if (sessionId !== validatedSessionId) {
+    return { error: "session mismatch" };
+  }
+
+  if (validatedSession.tenantId && tenantId !== validatedSession.tenantId) {
+    return { error: "tenant mismatch" };
+  }
+
   if (filePath.length > 4096 || filePath.includes("\x00")) {
     return { error: "invalid file path" };
   }
 
-  const normalizedPath = path.normalize(filePath);
-  if (normalizedPath.startsWith("..") || path.isAbsolute(normalizedPath)) {
+  const normalizedPath = path.normalize(filePath).replace(/\\/g, "/");
+  if (normalizedPath.includes("..") || path.isAbsolute(normalizedPath)) {
+    return { error: "invalid file path" };
+  }
+
+  const resolvedPath = path.resolve(PERSISTENCE_DIR, normalizedPath);
+  if (!resolvedPath.startsWith(PERSISTENCE_DIR + path.sep)) {
     return { error: "invalid file path" };
   }
 
@@ -391,9 +410,13 @@ export function setupCollaborationServer(
     }
 
     wss.handleUpgrade(request, socket, head, async (ws) => {
-      const derived = deriveRoomId(request);
+      const derived = deriveRoomId(request, authResult.session, authResult.sessionId);
       if (!derived.roomId || !derived.filePath) {
-        ws.close(CLOSE_CODE_UNAUTHORIZED, derived.error ?? "unauthorized");
+        logger.warn(
+          { error: derived.error, source: authResult.source },
+          "rejecting collaboration connection due to identity mismatch",
+        );
+        ws.close(CLOSE_CODE_UNAUTHORIZED, "unauthorized");
         decrementConnection(ip);
         return;
       }
@@ -406,9 +429,18 @@ export function setupCollaborationServer(
       }
 
       room.clients.add(ws);
+      logger.info(
+        {
+          roomId: derived.roomId,
+          tenantId: authResult.session.tenantId,
+          sessionId: authResult.sessionId,
+        },
+        "collaboration connection established",
+      );
       ws.once("close", () => {
         room.clients.delete(ws);
         decrementConnection(ip);
+        logger.info({ roomId: derived.roomId, sessionId: authResult.sessionId }, "collaboration connection closed");
       });
 
       setupWSConnection(ws, request, { docName: derived.roomId, gc: true, getYDoc: () => room.doc });

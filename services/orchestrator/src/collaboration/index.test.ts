@@ -4,6 +4,8 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 
+const CLOSE_CODE_UNAUTHORIZED = 4401;
+
 vi.mock(
   "y-websocket/bin/utils.js",
   () => ({
@@ -174,6 +176,22 @@ describe("collaboration server", () => {
     client.close();
   });
 
+  it("rejects connections when header session id does not match authenticated session", async () => {
+    const headers = createSessionHeaders();
+    headers["x-session-id"] = randomUUID();
+
+    const client = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=header-mismatch.txt`, { headers });
+
+    const result = await new Promise<{ error?: Error; closeCode?: number }>((resolve) => {
+      client.on("error", (err) => resolve({ error: err as Error }));
+      client.on("close", (code) => resolve({ closeCode: code }));
+    });
+
+    const message = result.error?.message ?? "";
+    expect(message.includes("401") || result.closeCode === CLOSE_CODE_UNAUTHORIZED).toBe(true);
+    client.close();
+  });
+
   it("enforces per-IP connection limits", async () => {
     const headers = createSessionHeaders({ tenantId: "tenant-limit", projectId: "project-limit" });
 
@@ -211,6 +229,23 @@ describe("collaboration server", () => {
       client.on("close", () => resolve());
       client.close();
     });
+  });
+
+  it("rejects path traversal attempts", async () => {
+    const headers = createSessionHeaders();
+    const client = new WebSocket(
+      `ws://127.0.0.1:${port}/collaboration/ws?filePath=../../etc/passwd`,
+      { headers },
+    );
+
+    const result = await new Promise<{ error?: Error; closeCode?: number }>((resolve) => {
+      client.on("error", (err) => resolve({ error: err as Error }));
+      client.on("close", (code) => resolve({ closeCode: code }));
+    });
+
+    const message = result.error?.message ?? "";
+    expect(message.includes("401") || result.closeCode === CLOSE_CODE_UNAUTHORIZED).toBe(true);
+    client.close();
   });
 
   it("tracks busy rooms only for human edits", () => {
