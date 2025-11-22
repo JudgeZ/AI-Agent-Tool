@@ -2,6 +2,7 @@
 
 **How to maintain this file**
 - Keep task IDs sequential starting from `T1`; renumber the table when adding or removing tasks to avoid gaps.
+- Add only actionable tasks that are expected to be implemented; declined items belong in `ignored.md`.
 - When a task is completed and merged, remove its row entirely; keep only outstanding work here.
 - Preserve the column structure and concise descriptions so tasks remain actionable with locations and testing expectations.
 - When adding a task, include enough detail in `notes` to implement later and set `test_impact` based on expected changes.
