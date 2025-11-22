@@ -176,20 +176,9 @@ func collaborationAuthMiddleware(
 
 		tenantID, projectID, sessionID, filePath, ok := validateCollaborationIdentity(r)
 		if !ok {
-			limited, retryAfter, identity := registerCollaborationAuthFailure(r.Context(), r, failureLimiter, failureBucket, trustedProxies)
-			if limited {
-				recordCollaborationAudit(r.Context(), r, auditOutcomeDenied, map[string]any{
-					"reason":                  "auth_rate_limited",
-					"client_ip_hash":          gatewayAuditLogger.HashIdentity(identity),
-					"retry_after_seconds":     retryAfterToSeconds(retryAfter),
-					"original_failure_reason": "missing_identity",
-				})
-				respondTooManyRequests(w, r, retryAfter)
+			if handleCollaborationAuthFailure(r.Context(), w, r, failureLimiter, failureBucket, trustedProxies, "missing_identity", http.StatusUnauthorized, "unauthorized", "authentication required", nil, nil) {
 				return
 			}
-			recordCollaborationAudit(r.Context(), r, auditOutcomeDenied, map[string]any{"reason": "missing_identity"})
-			writeErrorResponse(w, r, http.StatusUnauthorized, "unauthorized", "authentication required", nil)
-			return
 		}
 
 		r.Header.Set("X-Tenant-Id", tenantID)
@@ -200,57 +189,25 @@ func collaborationAuthMiddleware(
 		r.URL.RawQuery = q.Encode()
 
 		if authHeader == "" && cookieHeader == "" {
-			limited, retryAfter, identity := registerCollaborationAuthFailure(r.Context(), r, failureLimiter, failureBucket, trustedProxies)
-			if limited {
-				recordCollaborationAudit(r.Context(), r, auditOutcomeDenied, map[string]any{
-					"reason":                  "auth_rate_limited",
-					"client_ip_hash":          gatewayAuditLogger.HashIdentity(identity),
-					"retry_after_seconds":     retryAfterToSeconds(retryAfter),
-					"original_failure_reason": "missing_auth",
-				})
-				respondTooManyRequests(w, r, retryAfter)
+			if handleCollaborationAuthFailure(r.Context(), w, r, failureLimiter, failureBucket, trustedProxies, "missing_auth", http.StatusUnauthorized, "unauthorized", "authentication required", nil, nil) {
 				return
 			}
-			recordCollaborationAudit(r.Context(), r, auditOutcomeDenied, map[string]any{"reason": "missing_auth"})
-			writeErrorResponse(w, r, http.StatusUnauthorized, "unauthorized", "authentication required", nil)
-			return
 		}
 
 		if authHeader != "" {
 			if len(authHeader) > maxAuthorizationHeaderLen || hasUnsafeHeaderRunes(authHeader) || !strings.HasPrefix(strings.ToLower(authHeader), "bearer ") || strings.TrimSpace(authHeader[7:]) == "" {
-				limited, retryAfter, identity := registerCollaborationAuthFailure(r.Context(), r, failureLimiter, failureBucket, trustedProxies)
-				if limited {
-					recordCollaborationAudit(r.Context(), r, auditOutcomeDenied, map[string]any{
-						"reason":                  "auth_rate_limited",
-						"client_ip_hash":          gatewayAuditLogger.HashIdentity(identity),
-						"retry_after_seconds":     retryAfterToSeconds(retryAfter),
-						"original_failure_reason": "invalid_authorization_header",
-					})
-					respondTooManyRequests(w, r, retryAfter)
+				if handleCollaborationAuthFailure(r.Context(), w, r, failureLimiter, failureBucket, trustedProxies, "invalid_authorization_header", http.StatusBadRequest, "invalid_request", "authorization header invalid", nil, nil) {
 					return
 				}
-				recordCollaborationAudit(r.Context(), r, auditOutcomeDenied, map[string]any{"reason": "invalid_authorization_header"})
-				writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "authorization header invalid", nil)
-				return
 			}
 		}
 
 		if cookieHeader != "" {
 			if err := validateForwardedCookie(cookieHeader); err != nil {
-				limited, retryAfter, identity := registerCollaborationAuthFailure(r.Context(), r, failureLimiter, failureBucket, trustedProxies)
-				if limited {
-					recordCollaborationAudit(r.Context(), r, auditOutcomeDenied, map[string]any{
-						"reason":                  "auth_rate_limited",
-						"client_ip_hash":          gatewayAuditLogger.HashIdentity(identity),
-						"retry_after_seconds":     retryAfterToSeconds(retryAfter),
-						"original_failure_reason": "invalid_cookie",
-					})
-					respondTooManyRequests(w, r, retryAfter)
+				auditDetails := map[string]any{"error": err.Error()}
+				if handleCollaborationAuthFailure(r.Context(), w, r, failureLimiter, failureBucket, trustedProxies, "invalid_cookie", http.StatusBadRequest, "invalid_request", "cookie header invalid", auditDetails, map[string]any{"reason": err.Error()}) {
 					return
 				}
-				recordCollaborationAudit(r.Context(), r, auditOutcomeDenied, map[string]any{"reason": "invalid_cookie", "error": err.Error()})
-				writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "cookie header invalid", map[string]any{"reason": err.Error()})
-				return
 			}
 		}
 
@@ -264,52 +221,19 @@ func collaborationAuthMiddleware(
 			return
 		}
 		if status != http.StatusOK {
-			limited, retryAfter, identity := registerCollaborationAuthFailure(ctx, r, failureLimiter, failureBucket, trustedProxies)
-			if limited {
-				recordCollaborationAudit(ctx, r, auditOutcomeDenied, map[string]any{
-					"reason":                  "auth_rate_limited",
-					"client_ip_hash":          gatewayAuditLogger.HashIdentity(identity),
-					"retry_after_seconds":     retryAfterToSeconds(retryAfter),
-					"original_failure_reason": "invalid_session",
-				})
-				respondTooManyRequests(w, r, retryAfter)
+			if handleCollaborationAuthFailure(ctx, w, r, failureLimiter, failureBucket, trustedProxies, "invalid_session", status, "unauthorized", "session validation failed", nil, nil) {
 				return
 			}
-			recordCollaborationAudit(ctx, r, auditOutcomeDenied, map[string]any{"reason": "invalid_session"})
-			writeErrorResponse(w, r, status, "unauthorized", "session validation failed", nil)
-			return
 		}
 		if session.ID != "" && session.ID != sessionID {
-			limited, retryAfter, identity := registerCollaborationAuthFailure(ctx, r, failureLimiter, failureBucket, trustedProxies)
-			if limited {
-				recordCollaborationAudit(ctx, r, auditOutcomeDenied, map[string]any{
-					"reason":                  "auth_rate_limited",
-					"client_ip_hash":          gatewayAuditLogger.HashIdentity(identity),
-					"retry_after_seconds":     retryAfterToSeconds(retryAfter),
-					"original_failure_reason": "session_mismatch",
-				})
-				respondTooManyRequests(w, r, retryAfter)
+			if handleCollaborationAuthFailure(ctx, w, r, failureLimiter, failureBucket, trustedProxies, "session_mismatch", http.StatusForbidden, "forbidden", "session mismatch", nil, nil) {
 				return
 			}
-			recordCollaborationAudit(ctx, r, auditOutcomeDenied, map[string]any{"reason": "session_mismatch"})
-			writeErrorResponse(w, r, http.StatusForbidden, "forbidden", "session mismatch", nil)
-			return
 		}
 		if session.TenantID != nil && *session.TenantID != tenantID {
-			limited, retryAfter, identity := registerCollaborationAuthFailure(ctx, r, failureLimiter, failureBucket, trustedProxies)
-			if limited {
-				recordCollaborationAudit(ctx, r, auditOutcomeDenied, map[string]any{
-					"reason":                  "auth_rate_limited",
-					"client_ip_hash":          gatewayAuditLogger.HashIdentity(identity),
-					"retry_after_seconds":     retryAfterToSeconds(retryAfter),
-					"original_failure_reason": "tenant_mismatch",
-				})
-				respondTooManyRequests(w, r, retryAfter)
+			if handleCollaborationAuthFailure(ctx, w, r, failureLimiter, failureBucket, trustedProxies, "tenant_mismatch", http.StatusForbidden, "forbidden", "tenant mismatch", map[string]any{"session_tenant_hash": gatewayAuditLogger.HashIdentity("tenant", *session.TenantID)}, nil) {
 				return
 			}
-			recordCollaborationAudit(ctx, r, auditOutcomeDenied, map[string]any{"reason": "tenant_mismatch", "session_tenant_hash": gatewayAuditLogger.HashIdentity("tenant", *session.TenantID)})
-			writeErrorResponse(w, r, http.StatusForbidden, "forbidden", "tenant mismatch", nil)
-			return
 		}
 
 		if session.ID != "" {
@@ -322,6 +246,41 @@ func collaborationAuthMiddleware(
 		recordCollaborationAudit(r.Context(), r, auditOutcomeSuccess, map[string]any{"reason": "authorized"})
 		next.ServeHTTP(w, r.WithContext(ctx))
 	})
+}
+
+func handleCollaborationAuthFailure(
+	ctx context.Context,
+	w http.ResponseWriter,
+	r *http.Request,
+	limiter *rateLimiter,
+	bucket rateLimitBucket,
+	trusted []*net.IPNet,
+	reason string,
+	status int,
+	code string,
+	message string,
+	auditDetails map[string]any,
+	responseDetails map[string]any,
+) bool {
+	limited, retryAfter, identity := registerCollaborationAuthFailure(ctx, r, limiter, bucket, trusted)
+	if limited {
+		recordCollaborationAudit(ctx, r, auditOutcomeDenied, map[string]any{
+			"reason":                  "auth_rate_limited",
+			"client_ip_hash":          gatewayAuditLogger.HashIdentity(identity),
+			"retry_after_seconds":     retryAfterToSeconds(retryAfter),
+			"original_failure_reason": reason,
+		})
+		respondTooManyRequests(w, r, retryAfter)
+		return true
+	}
+
+	mergedAudit := map[string]any{"reason": reason}
+	for k, v := range auditDetails {
+		mergedAudit[k] = v
+	}
+	recordCollaborationAudit(ctx, r, auditOutcomeDenied, mergedAudit)
+	writeErrorResponse(w, r, status, code, message, responseDetails)
+	return true
 }
 
 func validateCollaborationIdentity(r *http.Request) (string, string, string, string, bool) {
