@@ -353,7 +353,7 @@ indexer:
 
 redis:
   enabled: true
-  image: bitnami/redis:7.2.5
+  image: bitnami/redis:7.2
   podSecurityContext:
     runAsNonRoot: true
     fsGroup: 1001
@@ -373,10 +373,10 @@ redis:
 
 postgres:
   enabled: true
-  image: postgres:15-alpine
+  image: bitnami/postgresql:15
   podSecurityContext:
     runAsNonRoot: true
-    fsGroup: 999
+    fsGroup: 1001
     seccompProfile:
       type: RuntimeDefault
   containerSecurityContext:
@@ -400,7 +400,7 @@ postgres:
 
 rabbitmq:
   enabled: true
-  image: rabbitmq:3.13-management
+  image: bitnami/rabbitmq:3.13
   podSecurityContext:
     runAsNonRoot: true
     fsGroup: 1001
@@ -437,6 +437,35 @@ kafka:
   resources: {}
 
 monitoring:
+  prometheus:
+    alerts:
+      enabled: false
+      evaluationInterval: "30s"
+      thresholds:
+        providerErrorRate: 0.05
+        providerLatencyP95: 5
+        providerTimeoutRate: 0.01
+        providerRetryRate: 0.1
+        tokenUsageSpike: 3
+        monthlyCostRate: 1000
+        cacheHitRate: 0.3
+        providerAvailabilitySLO: 0.995
+        providerLatencySLO: 10
+      durations:
+        providerErrorRate: "5m"
+        providerDown: "5m"
+        allProvidersDown: "2m"
+        providerLatency: "10m"
+        providerTimeout: "5m"
+        circuitBreakerOpen: "1m"
+        multipleCircuitBreakers: "2m"
+        providerRetryRate: "10m"
+        tokenUsageSpike: "5m"
+        highCostRate: "15m"
+        lowCacheHitRate: "30m"
+        healthCheckFailing: "3m"
+        sloViolation: "15m"
+        latencySLO: "15m"
   serviceMonitor:
     enabled: false
     namespace: ""
@@ -502,3 +531,45 @@ ingress:
           pathType: Prefix
           service: gateway
   tls: []
+
+retention:
+  secrets:
+    retentionVersions: 5
+    retentionDays: 30
+    purge:
+      enabled: false
+      schedule: "0 3 * * *"
+      dryRun: false
+      auditEnabled: true
+      metricsEnabled: true
+  planState:
+    retentionDays: 30
+    backend: postgres
+    purge:
+      enabled: false
+      schedule: "0 4 * * *"
+      dryRun: false
+      auditEnabled: true
+      metricsEnabled: true
+      batchSize: 1000
+  artifacts:
+    retentionDays: 90
+    backend: file
+    purge:
+      enabled: false
+      schedule: "0 5 * * *"
+      dryRun: false
+      auditEnabled: true
+      metricsEnabled: true
+      batchSize: 100
+
+security:
+  cmek:
+    retentionVersions: 3
+    rotation:
+      enabled: false
+      schedule: "0 0 1 * *"
+      dryRun: false
+      auditEnabled: true
+      rotateAllTenants: false
+      tenants: []

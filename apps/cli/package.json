@@ -9,13 +9,18 @@
     "build": "esbuild src/index.ts --bundle --platform=node --format=cjs --sourcemap --outfile=dist/index.js --banner:js=\"#!/usr/bin/env node\"",
     "dev": "ts-node src/index.ts",
     "test": "npm run build && node --test tests/*.test.js",
-    "test:coverage": "npm run build && c8 --check-coverage --branches 60 --functions 60 --lines 60 --statements 60 node --test tests/*.test.js"
+    "test:coverage": "npm run build && c8 --check-coverage --branches 60 --functions 60 --lines 60 --statements 60 node --test tests/*.test.js",
+    "lint": "eslint \"src/**/*.ts\""
   },
   "devDependencies": {
+    "@eslint/js": "^9.39.1",
     "c8": "^9.1.0",
     "esbuild": "^0.25.0",
+    "eslint": "^9.39.1",
+    "globals": "^16.5.0",
     "ts-node": "^10.9.2",
-    "typescript": "^5.4.5"
+    "typescript": "^5.4.5",
+    "typescript-eslint": "^8.47.0"
   },
   "dependencies": {
     "pino": "^9.14.0"

@@ -120,7 +120,7 @@ func buildHTTPHandler(base http.Handler, limiter *gateway.GlobalRateLimiter, max
 }
 
 func trustedProxyCIDRsFromEnv() []string {
-	raw := strings.TrimSpace(os.Getenv("GATEWAY_TRUSTED_PROXY_CIDRS"))
+	raw := strings.TrimSpace(gateway.GetEnv("GATEWAY_TRUSTED_PROXY_CIDRS", ""))
 	if raw == "" {
 		return nil
 	}
@@ -140,7 +140,7 @@ func trustedProxyCIDRsFromEnv() []string {
 }
 
 func allowInsecureStateCookieFromEnv() bool {
-	value := strings.TrimSpace(os.Getenv("OAUTH_ALLOW_INSECURE_STATE_COOKIE"))
+	value := strings.TrimSpace(gateway.GetEnv("OAUTH_ALLOW_INSECURE_STATE_COOKIE", ""))
 	if value == "" {
 		return false
 	}
@@ -153,7 +153,7 @@ func allowInsecureStateCookieFromEnv() bool {
 }
 
 func maxRequestBodyBytesFromEnv() int64 {
-	value := strings.TrimSpace(os.Getenv("GATEWAY_MAX_REQUEST_BODY_BYTES"))
+	value := strings.TrimSpace(gateway.GetEnv("GATEWAY_MAX_REQUEST_BODY_BYTES", ""))
 	if value == "" {
 		return gateway.DefaultMaxRequestBodyBytes()
 	}
@@ -169,8 +169,8 @@ func validateStateCookieConfig(allowInsecure bool) error {
 		return nil
 	}
 
-	nodeEnv := strings.ToLower(strings.TrimSpace(os.Getenv("NODE_ENV")))
-	runMode := strings.ToLower(strings.TrimSpace(os.Getenv("RUN_MODE")))
+	nodeEnv := strings.ToLower(strings.TrimSpace(gateway.GetEnv("NODE_ENV", "")))
+	runMode := strings.ToLower(strings.TrimSpace(gateway.GetEnv("RUN_MODE", "")))
 
 	if nodeEnv == "production" || nodeEnv == "prod" {
 		return fmt.Errorf("OAUTH_ALLOW_INSECURE_STATE_COOKIE cannot be true when NODE_ENV=%q", nodeEnv)
@@ -182,7 +182,7 @@ func validateStateCookieConfig(allowInsecure bool) error {
 }
 
 func validateServiceURL(key, fallback string) (string, error) {
-	raw := strings.TrimSpace(os.Getenv(key))
+	raw := strings.TrimSpace(gateway.GetEnv(key, ""))
 	usedFallback := false
 	if raw == "" {
 		raw = fallback
@@ -209,8 +209,8 @@ func validateServiceURL(key, fallback string) (string, error) {
 }
 
 func requireSecureServiceURLs() bool {
-	nodeEnv := strings.ToLower(strings.TrimSpace(os.Getenv("NODE_ENV")))
-	runMode := strings.ToLower(strings.TrimSpace(os.Getenv("RUN_MODE")))
+	nodeEnv := strings.ToLower(strings.TrimSpace(gateway.GetEnv("NODE_ENV", "")))
+	runMode := strings.ToLower(strings.TrimSpace(gateway.GetEnv("RUN_MODE", "")))
 	if nodeEnv == "production" || nodeEnv == "prod" {
 		return true
 	}

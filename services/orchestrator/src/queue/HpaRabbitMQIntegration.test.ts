@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
 import { RabbitMQAdapter } from "./RabbitMQAdapter.js";
-import { queueDepthGauge, queueLagGauge } from "../observability/metrics.js";
+import { queueDepthGauge, queueLagGauge, resetMetrics } from "../observability/metrics.js";
 import type { Channel, ChannelModel } from "amqplib";
 
 /**
@@ -21,6 +21,7 @@ describe("HPA RabbitMQ Integration Tests", () => {
   let mockAmqp: any;
 
   beforeEach(() => {
+    resetMetrics();
     // Mock RabbitMQ channel
     mockChannel = {
       assertQueue: vi.fn().mockResolvedValue({ queue: "test-queue", messageCount: 0, consumerCount: 0 }),
@@ -53,6 +54,7 @@ describe("HPA RabbitMQ Integration Tests", () => {
 
   afterEach(async () => {
     await adapter.close();
+    resetMetrics();
     vi.clearAllMocks();
   });
 
@@ -119,6 +121,7 @@ describe("HPA RabbitMQ Integration Tests", () => {
       const depthMetric = metrics.values.find(
         v => v.labels.queue === "plan.steps" && v.labels.transport === "rabbitmq"
       );
+      expect(depthMetric).toBeDefined();
       expect(depthMetric?.value).toBe(0);
     });
 
@@ -152,6 +155,7 @@ describe("HPA RabbitMQ Integration Tests", () => {
       );
 
       // Verify all required labels for HPA selector are present
+      expect(depthMetric).toBeDefined();
       expect(depthMetric?.labels).toHaveProperty("queue", "plan.steps");
       expect(depthMetric?.labels).toHaveProperty("transport", "rabbitmq");
       expect(depthMetric?.labels).toHaveProperty("tenant");
@@ -209,6 +213,7 @@ describe("HPA RabbitMQ Integration Tests", () => {
       const depthMetric = metrics.values.find(
         v => v.labels.queue === "plan.steps" && v.labels.transport === "rabbitmq"
       );
+      expect(depthMetric).toBeDefined();
       expect(depthMetric?.value).toBe(0);
     });
 
@@ -427,6 +432,7 @@ describe("HPA RabbitMQ Integration Tests", () => {
       const depthMetric = metrics.values.find(
         v => v.labels.queue === "plan.steps" && v.labels.transport === "rabbitmq"
       );
+      expect(depthMetric).toBeDefined();
       expect(depthMetric?.value).toBe(0);
     });
 
@@ -474,6 +480,7 @@ describe("HPA RabbitMQ Integration Tests", () => {
       );
 
       // Verify tenant label exists for potential tenant-specific HPA
+      expect(depthMetric).toBeDefined();
       expect(depthMetric?.labels).toHaveProperty("tenant");
       expect(typeof depthMetric?.labels.tenant).toBe("string");
     });
@@ -495,6 +502,7 @@ describe("HPA RabbitMQ Integration Tests", () => {
       let depthMetric = metrics.values.find(
         v => v.labels.queue === "test.queue" && v.labels.transport === "rabbitmq"
       );
+      expect(depthMetric).toBeDefined();
       expect(depthMetric?.value).toBe(0);
 
       // After enqueuing messages, depth increases
@@ -511,6 +519,7 @@ describe("HPA RabbitMQ Integration Tests", () => {
       depthMetric = metrics.values.find(
         v => v.labels.queue === "test.queue" && v.labels.transport === "rabbitmq"
       );
+      expect(depthMetric).toBeDefined();
       expect(depthMetric?.value).toBe(10);
     });
   });

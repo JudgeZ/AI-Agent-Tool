@@ -1,9 +1,9 @@
-{{- if and .Values.grafana.enabled .Values.grafana.dashboards.hpaStatus }}
+{{- if .Values.monitoring.grafana.enabled }}
 apiVersion: v1
 kind: ConfigMap
 metadata:
   name: {{ include "oss-ai-agent-tool.fullname" . }}-hpa-dashboard
-  namespace: {{ .Values.grafana.dashboards.namespace | default .Release.Namespace }}
+  namespace: {{ .Release.Namespace }}
   labels:
     {{- include "oss-ai-agent-tool.labels" . | nindent 4 }}
     grafana_dashboard: "true"

@@ -296,14 +296,14 @@ export class IndexerClient {
         this.client.IndexSymbols(
           request,
           { deadline: this.getDeadline() },
-          (error: grpc.ServiceError | null, response: IndexSymbolsResponse) => {
+          (error: grpc.ServiceError | null, response?: IndexSymbolsResponse) => {
             if (error) {
               this.logger.error(
                 { error, tenantId, symbolCount: symbols.length },
                 "Failed to index symbols",
               );
               reject(error);
-            } else {
+            } else if (response) {
               this.logger.debug(
                 {
                   indexedCount: response.indexed_count,
@@ -315,6 +315,8 @@ export class IndexerClient {
                 indexedCount: response.indexed_count,
                 failedIds: response.failed_ids || [],
               });
+            } else {
+                reject(new Error("No response received"));
             }
           },
         );
@@ -333,15 +335,17 @@ export class IndexerClient {
         this.client.GetSymbol(
           request,
           { deadline: this.getDeadline() },
-          (error: grpc.ServiceError | null, response: ProtoSymbol) => {
+          (error: grpc.ServiceError | null, response?: ProtoSymbol) => {
             if (error) {
               this.logger.error(
                 { error, id, tenantId },
                 "Failed to get symbol",
               );
               reject(error);
-            } else {
+            } else if (response) {
               resolve(this.convertProtoSymbol(response));
+            } else {
+              reject(new Error("No response received"));
             }
           },
         );
@@ -464,14 +468,14 @@ export class IndexerClient {
         this.client.IndexDocument(
           request,
           { deadline: this.getDeadline() },
-          (error: grpc.ServiceError | null, response: IndexDocumentResponse) => {
+          (error: grpc.ServiceError | null, response?: IndexDocumentResponse) => {
             if (error) {
               this.logger.error(
                 { error, tenantId },
                 "Failed to index document",
               );
               reject(error);
-            } else {
+            } else if (response) {
               this.logger.debug(
                 { documentId: response.document_id },
                 "Document indexed successfully",
@@ -480,6 +484,8 @@ export class IndexerClient {
                 documentId: response.document_id,
                 embeddingDim: response.embedding_dim,
               });
+            } else {
+                reject(new Error("No response received"));
             }
           },
         );
@@ -556,14 +562,14 @@ export class IndexerClient {
         this.client.DeleteByPath(
           request,
           { deadline: this.getDeadline() },
-          (error: grpc.ServiceError | null, response: DeleteByPathResponse) => {
+          (error: grpc.ServiceError | null, response?: DeleteByPathResponse) => {
             if (error) {
               this.logger.error(
                 { error, path, tenantId },
                 "Failed to delete by path",
               );
               reject(error);
-            } else {
+            } else if (response) {
               this.logger.info(
                 {
                   path,
@@ -576,6 +582,8 @@ export class IndexerClient {
                 symbolsDeleted: response.symbols_deleted,
                 documentsDeleted: response.documents_deleted,
               });
+            } else {
+                reject(new Error("No response received"));
             }
           },
         );
@@ -615,11 +623,11 @@ export class IndexerClient {
         this.client.GetStats(
           {},
           { deadline: this.getDeadline() },
-          (error: grpc.ServiceError | null, response: ProtoIndexStats) => {
+          (error: grpc.ServiceError | null, response?: ProtoIndexStats) => {
             if (error) {
               this.logger.error({ error }, "Failed to get stats");
               reject(error);
-            } else {
+            } else if (response) {
               resolve({
                 totalSymbols: parseInt(response.total_symbols, 10),
                 totalDocuments: parseInt(response.total_documents, 10),
@@ -627,6 +635,8 @@ export class IndexerClient {
                 indexSizeBytes: parseInt(response.index_size_bytes, 10),
                 symbolsByKind: response.symbols_by_kind || {},
               });
+            } else {
+              reject(new Error("No response received"));
             }
           },
         );
@@ -647,16 +657,18 @@ export class IndexerClient {
         this.client.HealthCheck(
           {},
           { deadline: this.getDeadline() },
-          (error: grpc.ServiceError | null, response: HealthResponse) => {
+          (error: grpc.ServiceError | null, response?: HealthResponse) => {
             if (error) {
               this.logger.error({ error }, "Health check failed");
               reject(error);
-            } else {
+            } else if (response) {
               resolve({
                 status: this.convertHealthStatus(response.status),
                 version: response.version,
                 message: response.message,
               });
+            } else {
+                reject(new Error("No response received"));
             }
           },
         );

@@ -44,8 +44,8 @@ pub async fn run() -> Result<(), IndexerError> {
     let grpc_addr = resolve_grpc_addr()?;
 
     // Initialize storage
-    let storage_config = StorageConfig::from_env()
-        .map_err(|e| IndexerError::Storage(e.to_string()))?;
+    let storage_config =
+        StorageConfig::from_env().map_err(|e| IndexerError::Storage(e.to_string()))?;
     let storage = create_storage(storage_config)
         .await
         .map_err(|e| IndexerError::Storage(e.to_string()))?;
@@ -63,8 +63,7 @@ pub async fn run() -> Result<(), IndexerError> {
     let grpc_server = IndexerServiceServer::new(grpc_service);
 
     // Create HTTP service (legacy support / health check)
-    let app = Router::new()
-        .route("/healthz", get(health_check));
+    let app = Router::new().route("/healthz", get(health_check));
 
     // Spawn HTTP server
     let http_handle = {

@@ -16,7 +16,7 @@ import { KafkaAdapter } from '../queue/KafkaAdapter.js';
 import { RabbitMQAdapter } from '../queue/RabbitMQAdapter.js';
 import type { QueueAdapter } from '../queue/QueueAdapter.js';
 import { appLogger as logger } from '../observability/logger.js';
-import { pool } from '../database/Postgres.js';
+import { getPostgresPool } from '../database/Postgres.js';
 import { redis } from '../cache/index.js';
 import { toError } from '../utils/errorUtils.js';
 
@@ -152,7 +152,7 @@ async function checkQueueHealth(
           activeConsumers = groups.groups[0]?.members?.length || 0;
 
         } catch (error) {
-          logger.warn('Failed to fetch Kafka metrics', { error });
+          logger.warn({ error }, 'Failed to fetch Kafka metrics');
         }
       }
     } else if (transport === 'rabbitmq' && queueAdapter instanceof RabbitMQAdapter) {
@@ -164,7 +164,7 @@ async function checkQueueHealth(
           queueDepth = queueInfo.messageCount || 0;
           activeConsumers = queueInfo.consumerCount || 0;
         } catch (error) {
-          logger.warn('Failed to fetch RabbitMQ metrics', { error });
+          logger.warn({ error }, 'Failed to fetch RabbitMQ metrics');
         }
       }
     }
@@ -225,6 +225,7 @@ async function checkDatabaseHealth(
   try {
     if (type === 'postgres') {
       // PostgreSQL health check
+      const pool = getPostgresPool();
       if (!pool) {
         throw new Error("Postgres pool not initialized");
       }
@@ -490,7 +491,7 @@ export function registerComprehensiveHealthEndpoints(app: Express): void {
       res.status(statusCode).json(health);
     } catch (error: unknown) {
       const err = toError(error);
-      logger.error('Comprehensive health check failed', { error: err });
+      logger.error({ error: err }, 'Comprehensive health check failed');
       res.status(503).json({
         status: 'unhealthy',
         timestamp: new Date().toISOString(),
@@ -516,7 +517,7 @@ export function registerComprehensiveHealthEndpoints(app: Express): void {
       });
     } catch (error: unknown) {
       const err = toError(error);
-      logger.error('Queue health check failed', { error: err });
+      logger.error({ error: err }, 'Queue health check failed');
       res.status(503).json({
         status: 'unhealthy',
         timestamp: new Date().toISOString(),
@@ -542,7 +543,7 @@ export function registerComprehensiveHealthEndpoints(app: Express): void {
       });
     } catch (error: unknown) {
       const err = toError(error);
-      logger.error('Database health check failed', { error: err });
+      logger.error({ error: err }, 'Database health check failed');
       res.status(503).json({
         status: 'unhealthy',
         timestamp: new Date().toISOString(),

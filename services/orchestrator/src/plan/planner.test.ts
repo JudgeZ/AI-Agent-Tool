@@ -93,7 +93,7 @@ describe("planner", () => {
   });
 
   it("encrypts plan artifacts using the tenant CMEK manager", async () => {
-    const plan = await createPlan("Tenant encryption", { subject: { tenantId: "acme" } });
+    const plan = await createPlan("Tenant encryption", { subject: { tenantId: "acme", roles: [], scopes: [] } });
     const artifactDir = path.join(plansDir, plan.id);
     const artifactPath = path.join(artifactDir, "plan.json");
     expect(fs.existsSync(artifactPath)).toBe(true);
@@ -102,8 +102,10 @@ describe("planner", () => {
     expect(payload.algorithm).toBe("aes-256-gcm");
     expect(payload.ciphertext).toBeDefined();
     expect(tenantKeyManager.writes[0]?.tenantId).toBe("acme");
-    const stats = fs.statSync(artifactPath);
-    expect(stats.mode & 0o777).toBe(0o600);
+    if (process.platform !== "win32") {
+      const stats = fs.statSync(artifactPath);
+      expect(stats.mode & 0o777).toBe(0o600);
+    }
   });
 
   it("purges plan artifacts older than the retention window", async () => {
@@ -228,7 +230,7 @@ describe("planner", () => {
 
   it("surfaces encryption failures when writing artifacts", async () => {
     tenantKeyManager.encryptError = new Error("boom");
-    await expect(createPlan("Fails", { subject: { tenantId: "oops" } })).rejects.toThrow(/boom/);
+    await expect(createPlan("Fails", { subject: { tenantId: "oops", roles: [], scopes: [] } })).rejects.toThrow(/boom/);
   });
 
   it("creates multiple plans concurrently without blocking the event loop", async () => {

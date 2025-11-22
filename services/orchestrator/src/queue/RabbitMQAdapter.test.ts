@@ -385,7 +385,7 @@ describe("RabbitMQAdapter", () => {
     queueLagGauge.labels("plan.steps", "rabbitmq", tenantLabel).set(7);
 
     const spy = vi
-      .spyOn(adapter, "getQueueDepth")
+      .spyOn(channel, "checkQueue")
       .mockRejectedValueOnce(new Error("depth boom"));
     const refreshDepth = (adapter as unknown as {
       refreshDepth(queue: string): Promise<void>;

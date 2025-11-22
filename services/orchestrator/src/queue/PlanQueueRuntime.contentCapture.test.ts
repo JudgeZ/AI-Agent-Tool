@@ -31,6 +31,11 @@ class TestQueueAdapter implements QueueAdapter {
     headers: Record<string, string>;
     reason?: string;
   }> = [];
+  readonly enqueued: Array<{
+    queue: string;
+    payload: unknown;
+    options?: EnqueueOptions;
+  }> = [];
 
   async connect(): Promise<void> {
     // no-op for tests
@@ -41,11 +46,7 @@ class TestQueueAdapter implements QueueAdapter {
   }
 
   async enqueue<T>(queue: string, payload: T, options?: EnqueueOptions): Promise<void> {
-    throw new Error(
-      `enqueue not implemented in TestQueueAdapter (queue=${queue}, payload=${JSON.stringify(
-        payload,
-      )}, options=${JSON.stringify(options)})`,
-    );
+    this.enqueued.push({ queue, payload, options });
   }
 
   async consume<T>(queue: string, handler: QueueHandler<T>): Promise<void> {

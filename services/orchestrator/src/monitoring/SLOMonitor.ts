@@ -16,6 +16,7 @@ export interface SLO {
   window: number; // Time window in seconds
   percentile?: number; // For latency SLOs (e.g., 95 for p95)
   errorBudget: number; // Allowed failure rate (0-1)
+  direction?: "higher" | "lower"; // Whether higher or lower is better (default: lower)
   query?: string; // Custom PromQL query override
 }
 
@@ -119,6 +120,7 @@ export class SLOMonitor extends EventEmitter {
       target: 0.7, // 70%
       window: 600, // 10 minutes
       errorBudget: 0.1, // 10% allowed deviation
+      direction: "higher",
       // Custom query for hit rate: rate(hits) / (rate(hits) + rate(misses))
       query: `sum(rate(cache_hits_total[5m])) / (sum(rate(cache_hits_total[5m])) + sum(rate(cache_misses_total[5m])))`,
     });
@@ -130,6 +132,7 @@ export class SLOMonitor extends EventEmitter {
       target: 0.01, // 1%
       window: 300,
       errorBudget: 0.05, // 5% allowed deviation
+      direction: "lower",
       // Custom query for error rate: rate(errors) / rate(total)
       query: `sum(rate(http_requests_total{status=~"5.."}[5m])) / sum(rate(http_requests_total[5m]))`,
     });
@@ -141,6 +144,7 @@ export class SLOMonitor extends EventEmitter {
       target: 0.999, // 99.9%
       window: 3600, // 1 hour
       errorBudget: 0.001, // 0.1% allowed downtime
+      direction: "higher",
       query: `avg_over_time(up[1h])`,
     });
   }
@@ -232,10 +236,23 @@ export class SLOMonitor extends EventEmitter {
       : this.calculateMean(metrics);
 
     // Calculate error budget
-    const errorBudgetUsed = Math.abs(actual - slo.target) / slo.target;
-    const errorBudgetRemaining = Math.max(0, slo.errorBudget - errorBudgetUsed);
+    let errorBudgetUsed = 0;
+    const direction = slo.direction || "lower";
 
-    const passing = actual <= slo.target || errorBudgetRemaining > 0;
+    if (direction === "lower") {
+      // Lower is better (latency, error rate)
+      if (actual > slo.target) {
+        errorBudgetUsed = (actual - slo.target) / slo.target;
+      }
+    } else {
+      // Higher is better (availability, cache hit rate)
+      if (actual < slo.target) {
+        errorBudgetUsed = (slo.target - actual) / slo.target;
+      }
+    }
+
+    const errorBudgetRemaining = Math.max(0, slo.errorBudget - errorBudgetUsed);
+    const passing = errorBudgetUsed === 0 || errorBudgetRemaining > 0;
 
     const status: SLOStatus = {
       name: slo.name,
@@ -536,7 +553,7 @@ export class SLOAlertGenerator {
         // Rate-based SLO
         rules.push({
           alert: `${id.toUpperCase()}Violation`,
-          expr: `rate(${id}[${slo.window}s]) ${slo.target < 1 ? "<" : ">"} ${slo.target}`,
+          expr: `rate(${id}[${slo.window}s]) ${slo.direction === "higher" ? "<" : ">"} ${slo.target}`,
           for: `${Math.floor(slo.window / 6)}s`,
           labels: {
             severity: "high",

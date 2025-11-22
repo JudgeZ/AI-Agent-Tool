@@ -351,6 +351,9 @@ PY
       - name: Install Playwright browsers
         run: npx playwright install --with-deps
 
+      - name: Lint GUI
+        run: npm run lint
+
       - name: Start mock orchestrator
         run: |
           npm run mock:orchestrator &

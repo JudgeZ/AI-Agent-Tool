@@ -7,8 +7,8 @@ This report lists all third-party dependencies detected in the codebase and cate
 
 | Status | Count | Definition |
 | :--- | :--- | :--- |
-| 🟢 **Green** | 587 | **Permissive.** Safe for commercial use (MIT, Apache-2.0, BSD, etc.). |
-| 🟠 **Amber** | 65 | **Unknown/Custom.** License could not be parsed or requires manual verification. |
+| 🟢 **Green** | 640 | **Permissive.** Safe for commercial use (MIT, Apache-2.0, BSD, etc.). |
+| 🟠 **Amber** | 0 | **Unknown/Custom.** License could not be parsed or requires manual verification. |
 | 🔴 **Red** | 0 | **Restricted.** Copyleft or Non-Commercial (GPL, AGPL, CC-BY-NC). **ACTION REQUIRED.** |
 
 ---
@@ -69,7 +69,7 @@ This report lists all third-party dependencies detected in the codebase and cate
 | @grpc/proto-loader | 0.7.15 | npm | Apache-2.0 | 🟢 Permissive | Orchestrator |
 | @grpc/proto-loader | 0.8.0 | npm | Apache-2.0 | 🟢 Permissive | Orchestrator |
 | @js-sdsl/ordered-map | 4.4.2 | npm | MIT | 🟢 Permissive | Orchestrator |
-| @mistralai/mistralai | 1.10.0 | npm | Apache | 🟠 Unknown or non-standard license. Verify manually. | Orchestrator |
+| @mistralai/mistralai | 1.10.0 | npm | Apache-2.0 | 🟢 Permissive | Orchestrator |
 | @mongodb-js/saslprep | 1.3.2 | npm | MIT | 🟢 Permissive | Orchestrator |
 | @npmcli/fs | 1.1.1 | npm | ISC | 🟢 Permissive | Orchestrator |
 | @npmcli/move-file | 1.1.2 | npm | MIT | 🟢 Permissive | Orchestrator |
@@ -148,8 +148,7 @@ This report lists all third-party dependencies detected in the codebase and cate
 | @opentelemetry/semantic-conventions | 1.28.0 | npm | Apache-2.0 | 🟢 Permissive | Orchestrator |
 | @opentelemetry/semantic-conventions | 1.37.0 | npm | Apache-2.0 | 🟢 Permissive | Orchestrator |
 | @opentelemetry/sql-common | 0.40.1 | npm | Apache-2.0 | 🟢 Permissive | Orchestrator |
-| @oss/orchestrator | 0.1.0 | npm | UNLICENSED | 🟠 Unknown or non-standard license. Verify manually. | Orchestrator |
-| @pinojs/redact | 0.4.0 | npm | MIT | 🟢 Permissive | CLI |
+| @pinojs/redact | 0.4.0 | npm | MIT | 🟢 Permissive | Orchestrator, CLI |
 | @protobufjs/aspromise | 1.1.2 | npm | BSD-3-Clause | 🟢 Permissive | Orchestrator |
 | @protobufjs/base64 | 1.1.2 | npm | BSD-3-Clause | 🟢 Permissive | Orchestrator |
 | @protobufjs/codegen | 2.0.4 | npm | BSD-3-Clause | 🟢 Permissive | Orchestrator |
@@ -234,7 +233,6 @@ This report lists all third-party dependencies detected in the codebase and cate
 | @types/yauzl | 2.10.3 | npm | MIT | 🟢 Permissive | Orchestrator |
 | @typespec/ts-http-runtime | 0.3.1 | npm | MIT | 🟢 Permissive | Orchestrator |
 | abbrev | 1.1.1 | npm | ISC | 🟢 Permissive | Orchestrator |
-| abort-controller | 3.0.0 | npm | MIT | 🟢 Permissive | Orchestrator |
 | accepts | 1.3.8 | npm | MIT | 🟢 Permissive | Orchestrator |
 | acorn | 8.15.0 | npm | MIT | 🟢 Permissive | Orchestrator |
 | acorn-import-attributes | 1.9.5 | npm | MIT | 🟢 Permissive | Orchestrator |
@@ -247,7 +245,7 @@ This report lists all third-party dependencies detected in the codebase and cate
 | ansi-styles | 4.3.0 | npm | MIT | 🟢 Permissive | Orchestrator |
 | aproba | 2.1.0 | npm | ISC | 🟢 Permissive | Orchestrator |
 | are-we-there-yet | 3.0.1 | npm | ISC | 🟢 Permissive | Orchestrator |
-| argparse | 2.0.1 | npm | Python-2.0 | 🟠 Unknown or non-standard license. Verify manually. | Orchestrator |
+| argparse | 2.0.1 | npm | Python-2.0 | 🟢 Permissive | Orchestrator |
 | array-flatten | 1.1.1 | npm | MIT | 🟢 Permissive | Orchestrator |
 | ast-types | 0.13.4 | npm | MIT | 🟢 Permissive | Orchestrator |
 | atomic-sleep | 1.0.0 | npm | MIT | 🟢 Permissive | Orchestrator, CLI |
@@ -272,7 +270,6 @@ This report lists all third-party dependencies detected in the codebase and cate
 | brace-expansion | 1.1.12 | npm | MIT | 🟢 Permissive | Orchestrator |
 | bson | 7.0.0 | npm | Apache-2.0 | 🟢 Permissive | Orchestrator |
 | buffer | 5.7.1 | npm | MIT | 🟢 Permissive | Orchestrator |
-| buffer | 6.0.3 | npm | MIT | 🟢 Permissive | Orchestrator |
 | buffer-crc32 | 0.2.13 | npm | MIT | 🟢 Permissive | Orchestrator |
 | buffer-more-ints | 1.0.0 | npm | MIT | 🟢 Permissive | Orchestrator |
 | bytes | 3.1.2 | npm | MIT | 🟢 Permissive | Orchestrator |
@@ -280,14 +277,14 @@ This report lists all third-party dependencies detected in the codebase and cate
 | call-bind-apply-helpers | 1.0.2 | npm | MIT | 🟢 Permissive | Orchestrator |
 | call-bound | 1.0.4 | npm | MIT | 🟢 Permissive | Orchestrator |
 | callsites | 3.1.0 | npm | MIT | 🟢 Permissive | Orchestrator |
-| cel.dev/expr | v0.24.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
+| cel.dev/expr | v0.24.0 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
 | chownr | 1.1.4 | npm | ISC | 🟢 Permissive | Orchestrator |
 | chownr | 2.0.0 | npm | ISC | 🟢 Permissive | Orchestrator |
 | chromium-bidi | 11.0.0 | npm | Apache-2.0 | 🟢 Permissive | Orchestrator |
 | cjs-module-lexer | 1.4.3 | npm | MIT | 🟢 Permissive | Orchestrator |
 | clean-stack | 2.2.0 | npm | MIT | 🟢 Permissive | Orchestrator |
 | cliui | 8.0.1 | npm | ISC | 🟢 Permissive | Orchestrator |
-| cloud.google.com/go/compute/metadata | v0.7.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
+| cloud.google.com/go/compute/metadata | v0.7.0 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
 | cluster-key-slot | 1.1.2 | npm | Apache-2.0 | 🟢 Permissive | Orchestrator |
 | color-convert | 2.0.1 | npm | MIT | 🟢 Permissive | Orchestrator |
 | color-name | 1.1.4 | npm | MIT | 🟢 Permissive | Orchestrator |
@@ -331,7 +328,6 @@ This report lists all third-party dependencies detected in the codebase and cate
 | estraverse | 5.3.0 | npm | BSD-2-Clause | 🟢 Permissive | Orchestrator |
 | esutils | 2.0.3 | npm | BSD-2-Clause | 🟢 Permissive | Orchestrator |
 | etag | 1.8.1 | npm | MIT | 🟢 Permissive | Orchestrator |
-| event-target-shim | 5.0.1 | npm | MIT | 🟢 Permissive | Orchestrator |
 | events | 3.3.0 | npm | MIT | 🟢 Permissive | Orchestrator |
 | events-universal | 1.0.1 | npm | Apache-2.0 | 🟢 Permissive | Orchestrator |
 | expand-template | 2.0.3 | npm | MIT OR WTFPL | 🟢 Permissive | Orchestrator |
@@ -339,7 +335,6 @@ This report lists all third-party dependencies detected in the codebase and cate
 | extend | 3.0.2 | npm | MIT | 🟢 Permissive | Orchestrator |
 | extract-zip | 2.0.1 | npm | BSD-2-Clause | 🟢 Permissive | Orchestrator |
 | fast-fifo | 1.3.2 | npm | MIT | 🟢 Permissive | Orchestrator |
-| fast-redact | 3.5.0 | npm | MIT | 🟢 Permissive | Orchestrator |
 | fast-xml-parser | 5.2.5 | npm | MIT | 🟢 Permissive | Orchestrator |
 | fd-slicer | 1.1.0 | npm | MIT | 🟢 Permissive | Orchestrator |
 | file-uri-to-path | 1.0.0 | npm | MIT | 🟢 Permissive | Orchestrator |
@@ -361,67 +356,66 @@ This report lists all third-party dependencies detected in the codebase and cate
 | get-stream | 5.2.0 | npm | MIT | 🟢 Permissive | Orchestrator |
 | get-uri | 6.0.5 | npm | MIT | 🟢 Permissive | Orchestrator |
 | github-from-package | 0.0.0 | npm | MIT | 🟢 Permissive | Orchestrator |
-| github.com/cespare/xxhash/v2 | v2.3.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/cncf/xds/go | v0.0.0-20250501225837-2ac532fd4443 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/davecgh/go-spew | v1.1.1 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/envoyproxy/go-control-plane | v0.13.4 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/envoyproxy/go-control-plane/envoy | v1.32.4 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/envoyproxy/go-control-plane/ratelimit | v0.1.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/envoyproxy/protoc-gen-validate | v1.2.1 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/felixge/httpsnoop | v1.0.4 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/gabriel-vasile/mimetype | v1.4.3 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/go-jose/go-jose/v4 | v4.1.2 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/go-logr/logr | v1.4.3 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/go-logr/stdr | v1.2.2 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/go-playground/assert/v2 | v2.2.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/go-playground/locales | v0.14.1 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/go-playground/universal-translator | v0.18.1 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/go-playground/validator/v10 | v10.22.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/golang/glog | v1.2.5 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/golang/protobuf | v1.5.4 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/google/go-cmp | v0.7.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/google/gofuzz | v1.2.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/google/uuid | v1.6.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp | v1.29.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/gorilla/securecookie | v1.1.2 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/kr/pretty | v0.3.1 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/kr/text | v0.2.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/leodido/go-urn | v1.4.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api | v0.0.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/planetscale/vtprotobuf | v0.6.1-0.20240319094008-0393e58bdf10 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/pmezard/go-difflib | v1.0.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/rogpeppe/go-internal | v1.13.1 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/spiffe/go-spiffe/v2 | v2.5.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/stretchr/objx | v0.5.2 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/stretchr/testify | v1.11.1 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| github.com/zeebo/errs | v1.4.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
+| github.com/cespare/xxhash/v2 | v2.3.0 | gomod | MIT | 🟢 Permissive | Gateway API |
+| github.com/cncf/xds/go | v0.0.0-20250501225837-2ac532fd4443 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| github.com/davecgh/go-spew | v1.1.1 | gomod | ISC | 🟢 Permissive | Gateway API |
+| github.com/envoyproxy/go-control-plane | v0.13.4 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| github.com/envoyproxy/go-control-plane/envoy | v1.32.4 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| github.com/envoyproxy/go-control-plane/ratelimit | v0.1.0 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| github.com/envoyproxy/protoc-gen-validate | v1.2.1 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| github.com/felixge/httpsnoop | v1.0.4 | gomod | MIT | 🟢 Permissive | Gateway API |
+| github.com/gabriel-vasile/mimetype | v1.4.3 | gomod | MIT | 🟢 Permissive | Gateway API |
+| github.com/go-jose/go-jose/v4 | v4.1.2 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| github.com/go-logr/logr | v1.4.3 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| github.com/go-logr/stdr | v1.2.2 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| github.com/go-playground/assert/v2 | v2.2.0 | gomod | MIT | 🟢 Permissive | Gateway API |
+| github.com/go-playground/locales | v0.14.1 | gomod | BSD-3-Clause | 🟢 Permissive | Gateway API |
+| github.com/go-playground/universal-translator | v0.18.1 | gomod | MIT | 🟢 Permissive | Gateway API |
+| github.com/go-playground/validator/v10 | v10.22.0 | gomod | MIT | 🟢 Permissive | Gateway API |
+| github.com/golang/glog | v1.2.5 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| github.com/golang/protobuf | v1.5.4 | gomod | BSD-3-Clause | 🟢 Permissive | Gateway API |
+| github.com/google/go-cmp | v0.7.0 | gomod | BSD-3-Clause | 🟢 Permissive | Gateway API |
+| github.com/google/gofuzz | v1.2.0 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| github.com/google/uuid | v1.6.0 | gomod | BSD-3-Clause | 🟢 Permissive | Gateway API |
+| github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp | v1.29.0 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| github.com/gorilla/securecookie | v1.1.2 | gomod | BSD-3-Clause | 🟢 Permissive | Gateway API |
+| github.com/kr/pretty | v0.3.1 | gomod | MIT | 🟢 Permissive | Gateway API |
+| github.com/kr/text | v0.2.0 | gomod | MIT | 🟢 Permissive | Gateway API |
+| github.com/leodido/go-urn | v1.4.0 | gomod | MIT | 🟢 Permissive | Gateway API |
+| github.com/planetscale/vtprotobuf | v0.6.1-0.20240319094008-0393e58bdf10 | gomod | BSD-3-Clause | 🟢 Permissive | Gateway API |
+| github.com/pmezard/go-difflib | v1.0.0 | gomod | BSD-3-Clause | 🟢 Permissive | Gateway API |
+| github.com/rogpeppe/go-internal | v1.13.1 | gomod | BSD-3-Clause | 🟢 Permissive | Gateway API |
+| github.com/spiffe/go-spiffe/v2 | v2.5.0 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| github.com/stretchr/objx | v0.5.2 | gomod | MIT | 🟢 Permissive | Gateway API |
+| github.com/stretchr/testify | v1.11.1 | gomod | MIT | 🟢 Permissive | Gateway API |
+| github.com/zeebo/errs | v1.4.0 | gomod | MIT | 🟢 Permissive | Gateway API |
 | glob | 7.2.3 | npm | ISC | 🟢 Permissive | Orchestrator |
-| go.opentelemetry.io/auto/sdk | v1.1.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| go.opentelemetry.io/contrib/detectors/gcp | v1.36.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp | v0.53.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| go.opentelemetry.io/otel | v1.37.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| go.opentelemetry.io/otel/metric | v1.37.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| go.opentelemetry.io/otel/sdk | v1.37.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| go.opentelemetry.io/otel/sdk/metric | v1.37.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| go.opentelemetry.io/otel/trace | v1.37.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| golang.org/x/crypto | v0.41.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| golang.org/x/mod | v0.26.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| golang.org/x/net | v0.43.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| golang.org/x/oauth2 | v0.30.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| golang.org/x/sync | v0.16.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| golang.org/x/sys | v0.35.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| golang.org/x/term | v0.34.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| golang.org/x/text | v0.28.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| golang.org/x/tools | v0.35.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| gonum.org/v1/gonum | v0.16.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
+| go.opentelemetry.io/auto/sdk | v1.1.0 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| go.opentelemetry.io/contrib/detectors/gcp | v1.36.0 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp | v0.53.0 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| go.opentelemetry.io/otel | v1.37.0 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| go.opentelemetry.io/otel/metric | v1.37.0 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| go.opentelemetry.io/otel/sdk | v1.37.0 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| go.opentelemetry.io/otel/sdk/metric | v1.37.0 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| go.opentelemetry.io/otel/trace | v1.37.0 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| golang.org/x/crypto | v0.41.0 | gomod | BSD-3-Clause | 🟢 Permissive | Gateway API |
+| golang.org/x/mod | v0.26.0 | gomod | BSD-3-Clause | 🟢 Permissive | Gateway API |
+| golang.org/x/net | v0.43.0 | gomod | BSD-3-Clause | 🟢 Permissive | Gateway API |
+| golang.org/x/oauth2 | v0.30.0 | gomod | BSD-3-Clause | 🟢 Permissive | Gateway API |
+| golang.org/x/sync | v0.16.0 | gomod | BSD-3-Clause | 🟢 Permissive | Gateway API |
+| golang.org/x/sys | v0.35.0 | gomod | BSD-3-Clause | 🟢 Permissive | Gateway API |
+| golang.org/x/term | v0.34.0 | gomod | BSD-3-Clause | 🟢 Permissive | Gateway API |
+| golang.org/x/text | v0.28.0 | gomod | BSD-3-Clause | 🟢 Permissive | Gateway API |
+| golang.org/x/tools | v0.35.0 | gomod | BSD-3-Clause | 🟢 Permissive | Gateway API |
+| gonum.org/v1/gonum | v0.16.0 | gomod | BSD-3-Clause | 🟢 Permissive | Gateway API |
 | google-logging-utils | 0.0.2 | npm | Apache-2.0 | 🟢 Permissive | Orchestrator |
-| google.golang.org/genproto/googleapis/api | v0.0.0-20250804133106-a7a43d27e69b | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| google.golang.org/genproto/googleapis/rpc | v0.0.0-20250804133106-a7a43d27e69b | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| google.golang.org/grpc | v1.76.0 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| google.golang.org/protobuf | v1.36.10 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
+| google.golang.org/genproto/googleapis/api | v0.0.0-20250804133106-a7a43d27e69b | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| google.golang.org/genproto/googleapis/rpc | v0.0.0-20250804133106-a7a43d27e69b | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| google.golang.org/grpc | v1.76.0 | gomod | Apache-2.0 | 🟢 Permissive | Gateway API |
+| google.golang.org/protobuf | v1.36.10 | gomod | BSD-3-Clause | 🟢 Permissive | Gateway API |
 | gopd | 1.2.0 | npm | MIT | 🟢 Permissive | Orchestrator |
-| gopkg.in/check.v1 | v1.0.0-20201130134442-10cb98267c6c | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
-| gopkg.in/yaml.v3 | v3.0.1 | gomod | Unknown (Requires manual check) | 🟠 Unknown or non-standard license. Verify manually. | Gateway API |
+| gopkg.in/check.v1 | v1.0.0-20201130134442-10cb98267c6c | gomod | BSD-2-Clause | 🟢 Permissive | Gateway API |
+| gopkg.in/yaml.v3 | v3.0.1 | gomod | MIT | 🟢 Permissive | Gateway API |
 | graceful-fs | 4.2.11 | npm | ISC | 🟢 Permissive | Orchestrator |
 | has-symbols | 1.1.0 | npm | MIT | 🟢 Permissive | Orchestrator |
 | has-unicode | 2.0.1 | npm | ISC | 🟢 Permissive | Orchestrator |
@@ -519,8 +513,6 @@ This report lists all third-party dependencies detected in the codebase and cate
 | once | 1.4.0 | npm | ISC | 🟢 Permissive | Orchestrator |
 | openai | 6.7.0 | npm | Apache-2.0 | 🟢 Permissive | Orchestrator |
 | openrouter-client | 1.6.2 | npm | MIT | 🟢 Permissive | Orchestrator |
-| orchestrator-gui | 0.1.0 | npm | UNLICENSED | 🟠 Unknown or non-standard license. Verify manually. | GUI |
-| oss-ai-agent-tool-cli | 0.1.0 | npm | UNLICENSED | 🟠 Unknown or non-standard license. Verify manually. | CLI |
 | p-map | 4.0.0 | npm | MIT | 🟢 Permissive | Orchestrator |
 | pac-proxy-agent | 7.2.0 | npm | MIT | 🟢 Permissive | Orchestrator |
 | pac-resolver | 7.0.1 | npm | MIT | 🟢 Permissive | Orchestrator |
@@ -540,19 +532,15 @@ This report lists all third-party dependencies detected in the codebase and cate
 | pg-types | 2.2.0 | npm | MIT | 🟢 Permissive | Orchestrator |
 | pgpass | 1.0.5 | npm | MIT | 🟢 Permissive | Orchestrator |
 | picocolors | 1.1.1 | npm | ISC | 🟢 Permissive | Orchestrator |
-| pino | 9.3.2 | npm | MIT | 🟢 Permissive | Orchestrator |
-| pino | 9.14.0 | npm | MIT | 🟢 Permissive | CLI |
-| pino-abstract-transport | 1.2.0 | npm | MIT | 🟢 Permissive | Orchestrator |
-| pino-abstract-transport | 2.0.0 | npm | MIT | 🟢 Permissive | CLI |
+| pino | 9.14.0 | npm | MIT | 🟢 Permissive | Orchestrator, CLI |
+| pino-abstract-transport | 2.0.0 | npm | MIT | 🟢 Permissive | Orchestrator, CLI |
 | pino-std-serializers | 7.0.0 | npm | MIT | 🟢 Permissive | Orchestrator, CLI |
 | postgres-array | 2.0.0 | npm | MIT | 🟢 Permissive | Orchestrator |
 | postgres-bytea | 1.0.0 | npm | MIT | 🟢 Permissive | Orchestrator |
 | postgres-date | 1.0.7 | npm | MIT | 🟢 Permissive | Orchestrator |
 | postgres-interval | 1.2.0 | npm | MIT | 🟢 Permissive | Orchestrator |
 | prebuild-install | 7.1.3 | npm | MIT | 🟢 Permissive | Orchestrator |
-| process | 0.11.10 | npm | MIT | 🟢 Permissive | Orchestrator |
-| process-warning | 4.0.1 | npm | MIT | 🟢 Permissive | Orchestrator |
-| process-warning | 5.0.0 | npm | MIT | 🟢 Permissive | CLI |
+| process-warning | 5.0.0 | npm | MIT | 🟢 Permissive | Orchestrator, CLI |
 | progress | 2.0.3 | npm | MIT | 🟢 Permissive | Orchestrator |
 | prom-client | 15.1.3 | npm | Apache-2.0 | 🟢 Permissive | Orchestrator |
 | promise-inflight | 1.0.1 | npm | ISC | 🟢 Permissive | Orchestrator |
@@ -572,7 +560,6 @@ This report lists all third-party dependencies detected in the codebase and cate
 | raw-body | 2.5.2 | npm | MIT | 🟢 Permissive | Orchestrator |
 | rc | 1.2.8 | npm | BSD-2-Clause OR MIT OR Apache-2.0 | 🟢 Permissive | Orchestrator |
 | readable-stream | 3.6.2 | npm | MIT | 🟢 Permissive | Orchestrator |
-| readable-stream | 4.7.0 | npm | MIT | 🟢 Permissive | Orchestrator |
 | real-require | 0.2.0 | npm | MIT | 🟢 Permissive | Orchestrator, CLI |
 | redis | 4.7.1 | npm | MIT | 🟢 Permissive | Orchestrator |
 | require-directory | 2.1.1 | npm | MIT | 🟢 Permissive | Orchestrator |
@@ -647,6 +634,7 @@ This report lists all third-party dependencies detected in the codebase and cate
 | url-parse | 1.5.10 | npm | MIT | 🟢 Permissive | Orchestrator |
 | util-deprecate | 1.0.2 | npm | MIT | 🟢 Permissive | Orchestrator |
 | utils-merge | 1.0.1 | npm | MIT | 🟢 Permissive | Orchestrator |
+| uuid | 13.0.0 | npm | MIT | 🟢 Permissive | Orchestrator |
 | uuid | 9.0.1 | npm | MIT | 🟢 Permissive | Orchestrator |
 | vary | 1.1.2 | npm | MIT | 🟢 Permissive | Orchestrator |
 | webdriver-bidi-protocol | 0.3.8 | npm | Apache-2.0 | 🟢 Permissive | Orchestrator |

@@ -1,0 +1,45 @@
+﻿image:
+  repo: ghcr.io/yourorg/oss-ai-agent-tool
+  tag: "dev"
+  pullPolicy: IfNotPresent
+
+messaging:
+  type: rabbitmq
+
+postgres:
+  enabled: true
+  image: ankane/pgvector:v0.5.1
+  password: "dev-password"
+  podSecurityContext:
+    runAsNonRoot: false
+    fsGroup: 0
+    runAsUser: 0
+  containerSecurityContext:
+    runAsUser: 0
+    readOnlyRootFilesystem: false
+    allowPrivilegeEscalation: true
+    capabilities:
+      drop: []
+
+rabbitmq:
+  enabled: true
+  image: rabbitmq:3.13-management
+  podSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
+  containerSecurityContext:
+    readOnlyRootFilesystem: false
+
+redis:
+  enabled: true
+  image: bitnami/redis:latest
+  containerSecurityContext:
+    readOnlyRootFilesystem: false
+
+jaeger:
+  enabled: true
+
+ingress:
+  enabled: false

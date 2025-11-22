@@ -2,11 +2,14 @@ package gateway
 
 import (
 	"fmt"
-	"io/fs"
+	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
+
+const DefaultMaxFileReadSize = 10 * 1024 * 1024 // 10MB
 
 // readFileFromAllowedRoot opens the provided path after constraining it to the
 // supplied root directory. The helper defends against directory traversal by
@@ -33,5 +36,43 @@ func readFileFromAllowedRoot(path, rootDir string) ([]byte, error) {
 	}
 
 	filesystem := os.DirFS(cleanedRoot)
-	return fs.ReadFile(filesystem, rel)
+	f, err := filesystem.Open(rel)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+
+	stat, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+
+	maxSize := getMaxFileSize()
+	if stat.Size() > maxSize {
+		return nil, fmt.Errorf("file too large (size %d, max %d bytes)", stat.Size(), maxSize)
+	}
+
+	// We read one byte more than the limit to detect if the file grew or is larger than reported
+	r := io.LimitReader(f, maxSize+1)
+	data, err := io.ReadAll(r)
+	if err != nil {
+		return nil, err
+	}
+	if int64(len(data)) > maxSize {
+		return nil, fmt.Errorf("file too large (max %d bytes)", maxSize)
+	}
+
+	return data, nil
+}
+
+func getMaxFileSize() int64 {
+	val := os.Getenv("GATEWAY_MAX_FILE_READ_BYTES")
+	if val == "" {
+		return DefaultMaxFileReadSize
+	}
+	parsed, err := strconv.ParseInt(val, 10, 64)
+	if err != nil || parsed <= 0 {
+		return DefaultMaxFileReadSize
+	}
+	return parsed
 }

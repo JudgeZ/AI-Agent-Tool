@@ -1,10 +1,12 @@
+#![allow(dead_code)]
+
 use std::fmt::Display;
 
 use serde::de::{self, Deserializer};
 use serde::Deserialize;
 
-const MAX_PATH_LENGTH: usize = 4 * 1024;
-const MAX_QUERY_LENGTH: usize = 8 * 1024;
+pub const MAX_PATH_LENGTH: usize = 4 * 1024;
+pub const MAX_QUERY_LENGTH: usize = 8 * 1024;
 
 fn ensure_not_blank<T, E>(value: &str, field: T) -> Result<&str, E>
 where

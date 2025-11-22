@@ -130,6 +130,7 @@ export type ServerRateLimitsConfig = {
   plan: IdentityAwareRateLimitConfig;
   chat: IdentityAwareRateLimitConfig;
   auth: IdentityAwareRateLimitConfig;
+  secrets: IdentityAwareRateLimitConfig;
 };
 
 export type NetworkEgressMode = "enforce" | "report-only" | "allow";
@@ -787,6 +788,12 @@ export const DEFAULT_CONFIG: AppConfig = {
         maxRequests: 120,
         identityWindowMs: 60_000,
         identityMaxRequests: 20,
+      },
+      secrets: {
+        windowMs: 60_000,
+        maxRequests: 60,
+        identityWindowMs: 60_000,
+        identityMaxRequests: 10,
       }
     },
     sseQuotas: {
@@ -925,6 +932,7 @@ type PartialServerRateLimitsConfig = {
   plan?: PartialIdentityAwareRateLimitConfig;
   chat?: PartialIdentityAwareRateLimitConfig;
   auth?: PartialIdentityAwareRateLimitConfig;
+  secrets?: PartialIdentityAwareRateLimitConfig;
 };
 
 type PartialRequestSizeLimitsConfig = {
@@ -2930,6 +2938,29 @@ export function loadConfig(): AppConfig {
     "server.rateLimits.auth",
   );
 
+  const fileServerSecretsRateLimit = fileCfg.server?.rateLimits?.secrets;
+  const serverSecretsRateLimit = ensurePositiveRateLimit<IdentityAwareRateLimitConfig>(
+    {
+      windowMs:
+        fileServerSecretsRateLimit?.windowMs ??
+        DEFAULT_CONFIG.server.rateLimits.secrets.windowMs,
+      maxRequests:
+        fileServerSecretsRateLimit?.maxRequests ??
+        DEFAULT_CONFIG.server.rateLimits.secrets.maxRequests,
+      identityWindowMs: resolveIdentityLimitValue(
+        undefined,
+        fileServerSecretsRateLimit?.identityWindowMs,
+        DEFAULT_CONFIG.server.rateLimits.secrets.identityWindowMs,
+      ),
+      identityMaxRequests: resolveIdentityLimitValue(
+        undefined,
+        fileServerSecretsRateLimit?.identityMaxRequests,
+        DEFAULT_CONFIG.server.rateLimits.secrets.identityMaxRequests,
+      ),
+    },
+    "server.rateLimits.secrets",
+  );
+
   const serverRequestLimits: RequestSizeLimitsConfig = {
     jsonBytes: sanitizeRequestLimit(
       envServerRequestLimitJson ?? fileCfg.server?.requestLimits?.jsonBytes,
@@ -3386,7 +3417,8 @@ export function loadConfig(): AppConfig {
         backend: serverRateLimitBackend,
         plan: serverPlanRateLimit,
         chat: serverChatRateLimit,
-        auth: serverAuthRateLimit
+        auth: serverAuthRateLimit,
+        secrets: serverSecretsRateLimit
       },
       sseQuotas: serverSseQuotaConfig,
       tls: {

@@ -144,6 +144,7 @@ export class KafkaAdapter implements QueueAdapter {
   private readonly inflightKeys = new Set<string>();
   private readonly knownTopics = new Set<string>();
   private readonly topicInitPromises = new Map<string, Promise<void>>();
+  private consumePromise: Promise<void> = Promise.resolve();
 
   constructor(options: KafkaAdapterOptions = {}) {
     this.brokers = options.brokers ?? parseBrokerList(process.env.KAFKA_BROKERS) ?? DEFAULT_BROKERS;
@@ -214,15 +215,10 @@ export class KafkaAdapter implements QueueAdapter {
       this.admin = admin;
       this.connected = true;
 
-      await this.ensureConsumerRunning();
-
-      // Subscribe to queues that were registered before connect completed
-      await Promise.all(
-        Array.from(this.consumers.keys()).map(async topic => {
-          await this.ensureTopicExists(topic);
-          await this.consumer!.subscribe({ topic, fromBeginning: this.fromBeginning });
-        })
-      );
+      // IMPORTANT: We do NOT call ensureConsumerRunning() here.
+      // The consumer loop should only start after subscriptions are added via consume().
+      // If we start it now, subsequent consume() calls (subscribes) will fail because
+      // KafkaJS doesn't allow subscribing while running.
     })()
       .catch((error: unknown) => {
         this.connecting = null;
@@ -268,9 +264,23 @@ export class KafkaAdapter implements QueueAdapter {
 
   async consume<T>(queue: string, handler: QueueHandler<T>): Promise<void> {
     this.consumers.set(queue, handler as QueueHandler<any>);
-    await this.ensureConnected();
-    await this.ensureTopicExists(queue);
-    await this.consumer!.subscribe({ topic: queue, fromBeginning: this.fromBeginning });
+    
+    this.consumePromise = this.consumePromise.then(async () => {
+      await this.ensureConnected();
+      await this.ensureTopicExists(queue);
+
+      // If consumer is already running, we must stop it to subscribe to a new topic
+      if (this.consumerRunning && this.consumer) {
+          this.logger.info?.(`Stopping Kafka consumer to add subscription for ${queue}`);
+          await this.consumer.stop();
+          this.consumerRunning = false;
+      }
+
+      await this.consumer!.subscribe({ topic: queue, fromBeginning: this.fromBeginning });
+      await this.ensureConsumerRunning();
+    });
+    
+    return this.consumePromise;
   }
 
   async getQueueDepth(queue: string): Promise<number> {
@@ -311,10 +321,12 @@ export class KafkaAdapter implements QueueAdapter {
       this.partitionLagPartitions.set(queue, partitionIds);
       const totalLagNumber = Number(totalLag);
       queueLagGauge.labels(queue, this.transportLabel, this.tenantLabel).set(totalLagNumber);
+      queueDepthGauge.labels(queue, this.transportLabel, this.tenantLabel).set(totalLagNumber);
       return totalLagNumber;
     } catch (error) {
       this.logger.warn?.(`Failed to fetch Kafka lag for ${queue}: ${(error as Error).message}`);
       queueLagGauge.labels(queue, this.transportLabel, this.tenantLabel).set(0);
+      queueDepthGauge.labels(queue, this.transportLabel, this.tenantLabel).set(0);
       const knownPartitions = this.partitionLagPartitions.get(queue);
       if (knownPartitions) {
         for (const partitionId of knownPartitions) {
@@ -354,12 +366,12 @@ export class KafkaAdapter implements QueueAdapter {
       })
       .catch((error: unknown) => {
         this.logger.error?.(`Kafka consumer run failed: ${(error as Error).message}`);
-      })
-      .finally(() => {
-        this.consumerRunning = false;
+        // If run failed, mark as not running so we can try again?
+        // But KafkaJS consumers usually crash.
       });
   }
 
+  // ... rest of methods ...
   private async ensureTopicExists(topic: string): Promise<void> {
     if (!this.ensureTopics || this.knownTopics.has(topic)) {
       return;
@@ -858,4 +870,3 @@ function matchesAny(matchers: TopicMatcher[], value: string): boolean {
 function isTopicExistsError(error: unknown): boolean {
   return error instanceof KafkaJSProtocolError && error.type === "TOPIC_ALREADY_EXISTS";
 }
-

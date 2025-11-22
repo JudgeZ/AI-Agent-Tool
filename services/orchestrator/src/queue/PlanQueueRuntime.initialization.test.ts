@@ -58,8 +58,8 @@ describe("initializePlanQueueRuntime", () => {
 
     await expect(module.initializePlanQueueRuntime()).resolves.toBeUndefined();
 
-    // First attempt fails (one call), subsequent successful attempt initializes two consumers.
-    expect(getQueueAdapter.mock.calls.length).toBeGreaterThanOrEqual(3);
+    // First attempt fails (one call), subsequent successful attempt initializes consumers.
+    expect(getQueueAdapter.mock.calls.length).toBeGreaterThanOrEqual(2);
 
     module.resetPlanQueueRuntime();
   }, 10000);

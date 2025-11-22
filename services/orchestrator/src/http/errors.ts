@@ -1,6 +1,7 @@
 import type { Response } from "express";
 
 import { getRequestContext } from "../observability/requestContext.js";
+import { appLogger, normalizeError } from "../observability/logger.js";
 
 export type ErrorDetails = Array<{ path: string; message: string }>;
 
@@ -90,6 +91,14 @@ export function respondWithUnexpectedError(res: Response, error: unknown): void 
     respondWithPayloadTooLargeError(res, error);
     return;
   }
+
+  const normalized = normalizeError(error);
+  const context = getRequestContext();
+  appLogger.error({
+    err: normalized,
+    requestId: context?.requestId ?? res.locals.requestId,
+    traceId: context?.traceId ?? res.locals.traceId,
+  }, "Unexpected request error");
 
   const message = error instanceof Error ? error.message : "unexpected error";
   respondWithError(res, 500, {

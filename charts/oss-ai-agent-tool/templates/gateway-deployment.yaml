@@ -25,7 +25,7 @@
 {{- $orchestratorFqdn := printf "%s.%s.svc.cluster.local" $orchestratorHost $.Release.Namespace -}}
 {{- $gatewayTlsServerName := $gatewayTlsValues.serverName | default $orchestratorFqdn -}}
 {{- $orchestratorScheme := ternary "https" "http" $orchestratorTlsEnabled -}}
-{{- $defaultGatewayEnv := dict "ORCHESTRATOR_URL" (printf "%s://%s:%d" $orchestratorScheme $orchestratorHost ($root.Values.orchestrator.service.port | default 4000)) "INDEXER_URL" (printf "http://%s-indexer:%d" $fullname ($root.Values.indexer.service.port | default 7070)) -}}
+{{- $defaultGatewayEnv := dict "ORCHESTRATOR_URL" (printf "%s://%s:%d" $orchestratorScheme $orchestratorHost (int ($root.Values.orchestrator.service.port | default 4000))) "INDEXER_URL" (printf "http://%s-indexer:%d" $fullname (int ($root.Values.indexer.service.port | default 7070))) -}}
 {{- $_ := set $defaultGatewayEnv "GATEWAY_SSE_MAX_CONNECTIONS_PER_IP" (printf "%v" ($root.Values.gatewayApi.sse.maxConnectionsPerIP | default 4)) -}}
 {{- if $root.Values.gatewayApi.requestLimitBytes }}
   {{- $_ := set $defaultGatewayEnv "GATEWAY_MAX_REQUEST_BODY_BYTES" (printf "%v" $root.Values.gatewayApi.requestLimitBytes) -}}

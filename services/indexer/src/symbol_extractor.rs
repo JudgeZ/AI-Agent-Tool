@@ -204,19 +204,19 @@ impl<'a> SymbolExtractor<'a> {
         // But extract_symbol returns Option<ExtractedSymbol> (single).
         // If we encounter a variable_declarator, we extract it.
         // If we encounter a lexical_declaration, we should visit children.
-        
+
         // Wait, extract_symbol is called on "const_declaration" or "lexical_declaration".
         // If I return None, visit will recurse.
         // So I should return None here and let visit recurse to find "variable_declarator"?
         // But "variable_declarator" is not in extract_symbol match arms.
-        
+
         // I should add "variable_declarator" to extract_symbol match arms.
         // And remove "const_declaration" / "lexical_declaration" from match arms so they recurse.
-        
+
         // Let's adjust extract_symbol match arms.
         None
     }
-    
+
     fn extract_variable_declarator(&mut self, node: Node) -> Option<ExtractedSymbol> {
         if let Some(name_node) = node.child_by_field_name("name") {
             if let Ok(name) = name_node.utf8_text(self.source) {
@@ -307,7 +307,10 @@ impl<'a> SymbolExtractor<'a> {
         let mut comments = Vec::new();
 
         while let Some(sibling) = prev {
-            if sibling.kind() == "comment" || sibling.kind() == "line_comment" || sibling.kind() == "block_comment" {
+            if sibling.kind() == "comment"
+                || sibling.kind() == "line_comment"
+                || sibling.kind() == "block_comment"
+            {
                 if let Ok(text) = sibling.utf8_text(self.source) {
                     // Check if it's a doc comment (/** ... */ or ///)
                     if text.starts_with("/**") || text.starts_with("///") {
@@ -423,7 +426,7 @@ pub struct Person {
                 }
             }
         "#;
-        
+
         let symbols = extract_symbols(source, "typescript").expect("extraction failed");
         // Verify hierarchy
         assert_eq!(symbols.len(), 1);
@@ -455,9 +458,17 @@ pub struct Person {
                 add(a: number, b: number) {}
             }
         "#;
-        
+
         let symbols = extract_symbols(source, "typescript").expect("extraction failed");
-        assert!(symbols[0].doc_comment.as_ref().unwrap().contains("A calculator class"));
-        assert!(symbols[0].children[0].doc_comment.as_ref().unwrap().contains("Adds two numbers"));
+        assert!(symbols[0]
+            .doc_comment
+            .as_ref()
+            .unwrap()
+            .contains("A calculator class"));
+        assert!(symbols[0].children[0]
+            .doc_comment
+            .as_ref()
+            .unwrap()
+            .contains("Adds two numbers"));
     }
 }

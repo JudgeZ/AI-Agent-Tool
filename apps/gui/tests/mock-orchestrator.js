@@ -213,8 +213,8 @@ const server = http.createServer((req, res) => {
       try {
         const parsed = body ? JSON.parse(body) : {};
         decision = parsed.decision;
-      } catch (error) {
-        // ignore malformed body and fall back to approve
+      } catch {
+        // ignore read errors
       }
 
       if (!plan.steps[stepId]) {

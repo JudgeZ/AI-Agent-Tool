@@ -9,7 +9,7 @@ import (
 
 func mustTrustedProxies(t *testing.T, entries ...string) []*net.IPNet {
 	t.Helper()
-	proxies, err := parseTrustedProxyCIDRs(entries)
+	proxies, err := ParseTrustedProxyCIDRs(entries)
 	if err != nil {
 		t.Fatalf("failed to parse trusted proxies: %v", err)
 	}
@@ -59,9 +59,9 @@ func TestClientIP(t *testing.T) {
 				req.Header.Set("X-Forwarded-For", tt.forwarded)
 			}
 
-			got := clientIP(req, tt.proxies)
+			got := ClientIP(req, tt.proxies)
 			if got != tt.want {
-				t.Fatalf("clientIP() = %q, want %q", got, tt.want)
+				t.Fatalf("ClientIP() = %q, want %q", got, tt.want)
 			}
 		})
 	}

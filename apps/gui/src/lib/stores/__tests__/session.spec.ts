@@ -117,7 +117,8 @@ describe('session store', () => {
     vi.unstubAllGlobals();
     authorizeUrlMock.mockClear();
     fetchMock.mockReset();
-    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {}) as any;
     installWindowMocks();
     await importSessionModule();
   });
@@ -292,7 +293,8 @@ describe('session store', () => {
   });
 
   it('falls back to crypto.getRandomValues when randomUUID is unavailable', () => {
-    delete (window.crypto as Crypto & { randomUUID?: () => string }).randomUUID;
+    const crypto = window.crypto as unknown as { randomUUID?: () => string };
+    delete crypto.randomUUID;
     const focus = vi.fn();
     (window.open as unknown as ReturnType<typeof vi.fn>).mockReturnValueOnce({ focus } as unknown as Window);
 
@@ -303,8 +305,9 @@ describe('session store', () => {
   });
 
   it('surfaces an error when no secure random source is available', () => {
-    delete (window.crypto as Crypto & { randomUUID?: () => string }).randomUUID;
-    delete (window.crypto as Crypto & { getRandomValues?: (buffer: Uint8Array) => Uint8Array }).getRandomValues;
+    const crypto = window.crypto as unknown as { randomUUID?: () => string; getRandomValues?: (buffer: Uint8Array) => Uint8Array };
+    delete crypto.randomUUID;
+    delete crypto.getRandomValues;
 
     login();
 

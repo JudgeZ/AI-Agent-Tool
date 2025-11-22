@@ -8,6 +8,10 @@ import { loadConfig, type AppConfig } from "./config.js";
 import { initializePlanQueueRuntime } from "./queue/PlanQueueRuntime.js";
 import { appLogger, normalizeError } from "./observability/logger.js";
 import { createServer as createAppServer } from "./server/app.js";
+import { SLOMonitor } from "./monitoring/SLOMonitor.js";
+
+// Global singleton for monitoring
+export const sloMonitor = new SLOMonitor();
 
 export { createServer } from "./server/app.js";
 export {

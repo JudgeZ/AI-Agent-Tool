@@ -7,16 +7,12 @@ pub struct Range {
     pub end: Position,
 }
 
-pub fn node_at_position<'a>(
-    tree: &'a Tree,
-    position: Position,
-) -> Option<Node<'a>> {
+pub fn node_at_position<'a>(tree: &'a Tree, position: Position) -> Option<Node<'a>> {
     let point = tree_sitter::Point {
         row: position.line as usize,
         column: position.column as usize,
     };
-    tree.root_node()
-        .descendant_for_point_range(point, point)
+    tree.root_node().descendant_for_point_range(point, point)
 }
 
 pub fn identifier_at_position<'a>(
@@ -172,16 +168,16 @@ pub fn analyze_graph(tree: &Tree, source: &str, path: &str) -> (Vec<GraphNode>, 
     let mut edges = Vec::new();
     let mut stack = vec![tree.root_node()];
 
-    // Simple heuristic: 
+    // Simple heuristic:
     // 1. Find declarations -> Nodes
     // 2. Find calls/usages inside declarations -> Edges
 
     // We need to track the current scope (parent declaration)
     // This is a simplified traversal.
-    
+
     // First pass: collect all declarations
     let mut declarations = Vec::new();
-    
+
     while let Some(node) = stack.pop() {
         if is_declaration(&node) {
             if let Some(name) = get_name(&node, source) {
@@ -194,7 +190,7 @@ pub fn analyze_graph(tree: &Tree, source: &str, path: &str) -> (Vec<GraphNode>, 
                 declarations.push((id, node));
             }
         }
-        
+
         let mut child_cursor = node.walk();
         for child in node.children(&mut child_cursor) {
             if child.is_named() {
@@ -249,17 +245,17 @@ fn is_declaration(node: &Node) -> bool {
 }
 
 fn is_call_expression(node: &Node) -> bool {
-    matches!(
-        node.kind(),
-        "call_expression" | "new_expression"
-    )
+    matches!(node.kind(), "call_expression" | "new_expression")
 }
 
 fn get_name(node: &Node, source: &str) -> Option<String> {
     let mut cursor = node.walk();
     for child in node.children(&mut cursor) {
         if is_identifier(&child) {
-            return child.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+            return child
+                .utf8_text(source.as_bytes())
+                .ok()
+                .map(|s| s.to_string());
         }
     }
     None
@@ -269,13 +265,18 @@ fn get_callee_name(node: &Node, source: &str) -> Option<String> {
     // For call_expression, the first child is usually the function being called
     let child = node.child(0)?;
     if is_identifier(&child) {
-        return child.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+        return child
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| s.to_string());
     }
     // Handle member expression (obj.method())
     if child.kind() == "member_expression" {
         let property = child.child_by_field_name("property")?;
-        return property.utf8_text(source.as_bytes()).ok().map(|s| s.to_string());
+        return property
+            .utf8_text(source.as_bytes())
+            .ok()
+            .map(|s| s.to_string());
     }
     None
 }
-

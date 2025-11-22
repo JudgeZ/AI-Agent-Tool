@@ -240,3 +240,48 @@ jobs:
 
       - name: Run cargo audit
         run: cargo audit --deny warnings
+
+  license-compliance:
+    name: License Compliance Check
+    runs-on: ubuntu-latest
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.fork == false
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Orchestrator dependencies
+        run: npm ci
+        working-directory: services/orchestrator
+
+      - name: Install GUI dependencies
+        run: npm ci
+        working-directory: apps/gui
+
+      - name: Install CLI dependencies
+        run: npm ci
+        working-directory: apps/cli
+
+      # Go and Rust scans use metadata/mod files and don't strictly need build artifacts for license check in this script's logic
+      # but Go might need 'go list' to work which requires modules.
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.work
+          check-latest: true
+
+      - name: Generate Compliance Report
+        run: node scripts/generate-compliance-report.js
+
+      - name: Verify no changes to Compliance Report (Drift Detection)
+        run: |
+          if [[ -n $(git status --porcelain LICENSE_COMPLIANCE.md SBOM.json) ]]; then
+            echo "Error: License compliance artifacts (LICENSE_COMPLIANCE.md or SBOM.json) are out of date."
+            echo "Please run 'node scripts/generate-compliance-report.js' locally and commit the changes."
+            git diff LICENSE_COMPLIANCE.md SBOM.json
+            exit 1
+          fi

@@ -2,6 +2,9 @@
 {{- $root := . -}}
 {{- $fullname := include "oss-ai-agent-tool.fullname" $root -}}
 {{- $defaultIndexerEnv := dict "RUST_LOG" ($root.Values.indexer.logLevel | default "info") -}}
+{{- if .Values.postgres.enabled -}}
+  {{- $_ := set $defaultIndexerEnv "DATABASE_URL" (printf "postgres://%s:%s@%s-postgres:5432/%s" (.Values.postgres.username | default "ossaat") (.Values.postgres.password | default "ossaat") $fullname (.Values.postgres.database | default "ossaat")) -}}
+{{- end -}}
 {{- $_ := set $defaultIndexerEnv "INDEXER_MAX_REQUEST_BODY_BYTES" (printf "%v" ($root.Values.indexer.requestLimitBytes | default 1048576)) -}}
 {{- $_ := set $defaultIndexerEnv "RUN_MODE" ($root.Values.runMode | default "consumer") -}}
 {{- $indexerValueFromEnv := dict -}}

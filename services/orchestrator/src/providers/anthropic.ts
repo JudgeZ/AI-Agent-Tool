@@ -78,6 +78,17 @@ export class AnthropicProvider implements ModelProvider {
 
   constructor(private readonly secrets: SecretsStore, private readonly options: AnthropicProviderOptions = {}) {}
 
+  toJSON() {
+    return {
+      name: this.name,
+      options: {
+        defaultModel: this.options.defaultModel,
+        maxTokens: this.options.maxTokens,
+        retryAttempts: this.options.retryAttempts
+      }
+    };
+  }
+
   private async getClient(): Promise<AnthropicClient> {
     const currentPromise = this.clientPromise;
     let credentials!: { apiKey: string };
@@ -204,6 +215,11 @@ export class AnthropicProvider implements ModelProvider {
     };
   }
 
+  private sanitize(text: string): string {
+    if (!text || !this.clientCredentials?.apiKey) return text;
+    return text.replace(this.clientCredentials.apiKey, "[REDACTED]");
+  }
+
   private normalizeError(error: unknown): ProviderError {
     if (error instanceof ProviderError) {
       return error;
@@ -223,16 +239,35 @@ export class AnthropicProvider implements ModelProvider {
           ? details.statusCode
           : undefined;
     const code = typeof details?.code === "string" ? details.code : undefined;
-    const message =
+    const rawMessage =
       typeof details?.message === "string" ? details.message : "Anthropic request failed";
+    
+    const message = this.sanitize(rawMessage);
+    
     const status = statusCandidate;
     const retryable = status === 429 || status === 408 || (typeof status === "number" ? status >= 500 : true);
+    
+    // Sanitize cause if needed, or omit if we can't be sure
+    let cause = error;
+    if (error && typeof error === "object") {
+        try {
+            const json = JSON.stringify(error);
+            if (this.clientCredentials?.apiKey && json.includes(this.clientCredentials.apiKey)) {
+                // If cause contains secret, redact it or use sanitized message
+                cause = new Error(this.sanitize(json));
+            }
+        } catch {
+            // If circular or whatever, keep it as is or omit? 
+            // Safer to omit if we suspect secrets, but we only check string representation
+        }
+    }
+
     return new ProviderError(message, {
       status: status ?? 502,
       code,
       provider: this.name,
       retryable,
-      cause: error
+      cause
     });
   }
 }

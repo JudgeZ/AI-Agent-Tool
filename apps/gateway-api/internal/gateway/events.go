@@ -9,9 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"os"
 	"regexp"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -141,13 +139,13 @@ func NewEventsHandler(client *http.Client, orchestratorURL string, heartbeat tim
 
 // RegisterEventRoutes wires the /events endpoint into the provided mux.
 func RegisterEventRoutes(mux *http.ServeMux, cfg EventRouteConfig) {
-	orchestratorURL := getEnv("ORCHESTRATOR_URL", "http://127.0.0.1:4000")
+	orchestratorURL := GetEnv("ORCHESTRATOR_URL", "http://127.0.0.1:4000")
 	client, err := getOrchestratorClient()
 	if err != nil {
 		panic(fmt.Sprintf("failed to configure orchestrator client: %v", err))
 	}
-	maxConnections := getIntEnv("GATEWAY_SSE_MAX_CONNECTIONS_PER_IP", 4)
-	trustedProxies, err := parseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs)
+	maxConnections := GetIntEnv("GATEWAY_SSE_MAX_CONNECTIONS_PER_IP", 4)
+	trustedProxies, err := ParseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs)
 	if err != nil {
 		panic(fmt.Sprintf("invalid trusted proxy configuration: %v", err))
 	}
@@ -156,8 +154,8 @@ func RegisterEventRoutes(mux *http.ServeMux, cfg EventRouteConfig) {
 	handler.attemptBucket = rateLimitBucket{
 		Endpoint:     "events.connect",
 		IdentityType: "ip",
-		Limit:        resolveLimit([]string{"GATEWAY_SSE_CONNECT_LIMIT"}, 12),
-		Window:       resolveDuration([]string{"GATEWAY_SSE_CONNECT_WINDOW"}, time.Minute),
+		Limit:        ResolveLimit([]string{"GATEWAY_SSE_CONNECT_LIMIT"}, 12),
+		Window:       ResolveDuration([]string{"GATEWAY_SSE_CONNECT_WINDOW"}, time.Minute),
 	}
 	mux.Handle("/events", handler)
 }
@@ -167,7 +165,7 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	baseCtx := r.Context()
 	auditLogger := h.getAuditLogger()
 	planID := strings.TrimSpace(r.URL.Query().Get("plan_id"))
-	clientAddr := clientIP(r, h.trustedProxies)
+	clientAddr := ClientIP(r, h.trustedProxies)
 	planHash := ""
 	clientHash := ""
 
@@ -301,9 +299,9 @@ func (h *EventsHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			req.Header.Add("Cookie", cookie)
 		}
 	}
-	cloneHeaders(req.Header, r.Header, forwardedSSEHeaders)
+	CloneHeaders(req.Header, r.Header, forwardedSSEHeaders)
 
-	gatewayAddr := localIP(r)
+	gatewayAddr := LocalIP(r)
 	appendForwardingHeaders(req.Header, r.Header, clientAddr, gatewayAddr)
 
 	logger := slog.Default()
@@ -550,200 +548,22 @@ func (fw *flushingWriter) Write(p []byte) (int, error) {
 	return n, err
 }
 
-func extractClientIPFromForwardedFor(header string, trustedProxies []*net.IPNet) net.IP {
-	if header == "" {
-		return nil
-	}
-	parts := strings.Split(header, ",")
-	for i := len(parts) - 1; i >= 0; i-- {
-		candidate := strings.TrimSpace(parts[i])
-		if candidate == "" {
-			continue
-		}
-		ip := net.ParseIP(candidate)
-		if ip == nil {
-			continue
-		}
-		if !isTrustedProxy(ip, trustedProxies) {
-			return ip
-		}
-	}
-	return nil
-}
-
-func extractClientIP(candidate string, trustedProxies []*net.IPNet) net.IP {
-	if candidate == "" {
-		return nil
-	}
-	ip := net.ParseIP(candidate)
-	if ip == nil {
-		return nil
-	}
-	if isTrustedProxy(ip, trustedProxies) {
-		return nil
-	}
-	return ip
-}
-
-func isTrustedProxy(ip net.IP, trusted []*net.IPNet) bool {
-	if ip == nil {
-		return false
-	}
-	for _, network := range trusted {
-		if network != nil && network.Contains(ip) {
-			return true
-		}
-	}
-	return false
-}
-
-func parseTrustedProxyCIDRs(entries []string) ([]*net.IPNet, error) {
-	if len(entries) == 0 {
-		return nil, nil
-	}
-	proxies := make([]*net.IPNet, 0, len(entries))
-	for _, entry := range entries {
-		token := strings.TrimSpace(entry)
-		if token == "" {
-			continue
-		}
-		if strings.Contains(token, "/") {
-			_, network, err := net.ParseCIDR(token)
-			if err != nil {
-				return nil, fmt.Errorf("invalid CIDR %q: %w", token, err)
-			}
-			proxies = append(proxies, network)
-			continue
-		}
-		ip := net.ParseIP(token)
-		if ip == nil {
-			return nil, fmt.Errorf("invalid IP %q", token)
-		}
-		if ipv4 := ip.To4(); ipv4 != nil {
-			mask := net.CIDRMask(net.IPv4len*8, net.IPv4len*8)
-			proxies = append(proxies, &net.IPNet{IP: ipv4, Mask: mask})
-			continue
-		}
-		mask := net.CIDRMask(net.IPv6len*8, net.IPv6len*8)
-		proxies = append(proxies, &net.IPNet{IP: ip, Mask: mask})
-	}
-	if len(proxies) == 0 {
-		return nil, nil
-	}
-	return proxies, nil
-}
-
-// ParseTrustedProxyCIDRs is an exported helper that normalises trusted proxy
-// definitions for use by external callers such as the main package.
-func ParseTrustedProxyCIDRs(entries []string) ([]*net.IPNet, error) {
-	return parseTrustedProxyCIDRs(entries)
-}
-
-func getIntEnv(key string, fallback int) int {
-	raw := strings.TrimSpace(os.Getenv(key))
-	if raw == "" {
-		return fallback
-	}
-	value, err := strconv.Atoi(raw)
-	if err != nil {
-		return fallback
-	}
-	if value < 0 {
-		return 0
-	}
-	return value
-}
-
-func cloneHeaders(dst, src http.Header, headers []string) {
-	if len(headers) == 0 {
-		return
-	}
-	for _, header := range headers {
-		values := src.Values(header)
-		if len(values) == 0 {
-			continue
-		}
-		dst.Del(header)
-		for _, value := range values {
-			if value == "" {
-				continue
-			}
-			dst.Add(header, value)
-		}
-	}
-}
-
 func appendForwardingHeaders(dst, src http.Header, clientAddr, gatewayAddr string) {
-	forwardedFor := uniqueHeaderValues(src.Values("X-Forwarded-For"))
-	forwardedFor = appendAddressIfMissing(forwardedFor, clientAddr)
-	forwardedFor = appendAddressIfMissing(forwardedFor, gatewayAddr)
+	forwardedFor := UniqueHeaderValues(src.Values("X-Forwarded-For"))
+	forwardedFor = AppendAddressIfMissing(forwardedFor, clientAddr)
+	forwardedFor = AppendAddressIfMissing(forwardedFor, gatewayAddr)
 	if len(forwardedFor) > 0 {
 		dst.Del("X-Forwarded-For")
 		dst.Add("X-Forwarded-For", strings.Join(forwardedFor, ", "))
 	}
 
-	realIP := uniqueHeaderValues(src.Values("X-Real-IP"))
-	realIP = appendAddressIfMissing(realIP, clientAddr)
-	realIP = appendAddressIfMissing(realIP, gatewayAddr)
+	realIP := UniqueHeaderValues(src.Values("X-Real-IP"))
+	realIP = AppendAddressIfMissing(realIP, clientAddr)
+	realIP = AppendAddressIfMissing(realIP, gatewayAddr)
 	if len(realIP) > 0 {
 		dst.Del("X-Real-IP")
 		for _, value := range realIP {
 			dst.Add("X-Real-IP", value)
 		}
 	}
-}
-
-func uniqueHeaderValues(values []string) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	seen := make(map[string]struct{}, len(values))
-	normalized := make([]string, 0, len(values))
-	for _, value := range values {
-		if value == "" {
-			continue
-		}
-		parts := strings.Split(value, ",")
-		for _, part := range parts {
-			token := strings.TrimSpace(part)
-			if token == "" {
-				continue
-			}
-			if _, ok := seen[token]; ok {
-				continue
-			}
-			seen[token] = struct{}{}
-			normalized = append(normalized, token)
-		}
-	}
-	return normalized
-}
-
-func appendAddressIfMissing(values []string, addr string) []string {
-	addr = strings.TrimSpace(addr)
-	if addr == "" {
-		return values
-	}
-	for _, existing := range values {
-		if existing == addr {
-			return values
-		}
-	}
-	return append(values, addr)
-}
-
-func localIP(r *http.Request) string {
-	addrVal := r.Context().Value(http.LocalAddrContextKey)
-	if addrVal == nil {
-		return ""
-	}
-	netAddr, ok := addrVal.(net.Addr)
-	if !ok || netAddr == nil {
-		return ""
-	}
-	host, _, err := net.SplitHostPort(netAddr.String())
-	if err != nil {
-		return strings.TrimSpace(netAddr.String())
-	}
-	return strings.TrimSpace(host)
 }

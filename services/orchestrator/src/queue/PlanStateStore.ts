@@ -112,12 +112,14 @@ export interface PlanStatePersistence {
   listPlanMetadata(): Promise<PersistedPlanMetadata[]>;
   forgetPlanMetadata(planId: string): Promise<void>;
   clear(): Promise<void>;
+  close(): Promise<void>;
 }
 
 export class FilePlanStateStore implements PlanStatePersistence {
   private readonly filePath: string;
   private readonly retentionMs: number | null;
   private loaded = false;
+  private closed = false;
   private readonly records = new Map<string, PersistedStep>();
   private readonly planRecords = new Map<string, PersistedPlanMetadata & { updatedAt: string }>();
   private persistChain: Promise<void> = Promise.resolve();
@@ -386,6 +388,11 @@ export class FilePlanStateStore implements PlanStatePersistence {
     await this.enqueuePersist();
   }
 
+  async close(): Promise<void> {
+    this.closed = true;
+    await this.persistChain;
+  }
+
   private toKey(planId: string, stepId: string): string {
     return `${planId}:${stepId}`;
   }
@@ -437,11 +444,15 @@ export class FilePlanStateStore implements PlanStatePersistence {
   }
 
   private enqueuePersist(): Promise<void> {
+    if (this.closed) {
+      return Promise.resolve();
+    }
     const run = this.persistChain.then(() => this.persist());
-    this.persistChain = run.catch(() => {
-      /* swallow persist errors for subsequent attempts */
+    this.persistChain = run.catch((err) => {
+      // Ignore persistence errors in background
+      // console.error(`DEBUG: Persistence error: ${err}`);
     });
-    return run;
+    return this.persistChain;
   }
 
   private async persist(): Promise<void> {
@@ -456,22 +467,58 @@ export class FilePlanStateStore implements PlanStatePersistence {
         requestId: entry.requestId,
         nextStepIndex: entry.nextStepIndex,
         lastCompletedIndex: entry.lastCompletedIndex,
-        steps: entry.steps.map(stepEntry => ({
-          step: stepEntry.step,
-          createdAt: stepEntry.createdAt,
-          attempt: stepEntry.attempt,
-          requestId: stepEntry.requestId,
-          subject: stepEntry.subject
+        steps: entry.steps.map(entry => ({
+          step: entry.step,
+          createdAt: entry.createdAt,
+          attempt: entry.attempt,
+          requestId: entry.requestId,
+          subject: entry.subject
         }))
       }))
     };
     const tempPath = path.join(dir, `${path.basename(this.filePath)}.${randomUUID()}.tmp`);
     const data = JSON.stringify(payload, null, 2);
     try {
-      await fs.writeFile(tempPath, data, { mode: 0o600 });
-      await fs.rename(tempPath, this.filePath);
+      await fs.writeFile(tempPath, data);
+      await this.renameWithRetry(tempPath, this.filePath);
     } finally {
       await fs.rm(tempPath, { force: true }).catch(() => undefined);
+    }
+  }
+
+  private async renameWithRetry(src: string, dest: string, retries = 10, delayMs = 100): Promise<void> {
+    for (let i = 0; i < retries; i++) {
+      try {
+        await fs.rename(src, dest);
+        return;
+      } catch (error) {
+        // If rename fails, try copy and unlink as fallback on the last attempt or if error is ENOENT/EXDEV
+        const isLastAttempt = i === retries - 1;
+        const code = (error as NodeJS.ErrnoException)?.code;
+        
+        if (code === "EXDEV" || (isLastAttempt && code !== "EPERM")) {
+             // Fallback for cross-device or persistent failure
+             try {
+                 await fs.copyFile(src, dest);
+                 await fs.unlink(src);
+                 return;
+             } catch (copyError) {
+                 // If copy fails, throw the original rename error to preserve context, or the copy error?
+                 // Throwing original error is usually safer if copy failed for similar reasons.
+                 throw error;
+             }
+        }
+
+        if (isLastAttempt) {
+          throw error;
+        }
+        
+        if (code === "EPERM" || code === "EBUSY" || code === "ENOENT") {
+          await new Promise((resolve) => setTimeout(resolve, delayMs * (i + 1)));
+          continue;
+        }
+        throw error;
+      }
     }
   }
 
@@ -743,13 +790,13 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
         planId,
         metadata.traceId,
         metadata.requestId ?? null,
-        metadata.steps.map((entry) => ({
+        JSON.stringify(metadata.steps.map((entry) => ({
           step: cloneStep(entry.step),
           createdAt: entry.createdAt,
           attempt: entry.attempt,
           requestId: entry.requestId,
           subject: cloneSubject(entry.subject),
-        })),
+        }))),
         metadata.nextStepIndex,
         metadata.lastCompletedIndex,
         now,
@@ -794,52 +841,58 @@ export class PostgresPlanStateStore implements PlanStatePersistence {
     await this.pool.query(`DELETE FROM plan_state_metadata`);
   }
 
+  async close(): Promise<void> {
+    // No-op for shared pool, or release if we owned it.
+    // The pool is passed in constructor, so lifecycle is managed externally usually.
+    return Promise.resolve();
+  }
+
   private async initialize(): Promise<void> {
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS plan_state (
-        plan_id TEXT NOT NULL,
-        step_id TEXT NOT NULL,
-        id UUID NOT NULL,
-        trace_id TEXT NOT NULL,
-        request_id TEXT,
-        step JSONB NOT NULL,
-        state TEXT NOT NULL,
-        summary TEXT,
-        output JSONB,
-        updated_at TIMESTAMPTZ NOT NULL,
-        attempt INTEGER NOT NULL,
-        idempotency_key TEXT NOT NULL,
-        created_at TIMESTAMPTZ NOT NULL,
-        approvals JSONB,
-        subject JSONB,
-        PRIMARY KEY (plan_id, step_id)
-      )
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS plan_state_updated_at_idx ON plan_state(updated_at)
-    `);
-    await this.pool.query(`
-      CREATE TABLE IF NOT EXISTS plan_state_metadata (
-        plan_id TEXT PRIMARY KEY,
-        trace_id TEXT NOT NULL,
-        request_id TEXT,
-        steps JSONB NOT NULL,
-        next_step_index INTEGER NOT NULL,
-        last_completed_index INTEGER NOT NULL,
-        updated_at TIMESTAMPTZ NOT NULL
-      )
-    `);
-    await this.pool.query(`
-      ALTER TABLE plan_state
-      ADD COLUMN IF NOT EXISTS request_id TEXT
-    `);
-    await this.pool.query(`
-      ALTER TABLE plan_state_metadata
-      ADD COLUMN IF NOT EXISTS request_id TEXT
-    `);
-    await this.pool.query(`
-      CREATE INDEX IF NOT EXISTS plan_state_metadata_updated_at_idx ON plan_state_metadata(updated_at)
-    `);
+    const queries = [
+      `CREATE TABLE IF NOT EXISTS plan_state (
+          plan_id TEXT NOT NULL,
+          step_id TEXT NOT NULL,
+          id UUID NOT NULL,
+          trace_id TEXT NOT NULL,
+          request_id TEXT,
+          step JSONB NOT NULL,
+          state TEXT NOT NULL,
+          summary TEXT,
+          output JSONB,
+          updated_at TIMESTAMPTZ NOT NULL,
+          attempt INTEGER NOT NULL,
+          idempotency_key TEXT NOT NULL,
+          created_at TIMESTAMPTZ NOT NULL,
+          approvals JSONB,
+          subject JSONB,
+          PRIMARY KEY (plan_id, step_id)
+        )`,
+      `CREATE INDEX IF NOT EXISTS plan_state_updated_at_idx ON plan_state(updated_at)`,
+      `CREATE TABLE IF NOT EXISTS plan_state_metadata (
+          plan_id TEXT PRIMARY KEY,
+          trace_id TEXT NOT NULL,
+          request_id TEXT,
+          steps JSONB NOT NULL,
+          next_step_index INTEGER NOT NULL,
+          last_completed_index INTEGER NOT NULL,
+          updated_at TIMESTAMPTZ NOT NULL
+        )`,
+      `ALTER TABLE plan_state ADD COLUMN IF NOT EXISTS request_id TEXT`,
+      `ALTER TABLE plan_state_metadata ADD COLUMN IF NOT EXISTS request_id TEXT`,
+      `CREATE INDEX IF NOT EXISTS plan_state_metadata_updated_at_idx ON plan_state_metadata(updated_at)`
+    ];
+
+    for (const query of queries) {
+      try {
+        await this.pool.query(query);
+      } catch (error: any) {
+        // Ignore race conditions on table/type creation
+        if (error.code === "23505" && error.constraint === "pg_type_typname_nsp_index") {
+          continue;
+        }
+        throw error;
+      }
+    }
   }
 
   private async purgeExpired(now = Date.now()): Promise<void> {

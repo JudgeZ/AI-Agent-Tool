@@ -42,9 +42,9 @@ spec:
           image: {{ .Values.rabbitmq.image | default "rabbitmq:3.13-management" }}
           imagePullPolicy: IfNotPresent
           env:
-            - name: RABBITMQ_DEFAULT_USER
+            - name: RABBITMQ_USERNAME
               value: {{ .Values.rabbitmq.username | default "guest" | quote }}
-            - name: RABBITMQ_DEFAULT_PASS
+            - name: RABBITMQ_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "oss-ai-agent-tool.fullname" . }}-rabbitmq

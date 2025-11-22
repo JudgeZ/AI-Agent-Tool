@@ -28,7 +28,7 @@ func TestClientIPRejectsSpoofedForwardedForFromUntrustedSource(t *testing.T) {
 	req.RemoteAddr = "203.0.113.10:1234"
 	req.Header.Set("X-Forwarded-For", "198.51.100.9")
 
-	ip := clientIP(req, nil)
+	ip := ClientIP(req, nil)
 	if ip != "203.0.113.10" {
 		t.Fatalf("expected remote addr, got %q", ip)
 	}
@@ -43,7 +43,7 @@ func TestClientIPAcceptsForwardedForFromTrustedProxy(t *testing.T) {
 	req.RemoteAddr = "10.1.2.3:4321"
 	req.Header.Set("X-Forwarded-For", "198.51.100.9, 10.1.2.3")
 
-	ip := clientIP(req, []*net.IPNet{trustedNet})
+	ip := ClientIP(req, []*net.IPNet{trustedNet})
 	if ip != "198.51.100.9" {
 		t.Fatalf("expected forwarded client ip, got %q", ip)
 	}
@@ -58,7 +58,7 @@ func TestClientIPSkipsSpoofedForwardedForEntriesFromTrustedProxy(t *testing.T) {
 	req.RemoteAddr = "10.1.2.3:4321"
 	req.Header.Set("X-Forwarded-For", "203.0.113.5, 198.51.100.9, 10.1.2.3")
 
-	ip := clientIP(req, []*net.IPNet{trustedNet})
+	ip := ClientIP(req, []*net.IPNet{trustedNet})
 	if ip != "198.51.100.9" {
 		t.Fatalf("expected to ignore spoofed entries and return %q, got %q", "198.51.100.9", ip)
 	}
@@ -73,7 +73,7 @@ func TestClientIPFallsBackWhenForwardedForInvalid(t *testing.T) {
 	req.RemoteAddr = "10.1.2.3:4321"
 	req.Header.Set("X-Forwarded-For", "not-an-ip")
 
-	ip := clientIP(req, []*net.IPNet{trustedNet})
+	ip := ClientIP(req, []*net.IPNet{trustedNet})
 	if ip != "10.1.2.3" {
 		t.Fatalf("expected remote addr fallback, got %q", ip)
 	}
@@ -88,14 +88,14 @@ func TestClientIPAcceptsRealIPHeaderFromTrustedProxy(t *testing.T) {
 	req.RemoteAddr = "10.1.2.3:4321"
 	req.Header.Set("X-Real-IP", "198.51.100.10")
 
-	ip := clientIP(req, []*net.IPNet{trustedNet})
+	ip := ClientIP(req, []*net.IPNet{trustedNet})
 	if ip != "198.51.100.10" {
 		t.Fatalf("expected real ip header, got %q", ip)
 	}
 }
 
 func TestParseTrustedProxyCIDRsNormalizesIPv4(t *testing.T) {
-	proxies, err := parseTrustedProxyCIDRs([]string{"192.0.2.10"})
+	proxies, err := ParseTrustedProxyCIDRs([]string{"192.0.2.10"})
 	if err != nil {
 		t.Fatalf("unexpected error parsing proxies: %v", err)
 	}
@@ -734,7 +734,7 @@ func TestEventsHandlerTerminatesOnHeartbeatWriteFailure(t *testing.T) {
 }
 
 func TestParseTrustedProxyCIDRsRejectsInvalidEntries(t *testing.T) {
-	_, err := parseTrustedProxyCIDRs([]string{"invalid-cidr"})
+	_, err := ParseTrustedProxyCIDRs([]string{"invalid-cidr"})
 	if err == nil {
 		t.Fatal("expected parse error for invalid CIDR entry")
 	}

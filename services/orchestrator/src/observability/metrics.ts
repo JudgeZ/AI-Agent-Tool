@@ -289,3 +289,22 @@ export function recordRateLimitOutcome(endpoint: string, identityType: string, a
   }
   rateLimitBlockedCounter.labels(labels).inc();
 }
+
+export function recordMetric(name: string, value: number, labels: Record<string, string> = {}): void {
+  let metric = register.getSingleMetric(name);
+  if (!metric) {
+    if (name.endsWith("_total") || name.endsWith("_tokens")) {
+      metric = new Counter({ name, help: `Metric ${name}` });
+    } else {
+      metric = new Gauge({ name, help: `Metric ${name}` });
+    }
+  }
+
+  if (metric instanceof Counter) {
+    metric.inc(labels, value);
+  } else if (metric instanceof Gauge) {
+    metric.set(labels, value);
+  } else if (metric instanceof Histogram) {
+    metric.observe(labels, value);
+  }
+}

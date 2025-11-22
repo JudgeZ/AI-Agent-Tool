@@ -56,6 +56,18 @@ export class OpenAIProvider implements ModelProvider {
 
   constructor(private readonly secrets: SecretsStore, private readonly options: OpenAIProviderOptions = {}) {}
 
+  toJSON() {
+    return {
+      name: this.name,
+      options: {
+        defaultModel: this.options.defaultModel,
+        retryAttempts: this.options.retryAttempts,
+        defaultTemperature: this.options.defaultTemperature,
+        timeoutMs: this.options.timeoutMs
+      }
+    };
+  }
+
   private async getClient(): Promise<OpenAIClient> {
     const currentPromise = this.clientPromise;
     let credentials!: { apiKey: string };
@@ -181,6 +193,11 @@ export class OpenAIProvider implements ModelProvider {
     };
   }
 
+  private sanitize(text: string): string {
+    if (!text || !this.clientCredentials?.apiKey) return text;
+    return text.replace(this.clientCredentials.apiKey, "[REDACTED]");
+  }
+
   private normalizeError(error: unknown): ProviderError {
     if (error instanceof ProviderError) {
       return error;
@@ -194,14 +211,31 @@ export class OpenAIProvider implements ModelProvider {
       typeof error === "object" && error !== null ? (error as OpenAIErrorLike) : undefined;
     const status = typeof details?.status === "number" ? details.status : undefined;
     const code = typeof details?.code === "string" ? details.code : undefined;
-    const message = typeof details?.message === "string" ? details.message : "OpenAI request failed";
+    const rawMessage = typeof details?.message === "string" ? details.message : "OpenAI request failed";
+    
+    const message = this.sanitize(rawMessage);
+    
     const retryable = status === 429 || status === 408 || (typeof status === "number" ? status >= 500 : true);
+    
+    // Sanitize cause if needed
+    let cause = error;
+    if (error && typeof error === "object") {
+        try {
+            const json = JSON.stringify(error);
+            if (this.clientCredentials?.apiKey && json.includes(this.clientCredentials.apiKey)) {
+                cause = new Error(this.sanitize(json));
+            }
+        } catch {
+            // Ignore serialization errors
+        }
+    }
+
     return new ProviderError(message, {
       status: status ?? 502,
       code,
       provider: this.name,
       retryable,
-      cause: error
+      cause
     });
   }
 }

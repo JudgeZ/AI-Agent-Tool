@@ -638,6 +638,7 @@ export class BrowserTool extends McpTool<any, any> {
     this.emit("evaluate:started", { scriptLength: input.script.length });
 
     // Execute script in page context
+    // eslint-disable-next-line @typescript-eslint/no-implied-eval
     const result = input.args
       ? await page.evaluate(
           new Function(

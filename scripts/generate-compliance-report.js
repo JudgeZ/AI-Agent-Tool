@@ -10,14 +10,97 @@ const REPORT_FILE = path.join(OUTPUT_DIR, 'LICENSE_COMPLIANCE.md');
 
 // Permissive licenses that are safe for business use (Apache-2.0 compatible)
 const PERMISSIVE_LICENSES = [
-    'MIT', 'Apache-2.0', 'Apache-2.0 WITH LLVM-exception', 'Apache 2.0', 'ISC', 
-    'BSD-2-Clause', 'BSD-3-Clause', 'BSD', '0BSD', 'Unlicense', 'CC0-1.0', 'BlueOak-1.0.0'
+    'MIT', 'Apache-2.0', 'Apache-2.0 WITH LLVM-exception', 'Apache 2.0', 'Apache', 'ISC', 
+    'BSD-2-Clause', 'BSD-3-Clause', 'BSD', '0BSD', 'Unlicense', 'CC0-1.0', 'BlueOak-1.0.0',
+    'Python-2.0'
 ];
 
 // Restricted/Copyleft licenses to flag
 const RESTRICTED_LICENSES = [
     'GPL', 'GPL-2.0', 'GPL-3.0', 'AGPL', 'AGPL-3.0', 'LGPL', 'LGPL-2.1', 'LGPL-3.0', 
     'CC-BY-NC', 'CC-BY-NC-SA'
+];
+
+// Manual Overrides for packages where license detection fails or is ambiguous
+const LICENSE_OVERRIDES = {
+    // Go Modules (Standard Library / Google)
+    'github.com/google/uuid': 'BSD-3-Clause',
+    'github.com/google/go-cmp': 'BSD-3-Clause',
+    'github.com/golang/protobuf': 'BSD-3-Clause',
+    'google.golang.org/protobuf': 'BSD-3-Clause',
+    'google.golang.org/grpc': 'Apache-2.0',
+    'google.golang.org/genproto/googleapis/api': 'Apache-2.0',
+    'google.golang.org/genproto/googleapis/rpc': 'Apache-2.0',
+    'golang.org/x/net': 'BSD-3-Clause',
+    'golang.org/x/text': 'BSD-3-Clause',
+    'golang.org/x/sys': 'BSD-3-Clause',
+    'golang.org/x/sync': 'BSD-3-Clause',
+    'golang.org/x/crypto': 'BSD-3-Clause',
+    'golang.org/x/oauth2': 'BSD-3-Clause',
+    'golang.org/x/mod': 'BSD-3-Clause',
+    'golang.org/x/term': 'BSD-3-Clause',
+    'golang.org/x/tools': 'BSD-3-Clause',
+    
+    // Go Modules (Open Telemetry)
+    'go.opentelemetry.io/otel': 'Apache-2.0',
+    'go.opentelemetry.io/otel/trace': 'Apache-2.0',
+    'go.opentelemetry.io/otel/metric': 'Apache-2.0',
+    'go.opentelemetry.io/otel/sdk': 'Apache-2.0',
+    'go.opentelemetry.io/otel/sdk/metric': 'Apache-2.0',
+    'go.opentelemetry.io/auto/sdk': 'Apache-2.0',
+    'go.opentelemetry.io/contrib/detectors/gcp': 'Apache-2.0',
+    'go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp': 'Apache-2.0',
+    'github.com/GoogleCloudPlatform/opentelemetry-operations-go/detectors/gcp': 'Apache-2.0',
+
+    // Go Modules (Common)
+    'gopkg.in/yaml.v3': 'MIT',
+    'gopkg.in/check.v1': 'BSD-2-Clause',
+    'github.com/stretchr/testify': 'MIT',
+    'github.com/davecgh/go-spew': 'ISC',
+    'github.com/pmezard/go-difflib': 'BSD-3-Clause',
+    'github.com/cespare/xxhash/v2': 'MIT',
+    'github.com/go-logr/logr': 'Apache-2.0',
+    'github.com/go-logr/stdr': 'Apache-2.0',
+    'github.com/gorilla/securecookie': 'BSD-3-Clause',
+    'github.com/felixge/httpsnoop': 'MIT',
+    'github.com/cncf/xds/go': 'Apache-2.0',
+    'github.com/envoyproxy/go-control-plane': 'Apache-2.0',
+    'github.com/envoyproxy/protoc-gen-validate': 'Apache-2.0',
+    'github.com/gabriel-vasile/mimetype': 'MIT',
+    'github.com/go-jose/go-jose/v4': 'Apache-2.0',
+    'github.com/go-playground/assert/v2': 'MIT',
+    'github.com/go-playground/locales': 'BSD-3-Clause',
+    'github.com/go-playground/universal-translator': 'MIT',
+    'github.com/go-playground/validator/v10': 'MIT',
+    'github.com/golang/glog': 'Apache-2.0',
+    'github.com/google/gofuzz': 'Apache-2.0',
+    'github.com/kr/pretty': 'MIT',
+    'github.com/kr/text': 'MIT',
+    'github.com/leodido/go-urn': 'MIT',
+    'github.com/planetscale/vtprotobuf': 'BSD-3-Clause',
+    'github.com/rogpeppe/go-internal': 'BSD-3-Clause',
+    'github.com/spiffe/go-spiffe/v2': 'Apache-2.0',
+    'github.com/stretchr/objx': 'MIT',
+    'github.com/zeebo/errs': 'MIT',
+    'gonum.org/v1/gonum': 'BSD-3-Clause',
+
+    // User Identified Overrides
+    'cel.dev/expr': 'Apache-2.0',
+    'cloud.google.com/go/compute/metadata': 'Apache-2.0',
+    'github.com/envoyproxy/go-control-plane/envoy': 'Apache-2.0',
+    'github.com/envoyproxy/go-control-plane/ratelimit': 'Apache-2.0',
+    
+    // NPM
+    'argparse': 'Python-2.0',
+    '@mistralai/mistralai': 'Apache-2.0'
+};
+
+// Internal packages to exclude from SBOM
+const INTERNAL_PACKAGES = [
+    '@oss/orchestrator',
+    'orchestrator-gui',
+    'oss-ai-agent-tool-cli',
+    'github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api'
 ];
 
 // Directories to scan
@@ -50,21 +133,30 @@ const scanners = {
             if (!jsonOut) return [];
             
             const data = JSON.parse(jsonOut);
-            return Object.entries(data).map(([key, info]) => {
-                // key is usually "package@version"
-                const lastAt = key.lastIndexOf('@');
-                const name = key.substring(0, lastAt);
-                const version = key.substring(lastAt + 1);
-                
-                return {
-                    component: name,
-                    version: version,
-                    ecosystem: 'npm',
-                    license: normalizeLicense(info.licenses),
-                    source: target.name,
-                    path: info.path
-                };
-            });
+            return Object.entries(data)
+                .map(([key, info]) => {
+                    // key is usually "package@version"
+                    const lastAt = key.lastIndexOf('@');
+                    const name = key.substring(0, lastAt);
+                    const version = key.substring(lastAt + 1);
+                    
+                    if (INTERNAL_PACKAGES.includes(name)) return null;
+
+                    let license = normalizeLicense(info.licenses);
+                    if (LICENSE_OVERRIDES[name]) {
+                        license = LICENSE_OVERRIDES[name];
+                    }
+
+                    return {
+                        component: name,
+                        version: version,
+                        ecosystem: 'npm',
+                        license: license,
+                        source: target.name,
+                        path: info.path
+                    };
+                })
+                .filter(item => item !== null);
         } catch (e) {
             console.error(`Failed to scan npm target ${target.name}: ${e.message}`);
             return [];
@@ -116,14 +208,23 @@ const scanners = {
         
         try {
             const modules = JSON.parse(fixedJson);
-            return modules.map(mod => ({
-                component: mod.Path,
-                version: mod.Version || 'v0.0.0', // Main module might not have version
-                ecosystem: 'gomod',
-                license: 'Unknown (Requires manual check)', // Go modules don't have metadata for this
-                source: target.name,
-                repository: mod.Path // Usually the path is the repo
-            }));
+            return modules
+                .filter(mod => !INTERNAL_PACKAGES.includes(mod.Path))
+                .map(mod => {
+                    let license = 'Unknown (Requires manual check)';
+                    if (LICENSE_OVERRIDES[mod.Path]) {
+                        license = LICENSE_OVERRIDES[mod.Path];
+                    }
+
+                    return {
+                        component: mod.Path,
+                        version: mod.Version || 'v0.0.0', // Main module might not have version
+                        ecosystem: 'gomod',
+                        license: license,
+                        source: target.name,
+                        repository: mod.Path // Usually the path is the repo
+                    };
+                });
         } catch (e) {
             console.error(`Failed to parse go list output: ${e.message}`);
             return [];
@@ -253,8 +354,13 @@ This report lists all third-party dependencies detected in the codebase and cate
     fs.writeFileSync(REPORT_FILE, md);
     console.log(`Report written to ${REPORT_FILE}`);
     
+    if (counts.Amber > 0) {
+        console.warn(`\n⚠️  WARNING: Found ${counts.Amber} unknown/custom license(s). Please review them manually in the report.`);
+    }
+
     if (counts.Red > 0) {
-        console.warn(`\n⚠️  WARNING: Found ${counts.Red} restricted license(s)! Check ${REPORT_FILE} immediately.`);
+        console.warn(`\n🛑  CRITICAL: Found ${counts.Red} restricted license(s)! Check ${REPORT_FILE} immediately.`);
+        process.exit(1);
     } else {
         console.log(`\n✅  Success: No restricted licenses found.`);
     }

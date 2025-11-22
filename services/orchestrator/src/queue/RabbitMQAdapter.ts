@@ -171,11 +171,25 @@ export class RabbitMQAdapter implements QueueAdapter {
     const channel = await this.ensureChannel();
     try {
       const result = await channel.checkQueue(queue);
-      return typeof result.messageCount === "number" ? result.messageCount : 0;
+      const depth =
+        typeof result.messageCount === "number" ? result.messageCount : 0;
+      queueDepthGauge
+        .labels(queue, this.transportLabel, this.tenantLabel)
+        .set(depth);
+      queueLagGauge
+        .labels(queue, this.transportLabel, this.tenantLabel)
+        .set(depth);
+      return depth;
     } catch (error) {
       this.logger.warn?.(
         `Failed to check queue depth for ${queue}: ${(error as Error).message}`,
       );
+      queueDepthGauge
+        .labels(queue, this.transportLabel, this.tenantLabel)
+        .set(0);
+      queueLagGauge
+        .labels(queue, this.transportLabel, this.tenantLabel)
+        .set(0);
       return 0;
     }
   }
@@ -448,19 +462,9 @@ export class RabbitMQAdapter implements QueueAdapter {
 
   private async refreshDepth(queue: string): Promise<void> {
     try {
-      const depth = await this.getQueueDepth(queue);
-      queueDepthGauge
-        .labels(queue, this.transportLabel, this.tenantLabel)
-        .set(depth);
-      queueLagGauge.labels(queue, this.transportLabel, this.tenantLabel).set(depth);
+      await this.getQueueDepth(queue);
     } catch (error) {
-      this.logger.warn?.(
-        `Failed to refresh depth for ${queue}: ${(error as Error).message}`,
-      );
-      queueDepthGauge
-        .labels(queue, this.transportLabel, this.tenantLabel)
-        .set(0);
-      queueLagGauge.labels(queue, this.transportLabel, this.tenantLabel).set(0);
+      // getQueueDepth handles its own errors/logging
     }
   }
 }

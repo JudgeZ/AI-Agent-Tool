@@ -49,7 +49,8 @@
     } else {
       // fallback in case the page was opened directly
       setTimeout(() => {
-        goto('/');
+        // eslint-disable-next-line svelte/no-navigation-without-resolve
+        void goto('/');
       }, 2000);
     }
   });

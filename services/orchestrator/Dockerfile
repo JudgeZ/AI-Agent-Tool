@@ -17,7 +17,7 @@ WORKDIR /app
 RUN npm install -g "npm@${NPM_VERSION}"
 COPY --from=deps /app/node_modules ./node_modules
 COPY package*.json ./
-COPY tsconfig.json vitest.config.ts ./
+COPY tsconfig.json tsconfig.build.json vitest.config.ts ./
 COPY src ./src
 RUN npm run build
 

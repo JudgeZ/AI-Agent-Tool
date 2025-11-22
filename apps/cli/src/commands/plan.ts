@@ -219,7 +219,7 @@ function ensureSafePlanId(planId: string | undefined): string {
   const trimmed = planId?.trim() ?? "";
   if (!PLAN_ID_PATTERN.test(trimmed)) {
     throw new Error(
-      `Gateway returned invalid plan id \"${planId ?? ""}\". Plan ids must match ${PLAN_ID_PATTERN}.`,
+      `Gateway returned invalid plan id "${planId ?? ""}". Plan ids must match ${PLAN_ID_PATTERN}.`,
     );
   }
   return trimmed;

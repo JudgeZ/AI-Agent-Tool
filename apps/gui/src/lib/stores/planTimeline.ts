@@ -456,10 +456,14 @@ function connect(planId: string, options: ConnectOptions = {}) {
       message = typeof event.data === 'string' && event.data ? event.data : null;
     } else if (event instanceof ErrorEvent) {
       message = event.message || (event.error instanceof Error ? event.error.message : null);
-    } else if (typeof (event as { message?: unknown }).message === 'string') {
-      message = (event as { message: string }).message;
-    } else if (typeof (event as { data?: unknown }).data === 'string') {
-      message = (event as { data: string }).data;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } else if (typeof (event as any).message === 'string') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      message = (event as any).message;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } else if (typeof (event as any).data === 'string') {
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      message = (event as any).data;
     }
     update((state) => ({
       ...state,

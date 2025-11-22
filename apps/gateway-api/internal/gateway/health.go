@@ -97,7 +97,7 @@ func checkOrchestrator(ctx context.Context) dependencyResult {
 		return failureResult(start, fmt.Sprintf("orchestrator client unavailable: %v", err))
 	}
 
-	baseURL := strings.TrimRight(getEnv("ORCHESTRATOR_URL", "http://127.0.0.1:4000"), "/")
+	baseURL := strings.TrimRight(GetEnv("ORCHESTRATOR_URL", "http://127.0.0.1:4000"), "/")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+orchestratorReadyPath, nil)
 	if err != nil {
 		return failureResult(start, fmt.Sprintf("failed to create orchestrator request: %v", err))
@@ -118,7 +118,7 @@ func checkOrchestrator(ctx context.Context) dependencyResult {
 
 func checkIndexer(ctx context.Context) dependencyResult {
 	start := time.Now()
-	baseURL := strings.TrimRight(getEnv("INDEXER_URL", "http://127.0.0.1:7070"), "/")
+	baseURL := strings.TrimRight(GetEnv("INDEXER_URL", "http://127.0.0.1:7070"), "/")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+indexerHealthPath, nil)
 	if err != nil {
 		return failureResult(start, fmt.Sprintf("failed to create indexer request: %v", err))

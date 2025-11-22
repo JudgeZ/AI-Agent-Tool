@@ -1,0 +1,63 @@
+import type { AppConfig } from "../config.js";
+import { sessionStore, type SessionRecord } from "../auth/SessionStore.js";
+import { extractSessionId } from "../auth/sessionValidation.js";
+import { logAuditEvent } from "../observability/audit.js";
+import type { ExtendedRequest } from "../http/types.js";
+import type { Response, NextFunction } from "express";
+
+export function attachSession(
+  req: ExtendedRequest,
+  config: AppConfig,
+): SessionRecord | undefined {
+  const oidcConfig = config.auth.oidc;
+  if (!oidcConfig.enabled) {
+    req.auth = undefined;
+    return undefined;
+  }
+  sessionStore.cleanupExpired();
+  const sessionResult = extractSessionId(req, oidcConfig.session.cookieName);
+  if (sessionResult.status === "invalid") {
+    req.auth = {
+      error: {
+        code: "invalid_session",
+        source: sessionResult.source,
+        issues: sessionResult.issues,
+      },
+    };
+    const requestId = req.header("x-request-id") ?? undefined;
+    const traceId = req.header("x-trace-id") ?? undefined;
+    logAuditEvent({
+      action: "auth.session.attach",
+      outcome: "failure",
+      requestId,
+      traceId,
+      resource: "auth.session",
+      details: {
+        reason: "invalid session id",
+        source: sessionResult.source,
+        issues: sessionResult.issues,
+        path: req.originalUrl,
+      },
+    });
+    return undefined;
+  }
+  if (sessionResult.status === "missing") {
+    req.auth = undefined;
+    return undefined;
+  }
+  const session = sessionStore.getSession(sessionResult.sessionId);
+  if (session) {
+    req.auth = { session };
+    return session;
+  }
+  req.auth = undefined;
+  return undefined;
+}
+
+export function attachSessionMiddleware(config: AppConfig) {
+    return (req: ExtendedRequest, _res: Response, next: NextFunction) => {
+        attachSession(req, config);
+        next();
+    };
+}
+

@@ -35,6 +35,8 @@ spec:
       {{- with .Values.postgres.podSecurityContext }}
       securityContext:
         {{- toYaml . | nindent 8 }}
+        # Allow fsGroup change
+        fsGroupChangePolicy: "Always"
       {{- end }}
       containers:
         - name: postgres
@@ -46,6 +48,16 @@ spec:
             - name: POSTGRES_USER
               value: {{ .Values.postgres.username | default "ossaat" | quote }}
             - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "oss-ai-agent-tool.fullname" . }}-postgres
+                  key: password
+            # Legacy Bitnami support (ignored by official/pgvector images)
+            - name: POSTGRESQL_DATABASE
+              value: {{ .Values.postgres.database | default "ossaat" | quote }}
+            - name: POSTGRESQL_USERNAME
+              value: {{ .Values.postgres.username | default "ossaat" | quote }}
+            - name: POSTGRESQL_PASSWORD
               valueFrom:
                 secretKeyRef:
                   name: {{ include "oss-ai-agent-tool.fullname" . }}-postgres

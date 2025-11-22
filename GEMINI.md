@@ -82,6 +82,7 @@ When editing code, you **MUST** follow this cycle:
     *   **Go:** `gofmt -l .` and `go vet ./...` (apps/gateway-api).
     *   **Rust:** `cargo fmt --all` and `cargo clippy` (services/indexer).
     *   **TypeScript:** `npm run lint` (services/orchestrator, apps/gui, apps/cli).
+    *   *(Note: If `make` is available, use `make lint` targets defined in the root Makefile).*
 *   **Type Safety:** `tsc --noEmit` is run in CI. Ensure your TypeScript changes compile without errors.
 
 ### Documentation Standards

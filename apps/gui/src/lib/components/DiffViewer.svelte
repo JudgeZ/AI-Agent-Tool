@@ -5,7 +5,7 @@
 </script>
 
 <div class="diff-viewer">
-  {#each diff.files as file}
+  {#each diff.files as file (file.path)}
     <section class="diff-file">
       <header class="diff-file__header">
         <span class="diff-file__path">{file.path}</span>

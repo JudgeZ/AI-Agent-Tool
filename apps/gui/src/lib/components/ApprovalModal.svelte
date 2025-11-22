@@ -152,7 +152,7 @@
         <section class="modal__section">
           <h3>Planned network requests</h3>
           <ul class="egress-list">
-            {#each egressRequests as request}
+            {#each egressRequests as request (request.url)}
               <li>
                 <span class="egress-list__target">{request.url}</span>
                 {#if request.method}

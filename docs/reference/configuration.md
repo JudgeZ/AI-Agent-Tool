@@ -51,6 +51,12 @@ tooling:
       - /etc/tool-agent/ca.pem     # optional additional trust roots
     certPath: /etc/tool-agent/client.pem
     keyPath: /etc/tool-agent/client.key
+server:
+  rateLimits:
+    plan: { windowMs: 60000, maxRequests: 60 }
+    chat: { windowMs: 60000, maxRequests: 600 }
+    auth: { windowMs: 60000, maxRequests: 120 }
+    secrets: { windowMs: 60000, maxRequests: 60 }
 network:
   egress:
     mode: enforce                  # enforce | report-only | disabled

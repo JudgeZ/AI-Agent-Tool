@@ -99,6 +99,37 @@ pub struct StoredSymbol {
 
 #[async_trait::async_trait]
 pub trait IndexStorage: Send + Sync {
+    async fn index_document(
+        &self,
+        path: String,
+        content: String,
+        commit_id: Option<String>,
+    ) -> Result<Uuid, StorageError>;
+
+    async fn index_symbols(
+        &self,
+        path: String,
+        content: String,
+        language: String,
+        commit_id: Option<String>,
+    ) -> Result<usize, StorageError>;
+
+    async fn search_documents(
+        &self,
+        query: String,
+        top_k: usize,
+        path_prefix: Option<String>,
+        commit_id: Option<String>,
+    ) -> Result<Vec<(StoredDocument, f32)>, StorageError>;
+
+    async fn search_symbols(
+        &self,
+        query: String,
+        top_k: usize,
+        path_prefix: Option<String>,
+        commit_id: Option<String>,
+    ) -> Result<Vec<(StoredSymbol, f32)>, StorageError>;
+
     async fn query_all_symbols(&self) -> Result<Vec<StoredSymbol>, StorageError>;
     async fn store_symbol(&self, symbol: &StoredSymbol) -> Result<(), StorageError>;
 }
@@ -127,8 +158,11 @@ impl Storage {
             embedding_manager,
         })
     }
+}
 
-    pub async fn index_document(
+#[async_trait::async_trait]
+impl IndexStorage for Storage {
+    async fn index_document(
         &self,
         path: String,
         content: String,
@@ -150,10 +184,10 @@ impl Storage {
             VALUES ($1, $2, $3, $4, $5, $6, $6, $7, $6)
             ON CONFLICT (path) DO UPDATE
             SET content = $3,
-                embedding_vector = $4,
-                commit_id = $5,
-                updated_at = $6,
-                embedding_generated_at = $6
+            embedding_vector = $4,
+            commit_id = $5,
+            updated_at = $6,
+            embedding_generated_at = $6
             RETURNING id
             "#
         )
@@ -170,7 +204,7 @@ impl Storage {
         Ok(id)
     }
 
-    pub async fn index_symbols(
+    async fn index_symbols(
         &self,
         path: String,
         content: String,
@@ -200,7 +234,9 @@ impl Storage {
                     commit_id: commit_id.cloned(),
                     start_line: extracted.range.start.line as i32,
                     end_line: extracted.range.end.line as i32,
-                    metadata: extracted.doc_comment.map(|doc| serde_json::json!({"doc": doc})),
+                    metadata: extracted
+                        .doc_comment
+                        .map(|doc| serde_json::json!({"doc": doc})),
                     created_at: Utc::now(),
                     updated_at: Utc::now(),
                 };
@@ -209,12 +245,17 @@ impl Storage {
             }
         }
 
-        flatten_symbols(extracted_symbols, &path, commit_id.as_ref(), &mut symbols_to_store);
+        flatten_symbols(
+            extracted_symbols,
+            &path,
+            commit_id.as_ref(),
+            &mut symbols_to_store,
+        );
 
         // Now process symbols: generate embeddings and store
         // Use parallel processing for embeddings
         let concurrency = 4; // Adjust based on needs
-        
+
         let results = futures::stream::iter(symbols_to_store)
             .map(|mut symbol| {
                 let storage = self.clone();
@@ -224,7 +265,7 @@ impl Storage {
                         .embed(&symbol.content)
                         .await
                         .map_err(|e| StorageError::Embedding(e.to_string()))?;
-                    
+
                     symbol.embedding = embedding;
                     Ok::<_, StorageError>(symbol)
                 }
@@ -236,7 +277,7 @@ impl Storage {
         for result in results {
             let symbol = result?;
             let embedding_vector = Vector::from(symbol.embedding.clone());
-            
+
             sqlx::query(
                 r#"
                 INSERT INTO symbols (id, path, name, kind, content, embedding_vector, commit_id, start_line, end_line, metadata, created_at, updated_at, embedding_model, embedding_generated_at)
@@ -257,14 +298,14 @@ impl Storage {
             .bind("all-MiniLM-L6-v2")
             .execute(&self.pool)
             .await?;
-            
+
             symbol_count += 1;
         }
 
         Ok(symbol_count)
     }
 
-    pub async fn search_documents(
+    async fn search_documents(
         &self,
         query: String,
         top_k: usize,
@@ -276,47 +317,52 @@ impl Storage {
             .embed(&query)
             .await
             .map_err(|e| StorageError::Embedding(e.to_string()))?;
-        
+
         let embedding_vector = Vector::from(query_embedding);
         let limit = top_k as i64;
 
         // Dynamic query construction is hard with sqlx macros, so we use query_as
-        // Note: <=> is cosine distance, so we sort by ASC. 
+        // Note: <=> is cosine distance, so we sort by ASC.
         // Similarity = 1 - distance.
-        
+
         let mut sql = String::from(
             r#"
             SELECT id, path, content, commit_id, created_at, updated_at, 
                    1 - (embedding_vector <=> $1) as score
             FROM documents
             WHERE 1=1
-            "#
+            "#,
         );
-        
+
         let mut args = sqlx::postgres::PgArguments::default();
         use sqlx::Arguments;
-        args.add(embedding_vector);
-        
+        args.add(embedding_vector)
+            .map_err(|e| StorageError::InvalidInput(e.to_string()))?;
+
         let mut param_idx = 2;
 
         if let Some(prefix) = path_prefix {
             sql.push_str(&format!(" AND path LIKE ${}", param_idx));
-            args.add(format!("{}%", prefix));
+            args.add(format!("{}%", prefix))
+                .map_err(|e| StorageError::InvalidInput(e.to_string()))?;
             param_idx += 1;
         }
 
         if let Some(commit) = commit_id {
             sql.push_str(&format!(" AND commit_id = ${}", param_idx));
-            args.add(commit);
+            args.add(commit)
+                .map_err(|e| StorageError::InvalidInput(e.to_string()))?;
             param_idx += 1;
         }
 
-        sql.push_str(&format!(" ORDER BY embedding_vector <=> $1 ASC LIMIT ${}", param_idx));
-        args.add(limit);
+        sql.push_str(&format!(
+            " ORDER BY embedding_vector <=> $1 ASC LIMIT ${}",
+            param_idx
+        ));
+        args.add(limit)
+            .map_err(|e| StorageError::InvalidInput(e.to_string()))?;
 
-        let rows: Vec<PgRow> = sqlx::query_with(&sql, args)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows: Vec<PgRow> = sqlx::query_with(&sql, args).fetch_all(&self.pool).await?;
 
         let mut results = Vec::new();
         for row in rows {
@@ -336,7 +382,7 @@ impl Storage {
         Ok(results)
     }
 
-    pub async fn search_symbols(
+    async fn search_symbols(
         &self,
         query: String,
         top_k: usize,
@@ -348,7 +394,7 @@ impl Storage {
             .embed(&query)
             .await
             .map_err(|e| StorageError::Embedding(e.to_string()))?;
-        
+
         let embedding_vector = Vector::from(query_embedding);
         let limit = top_k as i64;
 
@@ -358,33 +404,38 @@ impl Storage {
                    1 - (embedding_vector <=> $1) as score
             FROM symbols
             WHERE 1=1
-            "#
+            "#,
         );
-        
+
         let mut args = sqlx::postgres::PgArguments::default();
         use sqlx::Arguments;
-        args.add(embedding_vector);
-        
+        args.add(embedding_vector)
+            .map_err(|e| StorageError::InvalidInput(e.to_string()))?;
+
         let mut param_idx = 2;
 
         if let Some(prefix) = path_prefix {
             sql.push_str(&format!(" AND path LIKE ${}", param_idx));
-            args.add(format!("{}%", prefix));
+            args.add(format!("{}%", prefix))
+                .map_err(|e| StorageError::InvalidInput(e.to_string()))?;
             param_idx += 1;
         }
 
         if let Some(commit) = commit_id {
             sql.push_str(&format!(" AND commit_id = ${}", param_idx));
-            args.add(commit);
+            args.add(commit)
+                .map_err(|e| StorageError::InvalidInput(e.to_string()))?;
             param_idx += 1;
         }
 
-        sql.push_str(&format!(" ORDER BY embedding_vector <=> $1 ASC LIMIT ${}", param_idx));
-        args.add(limit);
+        sql.push_str(&format!(
+            " ORDER BY embedding_vector <=> $1 ASC LIMIT ${}",
+            param_idx
+        ));
+        args.add(limit)
+            .map_err(|e| StorageError::InvalidInput(e.to_string()))?;
 
-        let rows: Vec<PgRow> = sqlx::query_with(&sql, args)
-            .fetch_all(&self.pool)
-            .await?;
+        let rows: Vec<PgRow> = sqlx::query_with(&sql, args).fetch_all(&self.pool).await?;
 
         let mut results = Vec::new();
         for row in rows {
@@ -408,10 +459,7 @@ impl Storage {
 
         Ok(results)
     }
-}
 
-#[async_trait::async_trait]
-impl IndexStorage for Storage {
     async fn query_all_symbols(&self) -> Result<Vec<StoredSymbol>, StorageError> {
         let symbols = sqlx::query_as::<_, StoredSymbol>(
             r#"
@@ -430,31 +478,31 @@ impl IndexStorage for Storage {
         // It assumes the symbol already has an embedding if it was fetched from DB,
         // but if it's new or updated, we might need to re-embed.
         // For now, we'll assume the embedding is handled by the caller or we re-embed if empty.
-        
+
         let embedding_vector = if symbol.embedding.is_empty() {
-             let embedding = self
+            let embedding = self
                 .embedding_manager
                 .embed(&symbol.content)
                 .await
                 .map_err(|e| StorageError::Embedding(e.to_string()))?;
-             Vector::from(embedding)
+            Vector::from(embedding)
         } else {
-             Vector::from(symbol.embedding.clone())
+            Vector::from(symbol.embedding.clone())
         };
 
-            sqlx::query(
+        sqlx::query(
                 r#"
                 INSERT INTO symbols (id, path, name, kind, content, embedding_vector, commit_id, start_line, end_line, metadata, created_at, updated_at, embedding_model, embedding_generated_at)
                 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $12)
                 ON CONFLICT (id) DO UPDATE
                 SET content = $5,
-                    embedding_vector = $6,
-                    commit_id = $7,
-                    start_line = $8,
-                    end_line = $9,
-                    metadata = $10,
-                    updated_at = $12,
-                    embedding_generated_at = $12
+                embedding_vector = $6,
+                commit_id = $7,
+                start_line = $8,
+                end_line = $9,
+                metadata = $10,
+                updated_at = $12,
+                embedding_generated_at = $12
                 "#
             )
             .bind(symbol.id)

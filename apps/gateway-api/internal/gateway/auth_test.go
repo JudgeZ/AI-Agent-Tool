@@ -63,7 +63,7 @@ func setOidcRegistrations(t *testing.T, value string) {
 func setupTestCookies(t *testing.T) {
 	t.Helper()
 	t.Setenv("GATEWAY_COOKIE_HASH_KEY", "12345678901234567890123456789012") // 32 bytes
-	t.Setenv("GATEWAY_COOKIE_BLOCK_KEY", "1234567890123456")                 // 16 bytes
+	t.Setenv("GATEWAY_COOKIE_BLOCK_KEY", "1234567890123456")                // 16 bytes
 	ResetCookieHandler()
 	getCookieHandler() // Ensure initialization
 }
@@ -101,8 +101,9 @@ func TestResolveEnvValueReadsFile(t *testing.T) {
 		t.Fatalf("failed to write temp file: %v", err)
 	}
 	t.Setenv("OPENROUTER_CLIENT_ID_FILE", path)
+	t.Setenv("GATEWAY_SECRET_FILE_ROOT", dir)
 
-	value, err := resolveEnvValue("OPENROUTER_CLIENT_ID")
+	value, err := ResolveEnvValue("OPENROUTER_CLIENT_ID")
 	if err != nil {
 		t.Fatalf("expected no error reading secret file: %v", err)
 	}
@@ -112,8 +113,10 @@ func TestResolveEnvValueReadsFile(t *testing.T) {
 }
 
 func TestResolveEnvValueReturnsErrorWhenFileUnreadable(t *testing.T) {
-	t.Setenv("OPENROUTER_CLIENT_ID_FILE", filepath.Join(t.TempDir(), "missing"))
-	if _, err := resolveEnvValue("OPENROUTER_CLIENT_ID"); err == nil {
+	dir := t.TempDir()
+	t.Setenv("GATEWAY_SECRET_FILE_ROOT", dir)
+	t.Setenv("OPENROUTER_CLIENT_ID_FILE", filepath.Join(dir, "missing"))
+	if _, err := ResolveEnvValue("OPENROUTER_CLIENT_ID"); err == nil {
 		t.Fatal("expected error when secret file cannot be read")
 	}
 }
@@ -160,6 +163,7 @@ func TestGetProviderConfigReadsClientIDFromFile(t *testing.T) {
 		t.Fatalf("failed to write client id file: %v", err)
 	}
 	t.Setenv("OPENROUTER_CLIENT_ID_FILE", path)
+	t.Setenv("GATEWAY_SECRET_FILE_ROOT", dir)
 	t.Setenv("OAUTH_REDIRECT_BASE", "https://app.example.com")
 	t.Setenv("OAUTH_ALLOWED_REDIRECT_ORIGINS", "https://app.example.com")
 	allowedRedirectOrigins = loadAllowedRedirectOrigins()
@@ -1246,7 +1250,7 @@ func TestCallbackHandlerSuccessPropagatesCookies(t *testing.T) {
 		t.Fatalf("expected orchestrator to be called once, got %d", got)
 	}
 
-	if secure := isRequestSecure(req, nil); !secure {
+	if secure := IsRequestSecure(req, nil); !secure {
 		t.Fatalf("expected request to be secure")
 	}
 
@@ -1645,7 +1649,7 @@ func TestSetStateCookieAllowsInsecureWhenConfigured(t *testing.T) {
 }
 
 func TestIsRequestSecureRespectsTrustedProxies(t *testing.T) {
-	trusted, err := parseTrustedProxyCIDRs([]string{"10.0.0.0/8"})
+	trusted, err := ParseTrustedProxyCIDRs([]string{"10.0.0.0/8"})
 	if err != nil {
 		t.Fatalf("failed to parse trusted proxies: %v", err)
 	}
@@ -1687,8 +1691,8 @@ func TestIsRequestSecureRespectsTrustedProxies(t *testing.T) {
 			if tt.protoHeader != "" {
 				req.Header.Set("X-Forwarded-Proto", tt.protoHeader)
 			}
-			if got := isRequestSecure(req, tt.trusted); got != tt.want {
-				t.Fatalf("isRequestSecure() = %v, want %v", got, tt.want)
+			if got := IsRequestSecure(req, tt.trusted); got != tt.want {
+				t.Fatalf("IsRequestSecure() = %v, want %v", got, tt.want)
 			}
 		})
 	}

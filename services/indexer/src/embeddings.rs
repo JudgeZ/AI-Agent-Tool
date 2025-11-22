@@ -8,8 +8,8 @@ use candle_nn::VarBuilder;
 use candle_transformers::models::bert::{BertModel, Config, DTYPE};
 use hf_hub::{api::sync::Api, Repo, RepoType};
 use thiserror::Error;
-use tokio::task;
 use tokenizers::Tokenizer;
+use tokio::task;
 
 #[derive(Debug, Error)]
 pub enum EmbeddingError {
@@ -62,8 +62,8 @@ impl BertModelWrapper {
 
         let config = std::fs::read_to_string(config_filename)
             .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?;
-        let config: Config = serde_json::from_str(&config)
-            .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?;
+        let config: Config =
+            serde_json::from_str(&config).map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?;
 
         let tokenizer = Tokenizer::from_file(tokenizer_filename)
             .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?;
@@ -73,8 +73,8 @@ impl BertModelWrapper {
                 .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?
         };
 
-        let model = BertModel::load(vb, &config)
-            .map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?;
+        let model =
+            BertModel::load(vb, &config).map_err(|e| EmbeddingError::ModelLoad(e.to_string()))?;
 
         Ok(Self {
             model,
@@ -88,30 +88,33 @@ impl BertModelWrapper {
             .tokenizer
             .encode(text, true)
             .map_err(|e| EmbeddingError::Generation(e.to_string()))?;
-        
+
         let token_ids = Tensor::new(tokens.get_ids(), &self.device)
             .map_err(|e| EmbeddingError::Generation(e.to_string()))?
             .unsqueeze(0)
             .map_err(|e| EmbeddingError::Generation(e.to_string()))?;
-        
-        let token_type_ids = token_ids.zeros_like()
+
+        let token_type_ids = token_ids
+            .zeros_like()
             .map_err(|e| EmbeddingError::Generation(e.to_string()))?;
 
         let embeddings = self
             .model
-            .forward(&token_ids, &token_type_ids, None)
+            .forward(&token_ids, &token_type_ids) // Fixed: removed None argument
             .map_err(|e| EmbeddingError::Generation(e.to_string()))?;
 
         // Mean pooling
         let dims = embeddings.dims();
         let n_tokens = dims[1];
-        
-        let embeddings = (embeddings.sum(1).map_err(|e| EmbeddingError::Generation(e.to_string()))? 
+
+        let embeddings = (embeddings
+            .sum(1)
+            .map_err(|e| EmbeddingError::Generation(e.to_string()))?
             / (n_tokens as f64))
             .map_err(|e| EmbeddingError::Generation(e.to_string()))?;
-        
-        let embeddings = normalize_l2(&embeddings)
-            .map_err(|e| EmbeddingError::Generation(e.to_string()))?;
+
+        let embeddings =
+            normalize_l2(&embeddings).map_err(|e| EmbeddingError::Generation(e.to_string()))?;
 
         let embedding_vec = embeddings
             .squeeze(0)
@@ -139,7 +142,7 @@ pub struct LocalBertProvider {
 impl LocalBertProvider {
     pub fn new() -> Result<Self, EmbeddingError> {
         // Load model in a blocking task
-        let wrapper = task::block_in_place(|| BertModelWrapper::new())?;
+        let wrapper = task::block_in_place(BertModelWrapper::new)?;
         Ok(Self {
             model: Arc::new(Mutex::new(wrapper)),
         })
@@ -153,7 +156,9 @@ impl EmbeddingProvider for LocalBertProvider {
         let text = text.to_string();
 
         task::spawn_blocking(move || {
-            let wrapper = model.lock().map_err(|_| EmbeddingError::Generation("mutex poisoned".to_string()))?;
+            let wrapper = model
+                .lock()
+                .map_err(|_| EmbeddingError::Generation("mutex poisoned".to_string()))?;
             wrapper.embed(&text)
         })
         .await
@@ -176,7 +181,9 @@ impl OrchestratorProvider {
         let client = reqwest::Client::builder()
             .timeout(std::time::Duration::from_secs(30))
             .build()
-            .map_err(|e| EmbeddingError::HttpClient(format!("failed to create HTTP client: {e}")))?;
+            .map_err(|e| {
+                EmbeddingError::HttpClient(format!("failed to create HTTP client: {e}"))
+            })?;
 
         Ok(Self { client, base_url })
     }
@@ -238,9 +245,9 @@ impl EmbeddingManager {
                 // Default to orchestrator if ORCHESTRATOR_URL is set, otherwise local
                 let orchestrator_url = std::env::var("ORCHESTRATOR_URL").ok();
                 if orchestrator_url.is_some() || provider_type == Some("orchestrator") {
-                    Ok(EmbeddingManager::Orchestrator(
-                        OrchestratorProvider::new(orchestrator_url)?,
-                    ))
+                    Ok(EmbeddingManager::Orchestrator(OrchestratorProvider::new(
+                        orchestrator_url,
+                    )?))
                 } else {
                     Ok(EmbeddingManager::Local(LocalBertProvider::new()?))
                 }

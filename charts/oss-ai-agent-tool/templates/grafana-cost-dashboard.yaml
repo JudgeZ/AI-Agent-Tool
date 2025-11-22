@@ -130,7 +130,7 @@ data:
           "targets": [
             {
               "expr": "sum(llm_cost_total) by (provider)",
-              "legendFormat": "{{ provider }}",
+              "legendFormat": "{{ "{{" }} provider {{ "}}" }}",
               "refId": "A"
             }
           ],
@@ -307,7 +307,7 @@ data:
           "targets": [
             {
               "expr": "sum(rate(llm_cost_total[5m])) by (operation) * 300",
-              "legendFormat": "{{ operation }}",
+              "legendFormat": "{{ "{{" }} operation {{ "}}" }}",
               "refId": "A"
             }
           ],
@@ -380,7 +380,7 @@ data:
           "targets": [
             {
               "expr": "sum(rate(llm_tokens_total[5m])) by (type) * 300",
-              "legendFormat": "{{ type }}",
+              "legendFormat": "{{ "{{" }} type {{ "}}" }}",
               "refId": "A"
             }
           ],
@@ -498,7 +498,7 @@ data:
           "targets": [
             {
               "expr": "sum(llm_cost_total) by (model)",
-              "legendFormat": "{{ model }}",
+              "legendFormat": "{{ "{{" }} model {{ "}}" }}",
               "refId": "A"
             }
           ],

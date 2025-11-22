@@ -4,9 +4,12 @@ use serde_json::json;
 use tonic::{Request, Response, Status};
 use tracing::{info, instrument};
 
+use crate::analysis;
+use crate::ast;
 use crate::audit;
 use crate::security::SecurityConfig;
-use crate::storage::{Storage, StorageError};
+use crate::storage::{IndexStorage, StorageError};
+use crate::temporal::TemporalIndex;
 use crate::validation;
 
 pub mod proto {
@@ -14,22 +17,61 @@ pub mod proto {
 }
 
 use proto::{
-    indexer_service_server::IndexerService, IndexDocumentRequest, IndexDocumentResponse,
-    IndexSymbolsRequest, IndexSymbolsResponse, SearchDocumentsRequest, SearchDocumentsResponse,
-    SearchResult, SearchSymbolsRequest, SearchSymbolsResponse,
+    indexer_service_server::IndexerService, CorrelateFailureRequest, CorrelateFailureResponse,
+    GetDefinitionsRequest, GetDefinitionsResponse, GetReferencesRequest, GetReferencesResponse,
+    GetSymbolAtCommitRequest, GetSymbolAtCommitResponse, GetSymbolGraphRequest,
+    GetSymbolGraphResponse, GetSymbolHistoryRequest, GetSymbolHistoryResponse, GraphEdge,
+    GraphNode, IndexDocumentRequest, IndexDocumentResponse, IndexSymbolsRequest,
+    IndexSymbolsResponse, Location, Position, Range, SearchDocumentsRequest,
+    SearchDocumentsResponse, SearchResult, SearchSymbolsRequest, SearchSymbolsResponse,
+    SuspectChange, Symbol, SymbolVersion,
 };
 
 pub struct IndexerServiceImpl {
-    storage: Arc<Storage>,
+    storage: Arc<dyn IndexStorage>,
+    temporal: Arc<TemporalIndex>,
     security_config: SecurityConfig,
 }
 
 impl IndexerServiceImpl {
-    pub fn new(storage: Arc<Storage>) -> Self {
+    pub fn new(storage: Arc<dyn IndexStorage>, temporal: Arc<TemporalIndex>) -> Self {
         Self {
             storage,
+            temporal,
             security_config: SecurityConfig::from_env(),
         }
+    }
+
+    async fn get_file_content(
+        &self,
+        path: &str,
+        commit_id: Option<&str>,
+    ) -> Result<String, Status> {
+        // If commit_id is provided, use temporal index
+        if let Some(commit) = commit_id {
+            let symbol = self
+                .temporal
+                .get_symbol_at_commit(path, commit)
+                .await
+                .map_err(|e| Status::internal(e.to_string()))?;
+
+            return match symbol {
+                Some(s) => Ok(s.content),
+                None => Err(Status::not_found(format!(
+                    "File not found at commit {}",
+                    commit
+                ))),
+            };
+        }
+
+        // Check ACL before returning any content
+        if let Err(e) = self.security_config.check_path(path) {
+            return Err(Status::permission_denied(e.to_string()));
+        }
+
+        Err(Status::unimplemented(
+            "Must provide commit_id for code navigation currently",
+        ))
     }
 }
 
@@ -490,5 +532,329 @@ impl IndexerService for IndexerServiceImpl {
         info!(count = results.len(), "Symbol search completed");
 
         Ok(Response::new(SearchSymbolsResponse { results }))
+    }
+
+    #[instrument(skip(self, request))]
+    async fn get_symbol_graph(
+        &self,
+        request: Request<GetSymbolGraphRequest>,
+    ) -> Result<Response<GetSymbolGraphResponse>, Status> {
+        let req = request.into_inner();
+
+        // Validate path and check ACL
+        if let Err(e) = validate_path(&req.path) {
+            return Err(Status::invalid_argument(e));
+        }
+
+        // Note: get_file_content handles ACL check internally
+        let content = self
+            .get_file_content(&req.path, req.commit_id.as_deref())
+            .await?;
+
+        // Determine language from path
+        let language = if req.path.ends_with(".rs") {
+            "rust"
+        } else if req.path.ends_with(".ts") || req.path.ends_with(".tsx") {
+            "typescript"
+        } else if req.path.ends_with(".js") || req.path.ends_with(".jsx") {
+            "javascript"
+        } else {
+            return Err(Status::invalid_argument("Unsupported language"));
+        };
+
+        let (tree, _) = ast::parse_tree(language, &content)
+            .map_err(|e| Status::internal(format!("Failed to parse AST: {}", e)))?;
+
+        let (nodes, edges) = analysis::analyze_graph(&tree, &content, &req.path);
+
+        Ok(Response::new(GetSymbolGraphResponse {
+            nodes: nodes
+                .into_iter()
+                .map(|n| GraphNode {
+                    id: n.id,
+                    name: n.name,
+                    kind: n.kind,
+                    path: req.path.clone(),
+                })
+                .collect(),
+            edges: edges
+                .into_iter()
+                .map(|e| GraphEdge {
+                    from_id: e.from_id,
+                    to_id: e.to_id,
+                    relation: e.relation,
+                })
+                .collect(),
+        }))
+    }
+
+    #[instrument(skip(self, request))]
+    async fn get_references(
+        &self,
+        request: Request<GetReferencesRequest>,
+    ) -> Result<Response<GetReferencesResponse>, Status> {
+        let req = request.into_inner();
+
+        // Validate path
+        if let Err(e) = validate_path(&req.path) {
+            return Err(Status::invalid_argument(e));
+        }
+
+        let content = self
+            .get_file_content(&req.path, req.commit_id.as_deref())
+            .await?;
+
+        let language = if req.path.ends_with(".rs") {
+            "rust"
+        } else if req.path.ends_with(".ts") || req.path.ends_with(".tsx") {
+            "typescript"
+        } else if req.path.ends_with(".js") || req.path.ends_with(".jsx") {
+            "javascript"
+        } else {
+            return Err(Status::invalid_argument("Unsupported language"));
+        };
+
+        let (tree, _) = ast::parse_tree(language, &content)
+            .map_err(|e| Status::internal(format!("Failed to parse AST: {}", e)))?;
+
+        let position = ast::Position {
+            line: req.line,
+            column: req.character,
+        };
+
+        let (name, _) = analysis::identifier_at_position(&tree, &content, position)
+            .ok_or_else(|| Status::not_found("No identifier at position"))?;
+
+        let mut locations = Vec::new();
+
+        if req.include_declaration {
+            if let Some(range) = analysis::find_declaration(&tree, &content, &name) {
+                locations.push(Location {
+                    path: req.path.clone(),
+                    range: Some(Range {
+                        start: Some(Position {
+                            line: range.start.line,
+                            character: range.start.column,
+                        }),
+                        end: Some(Position {
+                            line: range.end.line,
+                            character: range.end.column,
+                        }),
+                    }),
+                });
+            }
+        }
+
+        let refs = analysis::find_references(&tree, &content, &name);
+        for r in refs {
+            locations.push(Location {
+                path: req.path.clone(),
+                range: Some(Range {
+                    start: Some(Position {
+                        line: r.start.line,
+                        character: r.start.column,
+                    }),
+                    end: Some(Position {
+                        line: r.end.line,
+                        character: r.end.column,
+                    }),
+                }),
+            });
+        }
+
+        Ok(Response::new(GetReferencesResponse { locations }))
+    }
+
+    #[instrument(skip(self, request))]
+    async fn get_definitions(
+        &self,
+        request: Request<GetDefinitionsRequest>,
+    ) -> Result<Response<GetDefinitionsResponse>, Status> {
+        let req = request.into_inner();
+
+        // Validate path
+        if let Err(e) = validate_path(&req.path) {
+            return Err(Status::invalid_argument(e));
+        }
+
+        let content = self
+            .get_file_content(&req.path, req.commit_id.as_deref())
+            .await?;
+
+        let language = if req.path.ends_with(".rs") {
+            "rust"
+        } else if req.path.ends_with(".ts") || req.path.ends_with(".tsx") {
+            "typescript"
+        } else if req.path.ends_with(".js") || req.path.ends_with(".jsx") {
+            "javascript"
+        } else {
+            return Err(Status::invalid_argument("Unsupported language"));
+        };
+
+        let (tree, _) = ast::parse_tree(language, &content)
+            .map_err(|e| Status::internal(format!("Failed to parse AST: {}", e)))?;
+
+        let position = ast::Position {
+            line: req.line,
+            column: req.character,
+        };
+
+        let (name, _) = analysis::identifier_at_position(&tree, &content, position)
+            .ok_or_else(|| Status::not_found("No identifier at position"))?;
+
+        let mut locations = Vec::new();
+
+        if let Some(range) = analysis::find_declaration(&tree, &content, &name) {
+            locations.push(Location {
+                path: req.path.clone(),
+                range: Some(Range {
+                    start: Some(Position {
+                        line: range.start.line,
+                        character: range.start.column,
+                    }),
+                    end: Some(Position {
+                        line: range.end.line,
+                        character: range.end.column,
+                    }),
+                }),
+            });
+        }
+
+        Ok(Response::new(GetDefinitionsResponse { locations }))
+    }
+
+    #[instrument(skip(self, request))]
+    async fn get_symbol_history(
+        &self,
+        request: Request<GetSymbolHistoryRequest>,
+    ) -> Result<Response<GetSymbolHistoryResponse>, Status> {
+        let req = request.into_inner();
+
+        // Validate path
+        if let Err(e) = validate_path(&req.path) {
+            return Err(Status::invalid_argument(e));
+        }
+
+        // Security check
+        if let Err(e) = self.security_config.check_path(&req.path) {
+            return Err(Status::permission_denied(e.to_string()));
+        }
+
+        let history = self.temporal.get_symbol_history(&req.path);
+
+        let versions = history
+            .into_iter()
+            .map(|v| SymbolVersion {
+                symbol_id: v.symbol_id.to_string(),
+                commit_id: v.commit_id,
+                timestamp: v.timestamp.to_rfc3339(),
+                change_type: format!("{:?}", v.change_type),
+                author: v.author,
+                commit_message: v.commit_message,
+                previous_path: v.previous_path,
+            })
+            .collect();
+
+        Ok(Response::new(GetSymbolHistoryResponse { versions }))
+    }
+
+    #[instrument(skip(self, request))]
+    async fn get_symbol_at_commit(
+        &self,
+        request: Request<GetSymbolAtCommitRequest>,
+    ) -> Result<Response<GetSymbolAtCommitResponse>, Status> {
+        let req = request.into_inner();
+
+        // Validate path
+        if let Err(e) = validate_path(&req.path) {
+            return Err(Status::invalid_argument(e));
+        }
+
+        if let Err(e) = validate_commit_id(Some(&req.commit_id)) {
+            return Err(Status::invalid_argument(e));
+        }
+
+        // Security check
+        if let Err(e) = self.security_config.check_path(&req.path) {
+            return Err(Status::permission_denied(e.to_string()));
+        }
+
+        let symbol = self
+            .temporal
+            .get_symbol_at_commit(&req.path, &req.commit_id)
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let symbol_proto = symbol.map(|s| Symbol {
+            id: s.id.to_string(),
+            path: s.path,
+            name: s.name,
+            kind: s.kind,
+            content: s.content,
+            commit_id: s.commit_id.unwrap_or_default(),
+            start_line: s.start_line,
+            end_line: s.end_line,
+            language: s
+                .metadata
+                .as_ref()
+                .and_then(|m| m.get("language"))
+                .and_then(|l| l.as_str())
+                .unwrap_or("unknown")
+                .to_string(),
+        });
+
+        Ok(Response::new(GetSymbolAtCommitResponse {
+            symbol: symbol_proto,
+        }))
+    }
+
+    #[instrument(skip(self, request))]
+    async fn correlate_failure(
+        &self,
+        request: Request<CorrelateFailureRequest>,
+    ) -> Result<Response<CorrelateFailureResponse>, Status> {
+        let req = request.into_inner();
+
+        if let Err(e) = validate_commit_id(Some(&req.commit_id)) {
+            return Err(Status::invalid_argument(e));
+        }
+        if let Err(e) = validate_commit_id(req.previous_commit_id.as_ref()) {
+            return Err(Status::invalid_argument(e));
+        }
+
+        let suspects = self
+            .temporal
+            .correlate_ci_failure(
+                &req.test_name,
+                &req.failure_message,
+                &req.commit_id,
+                req.previous_commit_id.as_deref(),
+            )
+            .await
+            .map_err(|e| Status::internal(e.to_string()))?;
+
+        let suspects_proto = suspects
+            .into_iter()
+            .map(|s| SuspectChange {
+                symbol: Some(Symbol {
+                    id: s.symbol.id.to_string(),
+                    path: s.symbol.path,
+                    name: s.symbol.name,
+                    kind: s.symbol.kind,
+                    content: s.symbol.content,
+                    commit_id: s.symbol.commit_id.unwrap_or_default(),
+                    start_line: s.symbol.start_line,
+                    end_line: s.symbol.end_line,
+                    language: "unknown".to_string(), // Simplified
+                }),
+                relevance_score: s.relevance_score,
+                reason: s.reason,
+                change_type: format!("{:?}", s.change_type),
+            })
+            .collect();
+
+        Ok(Response::new(CorrelateFailureResponse {
+            suspects: suspects_proto,
+        }))
     }
 }

@@ -13,7 +13,29 @@ ORCHESTRATOR_DOCKERFILE := $(ORCHESTRATOR_CONTEXT)/Dockerfile
 INDEXER_CONTEXT := services/indexer
 INDEXER_DOCKERFILE := $(INDEXER_CONTEXT)/Dockerfile
 
-.PHONY: build push helm-install helm-kafka helm-rabbit opa-build opa-test
+.PHONY: build push helm-install helm-kafka helm-rabbit opa-build opa-test lint lint-cli lint-gateway lint-gui lint-indexer lint-orchestrator
+
+lint: lint-cli lint-gateway lint-gui lint-indexer lint-orchestrator
+
+lint-cli:
+	@echo "[lint] cli"
+	cd apps/cli && npm run lint
+
+lint-gateway:
+	@echo "[lint] gateway-api"
+	cd apps/gateway-api && gofmt -l . && go vet ./...
+
+lint-gui:
+	@echo "[lint] gui"
+	cd apps/gui && npm run lint
+
+lint-indexer:
+	@echo "[lint] indexer"
+	cd services/indexer && cargo fmt --all -- --check && cargo clippy
+
+lint-orchestrator:
+	@echo "[lint] orchestrator"
+	cd services/orchestrator && npm run lint
 
 build: build-gateway-api build-orchestrator build-indexer
 

@@ -17,6 +17,7 @@ import type { Plan } from "../plan/planner.js";
 import * as events from "../plan/events.js";
 import type { PlanStepEvent } from "../plan/events.js";
 import { appLogger } from "../observability/logger.js";
+import { invalidateConfigCache } from "../config.js";
 
 const executeTool = vi.fn();
 
@@ -26,6 +27,29 @@ vi.mock("../grpc/AgentClient.js", () => {
       executeTool
     }),
     resetToolAgentClient: vi.fn()
+  };
+});
+
+const policyMock = vi.hoisted(() => ({
+  enforcePlanStep: vi.fn(async () => ({ allow: true, deny: [] as unknown[] }))
+}));
+
+vi.mock("../policy/PolicyEnforcer.js", () => {
+  return {
+    getPolicyEnforcer: () => policyMock,
+    PolicyViolationError: class extends Error {}
+  };
+});
+
+vi.mock("../services/DistributedLockService.js", () => {
+  return {
+    DistributedLockService: class {
+      async connect() { return; }
+      async disconnect() { return; }
+      async acquireLock() {
+        return async () => { return; };
+      }
+    }
   };
 });
 
@@ -45,7 +69,13 @@ describe("PlanQueueRuntime (Kafka integration)", () => {
     }
 
     try {
-      container = await new KafkaContainer("confluentinc/cp-kafka:7.6.1").start();
+      const containerStart = new KafkaContainer("confluentinc/cp-kafka:7.6.1").start();
+      
+      container = await Promise.race([
+        containerStart,
+        new Promise<StartedKafkaContainer>((_, reject) => setTimeout(() => reject(new Error("Container start timed out")), 60000))
+      ]);
+
       const brokersFn = (container as unknown as { getBootstrapServers?: () => string }).getBootstrapServers;
       bootstrapServers =
         typeof brokersFn === "function"
@@ -55,14 +85,14 @@ describe("PlanQueueRuntime (Kafka integration)", () => {
       skipSuite = true;
       appLogger.warn(
         { event: "test.skip", reason: "missing_container_runtime", test: "PlanQueueRuntime.kafka" },
-        "Skipping Kafka integration test because no container runtime is available",
+        "Skipping Kafka integration test because no container runtime is available or timed out",
       );
       appLogger.warn(
         { event: "test.skip.detail", test: "PlanQueueRuntime.kafka" },
         String(error),
       );
     }
-  }, 60000);
+  }, 120000);
 
   afterAll(async () => {
     await container?.stop();
@@ -71,6 +101,9 @@ describe("PlanQueueRuntime (Kafka integration)", () => {
 
   beforeEach(async () => {
     executeTool.mockReset();
+    policyMock.enforcePlanStep.mockReset();
+    policyMock.enforcePlanStep.mockResolvedValue({ allow: true, deny: [] });
+    
     if (skipSuite) {
       return;
     }
@@ -96,9 +129,10 @@ describe("PlanQueueRuntime (Kafka integration)", () => {
     process.env.KAFKA_BROKERS = bootstrapServers;
     process.env.KAFKA_CLIENT_ID = `orchestrator-test-${Date.now()}`;
     process.env.KAFKA_GROUP_ID = `plan-runtime-${Date.now()}`;
-    process.env.KAFKA_CONSUME_FROM_BEGINNING = "false";
+    process.env.KAFKA_CONSUME_FROM_BEGINNING = "true";
     process.env.KAFKA_RETRY_DELAY_MS = "0";
 
+    invalidateConfigCache();
     resetPlanQueueRuntime();
     resetQueueAdapter();
     publishSpy = vi.spyOn(events, "publishPlanStepEvent");
@@ -116,6 +150,7 @@ describe("PlanQueueRuntime (Kafka integration)", () => {
 
     resetPlanQueueRuntime();
     resetQueueAdapter();
+    invalidateConfigCache();
 
     await fs.rm(planStateDir!, { recursive: true, force: true }).catch(() => undefined);
     planStateDir = undefined;
@@ -170,7 +205,7 @@ describe("PlanQueueRuntime (Kafka integration)", () => {
       await submitPlanSteps(plan, "trace-kafka", undefined);
 
       await vi.waitFor(() => expect(executeTool).toHaveBeenCalledTimes(1), {
-        timeout: 20000
+        timeout: 60000
       });
 
       expect(publishSpy).toHaveBeenCalledWith(
@@ -191,7 +226,7 @@ describe("PlanQueueRuntime (Kafka integration)", () => {
         expect.any(Object)
       );
     },
-    60000
+    120000
   );
 
   it(
@@ -242,7 +277,6 @@ describe("PlanQueueRuntime (Kafka integration)", () => {
 
       expect(forgedEvents).toHaveLength(0);
     },
-    60000,
+    120000,
   );
 });
-

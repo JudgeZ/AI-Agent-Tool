@@ -110,7 +110,7 @@
             </div>
             {#if step.labels.length > 0}
               <div class="labels">
-                {#each step.labels as label}
+                {#each step.labels as label (label)}
                   <span class="label">{label}</span>
                 {/each}
               </div>
@@ -128,7 +128,7 @@
           <section class="egress">
             <h3>Requested destinations</h3>
             <ul>
-              {#each getEgressRequests(step) as request}
+              {#each getEgressRequests(step) as request (request.target)}
                 <li>
                   <span class="egress__target">{request.target}</span>
                   {#if request.method}
