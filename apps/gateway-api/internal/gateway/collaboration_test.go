@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
 	"net/url"
 	"strings"
 	"testing"
@@ -19,13 +20,14 @@ func TestCollaborationProxyPreservesQuery(t *testing.T) {
 	proxy := newCollaborationProxy(target)
 
 	req := httptest.NewRequest(http.MethodGet, "http://gateway.local/collaboration/ws?filePath=example.txt", nil)
-	proxy.Director(req)
+	out := req.Clone(req.Context())
+	proxy.Rewrite(&httputil.ProxyRequest{In: req, Out: out})
 
-	if req.URL.Path != "/collaboration/ws" {
-		t.Fatalf("expected path to be preserved, got %s", req.URL.Path)
+	if out.URL.Path != "/collaboration/ws" {
+		t.Fatalf("expected path to be preserved, got %s", out.URL.Path)
 	}
 
-	if got := req.URL.RawQuery; got != "filePath=example.txt" {
+	if got := out.URL.RawQuery; got != "filePath=example.txt" {
 		t.Fatalf("expected query to be preserved, got %q", got)
 	}
 }
