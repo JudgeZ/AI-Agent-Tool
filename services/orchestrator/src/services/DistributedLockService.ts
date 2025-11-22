@@ -3,6 +3,8 @@ import { appLogger, normalizeError } from "../observability/logger.js";
 import { randomUUID } from "node:crypto";
 
 const instances = new Map<string, DistributedLockService>();
+const instancePromises = new Map<string, Promise<DistributedLockService>>();
+const MAX_RETRY_COUNT = 10;
 
 export class LockAcquisitionError extends Error {
   constructor(
@@ -49,11 +51,13 @@ export class DistributedLockService {
     retryDelayMs = 100,
     trace?: { traceId?: string; spanId?: string },
   ): Promise<() => Promise<void>> {
+    const safeRetryCount = Math.min(Math.max(Math.trunc(retryCount) || 1, 1), MAX_RETRY_COUNT);
+    const safeRetryDelayMs = Math.max(Math.trunc(retryDelayMs) || 0, 0);
     await this.connect();
     const key = `lock:${resource}`;
     const token = randomUUID();
 
-    for (let i = 0; i < retryCount; i++) {
+    for (let i = 0; i < safeRetryCount; i++) {
       // NX: Set if Not Exists, PX: Expire in milliseconds
       const acquired = await this.client.set(key, token, { NX: true, PX: ttlMs });
       if (acquired) {
@@ -73,10 +77,10 @@ export class DistributedLockService {
           }
         };
       }
-      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      await new Promise((resolve) => setTimeout(resolve, safeRetryDelayMs));
     }
     throw new LockAcquisitionError(
-      `Failed to acquire lock for resource ${resource} after ${retryCount} attempts`,
+      `Failed to acquire lock for resource ${resource} after ${safeRetryCount} attempts`,
       "busy",
     );
   }
@@ -85,8 +89,9 @@ export class DistributedLockService {
 export async function getDistributedLockService(redisUrl?: string): Promise<DistributedLockService> {
   const url = redisUrl ?? process.env.LOCK_REDIS_URL ?? process.env.REDIS_URL ?? "redis://localhost:6379";
 
-  if (instances.has(url)) {
-    return instances.get(url)!;
+  const existing = instances.get(url);
+  if (existing) {
+    return existing;
   }
 
   if (instances.size > 0 && !instances.has(url)) {
@@ -95,9 +100,20 @@ export async function getDistributedLockService(redisUrl?: string): Promise<Dist
     );
   }
 
-  const instance = new DistributedLockService(url);
-  instances.set(url, instance);
-  return instance;
+  const pending = instancePromises.get(url);
+  if (pending) {
+    return pending;
+  }
+
+  const instancePromise = (async () => {
+    const instance = new DistributedLockService(url);
+    instances.set(url, instance);
+    instancePromises.delete(url);
+    return instance;
+  })();
+
+  instancePromises.set(url, instancePromise);
+  return instancePromise;
 }
 
 // Exported for tests
@@ -110,5 +126,6 @@ export async function resetDistributedLockService(): Promise<void> {
     }
   }
   instances.clear();
+  instancePromises.clear();
 }
 

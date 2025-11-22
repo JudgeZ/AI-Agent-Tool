@@ -70,6 +70,15 @@ describe("DistributedLockService", () => {
       );
     });
 
+    it("caps retry attempts to prevent excessive blocking", async () => {
+      mocks.set.mockResolvedValue(null);
+
+      await expect(lockService.acquireLock("resource-1", 1000, 50, 1)).rejects.toThrow(
+        "after 10 attempts",
+      );
+      expect(mocks.set).toHaveBeenCalledTimes(10);
+    });
+
     it("releases lock correctly", async () => {
       mocks.set.mockResolvedValue("OK");
       mocks.eval.mockResolvedValue(1); // Released
@@ -126,6 +135,16 @@ describe("DistributedLockService", () => {
 
       expect(service).toBeDefined();
       expect(mocks.createClient).toHaveBeenCalledWith({ url: "redis://lock-specific:6379" });
+    });
+
+    it("returns the same instance for concurrent initialization requests", async () => {
+      const [first, second] = await Promise.all([
+        getDistributedLockService("redis://concurrent:6379"),
+        getDistributedLockService("redis://concurrent:6379"),
+      ]);
+
+      expect(first).toBe(second);
+      expect(mocks.createClient).toHaveBeenCalledTimes(1);
     });
   });
 });
