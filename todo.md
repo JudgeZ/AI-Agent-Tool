@@ -21,5 +21,5 @@
 - `notes`: Extra context, edge cases, or related tasks/comments.
 
 | id | status | description | source | file_location | line_numbers | impl_plan | test_impact | notes |
-| T1 | todo | Add audit logging for lock acquisition/release events | Reviewer: "Missing audit logging for lock operations" | services/orchestrator/src/services/FileLockManager.ts | acquireLock / wrapRelease | 90-170, 300-330 | Emit structured info logs with sessionId/agentId/trace context on successful acquire/release; ensure no secrets logged. | update existing tests | Keep noise low; align with AGENTS.md audit guidance. |
-| T2 | todo | Add concurrency and TTL-expiry regression tests for file locks | Reviewers: "Missing Error Path Tests" | services/orchestrator/src/services/FileLockManager.test.ts | full file | Add tests covering simultaneous acquisitions on same path and lock expiry/reacquire scenarios. | requires new tests | Use fakes/mocks to avoid real Redis; validate busy and timeout behaviors. |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| T1 | todo | Add documentation/ADR for distributed file locking semantics | Reviewer: "Documentation: Missing ADR or README Updates" | docs/distributed-file-locking.md (new) | n/a | Outline lock scope, TTL/renewal expectations, session lifecycle, and failure handling; align with current implementation. | manual only (justify) | Provide operator/developer guidance for new locking architecture. |

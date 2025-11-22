@@ -177,11 +177,15 @@ export class FileLockManager {
           const lockService = await this.lockServicePromise;
           const release = await lockService.acquireLock(lockKey, this.lockTtlMs, undefined, undefined, mergedTrace);
           span.setAttribute("lock.ttl_ms", this.lockTtlMs);
-          const trackedRelease = this.wrapRelease(sessionId, normalizedPath, release);
+          const trackedRelease = this.wrapRelease(sessionId, normalizedPath, release, mergedTrace);
           const fileLock: FileLock = { path: normalizedPath, lockKey, release: trackedRelease };
           this.rememberLock(sessionId, normalizedPath, fileLock);
           try {
             await this.persistHistory(sessionId, true);
+            appLogger.info(
+              { path: normalizedPath, sessionId, agentId, ...mergedTrace },
+              "file lock acquired",
+            );
           } catch (error) {
             await trackedRelease().catch((releaseError) => {
               appLogger.warn(
@@ -293,7 +297,12 @@ export class FileLockManager {
     return createHash("sha256").update(normalizedPath).digest("hex");
   }
 
-  private wrapRelease(sessionId: string, normalizedPath: string, release: ReleaseFn): ReleaseFn {
+  private wrapRelease(
+    sessionId: string,
+    normalizedPath: string,
+    release: ReleaseFn,
+    traceContext?: TraceContext,
+  ): ReleaseFn {
     return async () => {
       try {
         await release();
@@ -309,6 +318,10 @@ export class FileLockManager {
           this.lockHistory.delete(sessionId);
         }
         await this.persistHistory(sessionId);
+        appLogger.info(
+          { path: normalizedPath, sessionId, ...traceContext },
+          "file lock released",
+        );
       }
     };
   }
@@ -339,7 +352,7 @@ export class FileLockManager {
           await this.connect();
           const lockService = await this.lockServicePromise;
           const release = await lockService.acquireLock(lockKey, this.lockTtlMs, undefined, undefined, mergedTrace);
-          const trackedRelease = this.wrapRelease(sessionId, normalizedPath, release);
+          const trackedRelease = this.wrapRelease(sessionId, normalizedPath, release, mergedTrace);
           const fileLock: FileLock = { path: normalizedPath, lockKey, release: trackedRelease };
           this.rememberLock(sessionId, normalizedPath, fileLock);
           return fileLock;
