@@ -69,6 +69,9 @@ go test ./...
 
 # Run with coverage
 make test-coverage
+
+# Run the collaboration proxy regression test with the local toolchain
+GOTOOLCHAIN=local go test ./internal/gateway -run TestCollaborationProxyPreservesQuery -count=1 -short
 ```
 
 ## Security Notes

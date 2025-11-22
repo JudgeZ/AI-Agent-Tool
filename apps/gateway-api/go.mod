@@ -1,4 +1,4 @@
-module github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api
+module github.com/JudgeZ/AI-Agent-Tool/apps/gateway-api
 
 go 1.24.0
 
@@ -22,6 +22,7 @@ require (
 	github.com/go-playground/locales v0.14.1 // indirect
 	github.com/go-playground/universal-translator v0.18.1 // indirect
 	github.com/gorilla/securecookie v1.1.2 // indirect
+	github.com/gorilla/websocket v1.5.3 // indirect
 	github.com/leodido/go-urn v1.4.0 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
 	go.opentelemetry.io/auto/sdk v1.1.0 // indirect

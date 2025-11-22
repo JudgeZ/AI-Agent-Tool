@@ -17,9 +17,9 @@ import (
 
 	"go.opentelemetry.io/contrib/instrumentation/net/http/otelhttp"
 
-	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/audit"
-	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/gateway"
-	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/observability/tracing"
+	"github.com/JudgeZ/AI-Agent-Tool/apps/gateway-api/internal/audit"
+	"github.com/JudgeZ/AI-Agent-Tool/apps/gateway-api/internal/gateway"
+	"github.com/JudgeZ/AI-Agent-Tool/apps/gateway-api/internal/observability/tracing"
 )
 
 func main() {
@@ -65,6 +65,7 @@ func main() {
 	})
 	gateway.RegisterHealthRoutes(mux, startTime)
 	gateway.RegisterEventRoutes(mux, gateway.EventRouteConfig{TrustedProxyCIDRs: trustedProxyCIDRs})
+	gateway.RegisterCollaborationRoutes(mux, gateway.CollaborationRouteConfig{TrustedProxyCIDRs: trustedProxyCIDRs})
 
 	port := os.Getenv("PORT")
 	if port == "" {

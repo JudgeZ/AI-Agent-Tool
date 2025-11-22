@@ -25,7 +25,7 @@ test-coverage-filtered:
 	@echo "\n=== Coverage Report (Excluding Generated Files) ==="
 	@go tool cover -func=coverage-filtered.out | tail -1
 	@echo "\n=== Coverage by Package (Excluding Generated Files) ==="
-	@go tool cover -func=coverage-filtered.out | grep -E "^github.com/OSS-AI-Agent-Tool.*:" | awk '{printf "%-80s %s\n", $$1, $$NF}' | head -10
+	@go tool cover -func=coverage-filtered.out | grep -E "^github.com/JudgeZ/AI-Agent-Tool.*:" | awk '{printf "%-80s %s\n", $$1, $$NF}' | head -10
 
 # Run integration tests
 test-integration:

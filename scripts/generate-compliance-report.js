@@ -100,7 +100,7 @@ const INTERNAL_PACKAGES = [
     '@oss/orchestrator',
     'orchestrator-gui',
     'oss-ai-agent-tool-cli',
-    'github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api'
+    'github.com/JudgeZ/AI-Agent-Tool/apps/gateway-api'
 ];
 
 // Directories to scan

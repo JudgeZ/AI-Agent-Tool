@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/gateway"
+	"github.com/JudgeZ/AI-Agent-Tool/apps/gateway-api/internal/gateway"
 )
 
 func TestNormalizeServiceURL(t *testing.T) {

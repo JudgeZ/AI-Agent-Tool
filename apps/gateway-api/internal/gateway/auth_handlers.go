@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/audit"
+	"github.com/JudgeZ/AI-Agent-Tool/apps/gateway-api/internal/audit"
 )
 
 func RegisterAuthRoutes(mux *http.ServeMux, cfg AuthRouteConfig) {

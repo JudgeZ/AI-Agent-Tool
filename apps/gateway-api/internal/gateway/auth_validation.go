@@ -13,7 +13,7 @@ import (
 	"regexp"
 	"strings"
 
-	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/audit"
+	"github.com/JudgeZ/AI-Agent-Tool/apps/gateway-api/internal/audit"
 	"github.com/go-playground/validator/v10"
 )
 

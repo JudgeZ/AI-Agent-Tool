@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api/internal/audit"
+	"github.com/JudgeZ/AI-Agent-Tool/apps/gateway-api/internal/audit"
 )
 
 func TestDefaultMaxRequestBodyBytes(t *testing.T) {
