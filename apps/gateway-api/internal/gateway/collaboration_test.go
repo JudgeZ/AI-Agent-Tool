@@ -285,3 +285,44 @@ func TestCollaborationConnectionLimiterReleasesConnections(t *testing.T) {
 		t.Fatalf("expected connection count to be released")
 	}
 }
+
+func TestCollaborationConnectionLimiterReleasesOnContextCancel(t *testing.T) {
+	limiter := newConnectionLimiter(1)
+	ctx, cancel := context.WithCancel(context.Background())
+
+	blocked := make(chan struct{})
+	handler := collaborationConnectionLimiter(nil, limiter, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(blocked)
+		<-r.Context().Done()
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.local/collaboration/ws", nil).WithContext(ctx)
+	req.RemoteAddr = "198.51.100.7:12345"
+	rr := httptest.NewRecorder()
+
+	done := make(chan struct{})
+	go func() {
+		handler.ServeHTTP(rr, req)
+		close(done)
+	}()
+
+	select {
+	case <-blocked:
+	case <-time.After(time.Second):
+		t.Fatalf("handler did not start in time")
+	}
+
+	cancel()
+
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatalf("handler did not return after context cancel")
+	}
+
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	if _, ok := limiter.counts["198.51.100.7"]; ok {
+		t.Fatalf("expected connection count to be released after context cancel")
+	}
+}
