@@ -16,7 +16,7 @@ import { hashIdentifier, logAuditEvent } from "../observability/audit.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
 import { normalizeTenantIdInput } from "../tenants/tenantIds.js";
 
-const PERSISTENCE_DIR = path.resolve(process.cwd(), process.env.COLLAB_PERSISTENCE_DIR ?? ".collaboration");
+const DEFAULT_PERSISTENCE_DIR = ".collaboration";
 const AGENT_EDIT_ORIGIN = "agent_edit";
 const COMPACTION_ORIGIN = "compaction";
 const ROOM_IDLE_THRESHOLD_MS = 5 * 60 * 1000;
@@ -39,16 +39,36 @@ type RoomState = {
 const rooms = new Map<string, RoomState>();
 const ipConnectionCounts = new Map<string, number>();
 
-function validatePersistenceDir(): void {
-  const rootPath = path.parse(PERSISTENCE_DIR).root;
-  if (PERSISTENCE_DIR === rootPath) {
+function resolvePersistenceDir(): string {
+  return path.resolve(process.cwd(), process.env.COLLAB_PERSISTENCE_DIR ?? DEFAULT_PERSISTENCE_DIR);
+}
+
+function validatePersistenceDir(persistenceDir: string): void {
+  const rootPath = path.parse(persistenceDir).root;
+  if (persistenceDir === rootPath) {
     throw new Error("collaboration persistence directory must not be the filesystem root");
   }
 }
 
-function ensurePersistenceDir(): Promise<void> {
-  validatePersistenceDir();
-  return fs.mkdir(PERSISTENCE_DIR, { recursive: true, mode: 0o700 });
+async function ensurePersistenceDir(): Promise<void> {
+  const persistenceDir = resolvePersistenceDir();
+  validatePersistenceDir(persistenceDir);
+  try {
+    const stats = await fs.stat(persistenceDir);
+    if (!stats.isDirectory()) {
+      throw new Error("collaboration persistence path must be a directory");
+    }
+    if ((stats.mode & 0o077) !== 0) {
+      throw new Error("collaboration persistence directory permissions are too broad; use 0700");
+    }
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
+      throw error;
+    }
+  }
+
+  await fs.mkdir(persistenceDir, { recursive: true, mode: 0o700 });
 }
 
 function headerValue(value: string | string[] | undefined): string | undefined {
@@ -234,8 +254,9 @@ function deriveRoomId(
     return { error: "invalid file path" };
   }
 
-  const resolvedPath = path.resolve(PERSISTENCE_DIR, normalizedPath);
-  if (!resolvedPath.startsWith(PERSISTENCE_DIR + path.sep)) {
+  const persistenceDir = resolvePersistenceDir();
+  const resolvedPath = path.resolve(persistenceDir, normalizedPath);
+  if (!resolvedPath.startsWith(persistenceDir + path.sep)) {
     return { error: "invalid file path" };
   }
 
@@ -288,7 +309,7 @@ function attachListeners(roomId: string, state: RoomState): void {
 }
 
 function roomPersistencePath(roomId: string): string {
-  return path.join(PERSISTENCE_DIR, `${roomId}.txt`);
+  return path.join(resolvePersistenceDir(), `${roomId}.txt`);
 }
 
 async function loadRoomFromDisk(roomId: string, state: RoomState, logger = appLogger): Promise<void> {
@@ -403,10 +424,11 @@ function scheduleCompaction(server: http.Server | https.Server): void {
   server.on("close", () => clearInterval(interval));
 }
 
-export function setupCollaborationServer(
+export async function setupCollaborationServer(
   httpServer: http.Server | https.Server,
   config: AppConfig,
-): void {
+): Promise<void> {
+  await ensurePersistenceDir();
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_WS_PAYLOAD_BYTES });
   scheduleCompaction(httpServer);
   const sessionCookieName = config.auth.oidc.session.cookieName;

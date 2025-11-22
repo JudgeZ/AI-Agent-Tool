@@ -1,5 +1,8 @@
 import http from "node:http";
 import { randomUUID } from "node:crypto";
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
@@ -81,6 +84,26 @@ import { DEFAULT_CONFIG } from "../config/loadConfig.js";
 import { sessionStore } from "../auth/SessionStore.js";
 import { logAuditEvent } from "../observability/audit.js";
 
+describe("persistence directory validation", () => {
+  it("rejects insecure persistence directory permissions", async () => {
+    const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "collab-insecure-"));
+    await fs.chmod(tempDir, 0o777);
+    const originalDir = process.env.COLLAB_PERSISTENCE_DIR;
+    const server = http.createServer();
+    try {
+      const config = structuredClone(DEFAULT_CONFIG);
+      process.env.COLLAB_PERSISTENCE_DIR = tempDir;
+      await expect(setupCollaborationServer(server, config)).rejects.toThrow(
+        /persistence directory permissions/i,
+      );
+    } finally {
+      process.env.COLLAB_PERSISTENCE_DIR = originalDir;
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+});
+
 function createSessionHeaders({
   tenantId = "tenant-a",
   projectId = "project-a",
@@ -121,7 +144,7 @@ describe("collaboration server", () => {
     server = http.createServer();
     const config = structuredClone(DEFAULT_CONFIG);
     config.server.cors.allowedOrigins = ["https://collab.example.com"];
-    setupCollaborationServer(server, config);
+    await setupCollaborationServer(server, config);
     await new Promise<void>((resolve) => {
       server.listen(0, "127.0.0.1", () => {
         const address = server.address();
