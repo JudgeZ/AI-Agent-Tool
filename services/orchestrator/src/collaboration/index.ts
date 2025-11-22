@@ -12,6 +12,7 @@ import * as Y from "yjs";
 import type { AppConfig } from "../config.js";
 import { SessionRecord, sessionStore } from "../auth/SessionStore.js";
 import { validateSessionId, type SessionExtractionResult, type SessionSource } from "../auth/sessionValidation.js";
+import { logAuditEvent } from "../observability/audit.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
 import { normalizeTenantIdInput } from "../tenants/tenantIds.js";
 
@@ -76,6 +77,28 @@ function resolveConnectionLimitFromEnv(): number {
     return parsed;
   }
   return 12;
+}
+
+function requestIdentifiers(req: IncomingMessage): {
+  requestId?: string;
+  traceId?: string;
+} {
+  return {
+    requestId: headerValue(req.headers["x-request-id"]),
+    traceId: headerValue(req.headers["x-trace-id"]),
+  };
+}
+
+function auditSubjectFromSession(session: SessionRecord | undefined) {
+  if (!session) {
+    return undefined;
+  }
+  return {
+    sessionId: session.id,
+    userId: session.subject,
+    tenantId: session.tenantId ?? undefined,
+    email: session.email ?? undefined,
+  };
 }
 
 function incrementConnection(ip: string, limit: number): boolean {
@@ -392,9 +415,18 @@ export function setupCollaborationServer(
     }
 
     const logger = loggerWithTrace(request);
+    const identifiers = requestIdentifiers(request);
     const ip = clientIp(request);
     if (!incrementConnection(ip, connectionLimitPerIp)) {
       logger.warn({ ip }, "rejecting collaboration connection due to per-IP limit");
+      logAuditEvent({
+        action: "collaboration.connection",
+        outcome: "denied",
+        resource: "collaboration.websocket",
+        requestId: identifiers.requestId,
+        traceId: identifiers.traceId,
+        details: { reason: "ip_rate_limited", ip },
+      });
       socket.write("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nRetry-After: 60\r\n\r\n");
       socket.destroy();
       return;
@@ -403,6 +435,15 @@ export function setupCollaborationServer(
     const authResult = authenticateCollaborationRequest(request, sessionCookieName);
     if (authResult.status === "error") {
       logger.warn({ reason: authResult.reason, source: authResult.source }, "rejecting collaboration connection due to invalid session");
+      logAuditEvent({
+        action: "collaboration.connection",
+        outcome: "denied",
+        resource: "collaboration.websocket",
+        requestId: identifiers.requestId,
+        traceId: identifiers.traceId,
+        subject: auditSubjectFromSession(authResult.status === "ok" ? authResult.session : undefined),
+        details: { reason: authResult.reason, source: authResult.source },
+      });
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       socket.destroy();
       decrementConnection(ip);
@@ -416,6 +457,15 @@ export function setupCollaborationServer(
           { error: derived.error, source: authResult.source },
           "rejecting collaboration connection due to identity mismatch",
         );
+        logAuditEvent({
+          action: "collaboration.connection",
+          outcome: "denied",
+          resource: "collaboration.websocket",
+          requestId: identifiers.requestId,
+          traceId: identifiers.traceId,
+          subject: auditSubjectFromSession(authResult.session),
+          details: { reason: derived.error ?? "identity_mismatch", source: authResult.source },
+        });
         ws.close(CLOSE_CODE_UNAUTHORIZED, "unauthorized");
         decrementConnection(ip);
         return;
@@ -437,10 +487,28 @@ export function setupCollaborationServer(
         },
         "collaboration connection established",
       );
+      logAuditEvent({
+        action: "collaboration.connection",
+        outcome: "success",
+        resource: "collaboration.websocket",
+        requestId: identifiers.requestId,
+        traceId: identifiers.traceId,
+        subject: auditSubjectFromSession(authResult.session),
+        details: { roomId: derived.roomId },
+      });
       ws.once("close", () => {
         room.clients.delete(ws);
         decrementConnection(ip);
         logger.info({ roomId: derived.roomId, sessionId: authResult.sessionId }, "collaboration connection closed");
+        logAuditEvent({
+          action: "collaboration.connection.closed",
+          outcome: "success",
+          resource: "collaboration.websocket",
+          requestId: identifiers.requestId,
+          traceId: identifiers.traceId,
+          subject: auditSubjectFromSession(authResult.session),
+          details: { roomId: derived.roomId },
+        });
       });
 
       setupWSConnection(ws, request, { docName: derived.roomId, gc: true, getYDoc: () => room.doc });

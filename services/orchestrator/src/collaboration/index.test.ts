@@ -65,6 +65,11 @@ vi.mock(
   { virtual: true },
 );
 
+vi.mock("../observability/audit.js", () => {
+  const logAuditEvent = vi.fn();
+  return { logAuditEvent };
+});
+
 import {
   applyAgentEditToRoom,
   getRoomStateForTesting,
@@ -74,6 +79,7 @@ import {
 } from "./index.js";
 import { DEFAULT_CONFIG } from "../config/loadConfig.js";
 import { sessionStore } from "../auth/SessionStore.js";
+import { logAuditEvent } from "../observability/audit.js";
 
 function createSessionHeaders({
   tenantId = "tenant-a",
@@ -127,6 +133,7 @@ describe("collaboration server", () => {
 
   afterEach(() => {
     sessionStore.clear();
+    vi.mocked(logAuditEvent).mockClear();
   });
 
   afterAll(async () => {
@@ -155,6 +162,8 @@ describe("collaboration server", () => {
   });
 
   it("rejects connections without a valid session", async () => {
+    const auditSpy = vi.mocked(logAuditEvent);
+    auditSpy.mockClear();
     const headers = {
       "x-tenant-id": "tenant-auth-missing",
       "x-project-id": "project-auth-missing",
@@ -173,6 +182,14 @@ describe("collaboration server", () => {
     });
 
     expect(error.message).toContain("401");
+    expect(
+      auditSpy.mock.calls.some(
+        ([event]) =>
+          event.action === "collaboration.connection" &&
+          event.outcome === "denied" &&
+          event.details?.reason === "unknown session",
+      ),
+    ).toBe(true);
     client.close();
   });
 
@@ -193,6 +210,8 @@ describe("collaboration server", () => {
   });
 
   it("enforces per-IP connection limits", async () => {
+    const auditSpy = vi.mocked(logAuditEvent);
+    auditSpy.mockClear();
     const headers = createSessionHeaders({ tenantId: "tenant-limit", projectId: "project-limit" });
 
     const first = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=limited.txt`, { headers });
@@ -207,6 +226,14 @@ describe("collaboration server", () => {
     });
 
     expect(error.message).toContain("429");
+    expect(
+      auditSpy.mock.calls.some(
+        ([event]) =>
+          event.action === "collaboration.connection" &&
+          event.outcome === "denied" &&
+          event.details?.reason === "ip_rate_limited",
+      ),
+    ).toBe(true);
     await new Promise<void>((resolve) => {
       first.on("close", () => resolve());
       first.close();
@@ -214,6 +241,8 @@ describe("collaboration server", () => {
   });
 
   it("allows authenticated clients to connect", async () => {
+    const auditSpy = vi.mocked(logAuditEvent);
+    auditSpy.mockClear();
     const headers = createSessionHeaders();
     const client = new WebSocket(
       `ws://127.0.0.1:${port}/collaboration/ws?filePath=connected.txt`,
@@ -229,6 +258,14 @@ describe("collaboration server", () => {
       client.on("close", () => resolve());
       client.close();
     });
+    expect(
+      auditSpy.mock.calls.some(
+        ([event]) =>
+          event.action === "collaboration.connection" &&
+          event.outcome === "success" &&
+          typeof event.details?.roomId === "string",
+      ),
+    ).toBe(true);
   });
 
   it("rejects path traversal attempts", async () => {

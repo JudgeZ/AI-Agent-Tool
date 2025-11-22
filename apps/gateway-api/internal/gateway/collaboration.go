@@ -2,6 +2,8 @@ package gateway
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -11,8 +13,10 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/JudgeZ/AI-Agent-Tool/apps/gateway-api/internal/audit"
+	"go.opentelemetry.io/otel"
 )
 
 const (
@@ -24,6 +28,7 @@ const (
 var (
 	collaborationIDPattern     = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
 	collaborationFilePathLimit = 4096
+	collaborationTracer        = otel.Tracer("gateway.collaboration")
 )
 
 // CollaborationRouteConfig captures configuration for the collaboration proxy wiring.
@@ -39,6 +44,7 @@ func RegisterCollaborationRoutes(mux *http.ServeMux, cfg CollaborationRouteConfi
 		panic(fmt.Sprintf("invalid orchestrator url: %v", err))
 	}
 	proxy := newCollaborationProxy(target)
+	validator := newCollaborationSessionValidator(orchestratorURL)
 
 	trustedProxies, err := ParseTrustedProxyCIDRs(cfg.TrustedProxyCIDRs)
 	if err != nil {
@@ -48,7 +54,64 @@ func RegisterCollaborationRoutes(mux *http.ServeMux, cfg CollaborationRouteConfi
 	maxConnections := GetIntEnv("GATEWAY_COLLAB_MAX_CONNECTIONS_PER_IP", 12)
 	limiter := newConnectionLimiter(maxConnections)
 
-	mux.Handle("/collaboration/ws", collaborationConnectionLimiter(trustedProxies, limiter, collaborationAuthMiddleware(proxy)))
+	mux.Handle("/collaboration/ws", collaborationConnectionLimiter(trustedProxies, limiter, collaborationAuthMiddleware(validator, proxy)))
+}
+
+type collaborationSession struct {
+	ID       string  `json:"id"`
+	TenantID *string `json:"tenantId"`
+}
+
+func newCollaborationSessionValidator(orchestratorURL string) func(context.Context, string, string, string) (collaborationSession, int, error) {
+	return func(ctx context.Context, authHeader, cookieHeader, requestID string) (collaborationSession, int, error) {
+		client, err := getOrchestratorClient()
+		if err != nil {
+			return collaborationSession{}, http.StatusBadGateway, err
+		}
+
+		ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, fmt.Sprintf("%s/auth/session", strings.TrimRight(orchestratorURL, "/")), nil)
+		if err != nil {
+			return collaborationSession{}, http.StatusInternalServerError, err
+		}
+		req.Header.Set("Accept", "application/json")
+		if authHeader != "" {
+			req.Header.Set("Authorization", authHeader)
+		}
+		if cookieHeader != "" {
+			req.Header.Set("Cookie", cookieHeader)
+		}
+		if requestID != "" {
+			req.Header.Set("X-Request-Id", requestID)
+			req.Header.Set("X-Trace-Id", requestID)
+		}
+
+		resp, err := client.Do(req)
+		if err != nil {
+			return collaborationSession{}, http.StatusBadGateway, err
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode == http.StatusUnauthorized {
+			return collaborationSession{}, http.StatusUnauthorized, nil
+		}
+		if resp.StatusCode != http.StatusOK {
+			return collaborationSession{}, http.StatusBadGateway, fmt.Errorf("unexpected status %d", resp.StatusCode)
+		}
+
+		var payload struct {
+			Session collaborationSession `json:"session"`
+		}
+		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+			return collaborationSession{}, http.StatusBadGateway, err
+		}
+		if payload.Session.ID == "" {
+			return collaborationSession{}, http.StatusUnauthorized, errors.New("missing session id")
+		}
+		return payload.Session, http.StatusOK, nil
+	}
 }
 
 func newCollaborationProxy(target *url.URL) *httputil.ReverseProxy {
@@ -83,7 +146,7 @@ func newCollaborationProxy(target *url.URL) *httputil.ReverseProxy {
 	return proxy
 }
 
-func collaborationAuthMiddleware(next http.Handler) http.Handler {
+func collaborationAuthMiddleware(validate func(context.Context, string, string, string) (collaborationSession, int, error), next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if updated, _ := audit.EnsureRequestID(r, w); updated != nil {
 			r = updated
@@ -128,8 +191,28 @@ func collaborationAuthMiddleware(next http.Handler) http.Handler {
 			}
 		}
 
+		ctx, span := collaborationTracer.Start(r.Context(), "collaboration.validate_session")
+		defer span.End()
+
+		session, status, err := validate(ctx, authHeader, cookieHeader, audit.RequestID(ctx))
+		if err != nil {
+			recordCollaborationAudit(ctx, r, auditOutcomeFailure, map[string]any{"reason": "session_validation_failed", "error": err.Error()})
+			writeErrorResponse(w, r, http.StatusBadGateway, "upstream_error", "failed to validate session", nil)
+			return
+		}
+		if status != http.StatusOK {
+			recordCollaborationAudit(ctx, r, auditOutcomeDenied, map[string]any{"reason": "invalid_session"})
+			writeErrorResponse(w, r, status, "unauthorized", "session validation failed", nil)
+			return
+		}
+		if session.TenantID != nil && *session.TenantID != tenantID {
+			recordCollaborationAudit(ctx, r, auditOutcomeDenied, map[string]any{"reason": "tenant_mismatch", "session_tenant_hash": gatewayAuditLogger.HashIdentity("tenant", *session.TenantID)})
+			writeErrorResponse(w, r, http.StatusForbidden, "forbidden", "tenant mismatch", nil)
+			return
+		}
+
 		recordCollaborationAudit(r.Context(), r, auditOutcomeSuccess, map[string]any{"reason": "authorized"})
-		next.ServeHTTP(w, r)
+		next.ServeHTTP(w, r.WithContext(ctx))
 	})
 }
 
