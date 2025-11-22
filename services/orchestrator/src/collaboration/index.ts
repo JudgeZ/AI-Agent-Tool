@@ -9,6 +9,9 @@ import { WebSocketServer, type WebSocket } from "ws";
 import { setupWSConnection } from "y-websocket/bin/utils.js";
 import * as Y from "yjs";
 
+import type { AppConfig } from "../config.js";
+import { sessionStore } from "../auth/SessionStore.js";
+import { validateSessionId, type SessionExtractionResult, type SessionSource } from "../auth/sessionValidation.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
 import { normalizeTenantIdInput } from "../tenants/tenantIds.js";
 
@@ -19,13 +22,6 @@ const ROOM_IDLE_THRESHOLD_MS = 5 * 60 * 1000;
 const ROOM_EVICTION_THRESHOLD_MS = 15 * 60 * 1000;
 const ROOM_CHECK_INTERVAL_MS = 60 * 1000;
 const CLOSE_CODE_UNAUTHORIZED = 4401;
-const CONNECTION_LIMIT_PER_IP: number = (() => {
-  const parsed = Number.parseInt(process.env.COLLAB_WS_IP_LIMIT ?? "", 10);
-  if (Number.isFinite(parsed) && parsed > 0) {
-    return parsed;
-  }
-  return 12;
-})();
 
 const TEXT_FIELD = "content";
 
@@ -74,9 +70,17 @@ function clientIp(req: IncomingMessage): string {
   return "unknown";
 }
 
-function incrementConnection(ip: string): boolean {
+function resolveConnectionLimitFromEnv(): number {
+  const parsed = Number.parseInt(process.env.COLLAB_WS_IP_LIMIT ?? "", 10);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return 12;
+}
+
+function incrementConnection(ip: string, limit: number): boolean {
   const current = ipConnectionCounts.get(ip) ?? 0;
-  if (current >= CONNECTION_LIMIT_PER_IP) {
+  if (current >= limit) {
     return false;
   }
   ipConnectionCounts.set(ip, current + 1);
@@ -90,6 +94,64 @@ function decrementConnection(ip: string): void {
     return;
   }
   ipConnectionCounts.set(ip, current - 1);
+}
+
+function extractSessionIdFromUpgrade(
+  req: IncomingMessage,
+  cookieName: string,
+): SessionExtractionResult {
+  const authHeader = headerValue(req.headers.authorization);
+  const bearerPrefix = "bearer ";
+  if (authHeader && authHeader.toLowerCase().startsWith(bearerPrefix)) {
+    const token = authHeader.slice(bearerPrefix.length).trim();
+    return validateSessionId(token, "authorization");
+  }
+
+  const cookieHeader = headerValue(req.headers.cookie);
+  if (!cookieHeader) {
+    return { status: "missing" };
+  }
+
+  for (const part of cookieHeader.split(";")) {
+    const [rawName, ...rest] = part.split("=");
+    if (!rawName) {
+      continue;
+    }
+    const name = rawName.trim();
+    if (name !== cookieName) {
+      continue;
+    }
+    const rawValue = rest.join("=");
+    const trimmedValue = rawValue.trim();
+    let decoded = trimmedValue;
+    try {
+      decoded = decodeURIComponent(trimmedValue);
+    } catch {
+      // Preserve raw value so validation can surface helpful errors.
+    }
+    return validateSessionId(decoded, "cookie");
+  }
+
+  return { status: "missing" };
+}
+
+function authenticateCollaborationRequest(
+  req: IncomingMessage,
+  cookieName: string,
+): { status: "ok" } | { status: "error"; reason: string; source?: SessionSource } {
+  sessionStore.cleanupExpired();
+  const sessionResult = extractSessionIdFromUpgrade(req, cookieName);
+  if (sessionResult.status === "invalid") {
+    return { status: "error", reason: "invalid session", source: sessionResult.source };
+  }
+  if (sessionResult.status === "missing") {
+    return { status: "error", reason: "missing session" };
+  }
+  const session = sessionStore.getSession(sessionResult.sessionId);
+  if (!session) {
+    return { status: "error", reason: "unknown session", source: sessionResult.source };
+  }
+  return { status: "ok" };
 }
 
 function loggerWithTrace(req: IncomingMessage) {
@@ -294,9 +356,14 @@ function scheduleCompaction(server: http.Server | https.Server): void {
   server.on("close", () => clearInterval(interval));
 }
 
-export function setupCollaborationServer(httpServer: http.Server | https.Server): void {
+export function setupCollaborationServer(
+  httpServer: http.Server | https.Server,
+  config: AppConfig,
+): void {
   const wss = new WebSocketServer({ noServer: true });
   scheduleCompaction(httpServer);
+  const sessionCookieName = config.auth.oidc.session.cookieName;
+  const connectionLimitPerIp = resolveConnectionLimitFromEnv();
 
   httpServer.on("upgrade", (request, socket, head) => {
     const { pathname } = new URL(request.url ?? "", "http://localhost");
@@ -307,10 +374,19 @@ export function setupCollaborationServer(httpServer: http.Server | https.Server)
 
     const logger = loggerWithTrace(request);
     const ip = clientIp(request);
-    if (!incrementConnection(ip)) {
+    if (!incrementConnection(ip, connectionLimitPerIp)) {
       logger.warn({ ip }, "rejecting collaboration connection due to per-IP limit");
       socket.write("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nRetry-After: 60\r\n\r\n");
       socket.destroy();
+      return;
+    }
+
+    const authResult = authenticateCollaborationRequest(request, sessionCookieName);
+    if (authResult.status === "error") {
+      logger.warn({ reason: authResult.reason, source: authResult.source }, "rejecting collaboration connection due to invalid session");
+      socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
+      socket.destroy();
+      decrementConnection(ip);
       return;
     }
 

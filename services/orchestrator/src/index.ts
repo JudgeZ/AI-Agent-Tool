@@ -70,7 +70,7 @@ export async function bootstrapOrchestrator(
   }
   const app = createAppServer(config);
   const server = createHttpServer(app, config);
-  setupCollaborationServer(server);
+  setupCollaborationServer(server, config);
   server.listen(port, () => {
     const protocol = config.server.tls.enabled ? "https" : "http";
     appLogger.info(

@@ -1,6 +1,7 @@
 import http from "node:http";
+import { randomUUID } from "node:crypto";
 
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 
 vi.mock(
@@ -69,15 +70,48 @@ import {
   runRoomMaintenanceForTesting,
   setupCollaborationServer,
 } from "./index.js";
+import { DEFAULT_CONFIG } from "../config/loadConfig.js";
+import { sessionStore } from "../auth/SessionStore.js";
+
+function createSessionHeaders({
+  tenantId = "tenant-a",
+  projectId = "project-a",
+  sessionHeaderId,
+}: {
+  tenantId?: string;
+  projectId?: string;
+  sessionHeaderId?: string;
+} = {}) {
+  const session = sessionStore.createSession(
+    {
+      subject: `user-${tenantId}`,
+      tenantId,
+      roles: [],
+      scopes: [],
+      claims: {},
+    },
+    DEFAULT_CONFIG.auth.oidc.session.ttlSeconds,
+  );
+
+  return {
+    authorization: `Bearer ${session.id}`,
+    Cookie: `${DEFAULT_CONFIG.auth.oidc.session.cookieName}=${session.id}`,
+    "x-tenant-id": tenantId,
+    "x-project-id": projectId,
+    "x-session-id": sessionHeaderId ?? session.id,
+  } as Record<string, string>;
+}
 
 describe("collaboration server", () => {
   let server: http.Server;
   let port: number;
+  const originalIpLimit = process.env.COLLAB_WS_IP_LIMIT;
 
   beforeAll(async () => {
     vi.useFakeTimers();
+    process.env.COLLAB_WS_IP_LIMIT = "1";
     server = http.createServer();
-    setupCollaborationServer(server);
+    setupCollaborationServer(server, DEFAULT_CONFIG);
     await new Promise<void>((resolve) => {
       server.listen(0, "127.0.0.1", () => {
         const address = server.address();
@@ -89,7 +123,12 @@ describe("collaboration server", () => {
     });
   });
 
+  afterEach(() => {
+    sessionStore.clear();
+  });
+
   afterAll(async () => {
+    process.env.COLLAB_WS_IP_LIMIT = originalIpLimit;
     vi.useRealTimers();
     await new Promise<void>((resolve, reject) => {
       server.close((error) => {
@@ -105,51 +144,62 @@ describe("collaboration server", () => {
   it("rejects connections without identity headers", async () => {
     const client = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=test.txt`);
 
-    const code = await new Promise<number>((resolve) => {
-      client.on("close", (closeCode) => resolve(closeCode));
+    const error = await new Promise<Error>((resolve) => {
+      client.on("error", (err) => resolve(err as Error));
     });
 
-    expect(code).toBe(4401);
+    expect(error.message).toContain("401");
+    client.close();
+  });
+
+  it("rejects connections without a valid session", async () => {
+    const headers = {
+      "x-tenant-id": "tenant-auth-missing",
+      "x-project-id": "project-auth-missing",
+      "x-session-id": "session-auth-missing",
+      authorization: `Bearer ${randomUUID()}`,
+      Cookie: `${DEFAULT_CONFIG.auth.oidc.session.cookieName}=${randomUUID()}`,
+    };
+
+    const client = new WebSocket(
+      `ws://127.0.0.1:${port}/collaboration/ws?filePath=missing-session.txt`,
+      { headers },
+    );
+
+    const error = await new Promise<Error>((resolve) => {
+      client.on("error", (err) => resolve(err as Error));
+    });
+
+    expect(error.message).toContain("401");
+    client.close();
   });
 
   it("enforces per-IP connection limits", async () => {
-    const originalIpLimit = process.env.COLLAB_WS_IP_LIMIT;
-    try {
-      process.env.COLLAB_WS_IP_LIMIT = "1";
-      const headers = {
-        "x-tenant-id": "tenant-limit",
-        "x-project-id": "project-limit",
-        "x-session-id": "session-limit",
-      };
+    const headers = createSessionHeaders({ tenantId: "tenant-limit", projectId: "project-limit" });
 
-      const first = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=limited.txt`, { headers });
-      await new Promise<void>((resolve) => {
-        first.on("open", () => resolve());
-      });
+    const first = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=limited.txt`, { headers });
+    await new Promise<void>((resolve) => {
+      first.on("open", () => resolve());
+    });
 
-      const second = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=limited.txt`, { headers });
+    const second = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=limited.txt`, { headers });
 
-      const error = await new Promise<Error>((resolve) => {
-        second.on("error", (err) => resolve(err as Error));
-      });
+    const error = await new Promise<Error>((resolve) => {
+      second.on("error", (err) => resolve(err as Error));
+    });
 
-      expect(error.message).toContain("429");
+    expect(error.message).toContain("429");
+    await new Promise<void>((resolve) => {
+      first.on("close", () => resolve());
       first.close();
-    } finally {
-      process.env.COLLAB_WS_IP_LIMIT = originalIpLimit;
-    }
+    });
   });
 
   it("allows authenticated clients to connect", async () => {
+    const headers = createSessionHeaders();
     const client = new WebSocket(
       `ws://127.0.0.1:${port}/collaboration/ws?filePath=connected.txt`,
-      {
-        headers: {
-          "x-tenant-id": "tenant-a",
-          "x-project-id": "project-a",
-          "x-session-id": "session-a",
-        },
-      },
+      { headers },
     );
 
     await new Promise<void>((resolve, reject) => {
@@ -157,7 +207,10 @@ describe("collaboration server", () => {
       client.on("error", (error) => reject(error));
     });
 
-    client.close();
+    await new Promise<void>((resolve) => {
+      client.on("close", () => resolve());
+      client.close();
+    });
   });
 
   it("tracks busy rooms only for human edits", () => {
