@@ -4,4 +4,4 @@ toolchain go1.24.10
 
 // Tracks canonical module paths for local packages.
 
-use ./apps/gateway-api // github.com/OSS-AI-Agent-Tool/OSS-AI-Agent-Tool/apps/gateway-api
+use ./apps/gateway-api // github.com/JudgeZ/AI-Agent-Tool/apps/gateway-api
