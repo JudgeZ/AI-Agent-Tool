@@ -174,16 +174,13 @@ func collaborationAuthMiddleware(
 		authHeader := strings.TrimSpace(r.Header.Get("Authorization"))
 		cookieHeader := strings.TrimSpace(r.Header.Get("Cookie"))
 
-		tenantID, projectID, sessionID, filePath, ok := validateCollaborationIdentity(r)
-		if !ok {
-			if handleCollaborationAuthFailure(r.Context(), w, r, failureLimiter, failureBucket, trustedProxies, "missing_identity", http.StatusUnauthorized, "unauthorized", "authentication required", nil, nil) {
+		tenantID, projectID, sessionID, filePath, err := parseCollaborationIdentity(r)
+		if err != nil {
+			if handleCollaborationAuthFailure(r.Context(), w, r, failureLimiter, failureBucket, trustedProxies, "invalid_identity", http.StatusUnauthorized, "unauthorized", "authentication required", map[string]any{"error": err.Error()}, map[string]any{"reason": err.Error()}) {
 				return
 			}
 		}
 
-		r.Header.Set("X-Tenant-Id", tenantID)
-		r.Header.Set("X-Project-Id", projectID)
-		r.Header.Set("X-Session-Id", sessionID)
 		q := r.URL.Query()
 		q.Set("filePath", filePath)
 		r.URL.RawQuery = q.Encode()
@@ -225,23 +222,37 @@ func collaborationAuthMiddleware(
 				return
 			}
 		}
-		if session.ID != "" && session.ID != sessionID {
+		if sessionID != "" && session.ID != "" && session.ID != sessionID {
 			if handleCollaborationAuthFailure(ctx, w, r, failureLimiter, failureBucket, trustedProxies, "session_mismatch", http.StatusForbidden, "forbidden", "session mismatch", nil, nil) {
 				return
 			}
 		}
-		if session.TenantID != nil && *session.TenantID != tenantID {
+		if session.TenantID != nil && tenantID != "" && *session.TenantID != tenantID {
 			if handleCollaborationAuthFailure(ctx, w, r, failureLimiter, failureBucket, trustedProxies, "tenant_mismatch", http.StatusForbidden, "forbidden", "tenant mismatch", map[string]any{"session_tenant_hash": gatewayAuditLogger.HashIdentity("tenant", *session.TenantID)}, nil) {
 				return
 			}
 		}
 
-		if session.ID != "" {
-			r.Header.Set("X-Session-Id", session.ID)
+		if sessionID == "" {
+			sessionID = session.ID
 		}
-		if session.TenantID != nil {
-			r.Header.Set("X-Tenant-Id", *session.TenantID)
+		if tenantID == "" && session.TenantID != nil {
+			tenantID = *session.TenantID
 		}
+
+		if tenantID == "" || projectID == "" || sessionID == "" {
+			if handleCollaborationAuthFailure(ctx, w, r, failureLimiter, failureBucket, trustedProxies, "missing_identity", http.StatusUnauthorized, "unauthorized", "authentication required", nil, nil) {
+				return
+			}
+		}
+
+		if sessionID != "" {
+			r.Header.Set("X-Session-Id", sessionID)
+		}
+		if tenantID != "" {
+			r.Header.Set("X-Tenant-Id", tenantID)
+		}
+		r.Header.Set("X-Project-Id", projectID)
 
 		recordCollaborationAudit(r.Context(), r, auditOutcomeSuccess, map[string]any{"reason": "authorized"})
 		next.ServeHTTP(w, r.WithContext(ctx))
@@ -283,30 +294,44 @@ func handleCollaborationAuthFailure(
 	return true
 }
 
-func validateCollaborationIdentity(r *http.Request) (string, string, string, string, bool) {
-	tenantID := strings.TrimSpace(r.Header.Get("X-Tenant-Id"))
-	projectID := strings.TrimSpace(r.Header.Get("X-Project-Id"))
-	sessionID := strings.TrimSpace(r.Header.Get("X-Session-Id"))
+func parseCollaborationIdentity(r *http.Request) (string, string, string, string, error) {
 	filePath := strings.TrimSpace(r.URL.Query().Get("filePath"))
-
-	if tenantID == "" || projectID == "" || sessionID == "" || filePath == "" {
-		return "", "", "", "", false
+	if filePath == "" {
+		return "", "", "", "", errors.New("missing file path")
 	}
-
-	normalizedTenant, err := normalizeTenantID(tenantID)
-	if err != nil || normalizedTenant == "" {
-		return "", "", "", "", false
-	}
-
-	if !collaborationIDPattern.MatchString(projectID) || !collaborationIDPattern.MatchString(sessionID) {
-		return "", "", "", "", false
-	}
-
 	if len(filePath) > collaborationFilePathLimit || strings.Contains(filePath, "\x00") || strings.HasPrefix(filePath, "/") || strings.Contains(filePath, "..") {
-		return "", "", "", "", false
+		return "", "", "", "", errors.New("invalid file path")
 	}
 
-	return normalizedTenant, projectID, sessionID, filePath, true
+	tenantID := strings.TrimSpace(r.Header.Get("X-Tenant-Id"))
+	if tenantID == "" {
+		tenantID = strings.TrimSpace(r.URL.Query().Get("tenantId"))
+	}
+	if tenantID != "" {
+		normalizedTenant, err := normalizeTenantID(tenantID)
+		if err != nil || normalizedTenant == "" {
+			return "", "", "", "", errors.New("invalid tenant id")
+		}
+		tenantID = normalizedTenant
+	}
+
+	projectID := strings.TrimSpace(r.Header.Get("X-Project-Id"))
+	if projectID == "" {
+		projectID = strings.TrimSpace(r.URL.Query().Get("projectId"))
+	}
+	if projectID != "" && !collaborationIDPattern.MatchString(projectID) {
+		return "", "", "", "", errors.New("invalid project id")
+	}
+
+	sessionID := strings.TrimSpace(r.Header.Get("X-Session-Id"))
+	if sessionID == "" {
+		sessionID = strings.TrimSpace(r.URL.Query().Get("sessionId"))
+	}
+	if sessionID != "" && !collaborationIDPattern.MatchString(sessionID) {
+		return "", "", "", "", errors.New("invalid session id")
+	}
+
+	return tenantID, projectID, sessionID, filePath, nil
 }
 
 func recordCollaborationAudit(ctx context.Context, r *http.Request, outcome string, details map[string]any) {
@@ -348,37 +373,37 @@ func recordCollaborationAudit(ctx context.Context, r *http.Request, outcome stri
 }
 
 func collaborationConnectionLimiter(trusted []*net.IPNet, limiter *connectionLimiter, next http.Handler) http.Handler {
-return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-ip := ClientIP(r, trusted)
-if !limiter.Acquire(ip) {
-recordCollaborationAudit(r.Context(), r, auditOutcomeDenied, map[string]any{"reason": "ip_rate_limited", "ip": gatewayAuditLogger.HashIdentity(ip)})
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := ClientIP(r, trusted)
+		if !limiter.Acquire(ip) {
+			recordCollaborationAudit(r.Context(), r, auditOutcomeDenied, map[string]any{"reason": "ip_rate_limited", "ip": gatewayAuditLogger.HashIdentity(ip)})
 			writeErrorResponse(w, r, http.StatusTooManyRequests, "rate_limited", "too many connections", map[string]any{"retry_after": 60})
 			return
 		}
 
-released := sync.Once{}
-release := func() {
-released.Do(func() {
-limiter.Release(ip)
-})
-}
+		released := sync.Once{}
+		release := func() {
+			released.Do(func() {
+				limiter.Release(ip)
+			})
+		}
 
-done := make(chan struct{})
-ctx := r.Context()
-go func() {
-select {
-case <-ctx.Done():
-release()
-case <-done:
-}
-}()
+		done := make(chan struct{})
+		ctx := r.Context()
+		go func() {
+			select {
+			case <-ctx.Done():
+				release()
+			case <-done:
+			}
+		}()
 
-defer func() {
-close(done)
-release()
-}()
-next.ServeHTTP(w, r)
-})
+		defer func() {
+			close(done)
+			release()
+		}()
+		next.ServeHTTP(w, r)
+	})
 }
 
 func registerCollaborationAuthFailure(ctx context.Context, r *http.Request, limiter *rateLimiter, bucket rateLimitBucket, trusted []*net.IPNet) (bool, time.Duration, string) {

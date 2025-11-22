@@ -60,6 +60,34 @@ func TestCollaborationAuthMiddlewareValidatesSession(t *testing.T) {
 	}
 }
 
+func TestCollaborationAuthMiddlewareAcceptsQueryIdentity(t *testing.T) {
+	tenant := "tenant-1"
+	var capturedSessionID, capturedTenantID, capturedProjectID string
+	validator := func(ctx context.Context, authHeader, cookieHeader, requestID string) (collaborationSession, int, error) {
+		return collaborationSession{ID: "session-123", TenantID: &tenant}, http.StatusOK, nil
+	}
+
+	handler := collaborationAuthMiddleware(validator, nil, rateLimitBucket{}, nil, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedSessionID = r.Header.Get("X-Session-Id")
+		capturedTenantID = r.Header.Get("X-Tenant-Id")
+		capturedProjectID = r.Header.Get("X-Project-Id")
+		w.WriteHeader(http.StatusNoContent)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.local/collaboration/ws?filePath=example.txt&projectId=project-1", nil)
+	req.Header.Set("Cookie", "session=abc")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusNoContent {
+		t.Fatalf("expected status %d, got %d", http.StatusNoContent, rr.Code)
+	}
+	if capturedSessionID != "session-123" || capturedTenantID != tenant || capturedProjectID != "project-1" {
+		t.Fatalf("expected headers to be populated from session/query, got session=%q tenant=%q project=%q", capturedSessionID, capturedTenantID, capturedProjectID)
+	}
+}
+
 func TestCollaborationAuthMiddlewareRejectsInvalidSession(t *testing.T) {
 	validator := func(ctx context.Context, authHeader, cookieHeader, requestID string) (collaborationSession, int, error) {
 		return collaborationSession{}, http.StatusUnauthorized, nil
@@ -339,9 +367,14 @@ func TestValidateCollaborationIdentity(t *testing.T) {
 		tenant               string
 		project              string
 		session              string
+		queryTenant          string
+		queryProject         string
+		querySession         string
 		filePath             string
-		wantOK               bool
+		wantErr              bool
 		wantNormalizedTenant string
+		wantProject          string
+		wantSession          string
 	}{
 		{
 			name:                 "valid headers and path",
@@ -349,8 +382,9 @@ func TestValidateCollaborationIdentity(t *testing.T) {
 			project:              "project-1",
 			session:              "session-1",
 			filePath:             "docs/readme.md",
-			wantOK:               true,
 			wantNormalizedTenant: "tenant-1",
+			wantProject:          "project-1",
+			wantSession:          "session-1",
 		},
 		{
 			name:                 "trims whitespace",
@@ -358,16 +392,23 @@ func TestValidateCollaborationIdentity(t *testing.T) {
 			project:              " project-2 ",
 			session:              " session-2 ",
 			filePath:             " nested/file.txt ",
-			wantOK:               true,
 			wantNormalizedTenant: "tenant-2",
+			wantProject:          "project-2",
+			wantSession:          "session-2",
 		},
 		{
-			name:     "missing fields",
-			tenant:   "",
-			project:  "project-3",
-			session:  "session-3",
+			name:                 "accepts query identity",
+			queryTenant:          "tenant-3",
+			queryProject:         "project-3",
+			querySession:         "session-3",
+			filePath:             "docs/file.txt",
+			wantNormalizedTenant: "tenant-3",
+			wantProject:          "project-3",
+			wantSession:          "session-3",
+		},
+		{
+			name:     "allows missing ids",
 			filePath: "docs/file.txt",
-			wantOK:   false,
 		},
 		{
 			name:     "invalid tenant",
@@ -375,64 +416,46 @@ func TestValidateCollaborationIdentity(t *testing.T) {
 			project:  "project-4",
 			session:  "session-4",
 			filePath: "docs/file.txt",
-			wantOK:   false,
+			wantErr:  true,
 		},
 		{
 			name:     "invalid project pattern",
-			tenant:   "tenant-5",
 			project:  "project/5",
-			session:  "session-5",
 			filePath: "docs/file.txt",
-			wantOK:   false,
+			wantErr:  true,
 		},
 		{
 			name:     "invalid session pattern",
-			tenant:   "tenant-6",
-			project:  "project-6",
 			session:  "session 6",
 			filePath: "docs/file.txt",
-			wantOK:   false,
+			wantErr:  true,
 		},
 		{
 			name:     "file path traversal",
-			tenant:   "tenant-7",
-			project:  "project-7",
-			session:  "session-7",
 			filePath: "../secrets.txt",
-			wantOK:   false,
+			wantErr:  true,
 		},
 		{
 			name:     "absolute file path",
-			tenant:   "tenant-8",
-			project:  "project-8",
-			session:  "session-8",
 			filePath: "/etc/passwd",
-			wantOK:   false,
+			wantErr:  true,
 		},
 		{
 			name:     "file path contains null byte",
-			tenant:   "tenant-9",
-			project:  "project-9",
-			session:  "session-9",
 			filePath: "valid\x00path",
-			wantOK:   false,
+			wantErr:  true,
 		},
 		{
 			name:     "file path exceeds limit",
-			tenant:   "tenant-10",
-			project:  "project-10",
-			session:  "session-10",
 			filePath: longPath,
-			wantOK:   false,
+			wantErr:  true,
 		},
 		{
 			name:                 "file path at limit",
-			tenant:               "tenant-11",
-			project:              "project-11",
-			session:              "session-11",
 			filePath:             strings.Repeat("b", collaborationFilePathLimit),
-			wantOK:               true,
-			wantNormalizedTenant: "tenant-11",
+			wantNormalizedTenant: "",
+			wantProject:          "",
+			wantSession:          "",
 		},
 	}
 
@@ -442,10 +465,9 @@ func TestValidateCollaborationIdentity(t *testing.T) {
 			t.Parallel()
 
 			req := httptest.NewRequest(http.MethodGet, "http://gateway.local/collaboration/ws", nil)
+			q := req.URL.Query()
 			if tc.filePath != "" {
-				q := req.URL.Query()
 				q.Set("filePath", tc.filePath)
-				req.URL.RawQuery = q.Encode()
 			}
 			if tc.tenant != "" {
 				req.Header.Set("X-Tenant-Id", tc.tenant)
@@ -456,24 +478,36 @@ func TestValidateCollaborationIdentity(t *testing.T) {
 			if tc.session != "" {
 				req.Header.Set("X-Session-Id", tc.session)
 			}
-
-			tenant, project, session, filePath, ok := validateCollaborationIdentity(req)
-			if ok != tc.wantOK {
-				t.Fatalf("expected ok=%v, got %v", tc.wantOK, ok)
+			if tc.queryTenant != "" {
+				q.Set("tenantId", tc.queryTenant)
 			}
+			if tc.queryProject != "" {
+				q.Set("projectId", tc.queryProject)
+			}
+			if tc.querySession != "" {
+				q.Set("sessionId", tc.querySession)
+			}
+			req.URL.RawQuery = q.Encode()
 
-			if !tc.wantOK {
+			tenant, project, session, filePath, err := parseCollaborationIdentity(req)
+			if tc.wantErr {
+				if err == nil {
+					t.Fatalf("expected error but got none")
+				}
 				return
 			}
 
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
 			if tenant != tc.wantNormalizedTenant {
 				t.Fatalf("expected tenant %q, got %q", tc.wantNormalizedTenant, tenant)
 			}
-			if project != strings.TrimSpace(tc.project) {
-				t.Fatalf("expected project %q, got %q", strings.TrimSpace(tc.project), project)
+			if project != tc.wantProject {
+				t.Fatalf("expected project %q, got %q", tc.wantProject, project)
 			}
-			if session != strings.TrimSpace(tc.session) {
-				t.Fatalf("expected session %q, got %q", strings.TrimSpace(tc.session), session)
+			if session != tc.wantSession {
+				t.Fatalf("expected session %q, got %q", tc.wantSession, session)
 			}
 			if filePath != strings.TrimSpace(tc.filePath) {
 				t.Fatalf("expected filePath %q, got %q", strings.TrimSpace(tc.filePath), filePath)
