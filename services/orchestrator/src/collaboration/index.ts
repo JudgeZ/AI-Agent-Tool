@@ -171,13 +171,22 @@ function isTrustedProxyIp(address: IpAddress, trustedProxyCidrs: readonly string
   return false;
 }
 
+function isPrivateOrLoopback(address: IpAddress): boolean {
+  if (address.kind() === "ipv4") {
+    const range = (address as ipaddr.IPv4).range();
+    return range === "loopback" || range === "linkLocal" || range === "private";
+  }
+  const range = (address as ipaddr.IPv6).range();
+  return range === "loopback" || range === "linkLocal" || range === "uniqueLocal";
+}
+
 function resolveClientIp(req: IncomingMessage, trustedProxyCidrs: readonly string[]): string {
   const remote = parseIpAddress(req.socket.remoteAddress ?? undefined);
   if (!remote) {
     return "unknown";
   }
 
-  if (!isTrustedProxyIp(remote, trustedProxyCidrs)) {
+  if (!isTrustedProxyIp(remote, trustedProxyCidrs) && !isPrivateOrLoopback(remote)) {
     return remote.toString();
   }
 

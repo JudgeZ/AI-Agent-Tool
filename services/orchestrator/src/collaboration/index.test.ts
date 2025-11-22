@@ -667,3 +667,86 @@ describe("collaboration server", () => {
     expect(getRoomStateForTesting(roomId)).toBeUndefined();
   });
 });
+
+describe("collaboration server proxy handling", () => {
+  const originalIpLimit = process.env.COLLAB_WS_IP_LIMIT;
+
+  afterEach(() => {
+    resetIpConnectionCountsForTesting();
+    sessionStore.clear();
+    if (originalIpLimit === undefined) {
+      delete process.env.COLLAB_WS_IP_LIMIT;
+    } else {
+      process.env.COLLAB_WS_IP_LIMIT = originalIpLimit;
+    }
+  });
+
+  it("uses forwarded client IPs from private proxies when trusted proxy config is empty", async () => {
+    process.env.COLLAB_WS_IP_LIMIT = "1";
+    const server = http.createServer();
+    const config = structuredClone(DEFAULT_CONFIG);
+    config.server.trustedProxyCidrs = [];
+    config.server.cors.allowedOrigins = [ALLOWED_ORIGIN];
+
+    await setupCollaborationServer(server, config);
+
+    let port = 0;
+    await new Promise<void>((resolve) => {
+      server.listen(0, "127.0.0.1", () => {
+        const address = server.address();
+        if (typeof address === "object" && address?.port) {
+          port = address.port;
+        }
+        resolve();
+      });
+    });
+
+    const headers = createSessionHeaders({
+      tenantId: "tenant-forwarded-private",
+      projectId: "project-forwarded-private",
+    });
+
+    const first = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=forwarded-private.txt`, {
+      headers: { ...headers, "x-forwarded-for": "198.51.100.21" },
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      first.on("open", () => resolve());
+      first.on("error", (error) => reject(error));
+    });
+
+    let secondError: Error | undefined;
+    const second = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=forwarded-private.txt`, {
+      headers: { ...headers, "x-forwarded-for": "198.51.100.22" },
+    });
+
+    await new Promise<void>((resolve) => {
+      second.on("open", () => resolve());
+      second.on("error", (error) => {
+        secondError = error as Error;
+        resolve();
+      });
+    });
+
+    expect(secondError).toBeUndefined();
+
+    await new Promise<void>((resolve) => {
+      first.on("close", () => resolve());
+      first.close();
+    });
+    await new Promise<void>((resolve) => {
+      second.on("close", () => resolve());
+      second.close();
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => {
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+  });
+});
