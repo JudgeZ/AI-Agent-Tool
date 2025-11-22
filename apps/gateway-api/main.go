@@ -65,6 +65,7 @@ func main() {
 	})
 	gateway.RegisterHealthRoutes(mux, startTime)
 	gateway.RegisterEventRoutes(mux, gateway.EventRouteConfig{TrustedProxyCIDRs: trustedProxyCIDRs})
+	gateway.RegisterCollaborationRoutes(mux)
 
 	port := os.Getenv("PORT")
 	if port == "" {
