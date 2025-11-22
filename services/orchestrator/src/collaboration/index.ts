@@ -6,8 +6,10 @@ import type https from "node:https";
 
 import type { IncomingMessage } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
-import { setupWSConnection } from "y-websocket/bin/utils.js";
+import { setupWSConnection } from "y-websocket/bin/utils";
 import * as Y from "yjs";
+import { Awareness } from "y-protocols/awareness.js";
+import { createMutex } from "lib0/mutex.js";
 
 import type { AppConfig } from "../config.js";
 import { SessionRecord, sessionStore } from "../auth/SessionStore.js";
@@ -27,8 +29,19 @@ const CLOSE_CODE_UNAUTHORIZED = 4401;
 
 const TEXT_FIELD = "content";
 
+class CollabDoc extends Y.Doc {
+  name: string;
+  mux = createMutex();
+  awareness = new Awareness(this);
+
+  constructor(name: string) {
+    super({ gc: false });
+    this.name = name;
+  }
+}
+
 type RoomState = {
-  doc: Y.Doc;
+  doc: CollabDoc;
   lastUserEditAt: number;
   lastCompactionAt: number;
   filePath: string;
@@ -284,7 +297,7 @@ function getRoomState(roomId: string, filePath: string): RoomState {
   if (existing) {
     return existing;
   }
-  const doc = new Y.Doc();
+  const doc = new CollabDoc(roomId);
   const state: RoomState = {
     doc,
     lastUserEditAt: 0,
@@ -344,7 +357,7 @@ async function compactRoom(roomId: string, state: RoomState): Promise<void> {
     if (state.clients.size > 0) {
       return;
     }
-    const nextDoc = new Y.Doc();
+    const nextDoc = new CollabDoc(roomId);
     const text = nextDoc.getText(TEXT_FIELD);
     const persisted = await fs.readFile(roomPersistencePath(roomId), "utf8");
     nextDoc.transact(() => {
@@ -573,7 +586,7 @@ export function isRoomBusy(roomId: string, thresholdMs = 5000): boolean {
   return Date.now() - room.lastUserEditAt < thresholdMs;
 }
 
-export function applyAgentEditToRoom(roomId: string, filePath: string, newContent: string): Y.Doc {
+export function applyAgentEditToRoom(roomId: string, filePath: string, newContent: string): CollabDoc {
   const state = getRoomState(roomId, filePath);
   const text = state.doc.getText(TEXT_FIELD);
   state.doc.transact(() => {

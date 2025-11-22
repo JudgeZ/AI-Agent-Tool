@@ -10,7 +10,7 @@ import { WebSocket } from "ws";
 const CLOSE_CODE_UNAUTHORIZED = 4401;
 
 vi.mock(
-  "y-websocket/bin/utils.js",
+  "y-websocket/bin/utils",
   () => ({
     setupWSConnection: vi.fn(),
   }),
@@ -70,7 +70,7 @@ vi.mock(
 
 vi.mock("../observability/audit.js", () => {
   const logAuditEvent = vi.fn();
-  return { logAuditEvent };
+  return { logAuditEvent, hashIdentifier: (value: string) => `hashed:${value}` };
 });
 
 import {
