@@ -3,6 +3,7 @@ import { appLogger, normalizeError } from "../observability/logger.js";
 import { randomUUID } from "node:crypto";
 
 let sharedInstance: DistributedLockService | undefined;
+let sharedInstanceUrl: string | undefined;
 
 export class DistributedLockService {
   private readonly client: RedisClientType;
@@ -61,10 +62,19 @@ export class DistributedLockService {
 }
 
 export function getDistributedLockService(redisUrl?: string): DistributedLockService {
+  const url = redisUrl ?? process.env.REDIS_URL ?? process.env.LOCK_REDIS_URL ?? "redis://localhost:6379";
+
+  if (sharedInstance && sharedInstanceUrl && sharedInstanceUrl !== url) {
+    const previousInstance = sharedInstance;
+    void previousInstance.disconnect().catch((error) => {
+      appLogger.warn({ err: normalizeError(error) }, "failed to close previous lock service client");
+    });
+    sharedInstance = undefined;
+  }
+
   if (!sharedInstance) {
-    const url =
-      redisUrl ?? process.env.REDIS_URL ?? process.env.LOCK_REDIS_URL ?? "redis://localhost:6379";
     sharedInstance = new DistributedLockService(url);
+    sharedInstanceUrl = url;
   }
   return sharedInstance;
 }
@@ -72,5 +82,6 @@ export function getDistributedLockService(redisUrl?: string): DistributedLockSer
 // Exported for tests
 export function resetDistributedLockService(): void {
   sharedInstance = undefined;
+  sharedInstanceUrl = undefined;
 }
 
