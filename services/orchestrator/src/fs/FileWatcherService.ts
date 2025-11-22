@@ -22,6 +22,7 @@ export class FileWatcherService extends EventEmitter {
     string,
     Map<string, { timer: NodeJS.Timeout; originalPath: string }>
   >();
+  // Unlink/add pairs within this window are coalesced into renames; longer gaps emit separate delete/create events.
   private readonly renameWindowMs = 500;
 
   async watch(projectId: string, projectRoot: string): Promise<void> {
@@ -111,13 +112,15 @@ export class FileWatcherService extends EventEmitter {
     }
 
     if (pending && pending.size === 1) {
-      const [oldPathKey, entry] = pending
-        .entries()
-        .next().value as [string, { timer: NodeJS.Timeout; originalPath: string }];
-      clearTimeout(entry.timer);
-      pending.delete(oldPathKey);
-      this.emitEvent("rename", projectId, filePath, entry.originalPath);
-      return;
+      const nextValue = pending.entries().next().value;
+      if (nextValue) {
+        const [oldPathKey, entry] = nextValue;
+        clearTimeout(entry.timer);
+        pending.delete(oldPathKey);
+        this.emitEvent("rename", projectId, filePath, entry.originalPath);
+        return;
+      }
+      appLogger.warn({ projectId, filePath }, "pending delete map unexpectedly empty during rename detection");
     }
 
     this.emitEvent("create", projectId, filePath);

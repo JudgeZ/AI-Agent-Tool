@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import path from "node:path";
-import { createClient, type RedisClientType } from "redis";
+import type { RedisClientType } from "redis";
 import { z } from "zod";
 
 import { isRoomBusy } from "../collaboration/index.js";
@@ -29,24 +29,31 @@ export class FileLockError extends Error {
 
 export class FileLockManager {
   private readonly lockServicePromise: Promise<Awaited<ReturnType<typeof getDistributedLockService>>>;
-  private readonly redis: RedisClientType;
+  private readonly redisClientPromise: Promise<RedisClientType>;
+  private readonly lockTtlMs: number;
   private readonly activeLocks = new Map<string, Map<string, FileLock>>();
   private readonly lockHistory = new Map<string, Set<string>>();
 
   private readonly historySchema = z.array(z.string());
 
-  constructor(redisUrl?: string) {
+  constructor(redisUrl?: string, lockTtlMs = Number(process.env.LOCK_TTL_MS ?? 30_000)) {
     this.lockServicePromise = getDistributedLockService(redisUrl);
-    this.redis = createClient({ url: redisUrl ?? process.env.REDIS_URL ?? "redis://localhost:6379" });
-    this.redis.on("error", (err) => {
-      appLogger.warn({ err: normalizeError(err) }, "file lock redis error");
+    this.lockTtlMs = Number.isFinite(lockTtlMs) && lockTtlMs > 0 ? lockTtlMs : 30_000;
+    this.redisClientPromise = this.lockServicePromise.then(async (service) => {
+      await service.connect();
+      const client = service.getClient();
+      client.on("error", (err) => {
+        appLogger.warn({ err: normalizeError(err) }, "file lock redis error");
+      });
+      return client;
     });
   }
 
   async connect(): Promise<void> {
-    if (this.redis.isOpen) return;
+    const redis = await this.redisClientPromise;
+    if (redis.isOpen) return;
     try {
-      await this.redis.connect();
+      await redis.connect();
     } catch (error) {
       throw new FileLockError("Lock service unavailable", "unavailable", { err: normalizeError(error) });
     }
@@ -57,20 +64,31 @@ export class FileLockManager {
     return normalized.startsWith("/") ? normalized : `/${normalized}`;
   }
 
-  private sessionHistoryKey(sessionId: string): string {
-    return `session:locks:${sessionId}`;
+  private sanitizeSessionId(sessionId: string): string {
+    if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) {
+      throw new FileLockError("Invalid session id", "busy", { reason: "invalid_session_id" });
+    }
+    return sessionId;
   }
 
-  private async persistHistory(sessionId: string): Promise<void> {
+  private sessionHistoryKey(sessionId: string): string {
+    return `session:locks:${this.sanitizeSessionId(sessionId)}`;
+  }
+
+  private async persistHistory(sessionId: string, throwOnError = false): Promise<void> {
     try {
       await this.connect();
       const history = Array.from(this.lockHistory.get(sessionId) ?? []);
-      await this.redis.set(this.sessionHistoryKey(sessionId), JSON.stringify(history));
+      const redis = await this.redisClientPromise;
+      await redis.set(this.sessionHistoryKey(sessionId), JSON.stringify(history));
     } catch (error) {
       appLogger.warn(
         { err: normalizeError(error), sessionId },
         "failed to persist file lock history",
       );
+      if (throwOnError) {
+        throw new FileLockError("Failed to persist lock history", "unavailable", { sessionId });
+      }
     }
   }
 
@@ -87,6 +105,7 @@ export class FileLockManager {
   }
 
   async acquireLock(sessionId: string, filePath: string, agentId?: string): Promise<FileLock> {
+    this.sanitizeSessionId(sessionId);
     const normalizedPath = this.normalizePath(filePath);
 
     const roomId = this.buildRoomId(normalizedPath);
@@ -101,11 +120,18 @@ export class FileLockManager {
     try {
       await this.connect();
       const lockService = await this.lockServicePromise;
-      const release = await lockService.acquireLock(lockKey, 30_000);
+      const release = await lockService.acquireLock(lockKey, this.lockTtlMs);
       const trackedRelease = this.wrapRelease(sessionId, normalizedPath, release);
       const fileLock: FileLock = { path: normalizedPath, lockKey, release: trackedRelease };
       this.rememberLock(sessionId, normalizedPath, fileLock);
-      await this.persistHistory(sessionId);
+      try {
+        await this.persistHistory(sessionId, true);
+      } catch (error) {
+        await trackedRelease().catch((releaseError) => {
+          appLogger.warn({ err: normalizeError(releaseError), path: normalizedPath, sessionId }, "failed to roll back lock");
+        });
+        throw error;
+      }
       return fileLock;
     } catch (error) {
       if (error instanceof FileLockError) {
@@ -123,6 +149,7 @@ export class FileLockManager {
   }
 
   async releaseSessionLocks(sessionId: string): Promise<void> {
+    this.sanitizeSessionId(sessionId);
     const locks = this.activeLocks.get(sessionId);
     if (!locks) return;
 
@@ -148,6 +175,7 @@ export class FileLockManager {
   }
 
   async restoreSessionLocks(sessionId: string): Promise<void> {
+    this.sanitizeSessionId(sessionId);
     try {
       await this.connect();
     } catch (error) {
@@ -157,7 +185,8 @@ export class FileLockManager {
 
     let raw: string | null = null;
     try {
-      raw = await this.redis.get(this.sessionHistoryKey(sessionId));
+      const redis = await this.redisClientPromise;
+      raw = await redis.get(this.sessionHistoryKey(sessionId));
     } catch (error) {
       appLogger.warn({ err: normalizeError(error), sessionId }, "failed to read lock history");
       return;
@@ -186,8 +215,9 @@ export class FileLockManager {
   }
 
   async close(): Promise<void> {
-    if (this.redis.isOpen) {
-      await this.redis.quit();
+    const redis = await this.redisClientPromise;
+    if (redis.isOpen) {
+      await redis.quit();
     }
   }
 
@@ -202,14 +232,21 @@ export class FileLockManager {
       } finally {
         const locks = this.activeLocks.get(sessionId);
         locks?.delete(normalizedPath);
+        if (locks && locks.size === 0) {
+          this.activeLocks.delete(sessionId);
+        }
         const history = this.lockHistory.get(sessionId);
         history?.delete(normalizedPath);
+        if (history && history.size === 0) {
+          this.lockHistory.delete(sessionId);
+        }
         await this.persistHistory(sessionId);
       }
     };
   }
 
   private async acquireLockWithoutPersist(sessionId: string, filePath: string): Promise<FileLock> {
+    this.sanitizeSessionId(sessionId);
     const normalizedPath = this.normalizePath(filePath);
     const roomId = this.buildRoomId(normalizedPath);
     if (isRoomBusy(roomId)) {
@@ -221,9 +258,8 @@ export class FileLockManager {
 
     const lockKey = `file:${normalizedPath}`;
     try {
-      await this.connect();
       const lockService = await this.lockServicePromise;
-      const release = await lockService.acquireLock(lockKey, 30_000);
+      const release = await lockService.acquireLock(lockKey, this.lockTtlMs);
       const trackedRelease = this.wrapRelease(sessionId, normalizedPath, release);
       const fileLock: FileLock = { path: normalizedPath, lockKey, release: trackedRelease };
       this.rememberLock(sessionId, normalizedPath, fileLock);

@@ -159,8 +159,6 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
         await fs.writeFile(resolvedPath, content, "utf-8");
       }
 
-      await lock.release();
-
       return {
         success: true,
         data: { path: resolvedPath, action: input.action },

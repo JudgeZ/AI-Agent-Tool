@@ -23,13 +23,17 @@ const mocks = vi.hoisted(() => {
     redisClient,
     mockAcquireLock: vi.fn(async (_resource: string) => vi.fn(async () => {})),
     mockIsRoomBusy: vi.fn(() => false),
+    mockConnect: vi.fn(async () => {}),
   };
 });
 
-vi.mock("redis", () => ({ createClient: () => mocks.redisClient }));
 vi.mock("../collaboration/index.js", () => ({ isRoomBusy: mocks.mockIsRoomBusy }));
 vi.mock("./DistributedLockService.js", () => ({
-  getDistributedLockService: async () => ({ acquireLock: mocks.mockAcquireLock }),
+  getDistributedLockService: async () => ({
+    acquireLock: mocks.mockAcquireLock,
+    connect: mocks.mockConnect,
+    getClient: () => mocks.redisClient,
+  }),
 }));
 
 // Import after mocks are set up
@@ -87,15 +91,15 @@ describe("FileLockManager", () => {
     expect(mockAcquireLock).not.toHaveBeenCalled();
   });
 
-  it("continues when persisting history fails", async () => {
+  it("rolls back and surfaces errors when persisting history fails", async () => {
+    const releaseSpy = vi.fn(async () => {});
+    mockAcquireLock.mockResolvedValueOnce(releaseSpy);
     mockRedisClient.set.mockRejectedValueOnce(new Error("persist failed"));
+
     const manager = new FileLockManager("redis://example");
 
-    const lock = await manager.acquireLock("s1", "project/ok.txt");
-    expect(lock.path).toBe("/project/ok.txt");
-    expect(mockAcquireLock).toHaveBeenCalled();
-
-    await lock.release();
+    await expect(manager.acquireLock("s1", "project/ok.txt")).rejects.toMatchObject({ code: "unavailable" });
+    expect(releaseSpy).toHaveBeenCalled();
   });
 
   it("wraps errors during restore acquisitions as unavailable", async () => {
@@ -105,5 +109,19 @@ describe("FileLockManager", () => {
 
     await expect(manager.restoreSessionLocks("rehydrate")).resolves.not.toThrow();
     expect(mockAcquireLock).toHaveBeenCalledWith("file:/foo.txt", 30_000);
+  });
+
+  it("skips restore when history is invalid JSON", async () => {
+    mockStore.set(sessionKey("rehydrate"), "not-json");
+    const manager = new FileLockManager("redis://example");
+
+    await manager.restoreSessionLocks("rehydrate");
+
+    expect(mockAcquireLock).not.toHaveBeenCalled();
+  });
+
+  it("rejects invalid session identifiers", async () => {
+    const manager = new FileLockManager("redis://example");
+    await expect(manager.acquireLock("bad:id", "project/file.txt")).rejects.toBeInstanceOf(FileLockError);
   });
 });

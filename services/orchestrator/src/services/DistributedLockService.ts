@@ -2,8 +2,7 @@ import { createClient, type RedisClientType } from "redis";
 import { appLogger, normalizeError } from "../observability/logger.js";
 import { randomUUID } from "node:crypto";
 
-let sharedInstance: DistributedLockService | undefined;
-let sharedInstanceUrl: string | undefined;
+const instances = new Map<string, DistributedLockService>();
 
 export class DistributedLockService {
   private readonly client: RedisClientType;
@@ -28,6 +27,10 @@ export class DistributedLockService {
       await this.client.quit();
       this.connected = false;
     }
+  }
+
+  getClient(): RedisClientType {
+    return this.client;
   }
 
   async acquireLock(resource: string, ttlMs: number, retryCount = 3, retryDelayMs = 100): Promise<() => Promise<void>> {
@@ -64,25 +67,22 @@ export class DistributedLockService {
 export async function getDistributedLockService(redisUrl?: string): Promise<DistributedLockService> {
   const url = redisUrl ?? process.env.REDIS_URL ?? process.env.LOCK_REDIS_URL ?? "redis://localhost:6379";
 
-  if (sharedInstance && sharedInstanceUrl && sharedInstanceUrl !== url) {
-    const previousInstance = sharedInstance;
-    sharedInstance = undefined;
-    sharedInstanceUrl = undefined;
-    await previousInstance.disconnect().catch((error) => {
-      appLogger.warn({ err: normalizeError(error) }, "failed to close previous lock service client");
-    });
+  if (instances.has(url)) {
+    return instances.get(url)!;
   }
 
-  if (!sharedInstance) {
-    sharedInstance = new DistributedLockService(url);
-    sharedInstanceUrl = url;
-  }
-  return sharedInstance;
+  const instance = new DistributedLockService(url);
+  instances.set(url, instance);
+  return instance;
 }
 
 // Exported for tests
 export function resetDistributedLockService(): void {
-  sharedInstance = undefined;
-  sharedInstanceUrl = undefined;
+  for (const instance of instances.values()) {
+    void instance.disconnect().catch((error) =>
+      appLogger.warn({ err: normalizeError(error) }, "failed to close lock service client during reset"),
+    );
+  }
+  instances.clear();
 }
 
