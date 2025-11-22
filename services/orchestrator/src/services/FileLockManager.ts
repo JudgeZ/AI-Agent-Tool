@@ -31,14 +31,23 @@ export class FileLockManager {
   private readonly lockServicePromise: Promise<Awaited<ReturnType<typeof getDistributedLockService>>>;
   private readonly redisClientPromise: Promise<RedisClientType>;
   private readonly lockTtlMs: number;
+  private readonly sessionHistoryTtlSeconds: number | null;
   private readonly activeLocks = new Map<string, Map<string, FileLock>>();
   private readonly lockHistory = new Map<string, Set<string>>();
 
   private readonly historySchema = z.array(z.string());
 
-  constructor(redisUrl?: string, lockTtlMs = Number(process.env.LOCK_TTL_MS ?? 30_000)) {
+  constructor(
+    redisUrl?: string,
+    lockTtlMs = Number(process.env.LOCK_TTL_MS ?? 30_000),
+    sessionHistoryTtlSeconds = Number(process.env.LOCK_HISTORY_TTL_SEC ?? 0),
+  ) {
     this.lockServicePromise = getDistributedLockService(redisUrl);
     this.lockTtlMs = Number.isFinite(lockTtlMs) && lockTtlMs > 0 ? lockTtlMs : 30_000;
+    this.sessionHistoryTtlSeconds =
+      Number.isFinite(sessionHistoryTtlSeconds) && sessionHistoryTtlSeconds > 0
+        ? sessionHistoryTtlSeconds
+        : null;
     this.redisClientPromise = this.lockServicePromise.then(async (service) => {
       await service.connect();
       const client = service.getClient();
@@ -80,6 +89,13 @@ export class FileLockManager {
       await this.connect();
       const history = Array.from(this.lockHistory.get(sessionId) ?? []);
       const redis = await this.redisClientPromise;
+      if (this.sessionHistoryTtlSeconds) {
+        await redis.set(this.sessionHistoryKey(sessionId), JSON.stringify(history), {
+          EX: this.sessionHistoryTtlSeconds,
+        });
+        return;
+      }
+
       await redis.set(this.sessionHistoryKey(sessionId), JSON.stringify(history));
     } catch (error) {
       appLogger.warn(
@@ -258,6 +274,7 @@ export class FileLockManager {
 
     const lockKey = `file:${normalizedPath}`;
     try {
+      await this.connect();
       const lockService = await this.lockServicePromise;
       const release = await lockService.acquireLock(lockKey, this.lockTtlMs);
       const trackedRelease = this.wrapRelease(sessionId, normalizedPath, release);

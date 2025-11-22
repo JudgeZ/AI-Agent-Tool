@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   const store = new Map<string, string>();
+  const setOptions = new Map<string, any>();
   const redisClient: any = {
     isOpen: false,
     connect: vi.fn(async () => {
@@ -11,20 +12,26 @@ const mocks = vi.hoisted(() => {
       redisClient.isOpen = false;
     }),
     get: vi.fn(async (key: string) => store.get(key) ?? null),
-    set: vi.fn(async (key: string, value: string) => {
+    set: vi.fn(async (key: string, value: string, options?: any) => {
       store.set(key, value);
+      if (options) {
+        setOptions.set(key, options);
+      } else {
+        setOptions.delete(key);
+      }
       return "OK";
     }),
     on: vi.fn(),
   };
 
-  return {
-    store,
-    redisClient,
-    mockAcquireLock: vi.fn(async (_resource: string) => vi.fn(async () => {})),
-    mockIsRoomBusy: vi.fn(() => false),
-    mockConnect: vi.fn(async () => {}),
-  };
+    return {
+      store,
+      setOptions,
+      redisClient,
+      mockAcquireLock: vi.fn(async (_resource: string) => vi.fn(async () => {})),
+      mockIsRoomBusy: vi.fn(() => false),
+      mockConnect: vi.fn(async () => {}),
+    };
 });
 
 vi.mock("../collaboration/index.js", () => ({ isRoomBusy: mocks.mockIsRoomBusy }));
@@ -39,7 +46,7 @@ vi.mock("./DistributedLockService.js", () => ({
 // Import after mocks are set up
 import { FileLockError, FileLockManager } from "./FileLockManager.js";
 
-const { store: mockStore, redisClient: mockRedisClient, mockAcquireLock, mockIsRoomBusy } = mocks;
+const { store: mockStore, setOptions: mockSetOptions, redisClient: mockRedisClient, mockAcquireLock, mockIsRoomBusy } = mocks;
 const sessionKey = (sessionId: string) => `session:locks:${sessionId}`;
 
 describe("FileLockManager", () => {
@@ -63,6 +70,15 @@ describe("FileLockManager", () => {
     await manager.releaseSessionLocks("s1");
     const afterRelease = JSON.parse(mockStore.get(sessionKey("s1")) ?? "[]");
     expect(afterRelease).toEqual([]);
+  });
+
+  it("sets a TTL when persisting session history if configured", async () => {
+    const manager = new FileLockManager("redis://example", 30_000, 3600);
+
+    await manager.acquireLock("s1", "project/file.txt", "agent-1");
+
+    const options = mockSetOptions.get(sessionKey("s1"));
+    expect(options).toEqual({ EX: 3600 });
   });
 
   it("restores locks from persisted history", async () => {
@@ -109,6 +125,15 @@ describe("FileLockManager", () => {
 
     await expect(manager.restoreSessionLocks("rehydrate")).resolves.not.toThrow();
     expect(mockAcquireLock).toHaveBeenCalledWith("file:/foo.txt", 30_000);
+  });
+
+  it("wraps connection errors during restore acquisitions", async () => {
+    const manager = new FileLockManager("redis://example");
+    mockRedisClient.connect.mockRejectedValueOnce(new Error("redis down"));
+
+    await expect((manager as any).acquireLockWithoutPersist("s1", "foo.txt")).rejects.toMatchObject({
+      code: "unavailable",
+    });
   });
 
   it("skips restore when history is invalid JSON", async () => {
