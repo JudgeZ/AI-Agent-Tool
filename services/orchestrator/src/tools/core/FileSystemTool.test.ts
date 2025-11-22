@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
@@ -110,18 +111,17 @@ describe("FileSystemTool", () => {
       { requestId: "req-123" } as any,
     );
 
+    const resolved = path.join(projectRoot, target);
+    const roomId = createHash("sha256").update(resolved).digest("hex");
+
     expect(result.success).toBe(true);
-    expect(acquireLockMock).toHaveBeenCalledWith("s1", path.join(projectRoot, target), "agent");
-    expect(applyAgentEditToRoomMock).toHaveBeenCalledWith(
-      path.join(projectRoot, target),
-      path.join(projectRoot, target),
-      "hello world",
-    );
+    expect(acquireLockMock).toHaveBeenCalledWith("s1", resolved, "agent");
+    expect(applyAgentEditToRoomMock).toHaveBeenCalledWith(roomId, resolved, "hello world");
     expect(releaseMock).toHaveBeenCalled();
   });
 
   it("fails gracefully when locks are busy", async () => {
-    acquireLockMock.mockRejectedValueOnce(new MockFileLockError("busy", "busy", { reason: "locked" }));
+    acquireLockMock.mockRejectedValueOnce(new MockFileLockError("File is locked", "busy", { reason: "locked" }));
     const tool = new FileSystemTool(testLogger, { projectRoot });
 
     const result = await tool.execute(

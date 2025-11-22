@@ -1,5 +1,7 @@
+import { createHash } from "node:crypto";
 import path from "node:path";
 import { createClient, type RedisClientType } from "redis";
+import { z } from "zod";
 
 import { isRoomBusy } from "../collaboration/index.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
@@ -30,6 +32,8 @@ export class FileLockManager {
   private readonly redis: RedisClientType;
   private readonly activeLocks = new Map<string, Map<string, FileLock>>();
   private readonly lockHistory = new Map<string, Set<string>>();
+
+  private readonly historySchema = z.array(z.string());
 
   constructor(redisUrl?: string) {
     this.redis = createClient({ url: redisUrl ?? process.env.REDIS_URL ?? "redis://localhost:6379" });
@@ -84,7 +88,8 @@ export class FileLockManager {
   async acquireLock(sessionId: string, filePath: string, agentId?: string): Promise<FileLock> {
     const normalizedPath = this.normalizePath(filePath);
 
-    if (isRoomBusy(normalizedPath)) {
+    const roomId = this.buildRoomId(normalizedPath);
+    if (isRoomBusy(roomId)) {
       throw new FileLockError(`File is busy: ${normalizedPath}`, "busy", {
         path: normalizedPath,
         reason: "room_busy",
@@ -95,7 +100,8 @@ export class FileLockManager {
     try {
       await this.connect();
       const release = await this.lockService.acquireLock(lockKey, 30_000);
-      const fileLock: FileLock = { path: normalizedPath, lockKey, release };
+      const trackedRelease = this.wrapRelease(sessionId, normalizedPath, release);
+      const fileLock: FileLock = { path: normalizedPath, lockKey, release: trackedRelease };
       this.rememberLock(sessionId, normalizedPath, fileLock);
       await this.persistHistory(sessionId);
       return fileLock;
@@ -109,7 +115,7 @@ export class FileLockManager {
       );
       throw new FileLockError(`Failed to acquire lock for ${normalizedPath}`, "unavailable", {
         path: normalizedPath,
-        reason: "locked",
+        reason: "lock_acquisition_failed",
       });
     }
   }
@@ -118,7 +124,7 @@ export class FileLockManager {
     const locks = this.activeLocks.get(sessionId);
     if (!locks) return;
 
-    for (const [pathKey, lock] of locks.entries()) {
+    const releasePromises = Array.from(locks.entries()).map(async ([pathKey, lock]) => {
       try {
         await lock.release();
       } catch (error) {
@@ -127,7 +133,8 @@ export class FileLockManager {
           "failed to release file lock",
         );
       }
-    }
+    });
+    await Promise.all(releasePromises);
 
     this.activeLocks.delete(sessionId);
     const history = this.lockHistory.get(sessionId);
@@ -157,7 +164,7 @@ export class FileLockManager {
 
     let paths: string[] = [];
     try {
-      paths = JSON.parse(raw) as string[];
+      paths = this.historySchema.parse(JSON.parse(raw));
     } catch (error) {
       appLogger.warn({ err: normalizeError(error), sessionId }, "invalid session lock history");
       return;
@@ -165,7 +172,7 @@ export class FileLockManager {
 
     for (const storedPath of paths) {
       try {
-        await this.acquireLock(sessionId, storedPath);
+        await this.acquireLockWithoutPersist(sessionId, storedPath);
       } catch (error) {
         appLogger.warn(
           { err: normalizeError(error), sessionId, path: storedPath },
@@ -179,6 +186,42 @@ export class FileLockManager {
     if (this.redis.isOpen) {
       await this.redis.quit();
     }
+  }
+
+  private buildRoomId(normalizedPath: string): string {
+    return createHash("sha256").update(normalizedPath).digest("hex");
+  }
+
+  private wrapRelease(sessionId: string, normalizedPath: string, release: ReleaseFn): ReleaseFn {
+    return async () => {
+      try {
+        await release();
+      } finally {
+        const locks = this.activeLocks.get(sessionId);
+        locks?.delete(normalizedPath);
+        const history = this.lockHistory.get(sessionId);
+        history?.delete(normalizedPath);
+        await this.persistHistory(sessionId);
+      }
+    };
+  }
+
+  private async acquireLockWithoutPersist(sessionId: string, filePath: string): Promise<FileLock> {
+    const normalizedPath = this.normalizePath(filePath);
+    const roomId = this.buildRoomId(normalizedPath);
+    if (isRoomBusy(roomId)) {
+      throw new FileLockError(`File is busy: ${normalizedPath}`, "busy", {
+        path: normalizedPath,
+        reason: "room_busy",
+      });
+    }
+
+    const lockKey = `file:${normalizedPath}`;
+    const release = await this.lockService.acquireLock(lockKey, 30_000);
+    const trackedRelease = this.wrapRelease(sessionId, normalizedPath, release);
+    const fileLock: FileLock = { path: normalizedPath, lockKey, release: trackedRelease };
+    this.rememberLock(sessionId, normalizedPath, fileLock);
+    return fileLock;
   }
 }
 

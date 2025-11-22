@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
@@ -38,7 +39,7 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
         type: "object",
         properties: {
           path: { type: "string" },
-          action: { type: "string" },
+          action: { type: "string", enum: ["read", "write", "delete"] },
           content: { type: "string" },
           requiresReview: { type: "boolean" },
           sessionId: { type: "string" },
@@ -95,26 +96,38 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
     return this.config.criticalPatterns?.some((pattern) => pattern.test(target)) ?? false;
   }
 
+  private roomIdForPath(resolvedPath: string): string {
+    return createHash("sha256").update(resolvedPath).digest("hex");
+  }
+
   async execute(input: FileSystemToolInput, context: ToolContext): Promise<ToolResult> {
     const started = Date.now();
     await this.validateInput(input);
     const logs: string[] = [];
 
     let lock: { release: () => Promise<void> } | undefined;
-    let lockReleased = false;
     try {
       const resolvedPath = this.resolvePath(input.path);
+      const sessionId = input.sessionId ?? context.requestId ?? "anonymous-session";
+      const roomId = this.roomIdForPath(resolvedPath);
 
       if (input.action === "read") {
-        const content = await fs.readFile(resolvedPath, "utf-8");
-        return {
-          success: true,
-          data: { path: resolvedPath, content },
-          duration: Date.now() - started,
-        };
+        lock = await fileLockManager.acquireLock(sessionId, resolvedPath, input.agentId);
+        try {
+          const content = await fs.readFile(resolvedPath, "utf-8");
+          return {
+            success: true,
+            data: { path: resolvedPath, content },
+            duration: Date.now() - started,
+          };
+        } finally {
+          await lock.release().catch((releaseError) => {
+            appLogger.warn({ err: normalizeError(releaseError) }, "failed to release filesystem lock");
+          });
+          lock = undefined;
+        }
       }
 
-      const sessionId = input.sessionId ?? context.requestId ?? "anonymous-session";
       lock = await fileLockManager.acquireLock(sessionId, resolvedPath, input.agentId);
       let approved = true;
 
@@ -129,8 +142,6 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
         }
 
         if (!approved) {
-          await lock.release();
-          lockReleased = true;
           return {
             success: false,
             error: "Change requires approval and was not approved",
@@ -144,11 +155,11 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
       } else {
         await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
         const content = input.content ?? "";
-        applyAgentEditToRoom(resolvedPath, resolvedPath, content);
+        applyAgentEditToRoom(roomId, resolvedPath, content);
+        await fs.writeFile(resolvedPath, content, "utf-8");
       }
 
       await lock.release();
-      lockReleased = true;
 
       return {
         success: true,
@@ -167,18 +178,24 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
           logs,
           metadata: { reason: error.details },
         };
+      } else if (error instanceof FileLockError && error.code === "unavailable") {
+        return {
+          success: false,
+          error: `File lock manager unavailable: ${error.message}. This is likely an infrastructure issue (e.g., Redis is down). Please try again later or contact support.`,
+          duration: Date.now() - started,
+          logs,
+          metadata: { reason: error.details },
+        };
       }
 
       appLogger.error({ err: normalizedError }, "filesystem tool error");
       return { success: false, error: (error as Error).message, duration: Date.now() - started, logs };
     }
     finally {
-      if (lock && !lockReleased) {
-        try {
-          await lock.release();
-        } catch (releaseError) {
+      if (lock) {
+        await lock.release().catch((releaseError) => {
           appLogger.warn({ err: normalizeError(releaseError) }, "failed to release filesystem lock");
-        }
+        });
       }
     }
   }
