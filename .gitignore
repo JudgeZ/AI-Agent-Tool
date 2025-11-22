@@ -22,3 +22,6 @@ services/orchestrator/test-output.txt
 services/orchestrator/test_results.txt
 protoc/
 protoc.zip
+
+.gemini/
+gha-creds-*.json
