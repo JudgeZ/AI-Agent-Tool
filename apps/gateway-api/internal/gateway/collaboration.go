@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"regexp"
 	"strings"
+	"sync"
 
 	"github.com/JudgeZ/AI-Agent-Tool/apps/gateway-api/internal/audit"
 )
@@ -204,7 +205,20 @@ func collaborationConnectionLimiter(trusted []*net.IPNet, limiter *connectionLim
 			writeErrorResponse(w, r, http.StatusTooManyRequests, "rate_limited", "too many connections", map[string]any{"retry_after": 60})
 			return
 		}
-		defer limiter.Release(ip)
+
+		released := sync.Once{}
+		release := func() {
+			released.Do(func() {
+				limiter.Release(ip)
+			})
+		}
+
+		go func(ctx context.Context) {
+			<-ctx.Done()
+			release()
+		}(r.Context())
+
 		next.ServeHTTP(w, r)
+		release()
 	})
 }
