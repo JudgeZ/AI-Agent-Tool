@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -324,5 +325,157 @@ func TestCollaborationConnectionLimiterReleasesOnContextCancel(t *testing.T) {
 	defer limiter.mu.Unlock()
 	if _, ok := limiter.counts["198.51.100.7"]; ok {
 		t.Fatalf("expected connection count to be released after context cancel")
+	}
+}
+
+func TestValidateCollaborationIdentity(t *testing.T) {
+	t.Parallel()
+
+	longPath := strings.Repeat("a", collaborationFilePathLimit+1)
+	cases := []struct {
+		name                 string
+		tenant               string
+		project              string
+		session              string
+		filePath             string
+		wantOK               bool
+		wantNormalizedTenant string
+	}{
+		{
+			name:                 "valid headers and path",
+			tenant:               "tenant-1",
+			project:              "project-1",
+			session:              "session-1",
+			filePath:             "docs/readme.md",
+			wantOK:               true,
+			wantNormalizedTenant: "tenant-1",
+		},
+		{
+			name:                 "trims whitespace",
+			tenant:               " tenant-2 ",
+			project:              " project-2 ",
+			session:              " session-2 ",
+			filePath:             " nested/file.txt ",
+			wantOK:               true,
+			wantNormalizedTenant: "tenant-2",
+		},
+		{
+			name:     "missing fields",
+			tenant:   "",
+			project:  "project-3",
+			session:  "session-3",
+			filePath: "docs/file.txt",
+			wantOK:   false,
+		},
+		{
+			name:     "invalid tenant",
+			tenant:   "tenant with space",
+			project:  "project-4",
+			session:  "session-4",
+			filePath: "docs/file.txt",
+			wantOK:   false,
+		},
+		{
+			name:     "invalid project pattern",
+			tenant:   "tenant-5",
+			project:  "project/5",
+			session:  "session-5",
+			filePath: "docs/file.txt",
+			wantOK:   false,
+		},
+		{
+			name:     "invalid session pattern",
+			tenant:   "tenant-6",
+			project:  "project-6",
+			session:  "session 6",
+			filePath: "docs/file.txt",
+			wantOK:   false,
+		},
+		{
+			name:     "file path traversal",
+			tenant:   "tenant-7",
+			project:  "project-7",
+			session:  "session-7",
+			filePath: "../secrets.txt",
+			wantOK:   false,
+		},
+		{
+			name:     "absolute file path",
+			tenant:   "tenant-8",
+			project:  "project-8",
+			session:  "session-8",
+			filePath: "/etc/passwd",
+			wantOK:   false,
+		},
+		{
+			name:     "file path contains null byte",
+			tenant:   "tenant-9",
+			project:  "project-9",
+			session:  "session-9",
+			filePath: "valid\x00path",
+			wantOK:   false,
+		},
+		{
+			name:     "file path exceeds limit",
+			tenant:   "tenant-10",
+			project:  "project-10",
+			session:  "session-10",
+			filePath: longPath,
+			wantOK:   false,
+		},
+		{
+			name:                 "file path at limit",
+			tenant:               "tenant-11",
+			project:              "project-11",
+			session:              "session-11",
+			filePath:             strings.Repeat("b", collaborationFilePathLimit),
+			wantOK:               true,
+			wantNormalizedTenant: "tenant-11",
+		},
+	}
+
+	for _, tc := range cases {
+		tc := tc
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+
+			req := httptest.NewRequest(http.MethodGet, "http://gateway.local/collaboration/ws", nil)
+			if tc.filePath != "" {
+				q := req.URL.Query()
+				q.Set("filePath", tc.filePath)
+				req.URL.RawQuery = q.Encode()
+			}
+			if tc.tenant != "" {
+				req.Header.Set("X-Tenant-Id", tc.tenant)
+			}
+			if tc.project != "" {
+				req.Header.Set("X-Project-Id", tc.project)
+			}
+			if tc.session != "" {
+				req.Header.Set("X-Session-Id", tc.session)
+			}
+
+			tenant, project, session, filePath, ok := validateCollaborationIdentity(req)
+			if ok != tc.wantOK {
+				t.Fatalf("expected ok=%v, got %v", tc.wantOK, ok)
+			}
+
+			if !tc.wantOK {
+				return
+			}
+
+			if tenant != tc.wantNormalizedTenant {
+				t.Fatalf("expected tenant %q, got %q", tc.wantNormalizedTenant, tenant)
+			}
+			if project != strings.TrimSpace(tc.project) {
+				t.Fatalf("expected project %q, got %q", strings.TrimSpace(tc.project), project)
+			}
+			if session != strings.TrimSpace(tc.session) {
+				t.Fatalf("expected session %q, got %q", strings.TrimSpace(tc.session), session)
+			}
+			if filePath != strings.TrimSpace(tc.filePath) {
+				t.Fatalf("expected filePath %q, got %q", strings.TrimSpace(tc.filePath), filePath)
+			}
+		})
 	}
 }

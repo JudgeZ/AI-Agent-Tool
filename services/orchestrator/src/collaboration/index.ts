@@ -7,6 +7,7 @@ import type https from "node:https";
 
 import type { IncomingMessage } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
+// setupWSConnection is imported from a y-websocket internal module; monitor for upstream API changes.
 import { setupWSConnection } from "y-websocket/bin/utils";
 import * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness.js";
