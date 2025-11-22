@@ -96,10 +96,6 @@ function headerValue(value: string | string[] | undefined): string | undefined {
 }
 
 function clientIp(req: IncomingMessage): string {
-  const realIp = headerValue(req.headers["x-real-ip"]);
-  if (realIp) {
-    return realIp;
-  }
   if (req.socket.remoteAddress) {
     return req.socket.remoteAddress;
   }

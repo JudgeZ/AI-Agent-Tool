@@ -265,6 +265,42 @@ describe("collaboration server", () => {
     });
   });
 
+  it("ignores spoofed X-Real-IP headers for per-IP limiting", async () => {
+    const auditSpy = vi.mocked(logAuditEvent);
+    auditSpy.mockClear();
+    const headers = createSessionHeaders({ tenantId: "tenant-spoof", projectId: "project-spoof" });
+
+    const first = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=limited.txt`, {
+      headers: { ...headers, "x-real-ip": "203.0.113.10" },
+    });
+    await new Promise<void>((resolve) => {
+      first.on("open", () => resolve());
+    });
+
+    const second = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=limited.txt`, {
+      headers: { ...headers, "x-real-ip": "198.51.100.5" },
+    });
+
+    const error = await new Promise<Error>((resolve) => {
+      second.on("error", (err) => resolve(err as Error));
+    });
+
+    expect(error.message).toContain("429");
+    expect(
+      auditSpy.mock.calls.some(
+        ([event]) =>
+          event.action === "collaboration.connection" &&
+          event.outcome === "denied" &&
+          event.details?.reason === "ip_rate_limited",
+      ),
+    ).toBe(true);
+
+    await new Promise<void>((resolve) => {
+      first.on("close", () => resolve());
+      first.close();
+    });
+  });
+
   it("allows authenticated clients to connect", async () => {
     const auditSpy = vi.mocked(logAuditEvent);
     auditSpy.mockClear();
