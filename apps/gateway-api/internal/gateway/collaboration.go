@@ -134,20 +134,20 @@ func newCollaborationProxy(target *url.URL) *httputil.ReverseProxy {
 		proxy.Transport = transportClient.Transport
 	}
 
-	proxy.Director = func(req *http.Request) {
-		originalQuery := req.URL.RawQuery
-		req.URL.Scheme = target.Scheme
-		req.URL.Host = target.Host
-		req.URL.Path = "/collaboration/ws"
-		req.URL.RawPath = ""
-		req.URL.RawQuery = originalQuery
-		req.Host = target.Host
-		if requestID := audit.RequestID(req.Context()); requestID != "" {
-			req.Header.Set("X-Request-Id", requestID)
-			req.Header.Set("X-Trace-Id", requestID)
+	proxy.Rewrite = func(pr *httputil.ProxyRequest) {
+		originalQuery := pr.In.URL.RawQuery
+		pr.Out.URL.Scheme = target.Scheme
+		pr.Out.URL.Host = target.Host
+		pr.Out.URL.Path = "/collaboration/ws"
+		pr.Out.URL.RawPath = ""
+		pr.Out.URL.RawQuery = originalQuery
+		pr.Out.Host = target.Host
+		if requestID := audit.RequestID(pr.In.Context()); requestID != "" {
+			pr.Out.Header.Set("X-Request-Id", requestID)
+			pr.Out.Header.Set("X-Trace-Id", requestID)
 		}
-		if original := req.Header.Get("Sec-WebSocket-Protocol"); original != "" {
-			req.Header.Set("Sec-WebSocket-Protocol", original)
+		if original := pr.In.Header.Get("Sec-WebSocket-Protocol"); original != "" {
+			pr.Out.Header.Set("Sec-WebSocket-Protocol", original)
 		}
 	}
 
@@ -403,6 +403,11 @@ func collaborationConnectionLimiter(trusted []*net.IPNet, limiter *connectionLim
 				limiter.Release(ip)
 			})
 		}
+
+		go func(ctx context.Context) {
+			<-ctx.Done()
+			release()
+		}(r.Context())
 
 		defer release()
 		next.ServeHTTP(w, r)
