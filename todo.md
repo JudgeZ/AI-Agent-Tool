@@ -22,4 +22,5 @@
 
 | id | status | description | source | file_location | line_numbers | impl_plan | test_impact | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| T1 | todo | Add documentation/ADR for distributed file locking semantics | Reviewer: "Documentation: Missing ADR or README Updates" | docs/distributed-file-locking.md (new) | n/a | Outline lock scope, TTL/renewal expectations, session lifecycle, and failure handling; align with current implementation. | manual only (justify) | Provide operator/developer guidance for new locking architecture. |
+
+No outstanding TODO items.
