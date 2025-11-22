@@ -9,6 +9,7 @@ import type { IncomingMessage } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
 // setupWSConnection is imported from a y-websocket internal module; monitor for upstream API changes.
 import { setupWSConnection } from "y-websocket/bin/utils";
+import { z } from "zod";
 import * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness.js";
 import { createMutex } from "lib0/mutex.js";
@@ -28,8 +29,22 @@ const ROOM_EVICTION_THRESHOLD_MS = 15 * 60 * 1000;
 const ROOM_CHECK_INTERVAL_MS = 60 * 1000;
 const MAX_WS_PAYLOAD_BYTES = 1024 * 1024;
 const CLOSE_CODE_UNAUTHORIZED = 4401;
+const MAX_ROOMS_DEFAULT = 500;
 
 const TEXT_FIELD = "content";
+
+const collabIdentitySchema = z.object({
+  tenantId: z.string().trim().min(1).max(256),
+  projectId: z.string().trim().regex(/^[A-Za-z0-9._-]{1,128}$/),
+  sessionId: z.string().trim().regex(/^[A-Za-z0-9._-]{1,128}$/),
+  filePath: z
+    .string()
+    .trim()
+    .max(4096)
+    .refine((value) => !value.includes("\x00"), { message: "invalid file path" })
+    .refine((value) => !value.startsWith("/"), { message: "invalid file path" })
+    .refine((value) => !value.includes(".."), { message: "invalid file path" }),
+});
 
 class CollabDoc extends Y.Doc {
   name: string;
@@ -55,7 +70,11 @@ const rooms = new Map<string, RoomState>();
 const ipConnectionCounts = new Map<string, number>();
 
 function resolvePersistenceDir(): string {
-  return path.resolve(process.cwd(), process.env.COLLAB_PERSISTENCE_DIR ?? DEFAULT_PERSISTENCE_DIR);
+  const rawDir = process.env.COLLAB_PERSISTENCE_DIR ?? DEFAULT_PERSISTENCE_DIR;
+  if (rawDir.includes("\0")) {
+    throw new Error("collaboration persistence directory contains invalid null byte");
+  }
+  return path.resolve(process.cwd(), rawDir);
 }
 
 function validatePersistenceDir(persistenceDir: string): void {
@@ -63,13 +82,19 @@ function validatePersistenceDir(persistenceDir: string): void {
   if (persistenceDir === rootPath) {
     throw new Error("collaboration persistence directory must not be the filesystem root");
   }
+  if (!persistenceDir.startsWith(process.cwd()) && !path.isAbsolute(persistenceDir)) {
+    throw new Error("collaboration persistence directory must be an absolute path");
+  }
 }
 
 async function ensurePersistenceDir(): Promise<void> {
   const persistenceDir = resolvePersistenceDir();
   validatePersistenceDir(persistenceDir);
   try {
-    const stats = await fs.stat(persistenceDir);
+    const stats = await fs.lstat(persistenceDir);
+    if (stats.isSymbolicLink()) {
+      throw new Error("collaboration persistence directory must not be a symlink");
+    }
     if (!stats.isDirectory()) {
       throw new Error("collaboration persistence path must be a directory");
     }
@@ -118,6 +143,14 @@ function resolveConnectionLimitFromEnv(): number {
   return 12;
 }
 
+function resolveRoomLimitFromEnv(): number {
+  const parsed = Number.parseInt(process.env.COLLAB_MAX_ROOMS ?? "", 10);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return MAX_ROOMS_DEFAULT;
+}
+
 function requestIdentifiers(req: IncomingMessage): {
   requestId?: string;
   traceId?: string;
@@ -126,6 +159,13 @@ function requestIdentifiers(req: IncomingMessage): {
     requestId: headerValue(req.headers["x-request-id"]),
     traceId: headerValue(req.headers["x-trace-id"]),
   };
+}
+
+function sanitizeHeaderForLog(value: string | undefined): string | undefined {
+  if (!value) {
+    return undefined;
+  }
+  return value.replace(/\r|\n/g, "").slice(0, 512);
 }
 
 function auditSubjectFromSession(session: SessionRecord | undefined) {
@@ -245,14 +285,16 @@ function deriveRoomId(
   } catch (error) {
     return { error: "invalid request url" };
   }
-  const tenantId = headerValue(req.headers["x-tenant-id"]);
-  const projectId = headerValue(req.headers["x-project-id"]);
-  const sessionId = headerValue(req.headers["x-session-id"]);
-  const filePath = parsed.searchParams.get("filePath")?.trim();
-
-  if (!tenantId || !projectId || !sessionId || !filePath) {
+  const identity = collabIdentitySchema.safeParse({
+    tenantId: headerValue(req.headers["x-tenant-id"]),
+    projectId: headerValue(req.headers["x-project-id"]),
+    sessionId: headerValue(req.headers["x-session-id"]),
+    filePath: parsed.searchParams.get("filePath"),
+  });
+  if (!identity.success) {
     return { error: "missing identity or file path" };
   }
+  const { tenantId, projectId, sessionId, filePath } = identity.data;
 
   if (sessionId !== validatedSessionId) {
     return { error: "session mismatch" };
@@ -260,10 +302,6 @@ function deriveRoomId(
 
   if (validatedSession.tenantId && tenantId !== validatedSession.tenantId) {
     return { error: "tenant mismatch" };
-  }
-
-  if (filePath.length > 4096 || filePath.includes("\x00")) {
-    return { error: "invalid file path" };
   }
 
   const normalizedPath = path.normalize(filePath).replace(/\\/g, "/");
@@ -291,9 +329,29 @@ function deriveRoomId(
     return { error: "invalid tenant id" };
   }
 
+  const allowedProjects = normalizedSessionProjects(validatedSession.claims);
+  if (allowedProjects && !allowedProjects.has(projectId)) {
+    return { error: "project mismatch" };
+  }
+
   const key = `${normalizedTenant.tenantId}:${projectId}:${normalizedPath}`;
   const roomId = createHash("sha256").update(key).digest("hex");
   return { roomId, filePath };
+}
+
+function normalizedSessionProjects(claims: Record<string, unknown>): Set<string> | null {
+  const candidate = claims?.projects ?? claims?.projectIds;
+  if (!Array.isArray(candidate)) {
+    return null;
+  }
+  const normalized = candidate
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim())
+    .filter((value) => value.length > 0);
+  if (normalized.length === 0) {
+    return null;
+  }
+  return new Set(normalized);
 }
 
 function getRoomState(roomId: string, filePath: string): RoomState {
@@ -473,14 +531,15 @@ export async function setupCollaborationServer(
       }
 
       if (originDenialReason) {
-        logger.warn({ origin }, "rejecting collaboration connection due to disallowed origin");
+        const safeOrigin = sanitizeHeaderForLog(origin);
+        logger.warn({ origin: safeOrigin }, "rejecting collaboration connection due to disallowed origin");
         logAuditEvent({
           action: "collaboration.connection",
           outcome: "denied",
           resource: "collaboration.websocket",
           requestId: identifiers.requestId,
           traceId: identifiers.traceId,
-          details: { reason: originDenialReason, origin },
+          details: { reason: originDenialReason, origin: safeOrigin },
         });
         socket.write("HTTP/1.1 403 Forbidden\r\nConnection: close\r\n\r\n");
         socket.destroy();
@@ -541,7 +600,25 @@ export async function setupCollaborationServer(
         return;
       }
 
-      const room = getRoomState(derived.roomId, derived.filePath);
+      const maxRooms = resolveRoomLimitFromEnv();
+      const existingRoom = rooms.get(derived.roomId);
+      if (!existingRoom && rooms.size >= maxRooms) {
+        logger.warn({ roomLimit: maxRooms }, "rejecting collaboration connection due to room limit");
+        logAuditEvent({
+          action: "collaboration.connection",
+          outcome: "denied",
+          resource: "collaboration.websocket",
+          requestId: identifiers.requestId,
+          traceId: identifiers.traceId,
+          subject: auditSubjectFromSession(authResult.session),
+          details: { reason: "room_limit", maxRooms },
+        });
+        ws.close(1013, "service unavailable");
+        decrementConnection(ip);
+        return;
+      }
+
+      const room = existingRoom ?? getRoomState(derived.roomId, derived.filePath);
       try {
         await loadRoomFromDisk(derived.roomId, room, logger);
       } catch (error) {

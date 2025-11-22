@@ -348,33 +348,37 @@ func recordCollaborationAudit(ctx context.Context, r *http.Request, outcome stri
 }
 
 func collaborationConnectionLimiter(trusted []*net.IPNet, limiter *connectionLimiter, next http.Handler) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip := ClientIP(r, trusted)
-		if !limiter.Acquire(ip) {
-			recordCollaborationAudit(r.Context(), r, auditOutcomeDenied, map[string]any{"reason": "ip_rate_limited", "ip": gatewayAuditLogger.HashIdentity(ip)})
+return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+ip := ClientIP(r, trusted)
+if !limiter.Acquire(ip) {
+recordCollaborationAudit(r.Context(), r, auditOutcomeDenied, map[string]any{"reason": "ip_rate_limited", "ip": gatewayAuditLogger.HashIdentity(ip)})
 			writeErrorResponse(w, r, http.StatusTooManyRequests, "rate_limited", "too many connections", map[string]any{"retry_after": 60})
 			return
 		}
 
-		released := sync.Once{}
-		release := func() {
-			released.Do(func() {
-				limiter.Release(ip)
-			})
-		}
+released := sync.Once{}
+release := func() {
+released.Do(func() {
+limiter.Release(ip)
+})
+}
 
-		ctx, cancel := context.WithCancel(r.Context())
-		go func(ctx context.Context) {
-			<-ctx.Done()
-			release()
-		}(ctx)
+done := make(chan struct{})
+ctx := r.Context()
+go func() {
+select {
+case <-ctx.Done():
+release()
+case <-done:
+}
+}()
 
-		defer func() {
-			cancel()
-			release()
-		}()
-		next.ServeHTTP(w, r)
-	})
+defer func() {
+close(done)
+release()
+}()
+next.ServeHTTP(w, r)
+})
 }
 
 func registerCollaborationAuthFailure(ctx context.Context, r *http.Request, limiter *rateLimiter, bucket rateLimitBucket, trusted []*net.IPNet) (bool, time.Duration, string) {

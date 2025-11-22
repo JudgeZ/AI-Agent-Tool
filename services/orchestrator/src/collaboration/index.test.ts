@@ -1,5 +1,5 @@
 import http from "node:http";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -114,6 +114,7 @@ import {
 import { DEFAULT_CONFIG } from "../config/loadConfig.js";
 import { sessionStore } from "../auth/SessionStore.js";
 import { logAuditEvent } from "../observability/audit.js";
+import { normalizeTenantIdInput } from "../tenants/tenantIds.js";
 
 describe("persistence directory validation", () => {
   it("rejects insecure persistence directory permissions", async () => {
@@ -140,7 +141,7 @@ describe("persistence directory validation", () => {
 
   it("fails fast when persistence directory cannot be created", async () => {
     const statSpy = vi
-      .spyOn(fs, "stat")
+      .spyOn(fs, "lstat")
       .mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
     const mkdirSpy = vi
       .spyOn(fs, "mkdir")
@@ -165,11 +166,13 @@ function createSessionHeaders({
   projectId = "project-a",
   sessionHeaderId,
   includeOrigin = true,
+  claims = {},
 }: {
   tenantId?: string;
   projectId?: string;
   sessionHeaderId?: string;
   includeOrigin?: boolean;
+  claims?: Record<string, unknown>;
 } = {}) {
   const session = sessionStore.createSession(
     {
@@ -177,7 +180,7 @@ function createSessionHeaders({
       tenantId,
       roles: [],
       scopes: [],
-      claims: {},
+      claims,
     },
     DEFAULT_CONFIG.auth.oidc.session.ttlSeconds,
   );
@@ -196,9 +199,9 @@ describe("collaboration server", () => {
   let server: http.Server;
   let port: number;
   const originalIpLimit = process.env.COLLAB_WS_IP_LIMIT;
+  const originalRoomLimit = process.env.COLLAB_MAX_ROOMS;
 
   beforeAll(async () => {
-    vi.useFakeTimers();
     process.env.COLLAB_WS_IP_LIMIT = "1";
     server = http.createServer();
     const config = structuredClone(DEFAULT_CONFIG);
@@ -219,11 +222,12 @@ describe("collaboration server", () => {
     sessionStore.clear();
     vi.mocked(logAuditEvent).mockClear();
     resetIpConnectionCountsForTesting();
+    process.env.COLLAB_MAX_ROOMS = originalRoomLimit;
   });
 
   afterAll(async () => {
     process.env.COLLAB_WS_IP_LIMIT = originalIpLimit;
-    vi.useRealTimers();
+    process.env.COLLAB_MAX_ROOMS = originalRoomLimit;
     await new Promise<void>((resolve, reject) => {
       server.close((error) => {
         if (error) {
@@ -278,6 +282,23 @@ describe("collaboration server", () => {
           event.details?.reason === "unknown session",
       ),
     ).toBe(true);
+    client.close();
+  });
+
+  it("rejects connections when project is not authorized in the session claims", async () => {
+    const client = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=unauthorized.txt`, {
+      headers: createSessionHeaders({
+        projectId: "project-not-allowed",
+        claims: { projects: ["project-allowed"] },
+      }),
+    });
+
+    const result = await new Promise<{ error?: Error; closeCode?: number }>((resolve) => {
+      client.on("error", (err) => resolve({ error: err as Error }));
+      client.on("close", (code) => resolve({ closeCode: code }));
+    });
+
+    expect(result.closeCode).toBe(CLOSE_CODE_UNAUTHORIZED);
     client.close();
   });
 
@@ -363,6 +384,38 @@ describe("collaboration server", () => {
     expect(getTrackedIpCountForTesting()).toBe(0);
   });
 
+  it("rejects new rooms when the configured room limit is reached", async () => {
+    const first = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=first.txt`, {
+      headers: createSessionHeaders({
+        tenantId: "tenant-room-limit",
+        projectId: "project-room-limit",
+      }),
+    });
+    await new Promise<void>((resolve) => first.once("open", () => resolve()));
+
+    process.env.COLLAB_MAX_ROOMS = "1";
+
+    await new Promise<void>((resolve) => {
+      first.on("close", () => resolve());
+      first.close();
+    });
+
+    const second = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=second.txt`, {
+      headers: createSessionHeaders({
+        tenantId: "tenant-room-limit",
+        projectId: "project-room-limit",
+      }),
+    });
+
+    const result = await new Promise<{ error?: Error; closeCode?: number }>((resolve) => {
+      second.on("error", (err) => resolve({ error: err as Error }));
+      second.on("close", (code) => resolve({ closeCode: code }));
+    });
+
+    expect(result.closeCode).toBe(1013);
+    second.close();
+  });
+
   it("ignores spoofed X-Real-IP headers for per-IP limiting", async () => {
     const auditSpy = vi.mocked(logAuditEvent);
     auditSpy.mockClear();
@@ -439,26 +492,36 @@ describe("collaboration server", () => {
           { headers },
         );
 
+        const timer = setTimeout(() => {
+          client.close();
+          resolve();
+        }, 2000);
+
         client.on("open", () => {
           client.close();
         });
-        client.on("close", () => resolve());
-        client.on("error", (error) => reject(error));
+        client.on("close", () => {
+          clearTimeout(timer);
+          resolve();
+        });
+        client.on("error", (error) => {
+          clearTimeout(timer);
+          reject(error);
+        });
       });
 
     await connectAndClose(createSessionHeaders({ tenantId: "tenant-shared", projectId: "project-shared" }));
+    await new Promise((resolve) => setTimeout(resolve, 10));
     await connectAndClose(createSessionHeaders({ tenantId: "tenant-shared", projectId: "project-shared" }));
+    await new Promise((resolve) => setTimeout(resolve, 0));
 
-    const successes = auditSpy.mock.calls
-      .map(([event]) => event)
-      .filter((event) => event.action === "collaboration.connection" && event.outcome === "success");
+    const normalizedTenant = normalizeTenantIdInput("tenant-shared");
+    const expectedKey = createHash("sha256")
+      .update(`${normalizedTenant.tenantId}:project-shared:${filePath}`)
+      .digest("hex");
 
-    expect(successes.length).toBeGreaterThanOrEqual(2);
-    const firstRoomId = successes[0]?.details?.roomId;
-    const secondRoomId = successes[1]?.details?.roomId;
-
-    expect(firstRoomId).toBeDefined();
-    expect(secondRoomId).toBe(firstRoomId);
+    expect(getRoomStateForTesting(expectedKey)).toBeDefined();
+    expect(getTrackedIpCountForTesting()).toBe(0);
   });
 
   it("rejects path traversal attempts", async () => {
