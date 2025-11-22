@@ -37,6 +37,11 @@ lint-orchestrator:
 	@echo "[lint] orchestrator"
 	cd services/orchestrator && npm run lint
 
+# Gateway test helper for the collaboration proxy regression
+test-gateway-collab-proxy:
+	@echo "[test] gateway collaboration proxy"
+	cd apps/gateway-api && GOTOOLCHAIN=local go test ./internal/gateway -run TestCollaborationProxyPreservesQuery -count=1 -short
+
 build: build-gateway-api build-orchestrator build-indexer
 
 build-gateway-api:
