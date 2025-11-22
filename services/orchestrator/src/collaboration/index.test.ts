@@ -105,6 +105,7 @@ vi.mock("../observability/audit.js", () => {
 import {
   applyAgentEditToRoom,
   getRoomStateForTesting,
+  getTrackedIpsForTesting,
   getTrackedIpCountForTesting,
   isRoomBusy,
   resetIpConnectionCountsForTesting,
@@ -206,6 +207,7 @@ describe("collaboration server", () => {
     server = http.createServer();
     const config = structuredClone(DEFAULT_CONFIG);
     config.server.cors.allowedOrigins = [ALLOWED_ORIGIN];
+    config.server.trustedProxyCidrs = ["127.0.0.1/32"];
     await setupCollaborationServer(server, config);
     await new Promise<void>((resolve) => {
       server.listen(0, "127.0.0.1", () => {
@@ -349,6 +351,36 @@ describe("collaboration server", () => {
     });
   });
 
+  it("uses forwarded client IPs from trusted proxies for per-IP limiting", async () => {
+    const headers = createSessionHeaders({ tenantId: "tenant-forwarded", projectId: "project-forwarded" });
+
+    const first = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=forwarded.txt`, {
+      headers: { ...headers, "x-forwarded-for": "198.51.100.10" },
+    });
+    await new Promise<void>((resolve, reject) => {
+      first.on("open", () => resolve());
+      first.on("error", (error) => reject(error));
+    });
+
+    const second = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=forwarded.txt`, {
+      headers: { ...headers, "x-forwarded-for": "198.51.100.11" },
+    });
+
+    await new Promise<void>((resolve, reject) => {
+      second.on("open", () => resolve());
+      second.on("error", (error) => reject(error));
+    });
+
+    await new Promise<void>((resolve) => {
+      first.on("close", () => resolve());
+      first.close();
+    });
+    await new Promise<void>((resolve) => {
+      second.on("close", () => resolve());
+      second.close();
+    });
+  });
+
   it("cleans up per-IP connection tracking after connections close", async () => {
     const headers = createSessionHeaders({ tenantId: "tenant-cleanup", projectId: "project-cleanup" });
 
@@ -365,7 +397,7 @@ describe("collaboration server", () => {
       first.close();
     });
 
-    expect(getTrackedIpCountForTesting()).toBe(0);
+    expect(getTrackedIpsForTesting()).toEqual([]);
 
     const second = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=cleanup.txt`, { headers });
 
@@ -381,7 +413,7 @@ describe("collaboration server", () => {
       second.close();
     });
 
-    expect(getTrackedIpCountForTesting()).toBe(0);
+    expect(getTrackedIpsForTesting()).toEqual([]);
   });
 
   it("rejects new rooms when the configured room limit is reached", async () => {

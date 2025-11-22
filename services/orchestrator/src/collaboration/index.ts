@@ -13,6 +13,7 @@ import { z } from "zod";
 import * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness.js";
 import { createMutex } from "lib0/mutex.js";
+import ipaddr from "ipaddr.js";
 
 import type { AppConfig } from "../config.js";
 import { SessionRecord, sessionStore } from "../auth/SessionStore.js";
@@ -128,11 +129,75 @@ function headerValue(value: string | string[] | undefined): string | undefined {
   return undefined;
 }
 
-function clientIp(req: IncomingMessage): string {
-  if (req.socket.remoteAddress) {
-    return req.socket.remoteAddress;
+type IpAddress = ipaddr.IPv4 | ipaddr.IPv6;
+
+function parseIpAddress(raw: string | undefined): IpAddress | undefined {
+  if (!raw) {
+    return undefined;
   }
-  return "unknown";
+  const sanitized = raw.includes("%") ? raw.split("%", 1)[0] : raw;
+  try {
+    const parsed = ipaddr.parse(sanitized.trim());
+    if (parsed.kind() === "ipv6" && (parsed as ipaddr.IPv6).isIPv4MappedAddress()) {
+      return (parsed as ipaddr.IPv6).toIPv4Address();
+    }
+    return parsed as IpAddress;
+  } catch {
+    return undefined;
+  }
+}
+
+function isTrustedProxyIp(address: IpAddress, trustedProxyCidrs: readonly string[]): boolean {
+  if (trustedProxyCidrs.length === 0) {
+    return false;
+  }
+  for (const entry of trustedProxyCidrs) {
+    const trimmed = entry.trim();
+    if (!trimmed) {
+      continue;
+    }
+    try {
+      const [network, prefixLength] = ipaddr.parseCIDR(trimmed);
+      if (network.kind() !== address.kind()) {
+        continue;
+      }
+      if (address.match([network, prefixLength])) {
+        return true;
+      }
+    } catch {
+      // ignore invalid trusted proxy entries
+    }
+  }
+  return false;
+}
+
+function resolveClientIp(req: IncomingMessage, trustedProxyCidrs: readonly string[]): string {
+  const remote = parseIpAddress(req.socket.remoteAddress ?? undefined);
+  if (!remote) {
+    return "unknown";
+  }
+
+  if (!isTrustedProxyIp(remote, trustedProxyCidrs)) {
+    return remote.toString();
+  }
+
+  const forwarded = headerValue(req.headers["x-forwarded-for"]);
+  if (forwarded) {
+    const entries = forwarded
+      .split(",")
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0);
+
+    for (let i = entries.length - 1; i >= 0; i -= 1) {
+      const parsed = parseIpAddress(entries[i]);
+      if (!parsed || isTrustedProxyIp(parsed, trustedProxyCidrs)) {
+        continue;
+      }
+      return parsed.toString();
+    }
+  }
+
+  return remote.toString();
 }
 
 function resolveConnectionLimitFromEnv(): number {
@@ -519,7 +584,7 @@ export async function setupCollaborationServer(
 
     const logger = loggerWithTrace(request);
     const identifiers = requestIdentifiers(request);
-    const ip = clientIp(request);
+    const ip = resolveClientIp(request, config.server.trustedProxyCidrs);
     const hashedIp = hashIdentifier(ip);
     const origin = headerValue(request.headers["origin"]);
     if (allowedOrigins.size > 0) {
@@ -671,6 +736,11 @@ export function resetIpConnectionCountsForTesting(): void {
 // Exported for tests only.
 export function getIpConnectionCountForTesting(ip: string): number | undefined {
   return ipConnectionCounts.get(ip);
+}
+
+// Exported for tests only.
+export function getTrackedIpsForTesting(): string[] {
+  return Array.from(ipConnectionCounts.keys());
 }
 
 // Exported for tests only.
