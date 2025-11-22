@@ -12,7 +12,7 @@ import * as Y from "yjs";
 import type { AppConfig } from "../config.js";
 import { SessionRecord, sessionStore } from "../auth/SessionStore.js";
 import { validateSessionId, type SessionExtractionResult, type SessionSource } from "../auth/sessionValidation.js";
-import { logAuditEvent } from "../observability/audit.js";
+import { hashIdentifier, logAuditEvent } from "../observability/audit.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
 import { normalizeTenantIdInput } from "../tenants/tenantIds.js";
 
@@ -318,6 +318,9 @@ async function compactRoom(roomId: string, state: RoomState): Promise<void> {
       return;
     }
     await persistRoom(roomId, state);
+    if (state.clients.size > 0) {
+      return;
+    }
     const nextDoc = new Y.Doc();
     const text = nextDoc.getText(TEXT_FIELD);
     const persisted = await fs.readFile(roomPersistencePath(roomId), "utf8");
@@ -418,6 +421,7 @@ export function setupCollaborationServer(
     const logger = loggerWithTrace(request);
     const identifiers = requestIdentifiers(request);
     const ip = clientIp(request);
+    const hashedIp = hashIdentifier(ip);
     const origin = headerValue(request.headers["origin"]);
     if (allowedOrigins.size > 0 && origin && !allowedOrigins.has(origin)) {
       logger.warn({ origin }, "rejecting collaboration connection due to disallowed origin");
@@ -434,14 +438,14 @@ export function setupCollaborationServer(
       return;
     }
     if (!incrementConnection(ip, connectionLimitPerIp)) {
-      logger.warn({ ip }, "rejecting collaboration connection due to per-IP limit");
+      logger.warn({ ip: hashedIp }, "rejecting collaboration connection due to per-IP limit");
       logAuditEvent({
         action: "collaboration.connection",
         outcome: "denied",
         resource: "collaboration.websocket",
         requestId: identifiers.requestId,
         traceId: identifiers.traceId,
-        details: { reason: "ip_rate_limited", ip },
+        details: { reason: "ip_rate_limited", ip: hashedIp },
       });
       socket.write("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nRetry-After: 60\r\n\r\n");
       socket.destroy();
