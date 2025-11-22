@@ -205,3 +205,26 @@ func TestCollaborationAuthMiddlewareRejectsInvalidCookie(t *testing.T) {
 		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rr.Code)
 	}
 }
+
+func TestCollaborationConnectionLimiterReleasesConnections(t *testing.T) {
+	limiter := newConnectionLimiter(1)
+	handler := collaborationConnectionLimiter(nil, limiter, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.local/collaboration/ws", nil)
+	req.RemoteAddr = "192.0.2.1:12345"
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusOK {
+		t.Fatalf("expected status %d, got %d", http.StatusOK, rr.Code)
+	}
+
+	limiter.mu.Lock()
+	defer limiter.mu.Unlock()
+	if _, ok := limiter.counts["192.0.2.1"]; ok {
+		t.Fatalf("expected connection count to be released")
+	}
+}

@@ -310,13 +310,8 @@ func collaborationConnectionLimiter(trusted []*net.IPNet, limiter *connectionLim
 				limiter.Release(ip)
 			})
 		}
-
-		go func(ctx context.Context) {
-			<-ctx.Done()
-			release()
-		}(r.Context())
+		defer release()
 
 		next.ServeHTTP(w, r)
-		release()
 	})
 }
