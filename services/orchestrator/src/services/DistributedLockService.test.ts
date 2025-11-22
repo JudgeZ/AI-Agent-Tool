@@ -100,18 +100,18 @@ describe("DistributedLockService", () => {
       resetDistributedLockService();
     });
 
-    it("reuses the singleton when the url matches", () => {
-      const first = getDistributedLockService("redis://custom:6379");
-      const second = getDistributedLockService("redis://custom:6379");
+    it("reuses the singleton when the url matches", async () => {
+      const first = await getDistributedLockService("redis://custom:6379");
+      const second = await getDistributedLockService("redis://custom:6379");
 
       expect(second).toBe(first);
       expect(mocks.createClient).toHaveBeenCalledTimes(1);
       expect(mocks.createClient).toHaveBeenCalledWith({ url: "redis://custom:6379" });
     });
 
-    it("reinitializes the singleton when a different url is provided", () => {
-      const first = getDistributedLockService();
-      const second = getDistributedLockService("redis://custom:6379");
+    it("reinitializes the singleton when a different url is provided", async () => {
+      const first = await getDistributedLockService();
+      const second = await getDistributedLockService("redis://custom:6379");
 
       expect(second).not.toBe(first);
       expect(mocks.createClient).toHaveBeenNthCalledWith(1, { url: "redis://localhost:6379" });

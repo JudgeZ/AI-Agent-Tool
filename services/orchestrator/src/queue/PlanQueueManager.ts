@@ -41,6 +41,7 @@ export class PlanQueueManager {
   private queueAdapter: QueueAdapter | undefined;
   private readonly fileLockManager = fileLockManager;
   private readonly planSessions = new Map<string, string>();
+  private readonly sessionRefCounts = new Map<string, number>();
 
   private config: AppConfig; // Remove readonly to allow updates
   private readonly queueLogger = appLogger.child({ component: "plan-queue-manager" });
@@ -49,11 +50,11 @@ export class PlanQueueManager {
     this.config = loadConfig();
   }
 
-  private setupServices() {
+  private async setupServices() {
     const pool = this.config.planState.backend === "postgres" ? getPostgresPool() : undefined;
-    
+
     const redisUrl = this.config.server.rateLimits.backend.redisUrl ?? process.env.REDIS_URL ?? "redis://localhost:6379";
-    const lockService = getDistributedLockService(redisUrl);
+    const lockService = await getDistributedLockService(redisUrl);
     const store = createPlanStateStore({
         backend: this.config.planState.backend,
         retentionMs: this.config.retention.planStateDays > 0 ? this.config.retention.planStateDays * 24 * 60 * 60 * 1000 : undefined,
@@ -70,7 +71,7 @@ export class PlanQueueManager {
     this.initializationPromise = (async () => {
       try {
         if (!this.stateService) {
-            this.setupServices();
+            await this.setupServices();
         }
 
         let attempts = 0;
@@ -127,12 +128,13 @@ export class PlanQueueManager {
   async submitPlanSteps(plan: Plan, traceId: string, requestId?: string, subject?: PlanSubject): Promise<void> {
       await this.initialize();
 
-      const sessionId = subject?.sessionId;
-      if (sessionId) {
-          this.planSessions.set(plan.id, sessionId);
-          await this.fileLockManager.restoreSessionLocks(sessionId).catch((err) =>
-            this.queueLogger.warn(
-              { err: normalizeError(err), planId: plan.id, sessionId },
+    const sessionId = subject?.sessionId;
+    if (sessionId) {
+        this.planSessions.set(plan.id, sessionId);
+        this.sessionRefCounts.set(sessionId, (this.sessionRefCounts.get(sessionId) ?? 0) + 1);
+        await this.fileLockManager.restoreSessionLocks(sessionId).catch((err) =>
+          this.queueLogger.warn(
+            { err: normalizeError(err), planId: plan.id, sessionId },
               "failed to restore session locks",
             ),
           );
@@ -407,25 +409,27 @@ export class PlanQueueManager {
         metadata.nextStepIndex >= metadata.steps.length &&
         metadata.lastCompletedIndex >= metadata.steps.length - 1;
 
-      if (metadata.nextStepIndex >= metadata.steps.length) {
-          if (metadata.lastCompletedIndex >= metadata.steps.length - 1) {
-               await this.stateService!.forgetPlanMetadata(planId);
-          } else {
-               await this.stateService!.rememberPlanMetadata(planId, metadata);
-          }
+      if (completed) {
+           await this.stateService!.forgetPlanMetadata(planId);
       } else {
-          await this.stateService!.rememberPlanMetadata(planId, metadata);
+           await this.stateService!.rememberPlanMetadata(planId, metadata);
       }
 
       if (completed) {
         const sessionId = this.planSessions.get(planId);
         if (sessionId) {
-          await this.fileLockManager.releaseSessionLocks(sessionId).catch((err) =>
-            this.queueLogger.warn(
-              { err: normalizeError(err), planId, sessionId },
-              "failed to release session locks",
-            ),
-          );
+          const remaining = (this.sessionRefCounts.get(sessionId) ?? 1) - 1;
+          if (remaining <= 0) {
+            await this.fileLockManager.releaseSessionLocks(sessionId).catch((err) =>
+              this.queueLogger.warn(
+                { err: normalizeError(err), planId, sessionId },
+                "failed to release session locks",
+              ),
+            );
+            this.sessionRefCounts.delete(sessionId);
+          } else {
+            this.sessionRefCounts.set(sessionId, remaining);
+          }
           this.planSessions.delete(planId);
         }
       }
@@ -451,6 +455,7 @@ export class PlanQueueManager {
           if (sessionId && !restoredSessions.has(sessionId)) {
             restoredSessions.add(sessionId);
             this.planSessions.set(persisted.planId, sessionId);
+            this.sessionRefCounts.set(sessionId, (this.sessionRefCounts.get(sessionId) ?? 0) + 1);
             await this.fileLockManager.restoreSessionLocks(sessionId).catch((err) =>
               this.queueLogger.warn(
                 { err: normalizeError(err), sessionId, planId: persisted.planId },

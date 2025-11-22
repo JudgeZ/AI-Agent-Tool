@@ -29,7 +29,7 @@ const mocks = vi.hoisted(() => {
 vi.mock("redis", () => ({ createClient: () => mocks.redisClient }));
 vi.mock("../collaboration/index.js", () => ({ isRoomBusy: mocks.mockIsRoomBusy }));
 vi.mock("./DistributedLockService.js", () => ({
-  getDistributedLockService: () => ({ acquireLock: mocks.mockAcquireLock }),
+  getDistributedLockService: async () => ({ acquireLock: mocks.mockAcquireLock }),
 }));
 
 // Import after mocks are set up
@@ -96,5 +96,14 @@ describe("FileLockManager", () => {
     expect(mockAcquireLock).toHaveBeenCalled();
 
     await lock.release();
+  });
+
+  it("wraps errors during restore acquisitions as unavailable", async () => {
+    mockStore.set(sessionKey("rehydrate"), JSON.stringify(["/foo.txt"]));
+    const manager = new FileLockManager("redis://example");
+    mockAcquireLock.mockRejectedValueOnce(new Error("redis unavailable"));
+
+    await expect(manager.restoreSessionLocks("rehydrate")).resolves.not.toThrow();
+    expect(mockAcquireLock).toHaveBeenCalledWith("file:/foo.txt", 30_000);
   });
 });

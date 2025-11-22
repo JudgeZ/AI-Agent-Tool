@@ -61,15 +61,16 @@ export class DistributedLockService {
   }
 }
 
-export function getDistributedLockService(redisUrl?: string): DistributedLockService {
+export async function getDistributedLockService(redisUrl?: string): Promise<DistributedLockService> {
   const url = redisUrl ?? process.env.REDIS_URL ?? process.env.LOCK_REDIS_URL ?? "redis://localhost:6379";
 
   if (sharedInstance && sharedInstanceUrl && sharedInstanceUrl !== url) {
     const previousInstance = sharedInstance;
-    void previousInstance.disconnect().catch((error) => {
+    sharedInstance = undefined;
+    sharedInstanceUrl = undefined;
+    await previousInstance.disconnect().catch((error) => {
       appLogger.warn({ err: normalizeError(error) }, "failed to close previous lock service client");
     });
-    sharedInstance = undefined;
   }
 
   if (!sharedInstance) {

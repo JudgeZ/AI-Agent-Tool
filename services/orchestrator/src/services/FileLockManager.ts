@@ -28,7 +28,7 @@ export class FileLockError extends Error {
 }
 
 export class FileLockManager {
-  private readonly lockService = getDistributedLockService();
+  private readonly lockServicePromise: Promise<Awaited<ReturnType<typeof getDistributedLockService>>>;
   private readonly redis: RedisClientType;
   private readonly activeLocks = new Map<string, Map<string, FileLock>>();
   private readonly lockHistory = new Map<string, Set<string>>();
@@ -36,6 +36,7 @@ export class FileLockManager {
   private readonly historySchema = z.array(z.string());
 
   constructor(redisUrl?: string) {
+    this.lockServicePromise = getDistributedLockService(redisUrl);
     this.redis = createClient({ url: redisUrl ?? process.env.REDIS_URL ?? "redis://localhost:6379" });
     this.redis.on("error", (err) => {
       appLogger.warn({ err: normalizeError(err) }, "file lock redis error");
@@ -99,7 +100,8 @@ export class FileLockManager {
     const lockKey = `file:${normalizedPath}`;
     try {
       await this.connect();
-      const release = await this.lockService.acquireLock(lockKey, 30_000);
+      const lockService = await this.lockServicePromise;
+      const release = await lockService.acquireLock(lockKey, 30_000);
       const trackedRelease = this.wrapRelease(sessionId, normalizedPath, release);
       const fileLock: FileLock = { path: normalizedPath, lockKey, release: trackedRelease };
       this.rememberLock(sessionId, normalizedPath, fileLock);
@@ -140,6 +142,7 @@ export class FileLockManager {
     const history = this.lockHistory.get(sessionId);
     if (history) {
       history.clear();
+      this.lockHistory.delete(sessionId);
     }
     await this.persistHistory(sessionId);
   }
@@ -217,11 +220,27 @@ export class FileLockManager {
     }
 
     const lockKey = `file:${normalizedPath}`;
-    const release = await this.lockService.acquireLock(lockKey, 30_000);
-    const trackedRelease = this.wrapRelease(sessionId, normalizedPath, release);
-    const fileLock: FileLock = { path: normalizedPath, lockKey, release: trackedRelease };
-    this.rememberLock(sessionId, normalizedPath, fileLock);
-    return fileLock;
+    try {
+      await this.connect();
+      const lockService = await this.lockServicePromise;
+      const release = await lockService.acquireLock(lockKey, 30_000);
+      const trackedRelease = this.wrapRelease(sessionId, normalizedPath, release);
+      const fileLock: FileLock = { path: normalizedPath, lockKey, release: trackedRelease };
+      this.rememberLock(sessionId, normalizedPath, fileLock);
+      return fileLock;
+    } catch (error) {
+      if (error instanceof FileLockError) {
+        throw error;
+      }
+      appLogger.warn(
+        { err: normalizeError(error), path: normalizedPath, sessionId },
+        "failed to acquire file lock during restore",
+      );
+      throw new FileLockError(`Failed to acquire lock for ${normalizedPath}`, "unavailable", {
+        path: normalizedPath,
+        reason: "lock_acquisition_failed",
+      });
+    }
   }
 }
 
