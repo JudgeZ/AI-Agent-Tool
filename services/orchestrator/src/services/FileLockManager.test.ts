@@ -88,6 +88,20 @@ describe("FileLockManager", () => {
     expect(options).toEqual({ EX: 3600 });
   });
 
+  it("caps excessively large lock TTL values", async () => {
+    const manager = new FileLockManager("redis://example", 1_000_000);
+
+    await manager.acquireLock("s1", "project/file.txt", "agent-1");
+
+    expect(mockAcquireLock).toHaveBeenCalledWith(
+      "file:/project/file.txt",
+      300_000,
+      undefined,
+      undefined,
+      undefined,
+    );
+  });
+
   it("restores locks from persisted history", async () => {
     mockStore.set(sessionKey("rehydrate"), JSON.stringify(["/foo.txt", "/bar/baz.md"]));
     const manager = new FileLockManager("redis://example");

@@ -39,6 +39,8 @@ export class FileLockManager {
 
   private readonly historySchema = z.array(z.string());
 
+  private static readonly MAX_LOCK_TTL_MS = 300_000;
+
   constructor(
     redisUrl?: string,
     lockTtlMs = Number(process.env.LOCK_TTL_MS ?? 30_000),
@@ -47,7 +49,11 @@ export class FileLockManager {
     lockRateWindowMs = Number(process.env.LOCK_RATE_LIMIT_WINDOW_MS ?? 60_000),
   ) {
     this.lockServicePromise = getDistributedLockService(redisUrl);
-    this.lockTtlMs = Number.isFinite(lockTtlMs) && lockTtlMs > 0 ? lockTtlMs : 30_000;
+    const normalizedTtl = Number.isFinite(lockTtlMs) && lockTtlMs > 0 ? lockTtlMs : 30_000;
+    this.lockTtlMs = Math.min(normalizedTtl, FileLockManager.MAX_LOCK_TTL_MS);
+    if (this.lockTtlMs < normalizedTtl) {
+      appLogger.warn({ requestedTtlMs: lockTtlMs, appliedTtlMs: this.lockTtlMs }, "lock TTL capped to safe maximum");
+    }
     this.sessionHistoryTtlSeconds =
       Number.isFinite(sessionHistoryTtlSeconds) && sessionHistoryTtlSeconds > 0
         ? sessionHistoryTtlSeconds

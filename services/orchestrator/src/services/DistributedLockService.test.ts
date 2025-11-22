@@ -109,13 +109,13 @@ describe("DistributedLockService", () => {
       expect(mocks.createClient).toHaveBeenCalledWith({ url: "redis://custom:6379" });
     });
 
-    it("reinitializes the singleton when a different url is provided", async () => {
-      const first = await getDistributedLockService();
-      const second = await getDistributedLockService("redis://custom:6379");
+    it("throws when switching redis URLs without reset", async () => {
+      await getDistributedLockService();
 
-      expect(second).not.toBe(first);
-      expect(mocks.createClient).toHaveBeenNthCalledWith(1, { url: "redis://localhost:6379" });
-      expect(mocks.createClient).toHaveBeenNthCalledWith(2, { url: "redis://custom:6379" });
+      await expect(getDistributedLockService("redis://custom:6379")).rejects.toThrow(
+        /already initialized for a different Redis URL/i,
+      );
+      expect(mocks.createClient).toHaveBeenCalledTimes(1);
     });
 
     it("prefers lock-specific redis URL when provided", async () => {

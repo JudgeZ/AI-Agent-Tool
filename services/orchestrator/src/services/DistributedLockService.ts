@@ -89,6 +89,12 @@ export async function getDistributedLockService(redisUrl?: string): Promise<Dist
     return instances.get(url)!;
   }
 
+  if (instances.size > 0 && !instances.has(url)) {
+    throw new Error(
+      "DistributedLockService already initialized for a different Redis URL; call resetDistributedLockService before switching endpoints.",
+    );
+  }
+
   const instance = new DistributedLockService(url);
   instances.set(url, instance);
   return instance;

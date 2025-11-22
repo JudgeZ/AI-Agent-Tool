@@ -129,15 +129,18 @@ export class PlanQueueManager {
       await this.initialize();
 
     const sessionId = subject?.sessionId;
-    if (sessionId) {
+    let sessionTracked = false;
+    try {
+      if (sessionId) {
         this.planSessions.set(plan.id, sessionId);
         this.sessionRefCounts.set(sessionId, (this.sessionRefCounts.get(sessionId) ?? 0) + 1);
+        sessionTracked = true;
         await this.fileLockManager.restoreSessionLocks(sessionId).catch((err) =>
           this.queueLogger.warn(
             { err: normalizeError(err), planId: plan.id, sessionId },
-              "failed to restore session locks",
-            ),
-          );
+            "failed to restore session locks",
+          ),
+        );
       } else {
           this.planSessions.delete(plan.id);
       }
@@ -172,6 +175,24 @@ export class PlanQueueManager {
       });
 
       await this.releaseNextPlanSteps(plan.id);
+    } catch (error) {
+      if (sessionId && sessionTracked) {
+        const remaining = (this.sessionRefCounts.get(sessionId) ?? 1) - 1;
+        if (remaining <= 0) {
+          this.sessionRefCounts.delete(sessionId);
+          await this.fileLockManager.releaseSessionLocks(sessionId).catch((err) =>
+            this.queueLogger.warn(
+              { err: normalizeError(err), planId: plan.id, sessionId },
+              "failed to release session locks after submission failure",
+            ),
+          );
+        } else {
+          this.sessionRefCounts.set(sessionId, remaining);
+        }
+        this.planSessions.delete(plan.id);
+      }
+      throw error;
+    }
   }
 
   async resolvePlanStepApproval(options: {
@@ -452,16 +473,19 @@ export class PlanQueueManager {
           }
 
           const sessionId = persisted.subject?.sessionId;
-          if (sessionId && !restoredSessions.has(sessionId)) {
-            restoredSessions.add(sessionId);
+          if (sessionId) {
             this.planSessions.set(persisted.planId, sessionId);
             this.sessionRefCounts.set(sessionId, (this.sessionRefCounts.get(sessionId) ?? 0) + 1);
-            await this.fileLockManager.restoreSessionLocks(sessionId).catch((err) =>
-              this.queueLogger.warn(
-                { err: normalizeError(err), sessionId, planId: persisted.planId },
-                "failed to restore session locks during rehydrate",
-              ),
-            );
+
+            if (!restoredSessions.has(sessionId)) {
+              restoredSessions.add(sessionId);
+              await this.fileLockManager.restoreSessionLocks(sessionId).catch((err) =>
+                this.queueLogger.warn(
+                  { err: normalizeError(err), sessionId, planId: persisted.planId },
+                  "failed to restore session locks during rehydrate",
+                ),
+              );
+            }
           }
           
           const job: PlanJob = {

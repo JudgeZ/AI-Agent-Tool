@@ -22,3 +22,5 @@
 
 | id | status | description | source | file_location | line_numbers | impl_plan | test_impact | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| T1 | todo | Propagate trace/Span IDs through file locking and filesystem tool logs | Reviewers: "Missing Tracing" feedback | services/orchestrator/src/services/FileLockManager.ts; services/orchestrator/src/tools/core/FileSystemTool.ts | ~30-210 | Thread trace context into lock acquisition/release and filesystem audit logs; add span emission if available. | requires new tests | Ensure alignment with AGENTS observability guidance without leaking sensitive data. |
+| T2 | todo | Add regression tests for concurrent lock acquisition and TTL expiry behavior | Reviewers: "Missing Error Path Tests" | services/orchestrator/src/services/FileLockManager.test.ts | entire file | Simulate parallel lock attempts on same path and TTL expiration/renewal flows. | requires new tests | Cover race conditions and expiration handling to prevent regressions. |
