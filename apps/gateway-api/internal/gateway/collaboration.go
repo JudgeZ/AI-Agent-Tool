@@ -135,6 +135,7 @@ func newCollaborationProxy(target *url.URL) *httputil.ReverseProxy {
 	}
 
 	proxy.Rewrite = func(pr *httputil.ProxyRequest) {
+		pr.SetXForwarded()
 		originalQuery := pr.In.URL.RawQuery
 		pr.Out.URL.Scheme = target.Scheme
 		pr.Out.URL.Host = target.Host

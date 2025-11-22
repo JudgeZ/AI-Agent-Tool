@@ -32,6 +32,32 @@ func TestCollaborationProxyPreservesQuery(t *testing.T) {
 	}
 }
 
+func TestCollaborationProxySetsForwardedHeaders(t *testing.T) {
+	target, err := url.Parse("http://orchestrator:4000")
+	if err != nil {
+		t.Fatalf("failed to parse target: %v", err)
+	}
+
+	proxy := newCollaborationProxy(target)
+
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.local/collaboration/ws?filePath=example.txt", nil)
+	req.RemoteAddr = "203.0.113.10:12345"
+	out := req.Clone(req.Context())
+	proxy.Rewrite(&httputil.ProxyRequest{In: req, Out: out})
+
+	if got := out.Header.Get("X-Forwarded-For"); got != "203.0.113.10" {
+		t.Fatalf("expected X-Forwarded-For to use client IP, got %q", got)
+	}
+
+	if got := out.Header.Get("X-Forwarded-Host"); got != "gateway.local" {
+		t.Fatalf("expected X-Forwarded-Host to preserve host, got %q", got)
+	}
+
+	if got := out.Header.Get("X-Forwarded-Proto"); got != "http" {
+		t.Fatalf("expected X-Forwarded-Proto to preserve scheme, got %q", got)
+	}
+}
+
 func TestCollaborationAuthMiddlewareValidatesSession(t *testing.T) {
 	var called bool
 	validator := func(ctx context.Context, authHeader, cookieHeader, requestID string) (collaborationSession, int, error) {
