@@ -57,7 +57,7 @@ function deriveRoomId(req: IncomingMessage): {
   try {
     parsed = new URL(urlValue, "http://localhost");
   } catch (error) {
-    return { error: `invalid request url: ${String(error)}` };
+    return { error: "invalid request url" };
   }
   const tenantId = headerValue(req.headers["x-tenant-id"]);
   const projectId = headerValue(req.headers["x-project-id"]);
@@ -114,8 +114,10 @@ async function loadRoomFromDisk(roomId: string, state: RoomState): Promise<void>
     await ensurePersistenceDir();
     const content = await fs.readFile(roomPersistencePath(roomId), "utf8");
     const text = state.doc.getText(TEXT_FIELD);
-    text.delete(0, text.length);
-    text.insert(0, content);
+    state.doc.transact(() => {
+      text.delete(0, text.length);
+      text.insert(0, content);
+    }, COMPACTION_ORIGIN);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
       appLogger.warn(
@@ -139,7 +141,12 @@ async function compactRoom(roomId: string, state: RoomState): Promise<void> {
     const nextDoc = new Y.Doc();
     const text = nextDoc.getText(TEXT_FIELD);
     const persisted = await fs.readFile(roomPersistencePath(roomId), "utf8");
-    text.insert(0, persisted);
+    nextDoc.transact(() => {
+      text.insert(0, persisted);
+    }, COMPACTION_ORIGIN);
+    if (state.clients.size > 0) {
+      return;
+    }
     const existingClients = state.clients;
     state.doc = nextDoc;
     state.clients = existingClients;
@@ -181,6 +188,7 @@ export function setupCollaborationServer(httpServer: http.Server | https.Server)
   httpServer.on("upgrade", (request, socket, head) => {
     const { pathname } = new URL(request.url ?? "", "http://localhost");
     if (pathname !== "/collaboration/ws") {
+      socket.destroy();
       return;
     }
 
@@ -192,16 +200,18 @@ export function setupCollaborationServer(httpServer: http.Server | https.Server)
       }
 
       const room = getRoomState(derived.roomId, derived.filePath);
-      loadRoomFromDisk(derived.roomId, room).catch((error) => {
-        appLogger.warn({ err: normalizeError(error), roomId: derived.roomId }, "failed to hydrate room from disk");
-      });
+      loadRoomFromDisk(derived.roomId, room)
+        .catch((error) => {
+          appLogger.warn({ err: normalizeError(error), roomId: derived.roomId }, "failed to hydrate room from disk");
+        })
+        .finally(() => {
+          room.clients.add(ws);
+          ws.once("close", () => {
+            room.clients.delete(ws);
+          });
 
-      room.clients.add(ws);
-      ws.once("close", () => {
-        room.clients.delete(ws);
-      });
-
-      setupWSConnection(ws, request, { docName: derived.roomId, gc: true, getYDoc: () => room.doc });
+          setupWSConnection(ws, request, { docName: derived.roomId, gc: true, getYDoc: () => room.doc });
+        });
     });
   });
 }
@@ -214,8 +224,8 @@ export function isRoomBusy(roomId: string, thresholdMs = 5000): boolean {
   return Date.now() - room.lastUserEditAt < thresholdMs;
 }
 
-export function applyAgentEditToRoom(roomId: string, newContent: string): Y.Doc {
-  const state = getRoomState(roomId, "");
+export function applyAgentEditToRoom(roomId: string, filePath: string, newContent: string): Y.Doc {
+  const state = getRoomState(roomId, filePath);
   const text = state.doc.getText(TEXT_FIELD);
   state.doc.transact(() => {
     text.delete(0, text.length);

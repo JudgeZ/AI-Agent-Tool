@@ -27,10 +27,12 @@ func newCollaborationProxy(target *url.URL) *httputil.ReverseProxy {
 	}
 
 	proxy.Director = func(req *http.Request) {
+		originalQuery := req.URL.RawQuery
 		req.URL.Scheme = target.Scheme
 		req.URL.Host = target.Host
 		req.URL.Path = "/collaboration/ws"
 		req.URL.RawPath = ""
+		req.URL.RawQuery = originalQuery
 		req.Host = target.Host
 		if original := req.Header.Get("Sec-WebSocket-Protocol"); original != "" {
 			req.Header.Set("Sec-WebSocket-Protocol", original)
@@ -38,9 +40,7 @@ func newCollaborationProxy(target *url.URL) *httputil.ReverseProxy {
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-		writeErrorResponse(w, r, http.StatusBadGateway, "upstream_error", "failed to contact orchestrator", map[string]any{
-			"error": err.Error(),
-		})
+		writeErrorResponse(w, r, http.StatusBadGateway, "upstream_error", "failed to contact orchestrator", nil)
 	}
 
 	return proxy
@@ -57,15 +57,7 @@ func collaborationAuthMiddleware(next http.Handler) http.Handler {
 		}
 
 		if authHeader != "" {
-			if len(authHeader) > maxAuthorizationHeaderLen {
-				writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "authorization header invalid", nil)
-				return
-			}
-			if hasUnsafeHeaderRunes(authHeader) {
-				writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "authorization header invalid", nil)
-				return
-			}
-			if !strings.HasPrefix(strings.ToLower(authHeader), "bearer ") || strings.TrimSpace(authHeader[7:]) == "" {
+			if len(authHeader) > maxAuthorizationHeaderLen || hasUnsafeHeaderRunes(authHeader) || !strings.HasPrefix(strings.ToLower(authHeader), "bearer ") || strings.TrimSpace(authHeader[7:]) == "" {
 				writeErrorResponse(w, r, http.StatusBadRequest, "invalid_request", "authorization header invalid", nil)
 				return
 			}

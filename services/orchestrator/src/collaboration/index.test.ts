@@ -72,7 +72,7 @@ describe("collaboration server", () => {
 
   it("tracks busy rooms only for human edits", () => {
     const roomId = "room-busy-check";
-    const doc = applyAgentEditToRoom(roomId, "initial");
+    const doc = applyAgentEditToRoom(roomId, "room-busy-check.txt", "initial");
 
     expect(isRoomBusy(roomId)).toBe(false);
 
