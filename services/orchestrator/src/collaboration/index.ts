@@ -283,7 +283,7 @@ function deriveRoomId(
     return { error: "invalid tenant id" };
   }
 
-  const key = `${normalizedTenant.tenantId}:${projectId}:${sessionId}:${normalizedPath}`;
+  const key = `${normalizedTenant.tenantId}:${projectId}:${normalizedPath}`;
   const roomId = createHash("sha256").update(key).digest("hex");
   return { roomId, filePath };
 }

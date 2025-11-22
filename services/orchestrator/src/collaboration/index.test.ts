@@ -68,6 +68,34 @@ vi.mock(
   { virtual: true },
 );
 
+vi.mock(
+  "y-protocols/awareness.js",
+  () => {
+    class Awareness {
+      constructor(_doc?: unknown) {}
+      on(): void {}
+      off(): void {}
+      destroy(): void {}
+      getLocalState(): Record<string, unknown> | null {
+        return {};
+      }
+      getStates(): Map<string, unknown> {
+        return new Map();
+      }
+      setLocalState(_state: unknown): void {}
+      setLocalStateField(_field: string, _value: unknown): void {}
+    }
+    return { Awareness };
+  },
+  { virtual: true },
+);
+
+vi.mock(
+  "lib0/mutex.js",
+  () => ({ createMutex: () => (fn: () => void) => fn() }),
+  { virtual: true },
+);
+
 vi.mock("../observability/audit.js", () => {
   const logAuditEvent = vi.fn();
   return { logAuditEvent, hashIdentifier: (value: string) => `hashed:${value}` };
@@ -327,6 +355,40 @@ describe("collaboration server", () => {
           typeof event.details?.roomId === "string",
       ),
     ).toBe(true);
+  });
+
+  it("reuses room ids for the same tenant, project, and file across sessions", async () => {
+    const auditSpy = vi.mocked(logAuditEvent);
+    auditSpy.mockClear();
+    const filePath = "shared-room.txt";
+
+    const connectAndClose = (headers: Record<string, string>) =>
+      new Promise<void>((resolve, reject) => {
+        const client = new WebSocket(
+          `ws://127.0.0.1:${port}/collaboration/ws?filePath=${filePath}`,
+          { headers },
+        );
+
+        client.on("open", () => {
+          client.close();
+        });
+        client.on("close", () => resolve());
+        client.on("error", (error) => reject(error));
+      });
+
+    await connectAndClose(createSessionHeaders({ tenantId: "tenant-shared", projectId: "project-shared" }));
+    await connectAndClose(createSessionHeaders({ tenantId: "tenant-shared", projectId: "project-shared" }));
+
+    const successes = auditSpy.mock.calls
+      .map(([event]) => event)
+      .filter((event) => event.action === "collaboration.connection" && event.outcome === "success");
+
+    expect(successes.length).toBeGreaterThanOrEqual(2);
+    const firstRoomId = successes[0]?.details?.roomId;
+    const secondRoomId = successes[1]?.details?.roomId;
+
+    expect(firstRoomId).toBeDefined();
+    expect(secondRoomId).toBe(firstRoomId);
   });
 
   it("rejects path traversal attempts", async () => {
