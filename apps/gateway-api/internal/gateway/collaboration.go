@@ -363,12 +363,16 @@ func collaborationConnectionLimiter(trusted []*net.IPNet, limiter *connectionLim
 			})
 		}
 
+		ctx, cancel := context.WithCancel(r.Context())
 		go func(ctx context.Context) {
 			<-ctx.Done()
 			release()
-		}(r.Context())
+		}(ctx)
 
-		defer release()
+		defer func() {
+			cancel()
+			release()
+		}()
 		next.ServeHTTP(w, r)
 	})
 }

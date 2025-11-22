@@ -105,6 +105,7 @@ vi.mock("../observability/audit.js", () => {
 import {
   applyAgentEditToRoom,
   getRoomStateForTesting,
+  getTrackedIpCountForTesting,
   isRoomBusy,
   resetIpConnectionCountsForTesting,
   runRoomMaintenanceForTesting,
@@ -127,9 +128,34 @@ describe("persistence directory validation", () => {
         /persistence directory permissions/i,
       );
     } finally {
-      process.env.COLLAB_PERSISTENCE_DIR = originalDir;
+      if (originalDir === undefined) {
+        delete process.env.COLLAB_PERSISTENCE_DIR;
+      } else {
+        process.env.COLLAB_PERSISTENCE_DIR = originalDir;
+      }
       await new Promise<void>((resolve) => server.close(() => resolve()));
       await fs.rm(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it("fails fast when persistence directory cannot be created", async () => {
+    const statSpy = vi
+      .spyOn(fs, "stat")
+      .mockRejectedValueOnce(Object.assign(new Error("missing"), { code: "ENOENT" }));
+    const mkdirSpy = vi
+      .spyOn(fs, "mkdir")
+      .mockRejectedValueOnce(Object.assign(new Error("permission denied"), { code: "EACCES" }));
+    const server = http.createServer();
+    const config = structuredClone(DEFAULT_CONFIG);
+
+    try {
+      await expect(setupCollaborationServer(server, config)).rejects.toThrow(
+        /failed to prepare collaboration persistence directory/i,
+      );
+    } finally {
+      mkdirSpy.mockRestore();
+      statSpy.mockRestore();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
     }
   });
 });
@@ -300,6 +326,41 @@ describe("collaboration server", () => {
       first.on("close", () => resolve());
       first.close();
     });
+  });
+
+  it("cleans up per-IP connection tracking after connections close", async () => {
+    const headers = createSessionHeaders({ tenantId: "tenant-cleanup", projectId: "project-cleanup" });
+
+    const first = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=cleanup.txt`, { headers });
+    await new Promise<void>((resolve, reject) => {
+      first.on("open", () => resolve());
+      first.on("error", (error) => reject(error));
+    });
+
+    expect(getTrackedIpCountForTesting()).toBe(1);
+
+    await new Promise<void>((resolve) => {
+      first.on("close", () => resolve());
+      first.close();
+    });
+
+    expect(getTrackedIpCountForTesting()).toBe(0);
+
+    const second = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=cleanup.txt`, { headers });
+
+    await new Promise<void>((resolve, reject) => {
+      second.on("open", () => resolve());
+      second.on("error", (error) => reject(error));
+    });
+
+    expect(getTrackedIpCountForTesting()).toBe(1);
+
+    await new Promise<void>((resolve) => {
+      second.on("close", () => resolve());
+      second.close();
+    });
+
+    expect(getTrackedIpCountForTesting()).toBe(0);
   });
 
   it("ignores spoofed X-Real-IP headers for per-IP limiting", async () => {

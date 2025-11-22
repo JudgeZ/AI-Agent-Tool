@@ -1,4 +1,5 @@
 import { createHash } from "node:crypto";
+import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
 import path from "node:path";
 import http from "node:http";
@@ -74,14 +75,20 @@ async function ensurePersistenceDir(): Promise<void> {
     if ((stats.mode & 0o077) !== 0) {
       throw new Error("collaboration persistence directory permissions are too broad; use 0700");
     }
+    await fs.access(persistenceDir, fsConstants.W_OK);
     return;
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      throw error;
+      throw new Error(`failed to prepare collaboration persistence directory: ${(error as Error).message}`);
     }
   }
 
-  await fs.mkdir(persistenceDir, { recursive: true, mode: 0o700 });
+  try {
+    await fs.mkdir(persistenceDir, { recursive: true, mode: 0o700 });
+    await fs.access(persistenceDir, fsConstants.W_OK);
+  } catch (error) {
+    throw new Error(`failed to prepare collaboration persistence directory: ${(error as Error).message}`);
+  }
 }
 
 function headerValue(value: string | string[] | undefined): string | undefined {
@@ -581,6 +588,16 @@ export async function setupCollaborationServer(
 // Exported for tests only.
 export function resetIpConnectionCountsForTesting(): void {
   ipConnectionCounts.clear();
+}
+
+// Exported for tests only.
+export function getIpConnectionCountForTesting(ip: string): number | undefined {
+  return ipConnectionCounts.get(ip);
+}
+
+// Exported for tests only.
+export function getTrackedIpCountForTesting(): number {
+  return ipConnectionCounts.size;
 }
 
 // Exported for tests only.
