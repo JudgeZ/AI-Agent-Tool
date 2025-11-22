@@ -117,5 +117,15 @@ describe("DistributedLockService", () => {
       expect(mocks.createClient).toHaveBeenNthCalledWith(1, { url: "redis://localhost:6379" });
       expect(mocks.createClient).toHaveBeenNthCalledWith(2, { url: "redis://custom:6379" });
     });
+
+    it("prefers lock-specific redis URL when provided", async () => {
+      process.env.REDIS_URL = "redis://default:6379";
+      process.env.LOCK_REDIS_URL = "redis://lock-specific:6379";
+
+      const service = await getDistributedLockService();
+
+      expect(service).toBeDefined();
+      expect(mocks.createClient).toHaveBeenCalledWith({ url: "redis://lock-specific:6379" });
+    });
   });
 });

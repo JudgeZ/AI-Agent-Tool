@@ -35,16 +35,23 @@ const mocks = vi.hoisted(() => {
 });
 
 vi.mock("../collaboration/index.js", () => ({ isRoomBusy: mocks.mockIsRoomBusy }));
-vi.mock("./DistributedLockService.js", () => ({
-  getDistributedLockService: async () => ({
-    acquireLock: mocks.mockAcquireLock,
-    connect: mocks.mockConnect,
-    getClient: () => mocks.redisClient,
-  }),
-}));
+vi.mock("./DistributedLockService.js", async () => {
+  const actual = await vi.importActual<typeof import("./DistributedLockService.js")>(
+    "./DistributedLockService.js",
+  );
+  return {
+    ...actual,
+    getDistributedLockService: async () => ({
+      acquireLock: mocks.mockAcquireLock,
+      connect: mocks.mockConnect,
+      getClient: () => mocks.redisClient,
+    }),
+  };
+});
 
 // Import after mocks are set up
 import { FileLockError, FileLockManager } from "./FileLockManager.js";
+import { LockAcquisitionError } from "./DistributedLockService.js";
 
 const { store: mockStore, setOptions: mockSetOptions, redisClient: mockRedisClient, mockAcquireLock, mockIsRoomBusy } = mocks;
 const sessionKey = (sessionId: string) => `session:locks:${sessionId}`;
@@ -62,7 +69,7 @@ describe("FileLockManager", () => {
     const lock = await manager.acquireLock("s1", "project/file.txt", "agent-1");
 
     expect(lock.path).toBe("/project/file.txt");
-    expect(mockAcquireLock).toHaveBeenCalledWith("file:/project/file.txt", 30_000);
+    expect(mockAcquireLock).toHaveBeenCalledWith("file:/project/file.txt", 30_000, undefined, undefined, undefined);
 
     const stored = JSON.parse(mockStore.get(sessionKey("s1")) ?? "[]");
     expect(stored).toEqual(["/project/file.txt"]);
@@ -87,8 +94,8 @@ describe("FileLockManager", () => {
 
     await manager.restoreSessionLocks("rehydrate");
 
-    expect(mockAcquireLock).toHaveBeenCalledWith("file:/foo.txt", 30_000);
-    expect(mockAcquireLock).toHaveBeenCalledWith("file:/bar/baz.md", 30_000);
+    expect(mockAcquireLock).toHaveBeenCalledWith("file:/foo.txt", 30_000, undefined, undefined, undefined);
+    expect(mockAcquireLock).toHaveBeenCalledWith("file:/bar/baz.md", 30_000, undefined, undefined, undefined);
   });
 
   it("returns busy errors when room is active", async () => {
@@ -124,7 +131,7 @@ describe("FileLockManager", () => {
     mockAcquireLock.mockRejectedValueOnce(new Error("redis unavailable"));
 
     await expect(manager.restoreSessionLocks("rehydrate")).resolves.not.toThrow();
-    expect(mockAcquireLock).toHaveBeenCalledWith("file:/foo.txt", 30_000);
+    expect(mockAcquireLock).toHaveBeenCalledWith("file:/foo.txt", 30_000, undefined, undefined, undefined);
   });
 
   it("wraps connection errors during restore acquisitions", async () => {
@@ -148,5 +155,33 @@ describe("FileLockManager", () => {
   it("rejects invalid session identifiers", async () => {
     const manager = new FileLockManager("redis://example");
     await expect(manager.acquireLock("bad:id", "project/file.txt")).rejects.toBeInstanceOf(FileLockError);
+  });
+
+  it("throttles repeated lock attempts per session", async () => {
+    const manager = new FileLockManager("redis://example", 30_000, 0, 1, 60_000);
+
+    await manager.acquireLock("s1", "project/file.txt");
+
+    await expect(manager.acquireLock("s1", "project/other.txt")).rejects.toMatchObject({ code: "rate_limited" });
+  });
+
+  it("maps distributed busy errors to busy responses", async () => {
+    mockAcquireLock.mockRejectedValueOnce(new LockAcquisitionError("contended", "busy"));
+    const manager = new FileLockManager("redis://example");
+
+    await expect(manager.acquireLock("s1", "project/contended.txt")).rejects.toMatchObject({
+      code: "busy",
+      details: { reason: "lock_contended" },
+    });
+  });
+
+  it("surfaces timeout errors as busy with timeout reason", async () => {
+    mockAcquireLock.mockRejectedValueOnce(new LockAcquisitionError("timeout", "timeout"));
+    const manager = new FileLockManager("redis://example");
+
+    await expect(manager.acquireLock("s1", "project/timeout.txt")).rejects.toMatchObject({
+      code: "busy",
+      details: { reason: "lock_timeout" },
+    });
   });
 });

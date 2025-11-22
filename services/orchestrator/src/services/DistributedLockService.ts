@@ -4,6 +4,15 @@ import { randomUUID } from "node:crypto";
 
 const instances = new Map<string, DistributedLockService>();
 
+export class LockAcquisitionError extends Error {
+  constructor(
+    message: string,
+    public readonly code: "busy" | "timeout",
+  ) {
+    super(message);
+  }
+}
+
 export class DistributedLockService {
   private readonly client: RedisClientType;
   private connected = false;
@@ -33,7 +42,13 @@ export class DistributedLockService {
     return this.client;
   }
 
-  async acquireLock(resource: string, ttlMs: number, retryCount = 3, retryDelayMs = 100): Promise<() => Promise<void>> {
+  async acquireLock(
+    resource: string,
+    ttlMs: number,
+    retryCount = 3,
+    retryDelayMs = 100,
+    trace?: { traceId?: string; spanId?: string },
+  ): Promise<() => Promise<void>> {
     await this.connect();
     const key = `lock:${resource}`;
     const token = randomUUID();
@@ -54,18 +69,21 @@ export class DistributedLockService {
             `;
             await this.client.eval(script, { keys: [key], arguments: [token] });
           } catch (error) {
-            appLogger.warn({ err: normalizeError(error), resource }, "failed to release lock");
+            appLogger.warn({ err: normalizeError(error), resource, ...trace }, "failed to release lock");
           }
         };
       }
       await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
     }
-    throw new Error(`Failed to acquire lock for resource ${resource} after ${retryCount} attempts`);
+    throw new LockAcquisitionError(
+      `Failed to acquire lock for resource ${resource} after ${retryCount} attempts`,
+      "busy",
+    );
   }
 }
 
 export async function getDistributedLockService(redisUrl?: string): Promise<DistributedLockService> {
-  const url = redisUrl ?? process.env.REDIS_URL ?? process.env.LOCK_REDIS_URL ?? "redis://localhost:6379";
+  const url = redisUrl ?? process.env.LOCK_REDIS_URL ?? process.env.REDIS_URL ?? "redis://localhost:6379";
 
   if (instances.has(url)) {
     return instances.get(url)!;

@@ -6,6 +6,7 @@ import path from "node:path";
 import { applyAgentEditToRoom } from "../../collaboration/index.js";
 import { appLogger, normalizeError } from "../../observability/logger.js";
 import { FileLockError, fileLockManager } from "../../services/FileLockManager.js";
+import { PerSessionRateLimiter } from "../../services/RateLimiter.js";
 import { SandboxCapabilities, SandboxType } from "../../sandbox/index.js";
 import { McpTool, ToolCapability, type ToolContext, type ToolMetadata, type ToolResult } from "../McpTool";
 
@@ -26,6 +27,7 @@ interface FileSystemToolInput {
 export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
   private readonly config: FileSystemToolConfig;
   private readonly realProjectRoot: string;
+  private readonly operationRateLimiter: PerSessionRateLimiter;
 
   constructor(logger: any, config: Partial<FileSystemToolConfig> = {}) {
     const metadata: ToolMetadata = {
@@ -60,6 +62,16 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
         config.criticalPatterns ?? [/package-lock\.json$/i, /yarn\.lock$/i, /\.env/i],
     };
     this.realProjectRoot = fsSync.realpathSync(this.config.projectRoot);
+    const opLimit = Number.isFinite(Number(process.env.FILESYSTEM_RATE_LIMIT_PER_MIN))
+      ? Number(process.env.FILESYSTEM_RATE_LIMIT_PER_MIN)
+      : 120;
+    const opWindow = Number.isFinite(Number(process.env.FILESYSTEM_RATE_LIMIT_WINDOW_MS))
+      ? Number(process.env.FILESYSTEM_RATE_LIMIT_WINDOW_MS)
+      : 60_000;
+    this.operationRateLimiter = new PerSessionRateLimiter(
+      opLimit > 0 ? opLimit : 120,
+      opWindow > 0 ? opWindow : 60_000,
+    );
   }
 
   private resolvePath(target: string): string {
@@ -100,6 +112,17 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
     return createHash("sha256").update(resolvedPath).digest("hex");
   }
 
+  private enforceOperationLimit(sessionId: string): void {
+    const result = this.operationRateLimiter.check(sessionId);
+    if (!result.allowed) {
+      throw new FileLockError("Filesystem operation rate limit exceeded", "rate_limited", {
+        sessionId,
+        limit: result.limit,
+        windowMs: result.windowMs,
+      });
+    }
+  }
+
   async execute(input: FileSystemToolInput, context: ToolContext): Promise<ToolResult> {
     const started = Date.now();
     await this.validateInput(input);
@@ -109,17 +132,20 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
     try {
       const resolvedPath = this.resolvePath(input.path);
       const sessionId = input.sessionId ?? context.requestId ?? "anonymous-session";
+      this.enforceOperationLimit(sessionId);
       const roomId = this.roomIdForPath(resolvedPath);
       const auditContext = {
         sessionId,
         agentId: input.agentId,
         requestId: context.requestId,
+        traceId: context.requestId,
         path: resolvedPath,
         action: input.action,
       };
+      const traceContext = { traceId: context.requestId, requestId: context.requestId };
 
       if (input.action === "read") {
-        lock = await fileLockManager.acquireLock(sessionId, resolvedPath, input.agentId);
+        lock = await fileLockManager.acquireLock(sessionId, resolvedPath, input.agentId, traceContext);
         try {
           const content = await fs.readFile(resolvedPath, "utf-8");
           appLogger.info({ ...auditContext }, "filesystem read completed");
@@ -136,7 +162,7 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
         }
       }
 
-      lock = await fileLockManager.acquireLock(sessionId, resolvedPath, input.agentId);
+      lock = await fileLockManager.acquireLock(sessionId, resolvedPath, input.agentId, traceContext);
       let approved = true;
 
       const requiresReview = input.requiresReview || this.isCritical(resolvedPath);
@@ -187,6 +213,14 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
         return {
           success: false,
           error: `File busy: ${error.message}`,
+          duration: Date.now() - started,
+          logs,
+          metadata: { reason: error.details },
+        };
+      } else if (error instanceof FileLockError && error.code === "rate_limited") {
+        return {
+          success: false,
+          error: `Rate limit exceeded: ${error.message}`,
           duration: Date.now() - started,
           logs,
           metadata: { reason: error.details },

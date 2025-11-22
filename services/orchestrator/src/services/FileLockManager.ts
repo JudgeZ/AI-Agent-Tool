@@ -5,7 +5,8 @@ import { z } from "zod";
 
 import { isRoomBusy } from "../collaboration/index.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
-import { getDistributedLockService } from "./DistributedLockService.js";
+import { getDistributedLockService, LockAcquisitionError } from "./DistributedLockService.js";
+import { PerSessionRateLimiter } from "./RateLimiter.js";
 
 type ReleaseFn = () => Promise<void>;
 
@@ -15,7 +16,7 @@ export interface FileLock {
   release: ReleaseFn;
 }
 
-export type FileLockErrorCode = "busy" | "unavailable";
+export type FileLockErrorCode = "busy" | "unavailable" | "rate_limited";
 
 export class FileLockError extends Error {
   constructor(
@@ -32,6 +33,7 @@ export class FileLockManager {
   private readonly redisClientPromise: Promise<RedisClientType>;
   private readonly lockTtlMs: number;
   private readonly sessionHistoryTtlSeconds: number | null;
+  private readonly lockRateLimiter: PerSessionRateLimiter;
   private readonly activeLocks = new Map<string, Map<string, FileLock>>();
   private readonly lockHistory = new Map<string, Set<string>>();
 
@@ -41,6 +43,8 @@ export class FileLockManager {
     redisUrl?: string,
     lockTtlMs = Number(process.env.LOCK_TTL_MS ?? 30_000),
     sessionHistoryTtlSeconds = Number(process.env.LOCK_HISTORY_TTL_SEC ?? 0),
+    lockRateLimit = Number(process.env.LOCK_RATE_LIMIT_PER_MIN ?? 60),
+    lockRateWindowMs = Number(process.env.LOCK_RATE_LIMIT_WINDOW_MS ?? 60_000),
   ) {
     this.lockServicePromise = getDistributedLockService(redisUrl);
     this.lockTtlMs = Number.isFinite(lockTtlMs) && lockTtlMs > 0 ? lockTtlMs : 30_000;
@@ -48,6 +52,9 @@ export class FileLockManager {
       Number.isFinite(sessionHistoryTtlSeconds) && sessionHistoryTtlSeconds > 0
         ? sessionHistoryTtlSeconds
         : null;
+    const limit = Number.isFinite(lockRateLimit) && lockRateLimit > 0 ? lockRateLimit : 60;
+    const windowMs = Number.isFinite(lockRateWindowMs) && lockRateWindowMs > 0 ? lockRateWindowMs : 60_000;
+    this.lockRateLimiter = new PerSessionRateLimiter(limit, windowMs);
     this.redisClientPromise = this.lockServicePromise.then(async (service) => {
       await service.connect();
       const client = service.getClient();
@@ -82,6 +89,17 @@ export class FileLockManager {
 
   private sessionHistoryKey(sessionId: string): string {
     return `session:locks:${this.sanitizeSessionId(sessionId)}`;
+  }
+
+  private enforceRateLimit(sessionId: string): void {
+    const result = this.lockRateLimiter.check(sessionId);
+    if (!result.allowed) {
+      throw new FileLockError("Session lock rate limit exceeded", "rate_limited", {
+        sessionId,
+        windowMs: result.windowMs,
+        limit: result.limit,
+      });
+    }
   }
 
   private async persistHistory(sessionId: string, throwOnError = false): Promise<void> {
@@ -120,8 +138,14 @@ export class FileLockManager {
     this.lockHistory.get(sessionId)!.add(normalizedPath);
   }
 
-  async acquireLock(sessionId: string, filePath: string, agentId?: string): Promise<FileLock> {
+  async acquireLock(
+    sessionId: string,
+    filePath: string,
+    agentId?: string,
+    traceContext?: { traceId?: string; requestId?: string; spanId?: string },
+  ): Promise<FileLock> {
     this.sanitizeSessionId(sessionId);
+    this.enforceRateLimit(sessionId);
     const normalizedPath = this.normalizePath(filePath);
 
     const roomId = this.buildRoomId(normalizedPath);
@@ -136,7 +160,7 @@ export class FileLockManager {
     try {
       await this.connect();
       const lockService = await this.lockServicePromise;
-      const release = await lockService.acquireLock(lockKey, this.lockTtlMs);
+      const release = await lockService.acquireLock(lockKey, this.lockTtlMs, undefined, undefined, traceContext);
       const trackedRelease = this.wrapRelease(sessionId, normalizedPath, release);
       const fileLock: FileLock = { path: normalizedPath, lockKey, release: trackedRelease };
       this.rememberLock(sessionId, normalizedPath, fileLock);
@@ -153,8 +177,14 @@ export class FileLockManager {
       if (error instanceof FileLockError) {
         throw error;
       }
+      if (error instanceof LockAcquisitionError) {
+        throw new FileLockError(`File is busy: ${normalizedPath}`, "busy", {
+          path: normalizedPath,
+          reason: error.code === "busy" ? "lock_contended" : "lock_timeout",
+        });
+      }
       appLogger.warn(
-        { err: normalizeError(error), path: normalizedPath, sessionId, agentId },
+        { err: normalizeError(error), path: normalizedPath, sessionId, agentId, ...traceContext },
         "failed to acquire file lock",
       );
       throw new FileLockError(`Failed to acquire lock for ${normalizedPath}`, "unavailable", {
@@ -188,6 +218,7 @@ export class FileLockManager {
       this.lockHistory.delete(sessionId);
     }
     await this.persistHistory(sessionId);
+    this.lockRateLimiter.reset(sessionId);
   }
 
   async restoreSessionLocks(sessionId: string): Promise<void> {
@@ -261,8 +292,13 @@ export class FileLockManager {
     };
   }
 
-  private async acquireLockWithoutPersist(sessionId: string, filePath: string): Promise<FileLock> {
+  private async acquireLockWithoutPersist(
+    sessionId: string,
+    filePath: string,
+    traceContext?: { traceId?: string; requestId?: string; spanId?: string },
+  ): Promise<FileLock> {
     this.sanitizeSessionId(sessionId);
+    this.enforceRateLimit(sessionId);
     const normalizedPath = this.normalizePath(filePath);
     const roomId = this.buildRoomId(normalizedPath);
     if (isRoomBusy(roomId)) {
@@ -276,7 +312,7 @@ export class FileLockManager {
     try {
       await this.connect();
       const lockService = await this.lockServicePromise;
-      const release = await lockService.acquireLock(lockKey, this.lockTtlMs);
+      const release = await lockService.acquireLock(lockKey, this.lockTtlMs, undefined, undefined, traceContext);
       const trackedRelease = this.wrapRelease(sessionId, normalizedPath, release);
       const fileLock: FileLock = { path: normalizedPath, lockKey, release: trackedRelease };
       this.rememberLock(sessionId, normalizedPath, fileLock);
@@ -285,8 +321,14 @@ export class FileLockManager {
       if (error instanceof FileLockError) {
         throw error;
       }
+      if (error instanceof LockAcquisitionError) {
+        throw new FileLockError(`File is busy: ${normalizedPath}`, "busy", {
+          path: normalizedPath,
+          reason: error.code === "busy" ? "lock_contended" : "lock_timeout",
+        });
+      }
       appLogger.warn(
-        { err: normalizeError(error), path: normalizedPath, sessionId },
+        { err: normalizeError(error), path: normalizedPath, sessionId, ...traceContext },
         "failed to acquire file lock during restore",
       );
       throw new FileLockError(`Failed to acquire lock for ${normalizedPath}`, "unavailable", {

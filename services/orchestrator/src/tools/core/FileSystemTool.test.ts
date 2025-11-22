@@ -7,7 +7,11 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
   class MockFileLockError extends Error {
-    constructor(message: string, public readonly code: "busy" | "unavailable", public readonly details?: any) {
+    constructor(
+      message: string,
+      public readonly code: "busy" | "unavailable" | "rate_limited",
+      public readonly details?: any,
+    ) {
       super(message);
     }
   }
@@ -115,7 +119,10 @@ describe("FileSystemTool", () => {
     const roomId = createHash("sha256").update(resolved).digest("hex");
 
     expect(result.success).toBe(true);
-    expect(acquireLockMock).toHaveBeenCalledWith("s1", resolved, "agent");
+    expect(acquireLockMock).toHaveBeenCalledWith("s1", resolved, "agent", {
+      requestId: "req-123",
+      traceId: "req-123",
+    });
     expect(applyAgentEditToRoomMock).toHaveBeenCalledWith(roomId, resolved, "hello world");
     expect(releaseMock).toHaveBeenCalled();
   });
@@ -177,5 +184,45 @@ describe("FileSystemTool", () => {
     await expect(fs.stat(target)).rejects.toThrow();
     expect(result.success).toBe(true);
     expect(releaseMock).toHaveBeenCalled();
+  });
+
+  it("returns rate limit metadata when lock manager throttles", async () => {
+    acquireLockMock.mockRejectedValueOnce(
+      new MockFileLockError("Too many requests", "rate_limited", { limit: 1, windowMs: 60_000 }),
+    );
+    const tool = new FileSystemTool(testLogger, { projectRoot });
+
+    const result = await tool.execute(
+      { path: "blocked.txt", action: "write", content: "data", sessionId: "s-rate" },
+      { requestId: "req-rate" } as any,
+    );
+
+    expect(result.success).toBe(false);
+    expect(result.metadata?.reason).toEqual({ limit: 1, windowMs: 60_000 });
+  });
+
+  it("enforces per-session filesystem operation quotas", async () => {
+    const originalLimit = process.env.FILESYSTEM_RATE_LIMIT_PER_MIN;
+    process.env.FILESYSTEM_RATE_LIMIT_PER_MIN = "1";
+    const tool = new FileSystemTool(testLogger, { projectRoot });
+
+    try {
+      const first = await tool.execute(
+        { path: "rate.txt", action: "write", content: "one", sessionId: "quota" },
+        { requestId: "req-rate-1" } as any,
+      );
+
+      const second = await tool.execute(
+        { path: "rate.txt", action: "write", content: "two", sessionId: "quota" },
+        { requestId: "req-rate-2" } as any,
+      );
+
+      expect(first.success).toBe(true);
+      expect(second.success).toBe(false);
+      expect(second.error).toContain("Rate limit");
+      expect(acquireLockMock).toHaveBeenCalledTimes(1);
+    } finally {
+      process.env.FILESYSTEM_RATE_LIMIT_PER_MIN = originalLimit;
+    }
   });
 });
