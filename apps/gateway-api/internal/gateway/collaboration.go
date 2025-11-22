@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -26,9 +27,10 @@ const (
 )
 
 var (
-	collaborationIDPattern     = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
-	collaborationFilePathLimit = 4096
-	collaborationTracer        = otel.Tracer("gateway.collaboration")
+	collaborationIDPattern                 = regexp.MustCompile(`^[A-Za-z0-9._-]{1,128}$`)
+	collaborationFilePathLimit             = 4096
+	collaborationTracer                    = otel.Tracer("gateway.collaboration")
+	collaborationSessionMaxBodyBytes int64 = 1 << 20
 )
 
 // CollaborationRouteConfig captures configuration for the collaboration proxy wiring.
@@ -104,7 +106,8 @@ func newCollaborationSessionValidator(orchestratorURL string) func(context.Conte
 		var payload struct {
 			Session collaborationSession `json:"session"`
 		}
-		if err := json.NewDecoder(resp.Body).Decode(&payload); err != nil {
+		limitedBody := io.LimitReader(resp.Body, collaborationSessionMaxBodyBytes)
+		if err := json.NewDecoder(limitedBody).Decode(&payload); err != nil {
 			return collaborationSession{}, http.StatusBadGateway, err
 		}
 		if payload.Session.ID == "" {

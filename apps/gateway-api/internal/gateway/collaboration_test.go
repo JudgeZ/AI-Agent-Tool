@@ -142,3 +142,66 @@ func TestNewCollaborationSessionValidatorHandlesErrors(t *testing.T) {
 		t.Fatalf("expected error from empty response body")
 	}
 }
+
+func TestCollaborationAuthMiddlewareRejectsMissingAuth(t *testing.T) {
+	validator := func(ctx context.Context, authHeader, cookieHeader, requestID string) (collaborationSession, int, error) {
+		return collaborationSession{ID: "session-123"}, http.StatusOK, nil
+	}
+
+	handler := collaborationAuthMiddleware(validator, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.local/collaboration/ws?filePath=example.txt", nil)
+	req.Header.Set("X-Tenant-Id", "tenant-1")
+	req.Header.Set("X-Project-Id", "project-1")
+	req.Header.Set("X-Session-Id", "session-123")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, rr.Code)
+	}
+}
+
+func TestCollaborationAuthMiddlewareRejectsPathTraversal(t *testing.T) {
+	validator := func(ctx context.Context, authHeader, cookieHeader, requestID string) (collaborationSession, int, error) {
+		return collaborationSession{ID: "session-123"}, http.StatusOK, nil
+	}
+
+	handler := collaborationAuthMiddleware(validator, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.local/collaboration/ws?filePath=../etc/passwd", nil)
+	req.Header.Set("X-Tenant-Id", "tenant-1")
+	req.Header.Set("X-Project-Id", "project-1")
+	req.Header.Set("X-Session-Id", "session-123")
+	req.Header.Set("Authorization", "Bearer token")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusUnauthorized {
+		t.Fatalf("expected status %d, got %d", http.StatusUnauthorized, rr.Code)
+	}
+}
+
+func TestCollaborationAuthMiddlewareRejectsInvalidCookie(t *testing.T) {
+	validator := func(ctx context.Context, authHeader, cookieHeader, requestID string) (collaborationSession, int, error) {
+		return collaborationSession{ID: "session-123"}, http.StatusOK, nil
+	}
+
+	handler := collaborationAuthMiddleware(validator, http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}))
+
+	req := httptest.NewRequest(http.MethodGet, "http://gateway.local/collaboration/ws?filePath=example.txt", nil)
+	req.Header.Set("X-Tenant-Id", "tenant-1")
+	req.Header.Set("X-Project-Id", "project-1")
+	req.Header.Set("X-Session-Id", "session-123")
+	req.Header.Set("Authorization", "Bearer token")
+	req.Header.Set("Cookie", "invalid;cookie")
+	rr := httptest.NewRecorder()
+
+	handler.ServeHTTP(rr, req)
+
+	if rr.Code != http.StatusBadRequest {
+		t.Fatalf("expected status %d, got %d", http.StatusBadRequest, rr.Code)
+	}
+}
