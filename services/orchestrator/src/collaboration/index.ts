@@ -6,7 +6,7 @@ import type https from "node:https";
 
 import type { IncomingMessage } from "node:http";
 import { WebSocketServer, type WebSocket } from "ws";
-import { setupWSConnection } from "y-websocket/bin/utils";
+import { setupWSConnection } from "y-websocket/bin/utils.js";
 import * as Y from "yjs";
 
 import { appLogger, normalizeError } from "../observability/logger.js";
@@ -16,18 +16,30 @@ const PERSISTENCE_DIR = path.resolve(process.cwd(), ".collaboration");
 const AGENT_EDIT_ORIGIN = "agent_edit";
 const COMPACTION_ORIGIN = "compaction";
 const ROOM_IDLE_THRESHOLD_MS = 5 * 60 * 1000;
+const ROOM_EVICTION_THRESHOLD_MS = 15 * 60 * 1000;
 const ROOM_CHECK_INTERVAL_MS = 60 * 1000;
+const CLOSE_CODE_UNAUTHORIZED = 4401;
+const CLOSE_CODE_RATE_LIMITED = 4408;
+function connectionLimitPerIp(): number {
+  const parsed = Number.parseInt(process.env.COLLAB_WS_IP_LIMIT ?? "", 10);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return 12;
+}
 
 const TEXT_FIELD = "content";
 
 type RoomState = {
   doc: Y.Doc;
   lastUserEditAt: number;
+  lastCompactionAt: number;
   filePath: string;
   clients: Set<WebSocket>;
 };
 
 const rooms = new Map<string, RoomState>();
+const ipConnectionCounts = new Map<string, number>();
 
 function ensurePersistenceDir(): Promise<void> {
   return fs.mkdir(PERSISTENCE_DIR, { recursive: true });
@@ -42,6 +54,50 @@ function headerValue(value: string | string[] | undefined): string | undefined {
     return trimmed.length > 0 ? trimmed : undefined;
   }
   return undefined;
+}
+
+function clientIp(req: IncomingMessage): string {
+  const forwarded = headerValue(req.headers["x-forwarded-for"]);
+  if (forwarded) {
+    const parts = forwarded.split(",").map((token) => token.trim()).filter((token) => token.length > 0);
+    if (parts.length > 0) {
+      return parts[0];
+    }
+  }
+  const realIp = headerValue(req.headers["x-real-ip"]);
+  if (realIp) {
+    return realIp;
+  }
+  if (req.socket.remoteAddress) {
+    return req.socket.remoteAddress;
+  }
+  return "unknown";
+}
+
+function incrementConnection(ip: string): boolean {
+  const current = ipConnectionCounts.get(ip) ?? 0;
+  if (current >= connectionLimitPerIp()) {
+    return false;
+  }
+  ipConnectionCounts.set(ip, current + 1);
+  return true;
+}
+
+function decrementConnection(ip: string): void {
+  const current = ipConnectionCounts.get(ip) ?? 0;
+  if (current <= 1) {
+    ipConnectionCounts.delete(ip);
+    return;
+  }
+  ipConnectionCounts.set(ip, current - 1);
+}
+
+function loggerWithTrace(req: IncomingMessage) {
+  const traceId = headerValue(req.headers["x-trace-id"]) ?? headerValue(req.headers["x-request-id"]);
+  if (!traceId) {
+    return appLogger;
+  }
+  return appLogger.child({ trace_id: traceId });
 }
 
 function deriveRoomId(req: IncomingMessage): {
@@ -68,6 +124,10 @@ function deriveRoomId(req: IncomingMessage): {
     return { error: "missing identity or file path" };
   }
 
+  if (filePath.length > 4096 || filePath.includes("\x00") || path.isAbsolute(filePath)) {
+    return { error: "invalid file path" };
+  }
+
   const normalizedTenant = normalizeTenantIdInput(tenantId);
   if (normalizedTenant.error) {
     return { error: normalizedTenant.error.message };
@@ -87,6 +147,7 @@ function getRoomState(roomId: string, filePath: string): RoomState {
   const state: RoomState = {
     doc,
     lastUserEditAt: 0,
+    lastCompactionAt: 0,
     filePath,
     clients: new Set<WebSocket>(),
   };
@@ -109,7 +170,7 @@ function roomPersistencePath(roomId: string): string {
   return path.join(PERSISTENCE_DIR, `${roomId}.txt`);
 }
 
-async function loadRoomFromDisk(roomId: string, state: RoomState): Promise<void> {
+async function loadRoomFromDisk(roomId: string, state: RoomState, logger = appLogger): Promise<void> {
   try {
     await ensurePersistenceDir();
     const content = await fs.readFile(roomPersistencePath(roomId), "utf8");
@@ -120,10 +181,7 @@ async function loadRoomFromDisk(roomId: string, state: RoomState): Promise<void>
     }, COMPACTION_ORIGIN);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") {
-      appLogger.warn(
-        { err: normalizeError(error), roomId },
-        "failed to load collaboration room from disk",
-      );
+      logger.warn({ err: normalizeError(error), roomId }, "failed to load collaboration room from disk");
     }
   }
 }
@@ -150,7 +208,7 @@ async function compactRoom(roomId: string, state: RoomState): Promise<void> {
     const existingClients = state.clients;
     state.doc = nextDoc;
     state.clients = existingClients;
-    state.lastUserEditAt = 0;
+    state.lastCompactionAt = Date.now();
     attachListeners(roomId, state);
     rooms.set(roomId, state);
   } catch (error) {
@@ -158,24 +216,58 @@ async function compactRoom(roomId: string, state: RoomState): Promise<void> {
   }
 }
 
-function scheduleCompaction(server: http.Server | https.Server): void {
-  const interval = setInterval(() => {
-    const now = Date.now();
-    for (const [roomId, state] of rooms.entries()) {
-      if (state.clients.size > 0) {
-        continue;
-      }
-      if (state.lastUserEditAt === 0) {
-        continue;
-      }
-      const idleDuration = now - state.lastUserEditAt;
-      if (idleDuration < ROOM_IDLE_THRESHOLD_MS) {
-        continue;
-      }
+async function evictRoom(roomId: string, state: RoomState): Promise<void> {
+  try {
+    await persistRoom(roomId, state);
+  } catch (error) {
+    appLogger.warn({ err: normalizeError(error), roomId }, "failed to persist collaboration room before eviction");
+  }
+
+  rooms.delete(roomId);
+  appLogger.info({ roomId }, "evicted idle collaboration room");
+}
+
+async function scanRooms(now = Date.now()): Promise<void> {
+  const tasks: Promise<void>[] = [];
+  for (const [roomId, state] of rooms.entries()) {
+    if (state.clients.size > 0) {
+      continue;
+    }
+    if (state.lastUserEditAt === 0) {
+      continue;
+    }
+    const idleDuration = now - state.lastUserEditAt;
+    if (idleDuration >= ROOM_EVICTION_THRESHOLD_MS) {
+      tasks.push(
+        evictRoom(roomId, state).catch((error) => {
+          appLogger.warn({ err: normalizeError(error), roomId }, "eviction failed");
+        }),
+      );
+      continue;
+    }
+    if (idleDuration < ROOM_IDLE_THRESHOLD_MS) {
+      continue;
+    }
+    if (state.lastCompactionAt >= state.lastUserEditAt) {
+      continue;
+    }
+    tasks.push(
       compactRoom(roomId, state).catch((error) => {
         appLogger.warn({ err: normalizeError(error), roomId }, "compaction failed");
-      });
-    }
+      }),
+    );
+  }
+
+  if (tasks.length > 0) {
+    await Promise.all(tasks);
+  }
+}
+
+function scheduleCompaction(server: http.Server | https.Server): void {
+  const interval = setInterval(() => {
+    scanRooms().catch((error) => {
+      appLogger.warn({ err: normalizeError(error) }, "room maintenance failed");
+    });
   }, ROOM_CHECK_INTERVAL_MS);
 
   server.on("close", () => clearInterval(interval));
@@ -192,28 +284,44 @@ export function setupCollaborationServer(httpServer: http.Server | https.Server)
       return;
     }
 
+    const logger = loggerWithTrace(request);
+    const ip = clientIp(request);
+    if (!incrementConnection(ip)) {
+      logger.warn({ ip }, "rejecting collaboration connection due to per-IP limit");
+      socket.write("HTTP/1.1 429 Too Many Requests\r\nConnection: close\r\nRetry-After: 60\r\n\r\n");
+      socket.destroy();
+      return;
+    }
+
     wss.handleUpgrade(request, socket, head, (ws) => {
       const derived = deriveRoomId(request);
       if (!derived.roomId || !derived.filePath) {
-        ws.close(4401, derived.error ?? "unauthorized");
+        ws.close(CLOSE_CODE_UNAUTHORIZED, derived.error ?? "unauthorized");
+        decrementConnection(ip);
         return;
       }
 
       const room = getRoomState(derived.roomId, derived.filePath);
-      loadRoomFromDisk(derived.roomId, room)
+      loadRoomFromDisk(derived.roomId, room, logger)
         .catch((error) => {
-          appLogger.warn({ err: normalizeError(error), roomId: derived.roomId }, "failed to hydrate room from disk");
+          logger.warn({ err: normalizeError(error), roomId: derived.roomId }, "failed to hydrate room from disk");
         })
         .finally(() => {
           room.clients.add(ws);
           ws.once("close", () => {
             room.clients.delete(ws);
+            decrementConnection(ip);
           });
 
           setupWSConnection(ws, request, { docName: derived.roomId, gc: true, getYDoc: () => room.doc });
         });
     });
   });
+}
+
+// Exported for tests only.
+export function runRoomMaintenanceForTesting(): Promise<void> {
+  return scanRooms();
 }
 
 export function isRoomBusy(roomId: string, thresholdMs = 5000): boolean {
