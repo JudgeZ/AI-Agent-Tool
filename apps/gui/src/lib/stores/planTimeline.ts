@@ -505,6 +505,18 @@ async function submitApproval(decision: 'approve' | 'reject', rationale?: string
   update((state) => ({ ...state, approvalSubmitting: false }));
 }
 
+export const __test = {
+  coalesce,
+  parseStepId,
+  compareStepIds,
+  resolveTimestamp,
+  getRetryDelay,
+  toDiffPayload,
+  toHistoryEntry,
+  upsertStep,
+  resetState: () => set(initialState)
+};
+
 export const timeline = {
   subscribe,
   connect,

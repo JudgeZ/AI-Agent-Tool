@@ -14,6 +14,8 @@ export interface SessionInfo {
   email?: string | null;
   name?: string | null;
   tenantId?: string | null;
+  projectId?: string | null;
+  sessionToken?: string | null;
   roles: string[];
   scopes: string[];
   issuedAt: string;
