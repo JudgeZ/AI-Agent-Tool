@@ -11,16 +11,18 @@
 - Favour **correctness, safety, and observability** over raw speed.
 - Make every change **small, reviewable, auditable**, and **easy to roll back**.
 - Keep the system **principle-of-least-privilege** by default.
-- Keep this document **in sync with the codebase**. Update the repo map and guardrails whenever we add new services, change toolchains, or modify the release process.
+- Keep this document **in sync with the codebase**. Update the repo map and guardrails (security/operational constraints documented below) whenever we add new services, change toolchains, or modify the release process.
 
 ---
 
-## 1.1 Repository map & toolchains (keep current)
+### 1.1 Repository map & toolchains (keep current)
 
-- `apps/gateway-api` (Go 1.24, net/http): public HTTP/SSE/WebSocket entrypoint, auth & policy enforcement. Lint with `gofmt -w` + `go vet ./...`; run focused tests with `GOTOOLCHAIN=local go test ./...` or `make test-gateway-collab-proxy`.
+> Commands assume you `cd` into the component directory; when Makefile targets exist (e.g., `make lint-gateway`), prefer them to stay aligned with automation.
+
+- `apps/gateway-api` (Go 1.24, net/http): public HTTP/SSE/WebSocket entrypoint, auth & policy enforcement. Lint with `gofmt -l` (use `gofmt -w` to fix) + `go vet ./...`, or `make lint-gateway`; run focused tests with `GOTOOLCHAIN=local go test ./...` or `make test-gateway-collab-proxy`.
 - `services/orchestrator` (TypeScript/Node, Express + queues): planning/policy engine and tool execution. Use `npm run lint` and `npm run test`/`npm run test:coverage`; build with `npm run build`.
 - `services/indexer` (Rust 2021, tonic/axum): repo analysis and embeddings. Format + lint with `cargo fmt --all -- --check` and `cargo clippy`; tests via `cargo test`.
-- `apps/gui` (SvelteKit + Tauri): desktop/web UI. Validate with `npm run lint` and `npm run test:unit`; Svelte type checks via `npm run check`; e2e via `npm run test:e2e` when UI changes are user-visible.
+- `apps/gui` (SvelteKit + Tauri): desktop/web UI. Validate with `npm run lint` and `npm run test:unit`; Svelte type checks via `npm run check`; e2e via `npm run test:e2e` when UI changes are user-visible; enable coverage as needed with `npm run test:unit -- --coverage`.
 - `apps/cli` (TypeScript CLI): build with `npm run build`; validate with `npm run lint` and `npm run test:coverage` when behavior changes.
 - `charts/` + `values.local.yaml`: Helm deployment defaults; ensure secure-by-default values for public charts.
 - `infra/policies`: OPA policies and tests (`make opa-build`, `make opa-test`).
