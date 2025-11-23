@@ -252,8 +252,9 @@ function normalizeRelativePath(path: string): string {
 function normalizeAbsolutePath(path: string): string {
     const sanitized = path.replace(/\\/g, '/');
     const segments = sanitized.split('/');
-    const isDriveRelative = /^[a-zA-Z]:[^/]*$/.test(segments[0]) && !/^[a-zA-Z]:$/.test(segments[0]);
-    const isAbsolute = sanitized.startsWith('/') || /^[a-zA-Z]:/.test(segments[0]);
+    const driveSuffix = sanitized.match(/^[a-zA-Z]:(.*)/)?.[1] ?? '';
+    const isDriveRelative = driveSuffix.length > 0 && !driveSuffix.startsWith('/');
+    const isAbsolute = sanitized.startsWith('/') || /^[a-zA-Z]:/.test(sanitized);
 
     if (!isAbsolute || isDriveRelative) {
         throw new Error('invalid path');
@@ -449,7 +450,7 @@ export async function deriveCollaborationRoom(filePath: string | null): Promise<
 
         invalidateRoomCache();
 
-        const cacheKey = `${context.tenantId}:${context.projectId}:${root ?? ''}:${normalizedFilePath}`;
+        const cacheKey = [context.tenantId, context.projectId, root ?? '', normalizedFilePath].join('\u0000');
         const cached = roomCache.get(cacheKey);
         if (cached) {
             currentRoomId.set(cached.roomId);
@@ -467,7 +468,9 @@ export async function deriveCollaborationRoom(filePath: string | null): Promise<
         };
         if (roomCache.size >= ROOM_CACHE_LIMIT) {
             const oldestKey = roomCache.keys().next().value;
-            roomCache.delete(oldestKey);
+            if (oldestKey !== undefined) {
+                roomCache.delete(oldestKey);
+            }
         }
         roomCache.set(cacheKey, info);
         currentRoomId.set(roomId);

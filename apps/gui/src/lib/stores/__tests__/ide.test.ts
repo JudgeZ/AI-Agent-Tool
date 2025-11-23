@@ -110,6 +110,20 @@ describe('collaboration room derivation', () => {
     expect(digestMock).toHaveBeenCalledTimes(3);
   });
 
+  it('avoids cache collisions when identifiers contain colons', async () => {
+    const digestMock = vi.fn(async () => new Uint8Array(32).buffer);
+    vi.stubGlobal('crypto', { subtle: { digest: digestMock } } as unknown as Crypto);
+
+    setProjectRootForCollaboration('/workspace/demo');
+    setCollaborationContext({ tenantId: 'tenant:1', projectId: 'project-1' });
+    await deriveCollaborationRoom('/workspace/demo/src/main.ts');
+
+    setCollaborationContext({ tenantId: 'tenant-1', projectId: 'project:1' });
+    await deriveCollaborationRoom('/workspace/demo/src/main.ts');
+
+    expect(digestMock).toHaveBeenCalledTimes(2);
+  });
+
   it('preserves cached rooms across connection resets but clears them on full reset', async () => {
     const digestMock = vi.fn(async () => new Uint8Array(32).buffer);
     vi.stubGlobal('crypto', { subtle: { digest: digestMock } } as unknown as Crypto);

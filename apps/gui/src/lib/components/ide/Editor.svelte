@@ -191,6 +191,25 @@
     requestId: number
   ) {
     const isStale = () => requestId !== configureRequestId;
+    const cleanupStaleCollaboration = () => {
+      if (yText && textObserver) {
+        yText.unobserve(textObserver);
+      }
+      if (queuedTextObserver !== null) {
+        cancelAnimationFrame(queuedTextObserver);
+        queuedTextObserver = null;
+      }
+      if (provider) {
+        provider.destroy();
+        provider = null;
+      }
+      if (doc) {
+        doc.destroy();
+        doc = null;
+        yText = null;
+      }
+      textObserver = null;
+    };
 
     if (isStale()) return;
 
@@ -223,11 +242,13 @@
     setupTextObserver(filePath);
 
     try {
-      if (isStale()) return;
-      const sessionToken = $session.info?.sessionToken ?? $session.info?.id ?? null;
+      if (isStale()) {
+        cleanupStaleCollaboration();
+        return;
+      }
       provider = new WebsocketProvider(
         websocketBase,
-        buildRoomName(roomInfo, sessionToken),
+        buildRoomName(roomInfo),
         doc,
         {
           awareness,
@@ -261,6 +282,7 @@
     }
 
     if (isStale()) {
+      cleanupStaleCollaboration();
       return;
     }
 
@@ -269,10 +291,7 @@
     binding = new MonacoBinding(yText, model, new Set([editor]), activeAwareness);
   }
 
-  function buildRoomName(
-    info: CollaborationRoomInfo,
-    sessionToken: string | null
-  ) {
+  function buildRoomName(info: CollaborationRoomInfo) {
     const params = new URLSearchParams({
       tenantId: info.tenantId,
       projectId: info.projectId,
@@ -281,9 +300,11 @@
       authMode: 'session'
     });
 
-    if (sessionToken) {
-      params.set('sessionId', sessionToken);
-      params.set('sessionToken', sessionToken);
+    if ($session.info?.id) {
+      params.set('sessionId', $session.info.id);
+    }
+    if ($session.info?.sessionToken) {
+      params.set('sessionToken', $session.info.sessionToken);
     }
 
     return `collaboration/ws?${params.toString()}`;
