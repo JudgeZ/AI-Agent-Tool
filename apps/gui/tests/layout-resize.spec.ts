@@ -54,10 +54,11 @@ test('sidebars resize via pointer drag and persist dimensions', async ({ page })
 
   await expect(rightSidebar).toHaveAttribute('style', /width: 500px/);
 
-  const persistedLayout = await page.evaluate(() => localStorage.getItem('oss.ide.layout'));
-  if (!persistedLayout) throw new Error('Layout was not persisted');
+  await page.waitForFunction(() => {
+    const persisted = localStorage.getItem('oss.ide.layout');
+    if (!persisted) return false;
 
-  const parsed = JSON.parse(persistedLayout) as { leftWidth?: number; rightWidth?: number };
-  expect(parsed.leftWidth).toBe(330);
-  expect(parsed.rightWidth).toBe(500);
+    const parsed = JSON.parse(persisted) as { leftWidth?: number; rightWidth?: number };
+    return parsed.leftWidth === 330 && parsed.rightWidth === 500;
+  });
 });
