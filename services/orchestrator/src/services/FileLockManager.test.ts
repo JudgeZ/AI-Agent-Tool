@@ -196,6 +196,28 @@ describe("FileLockManager", () => {
     });
   });
 
+  it("times out hung restore attempts and continues with subsequent locks", async () => {
+    vi.useFakeTimers();
+    mockStore.set(sessionKey("rehydrate"), JSON.stringify(["/hung.txt", "/ok.txt"]));
+    mockAcquireLock
+      .mockImplementationOnce(
+        () => new Promise<() => Promise<void>>(() => {}),
+      )
+      .mockResolvedValueOnce(vi.fn(async () => {}));
+
+    const manager = new FileLockManager("redis://example");
+
+    try {
+      const restorePromise = manager.restoreSessionLocks("rehydrate");
+      await vi.advanceTimersByTimeAsync(5_200);
+      await restorePromise;
+
+      expect(mockAcquireLock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it("skips restore when history is invalid JSON", async () => {
     mockStore.set(sessionKey("rehydrate"), "not-json");
     const manager = new FileLockManager("redis://example");

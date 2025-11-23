@@ -44,6 +44,8 @@ export class FileLockManager {
   private readonly historySchema = z.array(z.string());
 
   private static readonly MAX_LOCK_TTL_MS = 300_000;
+  private static readonly RESTORE_LOCK_TIMEOUT_MS = 5_000;
+  private static readonly RESTORE_BACKOFF_MS = 100;
 
   constructor(
     redisUrl?: string,
@@ -277,14 +279,37 @@ export class FileLockManager {
 
     for (const storedPath of paths) {
       try {
-        await this.acquireLockWithoutPersist(sessionId, storedPath);
+        await this.withTimeout(
+          this.acquireLockWithoutPersist(sessionId, storedPath),
+          FileLockManager.RESTORE_LOCK_TIMEOUT_MS,
+        );
       } catch (error) {
         appLogger.warn(
           { err: normalizeError(error), sessionId, path: storedPath },
           "failed to restore file lock",
         );
+        await this.delay(FileLockManager.RESTORE_BACKOFF_MS);
       }
     }
+  }
+
+  private withTimeout<T>(promise: Promise<T>, timeoutMs: number): Promise<T> {
+    return new Promise<T>((resolve, reject) => {
+      const timer = setTimeout(() => {
+        reject(new FileLockError("Timed out restoring lock", "unavailable", { reason: "restore_timeout" }));
+      }, timeoutMs);
+
+      promise
+        .then((result) => resolve(result))
+        .catch(reject)
+        .finally(() => {
+          clearTimeout(timer);
+        });
+    });
+  }
+
+  private delay(durationMs: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, durationMs));
   }
 
   async close(): Promise<void> {
