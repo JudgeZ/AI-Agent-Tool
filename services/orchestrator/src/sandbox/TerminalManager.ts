@@ -5,6 +5,7 @@ import { z } from "zod";
 import { appLogger, type AppLogger, normalizeError } from "../observability/logger.js";
 
 const MAX_MESSAGE_LENGTH = 16_384;
+const DEFAULT_MAX_PENDING_CLIENTS = 32;
 
 const terminalMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("input"), data: z.string().max(8192) }),
@@ -34,6 +35,7 @@ export type TerminalManagerOptions = {
   env?: NodeJS.ProcessEnv;
   spawnImpl?: typeof spawn;
   logger?: AppLogger;
+  maxPendingClients?: number;
 };
 
 export class TerminalManager {
@@ -45,6 +47,7 @@ export class TerminalManager {
   private readonly sessions = new Map<string, TerminalSession>();
   private readonly creatingSessions = new Set<string>();
   private readonly pendingClients = new Map<string, Set<WebSocket>>();
+  private readonly maxPendingClients: number;
 
   constructor(options: TerminalManagerOptions = {}) {
     this.shell = options.shell?.trim() || process.env.SHELL || "/bin/bash";
@@ -52,6 +55,7 @@ export class TerminalManager {
     this.env = { ...process.env, ...options.env };
     this.spawnImpl = options.spawnImpl ?? spawn;
     this.logger = (options.logger ?? appLogger).child({ component: "terminal" });
+    this.maxPendingClients = options.maxPendingClients ?? DEFAULT_MAX_PENDING_CLIENTS;
   }
 
   attach(sessionId: string, socket: WebSocket): "attached" | "pending" | "failed" {
@@ -67,6 +71,18 @@ export class TerminalManager {
 
     if (this.creatingSessions.has(sessionId)) {
       const waiting = this.pendingClients.get(sessionId) ?? new Set<WebSocket>();
+      if (waiting.size >= this.maxPendingClients) {
+        this.logger.warn(
+          { sessionId, pendingClients: waiting.size },
+          "rejecting terminal client while session is starting due to pending limit",
+        );
+        try {
+          socket.close(1013, "terminal starting, try again later");
+        } catch (error) {
+          this.logger.warn({ sessionId, err: normalizeError(error) }, "failed to close pending terminal client");
+        }
+        return "failed";
+      }
       waiting.add(socket);
       this.pendingClients.set(sessionId, waiting);
       return "pending";
@@ -347,50 +363,41 @@ export class TerminalManager {
         status: payload.status,
         clients: session.clients.size,
       };
-      const serializedCorrection = JSON.stringify(correction);
-
-      for (const client of Array.from(session.clients)) {
-        if (client.readyState === WebSocket.CLOSED || client.readyState === WebSocket.CLOSING) {
-          session.clients.delete(client);
-          continue;
-        }
-        const delivered = this.safeSend(client, serializedCorrection, sessionId);
-        if (!delivered) {
-          session.clients.delete(client);
-          try {
-            client.close(1011, "terminal delivery failure");
-          } catch (error) {
-            this.logger.warn({ sessionId, err: normalizeError(error) }, "failed to close terminal client");
-          }
-        }
-      }
+      this.broadcastWithCleanup(sessionId, correction, session);
     } else if (payload.type !== "status" && (removedDuringSend || prunedBeforeSend) && session.clients.size > 0) {
       const statusPayload: TerminalBroadcast = {
         type: "status",
         status: "disconnected",
         clients: session.clients.size,
       };
-      const serializedStatus = JSON.stringify(statusPayload);
-
-      for (const client of Array.from(session.clients)) {
-        if (client.readyState === WebSocket.CLOSED || client.readyState === WebSocket.CLOSING) {
-          session.clients.delete(client);
-          continue;
-        }
-        const delivered = this.safeSend(client, serializedStatus, sessionId);
-        if (!delivered) {
-          session.clients.delete(client);
-          try {
-            client.close(1011, "terminal delivery failure");
-          } catch (error) {
-            this.logger.warn({ sessionId, err: normalizeError(error) }, "failed to close terminal client");
-          }
-        }
-      }
+      this.broadcastWithCleanup(sessionId, statusPayload, session);
     }
 
     if (session.clients.size === 0) {
       this.destroySession(sessionId);
+    }
+  }
+
+  private broadcastWithCleanup(
+    sessionId: string,
+    payload: TerminalBroadcast,
+    session: TerminalSession,
+  ): void {
+    const serialized = JSON.stringify(payload);
+    for (const client of Array.from(session.clients)) {
+      if (client.readyState === WebSocket.CLOSED || client.readyState === WebSocket.CLOSING) {
+        session.clients.delete(client);
+        continue;
+      }
+      const delivered = this.safeSend(client, serialized, sessionId);
+      if (!delivered) {
+        session.clients.delete(client);
+        try {
+          client.close(1011, "terminal delivery failure");
+        } catch (error) {
+          this.logger.warn({ sessionId, err: normalizeError(error) }, "failed to close terminal client");
+        }
+      }
     }
   }
 }

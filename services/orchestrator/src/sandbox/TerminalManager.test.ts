@@ -225,6 +225,29 @@ describe("TerminalManager", () => {
     expect(parsedB).toMatchObject({ type: "status", status: "connected", clients: 2 });
   });
 
+  it("rejects pending attachments when the session creation queue is full", () => {
+    const manager = new TerminalManager({ spawnImpl: () => new MockPty() as any, logger, maxPendingClients: 1 });
+    const firstPending = new MockSocket();
+    const rejected = new MockSocket();
+
+    (manager as any).creatingSessions.add("session-pending-limit");
+
+    const firstResult = manager.attach("session-pending-limit", firstPending as unknown as WebSocket);
+    expect(firstResult).toBe("pending");
+
+    const rejectedResult = manager.attach("session-pending-limit", rejected as unknown as WebSocket);
+    expect(rejectedResult).toBe("failed");
+    expect(rejected.closed).toBe(true);
+    expect(rejected.closeCode).toBe(1013);
+    expect(rejected.closeReason).toBe("terminal starting, try again later");
+
+    (manager as any).creatingSessions.delete("session-pending-limit");
+    manager.attach("session-pending-limit", new MockSocket() as unknown as WebSocket);
+
+    const pendingSockets = (manager as any).pendingClients.get("session-pending-limit");
+    expect(pendingSockets?.size ?? 0).toBeLessThanOrEqual(1);
+  });
+
   it("normalizes status payload counts after pruning stale connections without emitting disconnects", () => {
     const pty = new MockPty();
     const manager = new TerminalManager({ spawnImpl: () => pty as any, logger });
