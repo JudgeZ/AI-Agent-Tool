@@ -8,11 +8,11 @@ The sandbox terminal bridges GUI users to a shared `node-pty` running inside the
 - **Authentication:** The gateway accepts either the session cookie (`config.auth.oidc.session.cookieName`) or a `Bearer` token in the `Authorization` header. The `sessionId` query parameter must match the authenticated session; mismatches are denied with `401`.
 - **Origin allowlist:** When `server.cors.allowedOrigins` is populated, upgrade requests must supply an Origin header that matches the allowlist; missing or mismatched origins receive `403` responses.
 - **Per-IP connection cap:** Connections are limited to `TERMINAL_CONNECTIONS_PER_IP` (default `20`). Exceeding the cap returns `429` with `Retry-After` guidance.
-- **Payload limits:** The WebSocket layer enforces a 64KiB payload cap, and terminal messages larger than 16KiB are rejected and close the offending socket with policy code `1008`.
+- **Payload limits:** The WebSocket layer enforces a 64KiB payload cap, and terminal messages larger than 16KiB are rejected and close the offending socket with policy code `1009`.
 
 ## Client → server messages
 
-Clients must send UTF-8 JSON payloads under 16KiB that satisfy the schema below. Invalid, unsupported, or oversized messages close the connection with policy code `1008` and are logged for auditability.
+Clients must send UTF-8 JSON payloads under 16KiB that satisfy the schema below. Invalid or unsupported messages close the connection with policy code `1008`, while oversized messages close the connection with policy code `1009`; all are logged for auditability.
 
 ```json
 // Input keystrokes and paste events

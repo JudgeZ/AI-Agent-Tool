@@ -166,8 +166,9 @@ describe("TerminalManager", () => {
     });
     const socket = new MockSocket();
 
-    manager.attach("session-spawn-failure", socket as unknown as WebSocket);
+    const attached = manager.attach("session-spawn-failure", socket as unknown as WebSocket);
 
+    expect(attached).toBe("failed");
     expect(socket.closed).toBe(true);
     expect(socket.closeCode).toBe(1011);
     expect(socket.closeReason).toBe("terminal unavailable");
@@ -175,6 +176,31 @@ describe("TerminalManager", () => {
       expect.objectContaining({ sessionId: "session-spawn-failure", err: expect.anything() }),
       "failed to start terminal session",
     );
+  });
+
+  it("cleans up failed sessions so subsequent attaches can retry", () => {
+    const pty = new MockPty();
+    const spawnImpl = vi.fn();
+    spawnImpl.mockImplementationOnce(() => {
+      throw new Error("first spawn failed");
+    });
+    spawnImpl.mockImplementationOnce(() => pty as any);
+
+    const manager = new TerminalManager({ spawnImpl: spawnImpl as any, logger });
+    const firstSocket = new MockSocket();
+    const secondSocket = new MockSocket();
+
+    const firstAttached = manager.attach("session-retry", firstSocket as unknown as WebSocket);
+    expect(firstAttached).toBe("failed");
+    expect(firstSocket.closed).toBe(true);
+    expect(firstSocket.closeReason).toBe("terminal unavailable");
+
+    const secondAttached = manager.attach("session-retry", secondSocket as unknown as WebSocket);
+    expect(secondAttached).toBe("attached");
+    expect(spawnImpl).toHaveBeenCalledTimes(2);
+    expect(secondSocket.closed).toBe(false);
+    const parsed = JSON.parse(secondSocket.messages[0] ?? "{}") as { type?: string; status?: string; clients?: number };
+    expect(parsed).toMatchObject({ type: "status", status: "connected", clients: 1 });
   });
 
   it("normalizes status payload counts after pruning stale connections without emitting disconnects", () => {

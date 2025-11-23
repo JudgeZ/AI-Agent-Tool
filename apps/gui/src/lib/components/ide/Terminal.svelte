@@ -112,8 +112,12 @@
       if (!data || typeof data !== 'object') return;
       if (data.type === 'output' && typeof data.data === 'string') {
         term?.write(data.data);
-      } else if (data.type === 'status' && typeof data.status === 'string') {
-        statusMessage = `Clients connected: ${data.clients ?? 1}`;
+      } else if (data.type === 'status') {
+        if (typeof data.status === 'string') {
+          statusMessage = data.status;
+        } else {
+          statusMessage = `Clients connected: ${data.clients ?? 1}`;
+        }
       } else if (data.type === 'exit') {
         setStatus('disconnected', `Session ended (code ${data.exitCode ?? 0})`);
         shouldReconnect = false;

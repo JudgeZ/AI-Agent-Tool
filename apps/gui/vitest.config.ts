@@ -10,18 +10,7 @@ export default defineConfig({
       compilerOptions: {
         dev: true
       }
-    }),
-    {
-      name: 'xterm-css-stub',
-      resolveId(id) {
-        if (id === XTERM_CSS_ID) return XTERM_CSS_ID;
-        return null;
-      },
-      load(id) {
-        if (id === XTERM_CSS_ID) return '/* xterm css stub */';
-        return null;
-      }
-    }
+    })
   ],
   esbuild: {
     tsconfigRaw: {
@@ -35,7 +24,7 @@ export default defineConfig({
     alias: [
       { find: '$lib', replacement: fileURLToPath(new URL('./src/lib', import.meta.url)) },
       { find: '$app/environment', replacement: fileURLToPath(new URL('./src/test-support/app-environment.ts', import.meta.url)) },
-      { find: '@xterm/xterm/css/xterm.css', replacement: fileURLToPath(new URL('./src/test-support/mocks/xterm.css', import.meta.url)) },
+      { find: XTERM_CSS_ID, replacement: fileURLToPath(new URL('./src/test-support/mocks/xterm.css', import.meta.url)) },
       { find: /^@xterm\/xterm$/, replacement: fileURLToPath(new URL('./src/test-support/mocks/xterm.ts', import.meta.url)) },
       { find: /^@xterm\/addon-fit$/, replacement: fileURLToPath(new URL('./src/test-support/mocks/xterm-fit.ts', import.meta.url)) }
     ],

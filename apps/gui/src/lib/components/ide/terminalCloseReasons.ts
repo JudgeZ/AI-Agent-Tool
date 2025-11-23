@@ -1,12 +1,20 @@
 type TerminalHaltReason = { message: string; status: 'error' | 'disconnected' };
 
 const SESSION_ENDED_REASON = 'terminal session ended';
+const TERMINAL_UNAVAILABLE_REASON = 'terminal unavailable';
 
 export function resolveTerminalHaltMessage(code: number, reason?: string): TerminalHaltReason | null {
   const normalizedReason = reason?.trim().toLowerCase();
 
   if (normalizedReason === SESSION_ENDED_REASON) {
     return { status: 'disconnected', message: 'Terminal session ended. Click reconnect to start a new shell.' };
+  }
+
+  if (code === 1011 && normalizedReason === TERMINAL_UNAVAILABLE_REASON) {
+    return {
+      status: 'error',
+      message: 'Terminal is currently unavailable. Please try again later or contact support.',
+    };
   }
 
   if (code === 1008) {

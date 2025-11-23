@@ -41,6 +41,7 @@ export class TerminalManager {
   private readonly spawnImpl: typeof spawn;
   private readonly logger: AppLogger;
   private readonly sessions = new Map<string, TerminalSession>();
+  private readonly creatingSessions = new Set<string>();
 
   constructor(options: TerminalManagerOptions = {}) {
     this.shell = options.shell?.trim() || process.env.SHELL || "/bin/bash";
@@ -50,7 +51,7 @@ export class TerminalManager {
     this.logger = (options.logger ?? appLogger).child({ component: "terminal" });
   }
 
-  attach(sessionId: string, socket: WebSocket): void {
+  attach(sessionId: string, socket: WebSocket): "attached" | "pending" | "failed" {
     if (socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) {
       this.logger.warn({ sessionId }, "rejecting closed terminal websocket");
       try {
@@ -58,12 +59,19 @@ export class TerminalManager {
       } catch (error) {
         this.logger.warn({ sessionId, err: normalizeError(error) }, "failed to close stale terminal socket");
       }
-      return;
+      return "failed";
     }
 
+    if (this.creatingSessions.has(sessionId)) {
+      queueMicrotask(() => this.attach(sessionId, socket));
+      return "pending";
+    }
+
+    this.creatingSessions.add(sessionId);
     const session = this.sessions.get(sessionId) ?? this.safeCreateSession(sessionId, socket);
+    this.creatingSessions.delete(sessionId);
     if (!session) {
-      return;
+      return "failed";
     }
     session.clients.add(socket);
     this.safeBroadcast(sessionId, { type: "status", status: "connected", clients: session.clients.size });
@@ -73,6 +81,7 @@ export class TerminalManager {
     socket.on("error", (error) => {
       this.logger.warn({ sessionId, err: normalizeError(error) }, "terminal websocket error");
     });
+    return "attached";
   }
 
   detach(sessionId: string, socket: WebSocket): void {

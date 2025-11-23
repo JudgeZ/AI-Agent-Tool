@@ -12,7 +12,7 @@ export {
   ExecutionResult,
   NetworkPolicy,
   ResourceLimits,
-} from './ContainerSandbox';
+} from './ContainerSandbox.js';
 
 export {
   WasmSandbox,
@@ -20,7 +20,7 @@ export {
   WasmExecutionResult,
   WasmResourceLimits,
   createTestWasmModule,
-} from './WasmSandbox';
+} from './WasmSandbox.js';
 
 /**
  * Sandbox type enum for selecting appropriate sandbox
