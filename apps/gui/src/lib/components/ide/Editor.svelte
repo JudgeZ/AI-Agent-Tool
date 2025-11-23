@@ -121,7 +121,6 @@
       })
     ];
 
-    return cleanupSubscriptions;
   });
 
   onDestroy(() => {
@@ -132,10 +131,11 @@
 
   function toWebsocketBase(httpUrl: string) {
     const parsed = new URL(httpUrl);
-    const protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
-    const normalized = new URL(parsed.origin);
-    normalized.protocol = protocol;
-    return normalized.toString().replace(/\/$/, '');
+    parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+    parsed.pathname = '';
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString().replace(/\/$/, '');
   }
 
   function notifyCollaborationError(message: string) {

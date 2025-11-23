@@ -60,5 +60,12 @@ export function clearNotifications() {
   timeouts.forEach((timeoutId) => clearTimeout(timeoutId));
   timeouts.clear();
   notificationsStore.set([]);
+  counter = 0;
+}
+
+if (import.meta.hot) {
+  import.meta.hot.dispose(() => {
+    clearNotifications();
+  });
 }
 

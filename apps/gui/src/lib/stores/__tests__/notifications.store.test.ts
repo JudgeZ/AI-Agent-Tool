@@ -3,6 +3,7 @@ import {
   clearNotifications,
   dismiss,
   notifications,
+  notifyInfo,
   notifyError,
   notifySuccess,
   type Notification
@@ -62,4 +63,17 @@ test('clears pending timeouts on manual dismiss and clear', () => {
 
   expect(() => vi.runOnlyPendingTimers()).not.toThrow();
   unsubscribe();
+});
+
+test('resets id counter when clearing notifications', () => {
+  const first = notifySuccess('one', { timeoutMs: 0 });
+  const second = notifyError('two', { timeoutMs: 0 });
+
+  expect(first).toBe(1);
+  expect(second).toBe(2);
+
+  clearNotifications();
+
+  const next = notifyInfo('again', { timeoutMs: 0 });
+  expect(next).toBe(1);
 });

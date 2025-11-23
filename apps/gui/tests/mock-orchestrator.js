@@ -172,7 +172,7 @@ const server = http.createServer((req, res) => {
   const approveMatch = url.pathname.match(/^\/plan\/([^/]+)\/steps\/([^/]+)\/approve$/);
 
   // MOCK ONLY: development allowlist to avoid reflecting arbitrary origins with credentials
-  const allowedOrigins = new Set(['http://localhost:5173', 'http://127.0.0.1:4173']);
+  const allowedOrigins = new Set(['http://localhost:5173', 'http://localhost:4173', 'http://127.0.0.1:4173']);
   const requestOrigin = req.headers.origin;
 
   if (requestOrigin && !allowedOrigins.has(requestOrigin)) {
