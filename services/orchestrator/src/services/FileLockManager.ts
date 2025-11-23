@@ -23,6 +23,7 @@ export interface FileLock {
   path: string;
   lockKey: string;
   release: ReleaseFn;
+  agentId?: string;
 }
 
 export type FileLockErrorCode = "busy" | "unavailable" | "rate_limited";
@@ -195,8 +196,8 @@ export class FileLockManager {
             const lockService = await this.lockServicePromise;
             const release = await lockService.acquireLock(lockKey, this.lockTtlMs, undefined, undefined, mergedTrace);
             span.setAttribute("lock.ttl_ms", this.lockTtlMs);
-            const trackedRelease = this.wrapRelease(sessionId, normalizedPath, release, mergedTrace);
-            const fileLock: FileLock = { path: normalizedPath, lockKey, release: trackedRelease };
+            const trackedRelease = this.wrapRelease(sessionId, normalizedPath, release, mergedTrace, agentId);
+            const fileLock: FileLock = { path: normalizedPath, lockKey, release: trackedRelease, agentId };
             this.rememberLock(sessionId, normalizedPath, fileLock);
             try {
               await this.persistHistory(sessionId, true);
@@ -354,6 +355,7 @@ export class FileLockManager {
     normalizedPath: string,
     release: ReleaseFn,
     traceContext?: TraceContext,
+    agentId?: string,
   ): ReleaseFn {
     return async () => {
       let outcome: "success" | "error" = "success";
@@ -374,10 +376,7 @@ export class FileLockManager {
           this.lockHistory.delete(sessionId);
         }
         await this.persistHistory(sessionId);
-        appLogger.info(
-          { path: normalizedPath, sessionId, ...traceContext },
-          "file lock released",
-        );
+        appLogger.info({ path: normalizedPath, sessionId, agentId, ...traceContext }, "file lock released");
         recordFileLockRelease(outcome);
       }
     };
