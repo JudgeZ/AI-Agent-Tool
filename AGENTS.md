@@ -251,11 +251,19 @@ For any new feature or change, explicitly consider:
   - end‑to‑end tests for critical flows.
 - Any bug fix must include a test that fails before the fix and passes after.
 - Avoid relying on real external services in CI; use fakes / mocks.
+- **Lint before you land.** Run the documented lint target/tooling for the area you touch (see §1.1) and treat lint failures as blockers.
 
 Target coverage is a guide, not a religion, but as a rule of thumb:
 
-- Core services (gateway, orchestrator, indexer): aim for **≥ 80%**.
-- CLI and GUI: aim for **≥ 60%** with emphasis on critical paths.
+- Core services (gateway, orchestrator, indexer): aim for **≥ 85%** overall coverage.
+- CLI and GUI: aim for **≥ 85%** on changed areas, with emphasis on critical paths.
+
+### 6.1 Work tracking files (todo.md, ignored.md, planner.md)
+
+- Use `todo.md` for actionable, approved work. Keep IDs sequential (`T1`, `T2`, …) without gaps, include file locations and test expectations, and remove rows once work ships.
+- Use `ignored.md` for declined or out-of-scope requests. Record why the item is rejected, when to revisit it, and move it back to `todo.md` (with a new ID) if it becomes actionable.
+- Use `planner.md` for short- to medium-term planning that is not yet committed. Capture owners, dependencies, and next steps, then promote items to `todo.md` or `ignored.md` when decisions are made.
+- Avoid duplicating entries across files. Move tasks between files instead of copying, and renumber sequentially after additions/removals.
 
 ---
 
