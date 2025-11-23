@@ -46,6 +46,7 @@ describe('TerminalPanel', () => {
     });
 
     const handle = getByRole('separator', { name: /terminal resize handle/i });
+    await fireEvent.keyDown(handle, { key: 'ArrowDown' });
     await fireEvent.keyDown(handle, { key: 'ArrowUp' });
 
     expect(onToggle).toHaveBeenCalledTimes(1);

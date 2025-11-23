@@ -38,8 +38,8 @@
     pendingWidth = startWidth;
     handleEl?.setPointerCapture(pointerId);
     window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerup', handlePointerUp, { once: true });
-    window.addEventListener('pointercancel', handlePointerUp, { once: true });
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
   };
 
   const handlePointerMove = (event: PointerEvent) => {

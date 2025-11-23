@@ -1,8 +1,6 @@
 import { render, screen, fireEvent, waitFor } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, vi } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }), { virtual: true });
-
 import Notifications from '../Notifications.svelte';
 import { clearNotifications, notifyError, notifyInfo } from '$lib/stores/notifications';
 

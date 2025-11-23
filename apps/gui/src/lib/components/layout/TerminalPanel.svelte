@@ -11,6 +11,7 @@
   export let onToggle: () => void = () => {};
 
   const step = 14;
+  const closedHeight = 40;
 
   let startY = 0;
   let startHeight = height;
@@ -37,8 +38,8 @@
     pendingHeight = startHeight;
     handleEl?.setPointerCapture(pointerId);
     window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerup', handlePointerUp, { once: true });
-    window.addEventListener('pointercancel', handlePointerUp, { once: true });
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointercancel', handlePointerUp);
   };
 
   const handlePointerMove = (event: PointerEvent) => {
@@ -75,8 +76,10 @@
     if (event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
 
     if (!open) {
-      onToggle();
-      event.preventDefault();
+      if (event.key === 'ArrowUp') {
+        onToggle();
+        event.preventDefault();
+      }
       return;
     }
 
@@ -93,7 +96,7 @@
 
 <section
   class={`terminal-panel ${open ? 'open' : 'closed'}`}
-  style={`height: ${open ? height : 40}px;`}
+  style={`height: ${open ? height : closedHeight}px;`}
   aria-label="Terminal"
 >
   <!-- svelte-ignore a11y-no-noninteractive-tabindex -->
@@ -103,9 +106,9 @@
     role="separator"
     aria-orientation="horizontal"
     aria-label="Terminal resize handle"
-    aria-valuemin={minHeight}
-    aria-valuemax={maxHeight}
-    aria-valuenow={open ? height : minHeight}
+    aria-valuemin={open ? minHeight : 0}
+    aria-valuemax={open ? maxHeight : closedHeight}
+    aria-valuenow={open ? height : closedHeight}
     tabindex="0"
     bind:this={handleEl}
     on:pointerdown|preventDefault={handlePointerDown}

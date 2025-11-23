@@ -110,28 +110,31 @@
     );
 
     let sessionInitialized = false;
-    let activeFileInitialized = false;
+    let hasRunInitialActiveFileSync = false;
 
     subscriptions = [
       session.subscribe((value) => {
         sessionValue = value;
         if (sessionInitialized) {
           syncCollaborationContext();
+          if (provider?.awareness) {
+            setLocalAwareness(provider.awareness, sessionValue);
+          }
         }
         sessionInitialized = true;
       }),
       activeFileWithContext.subscribe(({ file, version }) => {
         activeFileValue = file;
         collaborationContextVersionValue = version;
-        if (activeFileInitialized) {
+        if (hasRunInitialActiveFileSync) {
           syncActiveFile();
         }
-        activeFileInitialized = true;
       })
     ];
 
     syncCollaborationContext();
     syncActiveFile();
+    hasRunInitialActiveFileSync = true;
 
   });
 
