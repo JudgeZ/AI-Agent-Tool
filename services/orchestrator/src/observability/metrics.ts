@@ -124,6 +124,12 @@ export const __testUtils = {
 };
 const RATE_LIMIT_HITS_NAME = "limit_hits_total";
 const RATE_LIMIT_BLOCKED_NAME = "limit_blocked_total";
+const FILE_LOCK_ATTEMPT_NAME = "orchestrator_file_lock_attempts_total";
+const FILE_LOCK_ATTEMPT_SECONDS_NAME = "orchestrator_file_lock_attempt_seconds";
+const FILE_LOCK_RELEASE_NAME = "orchestrator_file_lock_release_total";
+const FILE_LOCK_RATE_LIMIT_NAME = "orchestrator_file_lock_rate_limit_total";
+const FILE_LOCK_ACQUIRE_SECONDS_NAME = "orchestrator_file_lock_acquire_seconds";
+const FILE_LOCK_CONTENTION_NAME = "orchestrator_file_lock_contention_total";
 function getOrCreateRateLimitHitCounter(): Counter<string> {
   const existing = register.getSingleMetric(RATE_LIMIT_HITS_NAME) as Counter<string> | undefined;
   if (existing) {
@@ -145,6 +151,80 @@ function getOrCreateRateLimitBlockedCounter(): Counter<string> {
     name: RATE_LIMIT_BLOCKED_NAME,
     help: "Total number of requests blocked by rate limiting",
     labelNames: ["endpoint", "identity_type"]
+  });
+}
+
+function getOrCreateFileLockAttemptCounter(): Counter<string> {
+  const existing = register.getSingleMetric(FILE_LOCK_ATTEMPT_NAME) as Counter<string> | undefined;
+  if (existing) {
+    return existing;
+  }
+  return new Counter({
+    name: FILE_LOCK_ATTEMPT_NAME,
+    help: "Count of file lock attempts by operation and outcome",
+    labelNames: ["operation", "outcome"],
+  });
+}
+
+function getOrCreateFileLockAttemptHistogram(): Histogram<string> {
+  const existing = register.getSingleMetric(FILE_LOCK_ATTEMPT_SECONDS_NAME) as Histogram<string> | undefined;
+  if (existing) {
+    return existing;
+  }
+  return new Histogram({
+    name: FILE_LOCK_ATTEMPT_SECONDS_NAME,
+    help: "Latency of file lock attempts in seconds",
+    labelNames: ["operation", "outcome"],
+    buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+  });
+}
+
+function getOrCreateFileLockReleaseCounter(): Counter<string> {
+  const existing = register.getSingleMetric(FILE_LOCK_RELEASE_NAME) as Counter<string> | undefined;
+  if (existing) {
+    return existing;
+  }
+  return new Counter({
+    name: FILE_LOCK_RELEASE_NAME,
+    help: "Count of file lock releases by outcome",
+    labelNames: ["outcome"],
+  });
+}
+
+function getOrCreateFileLockRateLimitCounter(): Counter<string> {
+  const existing = register.getSingleMetric(FILE_LOCK_RATE_LIMIT_NAME) as Counter<string> | undefined;
+  if (existing) {
+    return existing;
+  }
+  return new Counter({
+    name: FILE_LOCK_RATE_LIMIT_NAME,
+    help: "Count of file lock rate limit outcomes",
+    labelNames: ["operation", "result"],
+  });
+}
+
+function getOrCreateFileLockAcquisitionHistogram(): Histogram<string> {
+  const existing = register.getSingleMetric(FILE_LOCK_ACQUIRE_SECONDS_NAME) as Histogram<string> | undefined;
+  if (existing) {
+    return existing;
+  }
+  return new Histogram({
+    name: FILE_LOCK_ACQUIRE_SECONDS_NAME,
+    help: "Latency of successful file lock acquisitions in seconds",
+    labelNames: ["operation"],
+    buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2, 5],
+  });
+}
+
+function getOrCreateFileLockContentionCounter(): Counter<string> {
+  const existing = register.getSingleMetric(FILE_LOCK_CONTENTION_NAME) as Counter<string> | undefined;
+  if (existing) {
+    return existing;
+  }
+  return new Counter({
+    name: FILE_LOCK_CONTENTION_NAME,
+    help: "Count of file lock contention outcomes by reason",
+    labelNames: ["operation", "reason"],
   });
 }
 
@@ -230,6 +310,12 @@ const resultCounter = getOrCreateResultCounter();
 const processingHistogram = getOrCreateProcessingHistogram();
 const rateLimitHitCounter = getOrCreateRateLimitHitCounter();
 const rateLimitBlockedCounter = getOrCreateRateLimitBlockedCounter();
+const fileLockAttemptCounter = getOrCreateFileLockAttemptCounter();
+const fileLockAttemptHistogram = getOrCreateFileLockAttemptHistogram();
+const fileLockReleaseCounter = getOrCreateFileLockReleaseCounter();
+const fileLockRateLimitCounter = getOrCreateFileLockRateLimitCounter();
+const fileLockAcquisitionHistogram = getOrCreateFileLockAcquisitionHistogram();
+const fileLockContentionCounter = getOrCreateFileLockContentionCounter();
 
 export function resetMetrics(): void {
   register.resetMetrics();
@@ -243,6 +329,12 @@ export function resetMetrics(): void {
   processingHistogram.reset();
   rateLimitHitCounter.reset();
   rateLimitBlockedCounter.reset();
+  fileLockAttemptCounter.reset();
+  fileLockAttemptHistogram.reset();
+  fileLockReleaseCounter.reset();
+  fileLockRateLimitCounter.reset();
+  fileLockAcquisitionHistogram.reset();
+  fileLockContentionCounter.reset();
 }
 
 function getOrCreateResultCounter(): Counter<string> {
@@ -288,6 +380,39 @@ export function recordRateLimitOutcome(endpoint: string, identityType: string, a
     return;
   }
   rateLimitBlockedCounter.labels(labels).inc();
+}
+
+type FileLockOperation = "acquire" | "restore";
+type FileLockOutcome = "success" | "busy" | "error" | "rate_limited";
+type FileLockContentionReason = "room_busy" | "lock_contended" | "lock_timeout";
+
+export function recordFileLockAttempt(
+  operation: FileLockOperation,
+  outcome: FileLockOutcome,
+  durationMs: number,
+): void {
+  const labels = { operation, outcome };
+  fileLockAttemptCounter.labels(labels).inc();
+  fileLockAttemptHistogram.labels(labels).observe(durationMs / 1000);
+}
+
+export function recordFileLockRelease(outcome: "success" | "error"): void {
+  fileLockReleaseCounter.labels({ outcome }).inc();
+}
+
+export function recordFileLockRateLimit(operation: FileLockOperation, result: "allowed" | "blocked"): void {
+  fileLockRateLimitCounter.labels({ operation, result }).inc();
+}
+
+export function recordFileLockAcquisitionLatency(operation: FileLockOperation, durationMs: number): void {
+  fileLockAcquisitionHistogram.labels({ operation }).observe(durationMs / 1000);
+}
+
+export function recordFileLockContention(
+  operation: FileLockOperation,
+  reason: FileLockContentionReason,
+): void {
+  fileLockContentionCounter.labels({ operation, reason }).inc();
 }
 
 export function recordMetric(name: string, value: number, labels: Record<string, string> = {}): void {

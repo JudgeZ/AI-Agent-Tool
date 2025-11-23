@@ -2,6 +2,19 @@ import { createClient, type RedisClientType } from "redis";
 import { appLogger, normalizeError } from "../observability/logger.js";
 import { randomUUID } from "node:crypto";
 
+const instances = new Map<string, DistributedLockService>();
+const instancePromises = new Map<string, Promise<DistributedLockService>>();
+const MAX_RETRY_COUNT = 10;
+
+export class LockAcquisitionError extends Error {
+  constructor(
+    message: string,
+    public readonly code: "busy" | "timeout",
+  ) {
+    super(message);
+  }
+}
+
 export class DistributedLockService {
   private readonly client: RedisClientType;
   private connected = false;
@@ -27,12 +40,24 @@ export class DistributedLockService {
     }
   }
 
-  async acquireLock(resource: string, ttlMs: number, retryCount = 3, retryDelayMs = 100): Promise<() => Promise<void>> {
+  getClient(): RedisClientType {
+    return this.client;
+  }
+
+  async acquireLock(
+    resource: string,
+    ttlMs: number,
+    retryCount = 3,
+    retryDelayMs = 100,
+    trace?: { traceId?: string; spanId?: string },
+  ): Promise<() => Promise<void>> {
+    const safeRetryCount = Math.min(Math.max(Math.trunc(retryCount) || 1, 1), MAX_RETRY_COUNT);
+    const safeRetryDelayMs = Math.max(Math.trunc(retryDelayMs) || 0, 0);
     await this.connect();
     const key = `lock:${resource}`;
     const token = randomUUID();
 
-    for (let i = 0; i < retryCount; i++) {
+    for (let i = 0; i < safeRetryCount; i++) {
       // NX: Set if Not Exists, PX: Expire in milliseconds
       const acquired = await this.client.set(key, token, { NX: true, PX: ttlMs });
       if (acquired) {
@@ -48,13 +73,59 @@ export class DistributedLockService {
             `;
             await this.client.eval(script, { keys: [key], arguments: [token] });
           } catch (error) {
-            appLogger.warn({ err: normalizeError(error), resource }, "failed to release lock");
+            appLogger.warn({ err: normalizeError(error), resource, ...trace }, "failed to release lock");
           }
         };
       }
-      await new Promise((resolve) => setTimeout(resolve, retryDelayMs));
+      await new Promise((resolve) => setTimeout(resolve, safeRetryDelayMs));
     }
-    throw new Error(`Failed to acquire lock for resource ${resource} after ${retryCount} attempts`);
+    throw new LockAcquisitionError(
+      `Failed to acquire lock for resource ${resource} after ${safeRetryCount} attempts`,
+      "busy",
+    );
   }
+}
+
+export async function getDistributedLockService(redisUrl?: string): Promise<DistributedLockService> {
+  const url = redisUrl ?? process.env.LOCK_REDIS_URL ?? process.env.REDIS_URL ?? "redis://localhost:6379";
+
+  const existing = instances.get(url);
+  if (existing) {
+    return existing;
+  }
+
+  if (instances.size > 0 && !instances.has(url)) {
+    throw new Error(
+      "DistributedLockService already initialized for a different Redis URL; call resetDistributedLockService before switching endpoints.",
+    );
+  }
+
+  const pending = instancePromises.get(url);
+  if (pending) {
+    return pending;
+  }
+
+  const instancePromise = (async () => {
+    const instance = new DistributedLockService(url);
+    instances.set(url, instance);
+    instancePromises.delete(url);
+    return instance;
+  })();
+
+  instancePromises.set(url, instancePromise);
+  return instancePromise;
+}
+
+// Exported for tests
+export async function resetDistributedLockService(): Promise<void> {
+  for (const instance of instances.values()) {
+    try {
+      await instance.disconnect();
+    } catch (error) {
+      appLogger.warn({ err: normalizeError(error) }, "failed to close lock service client during reset");
+    }
+  }
+  instances.clear();
+  instancePromises.clear();
 }
 

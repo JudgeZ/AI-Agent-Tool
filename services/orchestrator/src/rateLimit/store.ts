@@ -2,7 +2,7 @@ import { createClient, type RedisClientType } from "redis";
 
 import { appLogger, normalizeError } from "../observability/logger.js";
 
-type LoggerLike = {
+export type LoggerLike = {
   debug?: (obj: Record<string, unknown>, msg?: string, ...args: unknown[]) => void;
   info?: (obj: Record<string, unknown>, msg?: string, ...args: unknown[]) => void;
   warn?: (obj: Record<string, unknown>, msg?: string, ...args: unknown[]) => void;
@@ -19,10 +19,14 @@ export type RateLimitBackendConfig = {
 export type RateLimitDecision = {
   allowed: boolean;
   retryAfterMs?: number;
+  remaining?: number;
+  limit?: number;
+  windowMs?: number;
 };
 
 export interface RateLimitStore {
   allow(key: string, windowMs: number, maxRequests: number): Promise<RateLimitDecision>;
+  reset?(key?: string): Promise<void>;
   disconnect?(): Promise<void>;
 }
 
@@ -48,11 +52,24 @@ class MemoryRateLimitStore implements RateLimitStore {
       const oldest = Math.min(...recent);
       const retryAfter = Math.max(0, windowMs - (now - oldest));
       this.hits.set(namespaced, recent);
-      return { allowed: false, retryAfterMs: retryAfter };
+      return { allowed: false, retryAfterMs: retryAfter, remaining: 0, limit: maxRequests, windowMs };
     }
     recent.push(now);
     this.hits.set(namespaced, recent);
-    return { allowed: true };
+    return {
+      allowed: true,
+      remaining: Math.max(0, maxRequests - recent.length),
+      limit: maxRequests,
+      windowMs,
+    };
+  }
+
+  async reset(key?: string): Promise<void> {
+    if (key) {
+      this.hits.delete(this.namespacedKey(key));
+      return;
+    }
+    this.hits.clear();
   }
 
   private namespacedKey(key: string): string {
@@ -89,19 +106,41 @@ class RedisRateLimitStore implements RateLimitStore {
         const oldestEntries = await this.client.zRangeWithScores(bucketKey, 0, 0);
         const oldest = oldestEntries[0]?.score ?? now;
         const retryAfter = Math.max(0, windowMs - (now - oldest));
-        return { allowed: false, retryAfterMs: retryAfter };
+        return { allowed: false, retryAfterMs: retryAfter, remaining: 0, limit: maxRequests, windowMs };
       }
 
       const member = `${now}-${Math.random().toString(36).slice(2)}`;
       await this.client.zAdd(bucketKey, [{ score: now, value: member }]);
       await this.client.pExpire(bucketKey, windowMs);
-      return { allowed: true };
+      return {
+        allowed: true,
+        remaining: Math.max(0, maxRequests - current - 1),
+        limit: maxRequests,
+        windowMs,
+      };
     } catch (error) {
       this.logger.error?.(
         { err: normalizeError(error), subsystem: "rate-limit", backend: "redis" },
         "rate limit check failed; defaulting to allow",
       );
-      return { allowed: true };
+      return { allowed: true, remaining: maxRequests - 1, limit: maxRequests, windowMs };
+    }
+  }
+
+  async reset(key?: string): Promise<void> {
+    try {
+      await this.ensureConnected();
+      if (key) {
+        await this.client.del(this.namespacedKey(key));
+        return;
+      }
+
+      const pattern = `${this.prefix}:*`;
+      for await (const match of this.client.scanIterator({ MATCH: pattern })) {
+        await this.client.del(match);
+      }
+    } catch (error) {
+      this.logger.warn?.({ err: normalizeError(error) }, "failed to reset redis rate limit state");
     }
   }
 

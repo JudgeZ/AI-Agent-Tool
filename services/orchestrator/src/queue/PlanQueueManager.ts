@@ -10,10 +10,11 @@ import { StepConsumer, PLAN_STEPS_QUEUE } from "./StepConsumer.js";
 import { CompletionConsumer, PLAN_COMPLETIONS_QUEUE } from "./CompletionConsumer.js";
 import { PlanStateService } from "../services/PlanStateService.js";
 import { createPlanStateStore } from "./PlanStateStore.js";
-import { DistributedLockService } from "../services/DistributedLockService.js";
+import { getDistributedLockService } from "../services/DistributedLockService.js";
 import { getPolicyEnforcer, PolicyViolationError } from "../policy/PolicyEnforcer.js";
 import { getPostgresPool } from "../database/Postgres.js";
 import { publishPlanStepEvent } from "../plan/events.js";
+import { fileLockManager } from "../services/FileLockManager.js";
 
 import type { Plan, PlanStep, PlanSubject } from "../plan/planner.js";
 import type { PlanJob, ToolEvent } from "../plan/validation.js";
@@ -38,6 +39,9 @@ export class PlanQueueManager {
   private stepConsumer!: StepConsumer;
   private completionConsumer!: CompletionConsumer;
   private queueAdapter: QueueAdapter | undefined;
+  private readonly fileLockManager = fileLockManager;
+  private readonly planSessions = new Map<string, string>();
+  private readonly sessionRefCounts = new Map<string, number>();
 
   private config: AppConfig; // Remove readonly to allow updates
   private readonly queueLogger = appLogger.child({ component: "plan-queue-manager" });
@@ -46,11 +50,15 @@ export class PlanQueueManager {
     this.config = loadConfig();
   }
 
-  private setupServices() {
+  private async setupServices() {
     const pool = this.config.planState.backend === "postgres" ? getPostgresPool() : undefined;
-    
-    const redisUrl = this.config.server.rateLimits.backend.redisUrl ?? process.env.REDIS_URL ?? "redis://localhost:6379";
-    const lockService = new DistributedLockService(redisUrl);
+
+    const lockRedisUrl =
+      process.env.LOCK_REDIS_URL ??
+      this.config.server.rateLimits.backend.redisUrl ??
+      process.env.REDIS_URL ??
+      "redis://localhost:6379";
+    const lockService = await getDistributedLockService(lockRedisUrl);
     const store = createPlanStateStore({
         backend: this.config.planState.backend,
         retentionMs: this.config.retention.planStateDays > 0 ? this.config.retention.planStateDays * 24 * 60 * 60 * 1000 : undefined,
@@ -67,7 +75,7 @@ export class PlanQueueManager {
     this.initializationPromise = (async () => {
       try {
         if (!this.stateService) {
-            this.setupServices();
+            await this.setupServices();
         }
 
         let attempts = 0;
@@ -124,6 +132,23 @@ export class PlanQueueManager {
   async submitPlanSteps(plan: Plan, traceId: string, requestId?: string, subject?: PlanSubject): Promise<void> {
       await this.initialize();
 
+    const sessionId = subject?.sessionId;
+    let sessionTracked = false;
+    try {
+      if (sessionId) {
+        this.planSessions.set(plan.id, sessionId);
+        this.sessionRefCounts.set(sessionId, (this.sessionRefCounts.get(sessionId) ?? 0) + 1);
+        sessionTracked = true;
+        await this.fileLockManager.restoreSessionLocks(sessionId).catch((err) =>
+          this.queueLogger.warn(
+            { err: normalizeError(err), planId: plan.id, sessionId },
+            "failed to restore session locks",
+          ),
+        );
+      } else {
+          this.planSessions.delete(plan.id);
+      }
+
       if (subject) {
           this.stateService!.setPlanSubject(plan.id, subject);
           this.stateService!.clearRetainedPlanSubject(plan.id);
@@ -154,6 +179,24 @@ export class PlanQueueManager {
       });
 
       await this.releaseNextPlanSteps(plan.id);
+    } catch (error) {
+      if (sessionId && sessionTracked) {
+        const remaining = (this.sessionRefCounts.get(sessionId) ?? 1) - 1;
+        if (remaining <= 0) {
+          this.sessionRefCounts.delete(sessionId);
+          await this.fileLockManager.releaseSessionLocks(sessionId).catch((err) =>
+            this.queueLogger.warn(
+              { err: normalizeError(err), planId: plan.id, sessionId },
+              "failed to release session locks after submission failure",
+            ),
+          );
+        } else {
+          this.sessionRefCounts.set(sessionId, remaining);
+        }
+        this.planSessions.delete(plan.id);
+      }
+      throw error;
+    }
   }
 
   async resolvePlanStepApproval(options: {
@@ -206,6 +249,7 @@ export class PlanQueueManager {
           this.stateService!.clearApprovals(planId, stepId);
           await this.stateService!.forgetStep(planId, stepId);
           this.prunePlanSubject(planId);
+          await this.cleanupPlanSession(planId, "failed to release session locks after rejection");
           return;
       }
 
@@ -387,14 +431,18 @@ export class PlanQueueManager {
         metadata.nextStepIndex += 1;
       }
       
-      if (metadata.nextStepIndex >= metadata.steps.length) {
-          if (metadata.lastCompletedIndex >= metadata.steps.length - 1) {
-               await this.stateService!.forgetPlanMetadata(planId);
-          } else {
-               await this.stateService!.rememberPlanMetadata(planId, metadata);
-          }
+      const completed =
+        metadata.nextStepIndex >= metadata.steps.length &&
+        metadata.lastCompletedIndex >= metadata.steps.length - 1;
+
+      if (completed) {
+           await this.stateService!.forgetPlanMetadata(planId);
       } else {
-          await this.stateService!.rememberPlanMetadata(planId, metadata);
+           await this.stateService!.rememberPlanMetadata(planId, metadata);
+      }
+
+      if (completed) {
+        await this.cleanupPlanSession(planId, "failed to release session locks");
       }
       
       if (this.queueAdapter) {
@@ -406,11 +454,28 @@ export class PlanQueueManager {
 
   async rehydratePendingSteps(): Promise<void> {
       const pendingSteps = await this.stateService!.listActiveSteps();
+      const restoredSessions = new Set<string>();
       for (const persisted of pendingSteps) {
           const key = persisted.idempotencyKey;
           const metadata = this.stateService!.getRegistryEntry(persisted.planId, persisted.step.id);
           if (metadata) {
               continue;
+          }
+
+          const sessionId = persisted.subject?.sessionId;
+          if (sessionId) {
+            this.planSessions.set(persisted.planId, sessionId);
+            this.sessionRefCounts.set(sessionId, (this.sessionRefCounts.get(sessionId) ?? 0) + 1);
+
+            if (!restoredSessions.has(sessionId)) {
+              restoredSessions.add(sessionId);
+              await this.fileLockManager.restoreSessionLocks(sessionId).catch((err) =>
+                this.queueLogger.warn(
+                  { err: normalizeError(err), sessionId, planId: persisted.planId },
+                  "failed to restore session locks during rehydrate",
+                ),
+              );
+            }
           }
           
           const job: PlanJob = {
@@ -528,31 +593,73 @@ export class PlanQueueManager {
         }
     }
     
-    getPlanSubject(planId: string) {
-        if (!this.stateService) return undefined;
-        return this.stateService.getPlanSubject(planId) ?? this.stateService.getRetainedPlanSubject(planId);
+  getPlanSubject(planId: string) {
+      if (!this.stateService) return undefined;
+      return this.stateService.getPlanSubject(planId) ?? this.stateService.getRetainedPlanSubject(planId);
+  }
+
+  async getPersistedPlanStep(planId: string, stepId: string) {
+      if (!this.stateService) return undefined;
+      return this.stateService.getEntry(planId, stepId);
+  }
+
+  private async cleanupPlanSession(planId: string, logMessage: string): Promise<void> {
+    const sessionId = this.planSessions.get(planId);
+    if (!sessionId) return;
+
+    const remaining = (this.sessionRefCounts.get(sessionId) ?? 1) - 1;
+    if (remaining <= 0) {
+      await this.fileLockManager.releaseSessionLocks(sessionId).catch((err) =>
+        this.queueLogger.warn(
+          { err: normalizeError(err), planId, sessionId },
+          logMessage,
+        ),
+      );
+      this.sessionRefCounts.delete(sessionId);
+    } else {
+      this.sessionRefCounts.set(sessionId, remaining);
     }
-    
-    async getPersistedPlanStep(planId: string, stepId: string) {
-        if (!this.stateService) return undefined;
-        return this.stateService.getEntry(planId, stepId);
+    this.planSessions.delete(planId);
+  }
+
+  private async releaseTrackedSessionLocks(): Promise<void> {
+    const sessionIds = new Set<string>();
+    for (const sessionId of this.sessionRefCounts.keys()) {
+      sessionIds.add(sessionId);
     }
-    
-    async stop(): Promise<void> {
-        if (this.stepConsumer) {
-          this.stepConsumer.stop();
-        }
+    for (const sessionId of this.planSessions.values()) {
+      sessionIds.add(sessionId);
+    }
+
+    for (const sessionId of sessionIds) {
+      await this.fileLockManager.releaseSessionLocks(sessionId).catch((err) =>
+        this.queueLogger.warn(
+          { err: normalizeError(err), sessionId },
+          "failed to release session locks during shutdown",
+        ),
+      );
+    }
+  }
+
+  async stop(): Promise<void> {
+    if (this.stepConsumer) {
+      this.stepConsumer.stop();
+    }
         if (this.completionConsumer) {
-          this.completionConsumer.stop();
-        }
-        
-        if (this.stateService) {
-            // Close without clearing to preserve state for restart tests
-            await this.stateService.close().catch(() => {});
-        }
+      this.completionConsumer.stop();
+    }
+
+    await this.releaseTrackedSessionLocks();
+
+    if (this.stateService) {
+        // Close without clearing to preserve state for restart tests
+        await this.stateService.close().catch(() => {});
+    }
         this.stateService = undefined;
         this.initialized = false;
         this.initializationPromise = null;
+        this.planSessions.clear();
+        this.sessionRefCounts.clear();
     }
 
     async reset(): Promise<void> {
@@ -560,20 +667,24 @@ export class PlanQueueManager {
           this.stepConsumer.stop();
         }
         if (this.completionConsumer) {
-          this.completionConsumer.stop();
-        }
-        
-        if (this.stateService) {
-            this.stateService.clearAll();
-            // Ensure persistence is closed to avoid race conditions in tests
-            await this.stateService.close().catch(() => {});
+      this.completionConsumer.stop();
+    }
+
+    await this.releaseTrackedSessionLocks();
+
+    if (this.stateService) {
+        this.stateService.clearAll();
+        // Ensure persistence is closed to avoid race conditions in tests
+        await this.stateService.close().catch(() => {});
         }
         this.stateService = undefined;
         this.initialized = false;
         this.initializationPromise = null;
         // Reload config and setup services again to pick up env changes in tests
         this.config = loadConfig();
-        this.setupServices();
+        await this.setupServices();
+        this.planSessions.clear();
+        this.sessionRefCounts.clear();
     }
 
     hasPendingPlanStep(planId: string, stepId: string): boolean {
