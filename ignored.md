@@ -20,3 +20,4 @@
 
 | id | status | description | source | file_location | line_numbers | reason | revisit_triggers | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| I1 | ignored | Remove locks for read operations to reduce contention | Reviewer: “acquiring lock for read creates unnecessary contention” | services/orchestrator/src/tools/core/FileSystemTool.ts | 121-177 | Retaining read locks prevents torn reads and aligns with security/consistency guidance. | If read operations become performance bottleneck and safety can be preserved via read-write locks. | Documented trade-off; maintains correctness over throughput. |
