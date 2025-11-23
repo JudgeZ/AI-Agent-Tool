@@ -24,6 +24,7 @@
   import { gatewayBaseUrl } from '$lib/config';
   import { session } from '$lib/stores/session';
   import { isCollaborationSessionValid } from './sessionAuth';
+  import { notifyError } from '$lib/stores/notifications';
 
   let editorContainer: HTMLElement;
   let editor: monaco.editor.IStandaloneCodeEditor;
@@ -42,7 +43,7 @@
   let sessionValue = get(session);
   let activeFileValue = get(activeFile);
   let collaborationContextVersionValue = get(collaborationContextVersion);
-  const subscriptions: Array<() => void> = [];
+  let subscriptions: Array<() => void> = [];
 
   // Worker setup for Monaco (Vite specific)
   import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
@@ -94,7 +95,7 @@
       }
     });
 
-    subscriptions.push(
+    subscriptions = [
       session.subscribe((value) => {
         sessionValue = value;
         syncCollaborationContext();
@@ -107,26 +108,26 @@
         collaborationContextVersionValue = value;
         syncActiveFile();
       })
-    );
-
-    syncCollaborationContext();
-    syncActiveFile();
+    ];
   });
 
   onDestroy(() => {
     teardownCollaboration();
     editor?.dispose();
     subscriptions.forEach((unsubscribe) => unsubscribe());
+    subscriptions = [];
   });
 
   function toWebsocketBase(httpUrl: string) {
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity
     const parsed = new URL(httpUrl);
-    parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
-    parsed.pathname = '';
-    parsed.search = '';
-    parsed.hash = '';
-    return parsed.toString().replace(/\/$/, '');
+    const protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+    const normalized = new URL(parsed.origin);
+    normalized.protocol = protocol;
+    return normalized.toString().replace(/\/$/, '');
+  }
+
+  function notifyCollaborationError(message: string) {
+    notifyError(message, { timeoutMs: 8000 });
   }
 
   async function configureForFile(path: string, forceReload = false) {
@@ -156,6 +157,7 @@
       } catch (error) {
         console.error('Failed to configure file for collaboration', { path, error });
         setCollaborationStatus('error');
+        notifyCollaborationError('Unable to open the file for collaboration. Please try again.');
       }
     });
     return configureQueue;
@@ -243,6 +245,7 @@
       console.error('Failed to derive collaboration room', error);
       setCollaborationStatus('error');
       logCollaborationEvent('room-derivation-failed', { message: (error as Error).message });
+      notifyCollaborationError('Could not start collaboration. Check your session and retry.');
       return;
     }
 
@@ -307,6 +310,7 @@
       console.error('Failed to initialize collaboration provider', error);
       setCollaborationStatus('error');
       logCollaborationEvent('ws-init-failed', { message: (error as Error).message });
+      notifyCollaborationError('Collaboration connection failed to initialize. Please retry.');
       cleanupStaleCollaboration();
       return;
     }

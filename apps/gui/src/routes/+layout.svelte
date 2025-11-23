@@ -4,6 +4,7 @@
   import Editor from '$lib/components/ide/Editor.svelte';
   import ResizableSidebar from '$lib/components/layout/ResizableSidebar.svelte';
   import TerminalPanel from '$lib/components/layout/TerminalPanel.svelte';
+  import Notifications from '$lib/components/Notifications.svelte';
   import {
     layoutState,
     LEFT_MAX,
@@ -68,6 +69,8 @@
       <p>Terminal output will appear here.</p>
     </div>
   </TerminalPanel>
+
+  <Notifications />
 </div>
 
 <style>

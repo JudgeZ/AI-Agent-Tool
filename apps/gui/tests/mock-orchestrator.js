@@ -171,7 +171,7 @@ const server = http.createServer((req, res) => {
   const sseMatch = url.pathname.match(/^\/plan\/([^/]+)\/events$/);
   const approveMatch = url.pathname.match(/^\/plan\/([^/]+)\/steps\/([^/]+)\/approve$/);
 
-  const requestOrigin = req.headers.origin || '*';
+  const requestOrigin = req.headers.origin || 'http://localhost:5173';
   res.setHeader('Access-Control-Allow-Origin', requestOrigin);
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
