@@ -1,17 +1,14 @@
 import http from "node:http";
 import type https from "node:https";
-import type { IncomingMessage } from "node:http";
 
 import { WebSocketServer } from "ws";
 import { z } from "zod";
 
-import type { SessionRecord } from "../auth/SessionStore.js";
 import type { AppConfig } from "../config.js";
 import { logAuditEvent } from "../observability/audit.js";
 import { hashIdentifier } from "../observability/audit.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
 import { SessionIdSchema } from "../http/validation.js";
-import type { SessionSource } from "../auth/sessionValidation.js";
 import {
   authenticateSessionFromUpgrade,
   decrementConnectionCount,
@@ -35,23 +32,6 @@ const terminalParamsSchema = z.object({
 });
 
 const ipConnectionCounts = new Map<string, number>();
-
-function authenticateTerminalRequest(
-  req: IncomingMessage,
-  cookieName: string,
-):
-  | { status: "ok"; session: SessionRecord; sessionId: string; source?: SessionSource }
-  | { status: "error"; reason: string; source?: SessionSource } {
-  return authenticateSessionFromUpgrade(req, cookieName);
-}
-
-function incrementConnection(ip: string, limit: number): boolean {
-  return incrementConnectionCount(ip, limit, ipConnectionCounts);
-}
-
-function decrementConnection(ip: string): void {
-  decrementConnectionCount(ip, ipConnectionCounts);
-}
 
 function resolveConnectionLimitFromEnv(): number {
   const parsed = Number.parseInt(process.env.TERMINAL_CONNECTIONS_PER_IP ?? "", 10);
@@ -108,7 +88,7 @@ export function setupTerminalServer(httpServer: http.Server | https.Server, conf
       }
     }
 
-    if (!incrementConnection(ip, connectionLimitPerIp)) {
+    if (!incrementConnectionCount(ip, connectionLimitPerIp, ipConnectionCounts)) {
       logger.warn({ ip: hashedIp }, "rejecting terminal connection due to per-IP limit");
       logAuditEvent({
         action: "terminal.connection",
@@ -123,7 +103,7 @@ export function setupTerminalServer(httpServer: http.Server | https.Server, conf
       return;
     }
 
-    const authResult = authenticateTerminalRequest(request, sessionCookieName);
+    const authResult = authenticateSessionFromUpgrade(request, sessionCookieName);
     if (authResult.status === "error") {
       logger.warn({ reason: authResult.reason }, "rejecting terminal connection due to invalid session");
       logAuditEvent({
@@ -136,7 +116,7 @@ export function setupTerminalServer(httpServer: http.Server | https.Server, conf
       });
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       socket.destroy();
-      decrementConnection(ip);
+      decrementConnectionCount(ip, ipConnectionCounts);
       return;
     }
 
@@ -154,18 +134,23 @@ export function setupTerminalServer(httpServer: http.Server | https.Server, conf
       });
       socket.write("HTTP/1.1 401 Unauthorized\r\nConnection: close\r\n\r\n");
       socket.destroy();
-      decrementConnection(ip);
+      decrementConnectionCount(ip, ipConnectionCounts);
       return;
     }
 
     wss.handleUpgrade(request, socket, head, (ws) => {
+      let cleanedUp = false;
       const cleanupConnection = () => {
-        decrementConnection(ip);
+        if (cleanedUp) {
+          return;
+        }
+        cleanedUp = true;
+        decrementConnectionCount(ip, ipConnectionCounts);
         ws.off("error", cleanupConnection);
         ws.off("close", cleanupConnection);
       };
-      ws.once("close", cleanupConnection);
-      ws.once("error", cleanupConnection);
+      ws.on("close", cleanupConnection);
+      ws.on("error", cleanupConnection);
       try {
         const attached = terminalManager.attach(paramsResult.data.sessionId, ws);
         if (attached === "attached" || attached === "pending") {

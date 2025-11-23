@@ -4,6 +4,8 @@ import { z } from "zod";
 
 import { appLogger, type AppLogger, normalizeError } from "../observability/logger.js";
 
+const MAX_MESSAGE_LENGTH = 16_384;
+
 const terminalMessageSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("input"), data: z.string().max(8192) }),
   z.object({
@@ -234,7 +236,7 @@ export class TerminalManager {
     if (!message) {
       return { ok: false, reason: "unsupported" };
     }
-    if (message.length > 16_384) {
+    if (message.length > MAX_MESSAGE_LENGTH) {
       return { ok: false, reason: "too_large" };
     }
     try {
