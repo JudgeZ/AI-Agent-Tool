@@ -56,6 +56,13 @@ if (process.env.NODE_ENV !== "test") {
   });
 }
 
+/**
+ * Bootstraps and starts the orchestrator HTTP(S) server using the provided or loaded configuration.
+ *
+ * @param appConfig - Optional application configuration to use instead of loading the default config
+ * @returns The started `http.Server` or `https.Server` instance
+ * @throws Rethrows any error that occurs while initializing the plan queue runtime
+ */
 export async function bootstrapOrchestrator(
   appConfig?: AppConfig,
 ): Promise<http.Server | https.Server> {

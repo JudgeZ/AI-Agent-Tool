@@ -27,6 +27,12 @@ type IpAddress = ipaddr.IPv4 | ipaddr.IPv6;
 
 const ipConnectionCounts = new Map<string, number>();
 
+/**
+ * Extracts the first non-empty trimmed header string from a header value that may be a string, an array of strings, or undefined.
+ *
+ * @param value - Header value as a string, an array of strings, or undefined
+ * @returns The first non-empty trimmed string if present, otherwise `undefined`
+ */
 function headerValue(value: string | string[] | undefined): string | undefined {
   if (Array.isArray(value)) {
     return value.find((entry) => typeof entry === "string" && entry.trim().length > 0)?.trim();
@@ -38,6 +44,12 @@ function headerValue(value: string | string[] | undefined): string | undefined {
   return undefined;
 }
 
+/**
+ * Clean a header string for safe logging by removing carriage returns and line feeds and limiting length to 512 characters.
+ *
+ * @param value - The header value to sanitize; may be `undefined`.
+ * @returns The sanitized header string, or `undefined` if the input was falsy.
+ */
 function sanitizeHeaderForLog(value: string | undefined): string | undefined {
   if (!value) {
     return undefined;
@@ -45,6 +57,13 @@ function sanitizeHeaderForLog(value: string | undefined): string | undefined {
   return value.replace(/\r|\n/g, "").slice(0, 512);
 }
 
+/**
+ * Parses a raw IP string into an ipaddr.js IP object, normalizing IPv6 zone identifiers
+ * and converting IPv4-mapped IPv6 addresses to IPv4.
+ *
+ * @param raw - The raw IP address string (may include an IPv6 zone identifier)
+ * @returns The parsed `IpAddress` object, or `undefined` if `raw` is missing or invalid
+ */
 function parseIpAddress(raw: string | undefined): IpAddress | undefined {
   if (!raw) {
     return undefined;
@@ -61,6 +80,13 @@ function parseIpAddress(raw: string | undefined): IpAddress | undefined {
   }
 }
 
+/**
+ * Determines whether an IP address falls within any of the provided trusted proxy CIDR ranges.
+ *
+ * @param address - The IP address to check.
+ * @param trustedProxyCidrs - Array of CIDR strings representing trusted proxy networks; invalid or empty entries are ignored.
+ * @returns `true` if `address` is contained in at least one CIDR from `trustedProxyCidrs`, `false` otherwise.
+ */
 function isTrustedProxyIp(address: IpAddress, trustedProxyCidrs: readonly string[]): boolean {
   if (trustedProxyCidrs.length === 0) {
     return false;
@@ -85,6 +111,12 @@ function isTrustedProxyIp(address: IpAddress, trustedProxyCidrs: readonly string
   return false;
 }
 
+/**
+ * Determines whether an IP address is loopback, link-local, or private/unique-local.
+ *
+ * @param address - The parsed IP address to evaluate
+ * @returns `true` if the address is loopback, link-local, or private (for IPv4) / unique local (for IPv6), `false` otherwise
+ */
 function isPrivateOrLoopback(address: IpAddress): boolean {
   if (address.kind() === "ipv4") {
     const range = (address as ipaddr.IPv4).range();
@@ -94,6 +126,13 @@ function isPrivateOrLoopback(address: IpAddress): boolean {
   return range === "loopback" || range === "linkLocal" || range === "uniqueLocal";
 }
 
+/**
+ * Determine the originating client IP address for an HTTP upgrade request, honoring trusted proxy CIDRs and X-Forwarded-For headers.
+ *
+ * @param req - The incoming HTTP(S) request whose socket and headers are inspected
+ * @param trustedProxyCidrs - Array of CIDR strings identifying trusted proxy addresses to be skipped when resolving the client IP
+ * @returns The resolved client IP as a string; returns `"unknown"` if the remote address cannot be parsed. If the remote address is a trusted proxy or private/loopback, the last non-proxy IP from `X-Forwarded-For` is returned when available, otherwise the remote address string is returned.
+ */
 function resolveClientIp(req: IncomingMessage, trustedProxyCidrs: readonly string[]): string {
   const remote = parseIpAddress(req.socket.remoteAddress ?? undefined);
   if (!remote) {
@@ -122,6 +161,11 @@ function resolveClientIp(req: IncomingMessage, trustedProxyCidrs: readonly strin
   return remote.toString();
 }
 
+/**
+ * Extracts request and trace identifiers from incoming HTTP headers.
+ *
+ * @returns An object with optional `requestId` and `traceId` string values read from `X-Request-Id` and `X-Trace-Id` headers, respectively; each property is `undefined` if the corresponding header is missing or empty.
+ */
 function requestIdentifiers(req: IncomingMessage): { requestId?: string; traceId?: string } {
   return {
     requestId: headerValue(req.headers["x-request-id"]),
@@ -129,6 +173,15 @@ function requestIdentifiers(req: IncomingMessage): { requestId?: string; traceId
   };
 }
 
+/**
+ * Selects an application logger augmented with a trace identifier when present.
+ *
+ * Reads the `X-Trace-Id` header (falling back to `X-Request-Id`) from the request and, if found,
+ * returns a child logger that includes `trace_id`; otherwise returns the default application logger.
+ *
+ * @param req - HTTP upgrade or request object whose headers may contain trace identifiers
+ * @returns A logger instance augmented with `trace_id` when a trace or request id header exists, otherwise the default application logger
+ */
 function loggerWithTrace(req: IncomingMessage) {
   const traceId = headerValue(req.headers["x-trace-id"]) ?? headerValue(req.headers["x-request-id"]);
   if (!traceId) {
@@ -137,6 +190,15 @@ function loggerWithTrace(req: IncomingMessage) {
   return appLogger.child({ trace_id: traceId });
 }
 
+/**
+ * Extracts a session ID from an HTTP upgrade request by checking a Bearer Authorization header first, then a named cookie.
+ *
+ * @param req - The incoming HTTP request for the upgrade handshake
+ * @param cookieName - The cookie name to look for when extracting the session ID
+ * @returns An object with:
+ *  - `status: "ok"` and the validated `sessionId` and `sessionSource` (`"authorization"` or `"cookie"`) when a valid session ID is found;
+ *  - `status: "missing"` when no Authorization bearer token or matching cookie is present;
+ *  - `status: "invalid"` when a present token or cookie value fails session ID validation.
 function extractSessionIdFromUpgrade(req: IncomingMessage, cookieName: string): SessionExtractionResult {
   const authHeader = headerValue(req.headers.authorization);
   const bearerPrefix = "bearer ";
@@ -173,6 +235,16 @@ function extractSessionIdFromUpgrade(req: IncomingMessage, cookieName: string): 
   return { status: "missing" };
 }
 
+/**
+ * Validate and resolve a session for a terminal WebSocket upgrade request.
+ *
+ * Attempts to extract a session ID from the request (Authorization header or cookie),
+ * cleans up expired sessions, and returns the corresponding session record if it exists.
+ *
+ * @param req - The incoming HTTP upgrade request to inspect for authentication data
+ * @param cookieName - The name of the session cookie to check when extracting a session ID
+ * @returns An object with `status: "ok"` and the resolved `session`, `sessionId`, and optional `source` when a valid session is found; otherwise `{ status: "error", reason }` describing why authentication failed
+ */
 function authenticateTerminalRequest(
   req: IncomingMessage,
   cookieName: string,
@@ -192,6 +264,13 @@ function authenticateTerminalRequest(
   return { status: "ok", session, sessionId: sessionResult.sessionId, source: sessionResult.source };
 }
 
+/**
+ * Attempts to increment the active connection count for the given IP address if doing so does not exceed the configured limit.
+ *
+ * @param ip - Client IP address used as the tracking key
+ * @param limit - Maximum allowed concurrent connections for this IP
+ * @returns `true` if the connection count was incremented, `false` if the limit was already reached
+ */
 function incrementConnection(ip: string, limit: number): boolean {
   const current = ipConnectionCounts.get(ip) ?? 0;
   if (current >= limit) {
@@ -201,6 +280,13 @@ function incrementConnection(ip: string, limit: number): boolean {
   return true;
 }
 
+/**
+ * Decrements the active terminal connection count for a given IP address.
+ *
+ * If the count reaches zero, the IP entry is removed from the internal tracking map.
+ *
+ * @param ip - The client IP address whose connection count should be decremented
+ */
 function decrementConnection(ip: string): void {
   const current = ipConnectionCounts.get(ip) ?? 0;
   if (current <= 1) {
@@ -210,6 +296,11 @@ function decrementConnection(ip: string): void {
   ipConnectionCounts.set(ip, current - 1);
 }
 
+/**
+ * Resolve the maximum allowed terminal WebSocket connections per IP from environment configuration.
+ *
+ * @returns The positive integer value of `TERMINAL_CONNECTIONS_PER_IP` if set and valid, otherwise the default connection limit.
+ */
 function resolveConnectionLimitFromEnv(): number {
   const parsed = Number.parseInt(process.env.TERMINAL_CONNECTIONS_PER_IP ?? "", 10);
   if (Number.isFinite(parsed) && parsed > 0) {
@@ -218,6 +309,14 @@ function resolveConnectionLimitFromEnv(): number {
   return DEFAULT_CONNECTIONS_PER_IP;
 }
 
+/**
+ * Install and manage the WebSocket-based sandbox terminal upgrade endpoint and connection lifecycle on the provided HTTP/S server.
+ *
+ * Sets up a no-server WebSocketServer at the module's terminal path, enforces origin allowlist, per-IP connection limits, and session-based authentication; upgrades validated requests into terminal WebSocket connections managed by TerminalManager and records audit events for allowed and denied attempts.
+ *
+ * @param httpServer - The HTTP or HTTPS server to attach the upgrade handler to
+ * @param config - Application configuration used for session cookie name, CORS allowed origins, and trusted proxy CIDRs
+ */
 export function setupTerminalServer(httpServer: http.Server | https.Server, config: AppConfig): void {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_TERMINAL_PAYLOAD_BYTES });
   const sessionCookieName = config.auth.oidc.session.cookieName;

@@ -54,7 +54,10 @@ export interface SandboxCapabilities {
 }
 
 /**
- * Select appropriate sandbox type based on capabilities
+ * Choose the sandbox type appropriate for the given capabilities.
+ *
+ * @param capabilities - Flags and limits that influence sandbox selection (e.g., filesystem, network, externalBinaries, heavyCompute, maxMemory)
+ * @returns `SandboxType.CONTAINER` if the capabilities require container features (filesystem access, network access, external binaries, heavy computation, or `maxMemory` > 1 GiB), `SandboxType.WASM` otherwise
  */
 export function selectSandboxType(capabilities: SandboxCapabilities): SandboxType {
   // Container sandbox if:

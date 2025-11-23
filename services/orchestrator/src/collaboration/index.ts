@@ -574,6 +574,18 @@ function scheduleCompaction(server: http.Server | https.Server): void {
   server.on("close", () => clearInterval(interval));
 }
 
+/**
+ * Initialize and attach the collaboration WebSocket endpoint and background maintenance routines.
+ *
+ * Sets up on-disk persistence, schedules periodic room compaction, and listens for HTTP Upgrade
+ * requests at /collaboration/ws. Enforces CORS origin checks and per-IP connection limits,
+ * authenticates incoming requests, derives and enforces room identity and room limits, loads
+ * persisted room state when needed, and establishes WebSocket connections that are bound to
+ * in-memory collaborative document state.
+ *
+ * @param httpServer - The HTTP(S) server to attach the collaboration upgrade handler to
+ * @param config - Application configuration used for auth, CORS, trusted proxies, and persistence
+ */
 export async function setupCollaborationServer(
   httpServer: http.Server | https.Server,
   config: AppConfig,
