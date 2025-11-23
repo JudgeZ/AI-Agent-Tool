@@ -1,46 +1,29 @@
-# Distributed File Locking
+# Distributed file locking
 
-This note documents how the orchestrator coordinates file locks across agents and sessions using Redis-backed locks. It captures the intended behavior so operators and contributors understand the guarantees and configuration surface.
+This orchestrator uses Redis-backed distributed locks to serialize read/write access to project files and protect collaborative editing sessions. Locks are mandatory for both read and write operations to avoid torn reads and ensure agents observe consistent state during tool execution.
 
-## Goals and Scope
-- Prevent concurrent writes (and reads during writes) to the same file across agents and rooms.
-- Keep lock lifecycle observable with trace context, audit logs, and persisted history.
-- Bound resource usage via TTLs and per-session rate limiting to avoid leaked locks or runaway memory.
-- Work against a single Redis endpoint per process to enforce consistent lock ownership.
+## Lock scope and lifecycle
+- **Resource key**: Each normalized absolute file path is mapped to a `file:<path>` lock key derived from a SHA-256 room identifier.
+- **TTL enforcement**: Lock TTL is configurable via `LOCK_TTL_MS` (default: 30s, capped at 5 minutes) and is applied to every acquisition. TTL requests above the cap are trimmed to the maximum to protect against runaway locks.
+- **Acquisition**: Requests use a best-effort retry policy (`DistributedLockService`) and are rate-limited per session (see below). Session IDs must be alphanumeric/`-_` and ≤128 characters; invalid identifiers are rejected.
+- **Persistence**: Per-session lock history is stored in Redis using `LOCK_HISTORY_TTL_SEC` when set, enabling reattachment after orchestrator restarts. History is cleared on release.
+- **Restore**: On reconnect, the manager reads stored paths and re-acquires locks with per-lock timeouts and small backoffs to avoid blocking other restores.
+- **Release**: Releases remove in-memory tracking, persist updated history, and log the event. Failures to release are surfaced and logged without leaking secrets.
 
-## Lock Model
-- **Resource key:** `file:<normalized-path>` where paths are normalized to POSIX and forced to start with `/`.
-- **Lock type:** Exclusive; acquisition fails when another session holds the lock or the room is busy.
-- **TTL:** Default `LOCK_TTL_MS` (30s) capped at 300s. TTL applies per acquire attempt; there is no automatic renewal—callers must reacquire after expiry.
-- **Rate limiting:** `LOCK_RATE_LIMIT_PER_MIN` over `LOCK_RATE_LIMIT_WINDOW_MS` per session. Exceeding the window returns `rate_limited`.
-- **History persistence:** Each session's lock paths are stored in Redis under `session:locks:<sessionId>` with optional expiry `LOCK_HISTORY_TTL_SEC`. History is validated on restore and repersisted on release to keep Redis aligned.
+## Rate limiting and multi-instance deployments
+- **Per-session rate limit**: Controlled by `LOCK_RATE_LIMIT_PER_MIN` and `LOCK_RATE_LIMIT_WINDOW_MS`; enforced before every acquire/restore attempt with structured errors on exhaustion.
+- **Backend selection**: By default, limits use the in-memory store. To share quotas across orchestrator instances, configure a Redis backend via `ORCHESTRATOR_RATE_LIMIT_BACKEND=redis` and `ORCHESTRATOR_RATE_LIMIT_REDIS_URL` (or `RATE_LIMIT_REDIS_URL`). Without Redis, limits are per-process and scale with the number of replicas.
+- **Cleanup**: Calling `releaseSessionLocks` clears both active locks and rate-limit counters for that session.
 
-## Lifecycle
-1. **Acquire**
-   - Validate session ID format and enforce per-session rate limit.
-   - Reject when the collaboration room is busy before contacting Redis.
-   - Acquire distributed lock with bounded retries; failure surfaces as `busy` or `unavailable`.
-   - Persist session history and emit audit log + tracing attributes after a successful acquire.
-2. **Release**
-   - Wrapped release records unlock in memory and persists updated history; failures are logged but do not throw.
-   - Releases are idempotent with token-checked deletion in Redis.
-3. **Restore on reconnect**
-   - Session history is fetched and validated via schema before attempting reacquisition.
-   - Invalid history entries are skipped; valid paths are reacquired with the same lifecycle as a new lock.
+## Metrics and observability
+- **Lock attempts**: `orchestrator_file_lock_attempts_total{operation,outcome}` and latency histogram `orchestrator_file_lock_attempt_seconds{operation,outcome}` capture success/error/busy/rate-limited paths.
+- **Successful acquisitions**: `orchestrator_file_lock_acquire_seconds{operation}` records latency for completed acquisitions.
+- **Contention**: `orchestrator_file_lock_contention_total{operation,reason}` distinguishes `room_busy`, `lock_contended`, and `lock_timeout` scenarios.
+- **Rate limiting**: `orchestrator_file_lock_rate_limit_total{operation,result}` reports allowed vs. blocked checks.
+- **Releases**: `orchestrator_file_lock_release_total{outcome}` counts release results.
 
-## Configuration
-- `LOCK_REDIS_URL` / `REDIS_URL`: Redis endpoint. The process reuses a single `DistributedLockService` per URL and rejects mid-run URL changes.
-- `LOCK_TTL_MS`: Per-lock TTL in milliseconds (capped at 300_000ms).
-- `LOCK_HISTORY_TTL_SEC`: Optional expiry for stored session history. Non-positive values disable expiry.
-- `LOCK_RATE_LIMIT_PER_MIN`, `LOCK_RATE_LIMIT_WINDOW_MS`: Per-session rate limiting parameters.
-
-## Failure Handling and Observability
-- Busy paths raise `FileLockError` with code `busy`; rate limit breaches raise `rate_limited`; Redis or connection errors return `unavailable`.
-- Structured logs include `path`, `sessionId`, `agentId` (when provided), and trace context on both acquire and release.
-- Redis client errors and history persistence issues log warnings; persistence failures during acquire trigger a best-effort rollback of the lock.
-
-## Operational Notes
-- Keep Redis reachable with low latency; acquisition retries default to 3 attempts with 100ms delay. The TTL bounds prevent orphaned locks if clients disconnect.
-- Because TTLs are not auto-renewed, long-running edits should renew by reacquiring before TTL expiry if exclusivity must be maintained.
-- Room-level busy checks guard against concurrent edits even before hitting Redis, reducing contention.
-- In multi-instance orchestrators, configure a shared rate limit backend (`ORCHESTRATOR_RATE_LIMIT_REDIS_URL` or `RATE_LIMIT_REDIS_URL`; backend defaults to Redis when a URL is provided) so per-session lock limits cannot be bypassed by hopping between instances.
+## Operational constraints and expectations
+- Redis availability is required for lock coordination and history persistence; connection failures surface as `unavailable` errors and are logged with normalized error details.
+- Locks apply to reads to prevent agents from reading inconsistent data while writes are in flight; removing read locks would risk correctness.
+- Keep TTLs modest to reduce the chance of stale locks; rely on restore/backoff logic rather than long TTLs for resiliency.
+- Ensure tracing (`trace_id`, `span_id`) and request IDs propagate to lock operations for cross-service debugging.

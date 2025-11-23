@@ -24,6 +24,13 @@ export type SessionRateLimiterOptions = {
 
 const DEFAULT_PREFIX = "orchestrator:session-rate-limit";
 
+/**
+ * Resolves the backing store for rate limiting. Multi-instance deployments
+ * should supply a Redis backend (via ORCHESTRATOR_RATE_LIMIT_BACKEND=redis and
+ * ORCHESTRATOR_RATE_LIMIT_REDIS_URL or RATE_LIMIT_REDIS_URL) to ensure limits
+ * are enforced across processes; otherwise the in-memory backend scopes limits
+ * to a single orchestrator instance.
+ */
 export function resolveBackendFromEnv(env: NodeJS.ProcessEnv = process.env): RateLimitBackendConfig {
   const providerEnv = env.ORCHESTRATOR_RATE_LIMIT_BACKEND?.toLowerCase();
   const redisUrl = env.ORCHESTRATOR_RATE_LIMIT_REDIS_URL ?? env.RATE_LIMIT_REDIS_URL;

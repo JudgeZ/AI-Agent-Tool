@@ -77,11 +77,26 @@ const sessionKey = (sessionId: string) => `session:locks:${sessionId}`;
 
 async function metricValue(name: string, labels: Record<string, string>): Promise<number> {
   const metrics = await register.getMetricsAsJSON();
-  const metric = metrics.find((entry) => entry.name === name);
-  const match = metric?.values?.find((value: any) =>
+  const directMatch = metrics.find((entry) => entry.name === name);
+  const directValue = directMatch?.values?.find((value: any) =>
     Object.entries(labels).every(([key, val]) => value.labels?.[key] === val),
   );
-  return typeof match?.value === "number" ? match.value : 0;
+  if (typeof directValue?.value === "number") {
+    return directValue.value;
+  }
+
+  for (const metric of metrics) {
+    const nested = metric.values?.find(
+      (value: any) =>
+        value.metricName === name &&
+        Object.entries(labels).every(([key, val]) => value.labels?.[key] === val),
+    );
+    if (typeof nested?.value === "number") {
+      return nested.value;
+    }
+  }
+
+  return 0;
 }
 
 describe("FileLockManager", () => {
@@ -162,8 +177,19 @@ describe("FileLockManager", () => {
     mockIsRoomBusy.mockReturnValue(true);
     const manager = new FileLockManager("redis://example");
 
+    const baselineContention = await metricValue("orchestrator_file_lock_contention_total", {
+      operation: "acquire",
+      reason: "room_busy",
+    });
+
     await expect(manager.acquireLock("s1", "busy/file.txt")).rejects.toBeInstanceOf(FileLockError);
     expect(mockAcquireLock).not.toHaveBeenCalled();
+    expect(
+      await metricValue("orchestrator_file_lock_contention_total", {
+        operation: "acquire",
+        reason: "room_busy",
+      }),
+    ).toBeGreaterThan(baselineContention);
   });
 
   it("propagates unavailable errors when redis cannot connect", async () => {
@@ -347,6 +373,9 @@ describe("FileLockManager", () => {
       operation: "acquire",
       outcome: "success",
     });
+    const baselineLatencyCount = await metricValue("orchestrator_file_lock_acquire_seconds_count", {
+      operation: "acquire",
+    });
     const baselineRelease = await metricValue("orchestrator_file_lock_release_total", { outcome: "success" });
 
     const lock = await manager.acquireLock("metrics-session", "project/file.txt");
@@ -361,12 +390,22 @@ describe("FileLockManager", () => {
     expect(await metricValue("orchestrator_file_lock_release_total", { outcome: "success" })).toBeGreaterThan(
       baselineRelease,
     );
+    expect(
+      await metricValue("orchestrator_file_lock_acquire_seconds_count", { operation: "acquire" }),
+    ).toBeGreaterThan(baselineLatencyCount);
   });
 
   it("records metrics when rate limiting blocks acquisitions", async () => {
     const manager = new FileLockManager("redis://example", 30_000, 0, 1, 60_000);
 
-    const baselineBlocked = await metricValue("orchestrator_file_lock_rate_limit_total", { result: "blocked" });
+    const baselineAllowed = await metricValue("orchestrator_file_lock_rate_limit_total", {
+      operation: "acquire",
+      result: "allowed",
+    });
+    const baselineBlocked = await metricValue("orchestrator_file_lock_rate_limit_total", {
+      operation: "acquire",
+      result: "blocked",
+    });
     const baselineRateLimitedAttempt = await metricValue("orchestrator_file_lock_attempts_total", {
       operation: "acquire",
       outcome: "rate_limited",
@@ -377,9 +416,13 @@ describe("FileLockManager", () => {
       code: "rate_limited",
     });
 
-    expect(await metricValue("orchestrator_file_lock_rate_limit_total", { result: "blocked" })).toBeGreaterThan(
-      baselineBlocked,
-    );
+    expect(
+      await metricValue("orchestrator_file_lock_rate_limit_total", { operation: "acquire", result: "allowed" }),
+    ).toBeGreaterThan(baselineAllowed);
+
+    expect(
+      await metricValue("orchestrator_file_lock_rate_limit_total", { operation: "acquire", result: "blocked" }),
+    ).toBeGreaterThan(baselineBlocked);
 
     expect(
       await metricValue("orchestrator_file_lock_attempts_total", {

@@ -7,6 +7,8 @@ import { isRoomBusy } from "../collaboration/index.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
 import {
   recordFileLockAttempt,
+  recordFileLockAcquisitionLatency,
+  recordFileLockContention,
   recordFileLockRateLimit,
   recordFileLockRelease,
 } from "../observability/metrics.js";
@@ -113,7 +115,7 @@ export class FileLockManager {
 
   private async enforceRateLimit(sessionId: string, operation: "acquire" | "restore"): Promise<void> {
     const result = await this.lockRateLimiter.check(sessionId);
-    this.recordRateLimit(result);
+    this.recordRateLimit(operation, result);
     if (!result.allowed) {
       throw new FileLockError("Session lock rate limit exceeded", "rate_limited", {
         sessionId,
@@ -175,6 +177,7 @@ export class FileLockManager {
 
       const roomId = this.buildRoomId(normalizedPath);
       if (isRoomBusy(roomId)) {
+        recordFileLockContention("acquire", "room_busy");
         throw new FileLockError(`File is busy: ${normalizedPath}`, "busy", {
           path: normalizedPath,
           reason: "room_busy",
@@ -201,6 +204,7 @@ export class FileLockManager {
                 { path: normalizedPath, sessionId, agentId, ...mergedTrace },
                 "file lock acquired",
               );
+              recordFileLockAcquisitionLatency("acquire", Date.now() - startedAt);
             } catch (error) {
               await trackedRelease().catch((releaseError) => {
                 appLogger.warn(
@@ -216,6 +220,10 @@ export class FileLockManager {
               throw error;
             }
             if (error instanceof LockAcquisitionError) {
+              recordFileLockContention(
+                "acquire",
+                error.code === "busy" ? "lock_contended" : "lock_timeout",
+              );
               throw new FileLockError(`File is busy: ${normalizedPath}`, "busy", {
                 path: normalizedPath,
                 reason: error.code === "busy" ? "lock_contended" : "lock_timeout",
@@ -391,6 +399,7 @@ export class FileLockManager {
     const normalizedPath = this.normalizePath(filePath);
     const roomId = this.buildRoomId(normalizedPath);
     if (isRoomBusy(roomId)) {
+      recordFileLockContention("restore", "room_busy");
       throw new FileLockError(`File is busy: ${normalizedPath}`, "busy", {
         path: normalizedPath,
         reason: "room_busy",
@@ -410,6 +419,7 @@ export class FileLockManager {
           const trackedRelease = this.wrapRelease(sessionId, normalizedPath, release, mergedTrace);
           const fileLock: FileLock = { path: normalizedPath, lockKey, release: trackedRelease };
           this.rememberLock(sessionId, normalizedPath, fileLock);
+          recordFileLockAcquisitionLatency("restore", Date.now() - startedAt);
           this.recordLockAttempt("restore", "success", startedAt);
           return fileLock;
         } catch (error) {
@@ -418,6 +428,10 @@ export class FileLockManager {
             throw error;
           }
           if (error instanceof LockAcquisitionError) {
+            recordFileLockContention(
+              "restore",
+              error.code === "busy" ? "lock_contended" : "lock_timeout",
+            );
             const wrappedError = new FileLockError(`File is busy: ${normalizedPath}`, "busy", {
               path: normalizedPath,
               reason: error.code === "busy" ? "lock_contended" : "lock_timeout",
@@ -470,8 +484,8 @@ export class FileLockManager {
     }
   }
 
-  private recordRateLimit(result: RateLimitResult): void {
-    recordFileLockRateLimit(result.allowed ? "allowed" : "blocked");
+  private recordRateLimit(operation: "acquire" | "restore", result: RateLimitResult): void {
+    recordFileLockRateLimit(operation, result.allowed ? "allowed" : "blocked");
   }
 
   private recordLockAttempt(
