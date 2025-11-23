@@ -1,10 +1,12 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
 
+  import { TERMINAL_MAX, TERMINAL_MIN } from '$lib/stores/layout';
+
   export let open = false;
   export let height = 240;
-  export let minHeight = 160;
-  export let maxHeight = 520;
+  export let minHeight = TERMINAL_MIN;
+  export let maxHeight = TERMINAL_MAX;
   export let onResize: (value: number) => void = () => {};
   export let onToggle: () => void = () => {};
 

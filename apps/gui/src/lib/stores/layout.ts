@@ -59,6 +59,11 @@ function readPersistedState(): LayoutState {
     } satisfies LayoutState;
   } catch (error) {
     console.warn('[layout] Failed to read persisted layout state', error);
+    try {
+      localStorage.removeItem(LAYOUT_STORAGE_KEY);
+    } catch (cleanupError) {
+      console.warn('[layout] Failed to clear corrupted layout state', cleanupError);
+    }
     return defaultState;
   }
 }

@@ -73,6 +73,16 @@ describe('layout store', () => {
     expect(state.terminalOpen).toBe(false);
   });
 
+  it('clears corrupted persisted state and falls back to defaults', async () => {
+    (globalThis.localStorage as Storage).setItem('oss.ide.layout', '{invalid json');
+
+    const { layoutState } = await import('../layout');
+    const state = get(layoutState);
+
+    expect(state).toEqual({ leftWidth: 260, rightWidth: 380, terminalHeight: 240, terminalOpen: false });
+    expect(globalThis.localStorage.removeItem).toHaveBeenCalledWith('oss.ide.layout');
+  });
+
   it('persists updates via requestAnimationFrame batching', async () => {
     const { layoutState, setTerminalHeight } = await import('../layout');
     const storage = globalThis.localStorage as Storage;
