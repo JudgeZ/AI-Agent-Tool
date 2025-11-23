@@ -171,8 +171,14 @@ const server = http.createServer((req, res) => {
   const sseMatch = url.pathname.match(/^\/plan\/([^/]+)\/events$/);
   const approveMatch = url.pathname.match(/^\/plan\/([^/]+)\/steps\/([^/]+)\/approve$/);
 
-  const requestOrigin = req.headers.origin || 'http://localhost:5173';
-  res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+  // MOCK ONLY: development allowlist to avoid reflecting arbitrary origins with credentials
+  const allowedOrigins = ['http://localhost:5173'];
+  const requestOrigin = req.headers.origin;
+  const allowedOrigin = requestOrigin && allowedOrigins.includes(requestOrigin)
+    ? requestOrigin
+    : allowedOrigins[0];
+
+  res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
   res.setHeader('Vary', 'Origin');
   res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');

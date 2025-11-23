@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { get } from 'svelte/store';
+  import { derived, get } from 'svelte/store';
   import { onMount, onDestroy } from 'svelte';
   import * as monaco from 'monaco-editor';
   import * as Y from 'yjs';
@@ -44,6 +44,11 @@
   let activeFileValue = get(activeFile);
   let collaborationContextVersionValue = get(collaborationContextVersion);
   let subscriptions: Array<() => void> = [];
+
+  const cleanupSubscriptions = () => {
+    subscriptions.forEach((unsubscribe) => unsubscribe());
+    subscriptions = [];
+  };
 
   // Worker setup for Monaco (Vite specific)
   import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
@@ -95,17 +100,23 @@
       }
     });
 
+    cleanupSubscriptions();
+    const activeFileWithContext = derived(
+      [activeFile, collaborationContextVersion],
+      ([$activeFile, $collaborationContextVersion]) => ({
+        file: $activeFile,
+        version: $collaborationContextVersion
+      })
+    );
+
     subscriptions = [
       session.subscribe((value) => {
         sessionValue = value;
         syncCollaborationContext();
       }),
-      activeFile.subscribe((value) => {
-        activeFileValue = value;
-        syncActiveFile();
-      }),
-      collaborationContextVersion.subscribe((value) => {
-        collaborationContextVersionValue = value;
+      activeFileWithContext.subscribe(({ file, version }) => {
+        activeFileValue = file;
+        collaborationContextVersionValue = version;
         syncActiveFile();
       })
     ];
@@ -114,8 +125,7 @@
   onDestroy(() => {
     teardownCollaboration();
     editor?.dispose();
-    subscriptions.forEach((unsubscribe) => unsubscribe());
-    subscriptions = [];
+    cleanupSubscriptions();
   });
 
   function toWebsocketBase(httpUrl: string) {

@@ -51,6 +51,11 @@
 
   const handlePointerUp = () => {
     resizing = false;
+    onResize(pendingHeight);
+    teardownListeners();
+  };
+
+  const teardownListeners = () => {
     if (pointerId !== null) {
       handleEl?.releasePointerCapture(pointerId);
       pointerId = null;
@@ -59,16 +64,6 @@
       cancelAnimationFrame(rafId);
       rafId = null;
     }
-    onResize(pendingHeight);
-    window.removeEventListener('pointermove', handlePointerMove);
-  };
-
-  const teardownListeners = () => {
-    if (rafId !== null) {
-      cancelAnimationFrame(rafId);
-      rafId = null;
-    }
-    pointerId = null;
     window.removeEventListener('pointermove', handlePointerMove);
     window.removeEventListener('pointerup', handlePointerUp);
     window.removeEventListener('pointercancel', handlePointerUp);

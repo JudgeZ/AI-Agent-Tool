@@ -33,10 +33,6 @@ function normalizeDimension(value: unknown, min: number, max: number, fallback: 
   return clamp(value, min, max);
 }
 
-function sanitizeIncomingDimension(value: number, min: number, max: number, fallback: number): number {
-  return normalizeDimension(value, min, max, fallback);
-}
-
 function sanitizeBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
 }
@@ -100,21 +96,21 @@ export const layoutState = layoutStore;
 export function setLeftWidth(width: number, min = LEFT_MIN, max = LEFT_MAX): void {
   layoutStore.update((state) => ({
     ...state,
-    leftWidth: sanitizeIncomingDimension(width, min, max, state.leftWidth)
+    leftWidth: normalizeDimension(width, min, max, state.leftWidth)
   }));
 }
 
 export function setRightWidth(width: number, min = RIGHT_MIN, max = RIGHT_MAX): void {
   layoutStore.update((state) => ({
     ...state,
-    rightWidth: sanitizeIncomingDimension(width, min, max, state.rightWidth)
+    rightWidth: normalizeDimension(width, min, max, state.rightWidth)
   }));
 }
 
 export function setTerminalHeight(height: number, min = TERMINAL_MIN, max = TERMINAL_MAX): void {
   layoutStore.update((state) => ({
     ...state,
-    terminalHeight: sanitizeIncomingDimension(height, min, max, state.terminalHeight)
+    terminalHeight: normalizeDimension(height, min, max, state.terminalHeight)
   }));
 }
 
