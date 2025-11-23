@@ -14,6 +14,7 @@
     deriveCollaborationRoom,
     setCollaborationStatus,
     resetCollaborationConnection,
+    currentRoomId,
     setCollaborationContext,
     restoreLocalCollaborationContext,
     getLocalProjectId,
