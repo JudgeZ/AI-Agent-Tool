@@ -88,6 +88,62 @@ describe("PlanQueueManager session lock tracking", () => {
     expect(anyManager.fileLockManager.releaseSessionLocks).toHaveBeenCalledWith("sess");
   });
 
+  it("releases session locks and clears tracking when approval is rejected", async () => {
+    const anyManager = manager as unknown as {
+      initialize: () => Promise<void>;
+      stateService: any;
+      planSessions: Map<string, string>;
+      sessionRefCounts: Map<string, number>;
+      fileLockManager: any;
+      emitPlanEvent: (...args: any[]) => Promise<void>;
+    };
+
+    anyManager.initialize = vi.fn().mockResolvedValue(undefined);
+    anyManager.planSessions.set("plan-1", "sess");
+    anyManager.sessionRefCounts.set("sess", 1);
+
+    const job = {
+      planId: "plan-1",
+      step: dummyStep,
+      attempt: 0,
+      createdAt: new Date().toISOString(),
+      traceId: "trace",
+      requestId: "req",
+    } as any;
+
+    anyManager.stateService = {
+      getRegistryEntry: vi.fn().mockReturnValue({
+        step: dummyStep,
+        traceId: "trace",
+        requestId: "req",
+        job,
+        inFlight: false,
+      }),
+      getEntry: vi.fn(),
+      deleteRegistryEntry: vi.fn(),
+      clearApprovals: vi.fn(),
+      forgetStep: vi.fn().mockResolvedValue(undefined),
+      hasPlanSubject: vi.fn().mockReturnValue(true),
+      getRegistryKeys: vi.fn().mockReturnValue([]),
+      getPlanSubject: vi.fn().mockReturnValue({ sessionId: "sess" }),
+      deletePlanSubject: vi.fn(),
+      retainCompletedPlanSubject: vi.fn(),
+    };
+    anyManager.fileLockManager = { releaseSessionLocks: vi.fn().mockResolvedValue(undefined) };
+    anyManager.emitPlanEvent = vi.fn().mockResolvedValue(undefined);
+
+    await manager.resolvePlanStepApproval({
+      planId: "plan-1",
+      stepId: dummyStep.id,
+      decision: "rejected",
+      summary: "not approved",
+    });
+
+    expect(anyManager.fileLockManager.releaseSessionLocks).toHaveBeenCalledWith("sess");
+    expect(anyManager.planSessions.has("plan-1")).toBe(false);
+    expect(anyManager.sessionRefCounts.has("sess")).toBe(false);
+  });
+
   it("increments ref counts per plan during rehydrate while restoring locks once", async () => {
     const anyManager = manager as unknown as {
       stateService: any;

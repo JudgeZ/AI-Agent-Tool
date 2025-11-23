@@ -249,6 +249,7 @@ export class PlanQueueManager {
           this.stateService!.clearApprovals(planId, stepId);
           await this.stateService!.forgetStep(planId, stepId);
           this.prunePlanSubject(planId);
+          await this.cleanupPlanSession(planId, "failed to release session locks after rejection");
           return;
       }
 
@@ -441,22 +442,7 @@ export class PlanQueueManager {
       }
 
       if (completed) {
-        const sessionId = this.planSessions.get(planId);
-        if (sessionId) {
-          const remaining = (this.sessionRefCounts.get(sessionId) ?? 1) - 1;
-          if (remaining <= 0) {
-            await this.fileLockManager.releaseSessionLocks(sessionId).catch((err) =>
-              this.queueLogger.warn(
-                { err: normalizeError(err), planId, sessionId },
-                "failed to release session locks",
-              ),
-            );
-            this.sessionRefCounts.delete(sessionId);
-          } else {
-            this.sessionRefCounts.set(sessionId, remaining);
-          }
-          this.planSessions.delete(planId);
-        }
+        await this.cleanupPlanSession(planId, "failed to release session locks");
       }
       
       if (this.queueAdapter) {
@@ -615,6 +601,25 @@ export class PlanQueueManager {
   async getPersistedPlanStep(planId: string, stepId: string) {
       if (!this.stateService) return undefined;
       return this.stateService.getEntry(planId, stepId);
+  }
+
+  private async cleanupPlanSession(planId: string, logMessage: string): Promise<void> {
+    const sessionId = this.planSessions.get(planId);
+    if (!sessionId) return;
+
+    const remaining = (this.sessionRefCounts.get(sessionId) ?? 1) - 1;
+    if (remaining <= 0) {
+      await this.fileLockManager.releaseSessionLocks(sessionId).catch((err) =>
+        this.queueLogger.warn(
+          { err: normalizeError(err), planId, sessionId },
+          logMessage,
+        ),
+      );
+      this.sessionRefCounts.delete(sessionId);
+    } else {
+      this.sessionRefCounts.set(sessionId, remaining);
+    }
+    this.planSessions.delete(planId);
   }
 
   private async releaseTrackedSessionLocks(): Promise<void> {
