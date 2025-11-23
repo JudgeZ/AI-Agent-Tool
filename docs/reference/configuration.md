@@ -160,6 +160,8 @@ Relevant environment overrides:
 | `RABBITMQ_PREFETCH` | RabbitMQ consumer prefetch count (defaults to `8`). Controls how many unacked messages each consumer can hold. |
 | `QUEUE_RETRY_MAX` | Maximum retry attempts for failed plan steps (defaults to `5`). Steps exceeding this limit are moved to the dead-letter queue. |
 | `QUEUE_RETRY_BACKOFF_MS` | Base delay in milliseconds for exponential backoff between retries (optional). If unset, retries occur immediately. |
+| `ORCHESTRATOR_RATE_LIMIT_BACKEND` | `memory` (default) or `redis`. Use `redis` in multi-instance deployments so per-session limits are enforced cluster-wide. When unset but paired with a Redis URL (below), the orchestrator automatically chooses `redis`. |
+| `ORCHESTRATOR_RATE_LIMIT_REDIS_URL` / `RATE_LIMIT_REDIS_URL` | Redis connection string for rate limiting. Supplying this value enables the shared Redis backend even if `ORCHESTRATOR_RATE_LIMIT_BACKEND` is not set. Leave unset to keep per-process in-memory buckets (single-instance only). |
 | `SERVER_TLS_ENABLED` | Enables HTTPS for the orchestrator (`true`/`false`). Requires cert and key paths when enabled. |
 | `SERVER_TLS_CERT_PATH` | Filesystem path to the orchestrator TLS certificate (PEM). |
 | `SERVER_TLS_KEY_PATH` | Filesystem path to the orchestrator TLS private key (PEM). |

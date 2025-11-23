@@ -43,3 +43,4 @@ This note documents how the orchestrator coordinates file locks across agents an
 - Keep Redis reachable with low latency; acquisition retries default to 3 attempts with 100ms delay. The TTL bounds prevent orphaned locks if clients disconnect.
 - Because TTLs are not auto-renewed, long-running edits should renew by reacquiring before TTL expiry if exclusivity must be maintained.
 - Room-level busy checks guard against concurrent edits even before hitting Redis, reducing contention.
+- In multi-instance orchestrators, configure a shared rate limit backend (`ORCHESTRATOR_RATE_LIMIT_REDIS_URL` or `RATE_LIMIT_REDIS_URL`; backend defaults to Redis when a URL is provided) so per-session lock limits cannot be bypassed by hopping between instances.

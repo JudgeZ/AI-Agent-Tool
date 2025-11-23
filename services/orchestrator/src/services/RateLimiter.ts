@@ -24,15 +24,15 @@ export type SessionRateLimiterOptions = {
 
 const DEFAULT_PREFIX = "orchestrator:session-rate-limit";
 
-function resolveBackendFromEnv(): RateLimitBackendConfig {
-  const providerEnv = process.env.ORCHESTRATOR_RATE_LIMIT_BACKEND?.toLowerCase();
-  const provider: RateLimitBackendConfig["provider"] = providerEnv === "redis" ? "redis" : "memory";
-  const redisUrl = process.env.ORCHESTRATOR_RATE_LIMIT_REDIS_URL ?? process.env.RATE_LIMIT_REDIS_URL;
-  if (provider === "redis" && !redisUrl) {
+export function resolveBackendFromEnv(env: NodeJS.ProcessEnv = process.env): RateLimitBackendConfig {
+  const providerEnv = env.ORCHESTRATOR_RATE_LIMIT_BACKEND?.toLowerCase();
+  const redisUrl = env.ORCHESTRATOR_RATE_LIMIT_REDIS_URL ?? env.RATE_LIMIT_REDIS_URL;
+  const wantsRedis = providerEnv === "redis" || (!!redisUrl && providerEnv !== "memory");
+  if (wantsRedis && !redisUrl) {
     appLogger.warn({ providerEnv }, "redis rate limit backend requested without redis url; falling back to memory");
     return { provider: "memory" };
   }
-  return redisUrl ? { provider, redisUrl } : { provider };
+  return wantsRedis && redisUrl ? { provider: "redis", redisUrl } : { provider: "memory" };
 }
 
 export class PerSessionRateLimiter {

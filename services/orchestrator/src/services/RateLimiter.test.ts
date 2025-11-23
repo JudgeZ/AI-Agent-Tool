@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
 import { createRateLimitStore } from "../rateLimit/store.js";
-import { PerSessionRateLimiter } from "./RateLimiter.js";
+import { PerSessionRateLimiter, resolveBackendFromEnv } from "./RateLimiter.js";
 
 describe("PerSessionRateLimiter", () => {
   afterEach(() => {
@@ -31,5 +31,27 @@ describe("PerSessionRateLimiter", () => {
     await limiter.reset("session-1");
     const allowedAfterReset = await limiter.check("session-1");
     expect(allowedAfterReset.allowed).toBe(true);
+  });
+});
+
+describe("resolveBackendFromEnv", () => {
+  it("defaults to memory when no backend is configured", () => {
+    expect(resolveBackendFromEnv({} as NodeJS.ProcessEnv)).toEqual({ provider: "memory" });
+  });
+
+  it("prefers redis when a redis url is provided", () => {
+    const env = {
+      ORCHESTRATOR_RATE_LIMIT_REDIS_URL: "redis://example:6379",
+    } satisfies NodeJS.ProcessEnv;
+
+    expect(resolveBackendFromEnv(env)).toEqual({ provider: "redis", redisUrl: "redis://example:6379" });
+  });
+
+  it("falls back to memory when redis is requested without a url", () => {
+    const env = {
+      ORCHESTRATOR_RATE_LIMIT_BACKEND: "redis",
+    } satisfies NodeJS.ProcessEnv;
+
+    expect(resolveBackendFromEnv(env)).toEqual({ provider: "memory" });
   });
 });
