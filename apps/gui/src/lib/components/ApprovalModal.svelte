@@ -81,7 +81,7 @@
     failed: 'failed'
   };
 
-  const formatState = (state: PlanStep['state']) => stateLabels[state] ?? state.replaceAll('_', ' ');
+  const formatState = (state: PlanStep['state']) => stateLabels[state];
 
   $: diffVisible = step.capability.startsWith('repo.write') && Boolean(step.diff);
   $: egressRequests = extractEgress(step);

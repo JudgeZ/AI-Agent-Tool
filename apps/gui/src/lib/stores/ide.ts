@@ -358,7 +358,7 @@ export const __test = {
 
 function sanitizeContextId(value: string, fallback: string): string {
     const trimmed = value.trim();
-    if (!trimmed || trimmed.length > 64 || !SAFE_ID_PATTERN.test(trimmed)) {
+    if (trimmed.length > 64 || !SAFE_ID_PATTERN.test(trimmed)) {
         console.warn('Rejected unsafe collaboration context identifier, keeping previous value');
         return fallback;
     }

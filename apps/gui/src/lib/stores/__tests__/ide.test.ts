@@ -133,6 +133,8 @@ describe('collaboration room derivation', () => {
     const cacheLimit = __test.ROOM_CACHE_LIMIT;
     const basePath = '/workspace/demo/src/file';
 
+    __test.setRoomRateLimiterForTest({ capacity: cacheLimit + 10, tokens: cacheLimit + 10 });
+
     for (let index = 0; index < cacheLimit + 5; index += 1) {
       await deriveCollaborationRoom(`${basePath}-${index}.ts`);
     }

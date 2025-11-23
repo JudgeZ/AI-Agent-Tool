@@ -125,26 +125,31 @@
   async function configureForFile(path: string, forceReload = false) {
     const requestId = ++configureRequestId;
     configureQueue = configureQueue.then(async () => {
-      if (requestId !== configureRequestId) return;
-      if (path === attachedFile && currentModel && !forceReload) return;
-      attachedFile = path;
-      teardownCollaboration();
+      try {
+        if (requestId !== configureRequestId) return;
+        if (path === attachedFile && currentModel && !forceReload) return;
+        attachedFile = path;
+        teardownCollaboration();
 
-      const content = $fileContents[path] ?? '';
-      const lang = getLangFromExt(path.split('.').pop() || 'txt');
+        const content = $fileContents[path] ?? '';
+        const lang = getLangFromExt(path.split('.').pop() || 'txt');
 
-      currentModel?.dispose();
-      const model = monaco.editor.createModel(content, lang);
-      currentModel = model;
-      editor.setModel(model);
-      isDirty.update((d) => ({ ...d, [path]: false }));
+        currentModel?.dispose();
+        const model = monaco.editor.createModel(content, lang);
+        currentModel = model;
+        editor.setModel(model);
+        isDirty.update((d) => ({ ...d, [path]: false }));
 
-      await setupCollaboration(model, content, path, requestId);
-      if (requestId !== configureRequestId) {
-        model.dispose();
-        return;
+        await setupCollaboration(model, content, path, requestId);
+        if (requestId !== configureRequestId) {
+          model.dispose();
+          return;
+        }
+        appliedContextVersion = $collaborationContextVersion;
+      } catch (error) {
+        console.error('Failed to configure file for collaboration', { path, error });
+        setCollaborationStatus('error');
       }
-      appliedContextVersion = $collaborationContextVersion;
     });
     return configureQueue;
   }
@@ -198,6 +203,14 @@
     } catch (error) {
       console.error('Failed to derive collaboration room', error);
       setCollaborationStatus('error');
+      logCollaborationEvent('room-derivation-failed', { message: (error as Error).message });
+      return;
+    }
+
+    if (!roomInfo) {
+      setCollaborationStatus('error');
+      logCollaborationEvent('room-derivation-failed');
+      return;
     }
 
     doc = new Y.Doc({ gc: false });
@@ -209,45 +222,42 @@
     const awareness = new Awareness(doc);
     setupTextObserver(filePath);
 
-    if (roomInfo) {
-      try {
-        if (isStale()) return;
-        provider = new WebsocketProvider(
-          websocketBase,
-          buildRoomName(roomInfo, $session.info?.id ?? null, $session.info?.id ?? null),
-          doc,
-          {
-            awareness,
-            maxBackoffTime: 5000
-          }
-        );
+    try {
+      if (isStale()) return;
+      const sessionToken = $session.info?.sessionToken ?? $session.info?.id ?? null;
+      provider = new WebsocketProvider(
+        websocketBase,
+        buildRoomName(roomInfo, sessionToken),
+        doc,
+        {
+          awareness,
+          maxBackoffTime: 5000
+        }
+      );
 
-        provider.on('status', (event: { status: string }) => {
-          logCollaborationEvent('ws-status', { status: event.status, roomId: roomInfo?.roomId });
-          if (event.status === 'connected') {
-            setCollaborationStatus('connected');
-          } else if (event.status === 'disconnected') {
-            setCollaborationStatus('disconnected');
-          } else {
-            setCollaborationStatus('connecting');
-          }
-        });
-        provider.on('connection-close', () => {
-          logCollaborationEvent('ws-closed', { roomId: roomInfo?.roomId });
+      provider.on('status', (event: { status: string }) => {
+        logCollaborationEvent('ws-status', { status: event.status, roomId: roomInfo?.roomId });
+        if (event.status === 'connected') {
+          setCollaborationStatus('connected');
+        } else if (event.status === 'disconnected') {
           setCollaborationStatus('disconnected');
-        });
-        provider.on('connection-error', () => {
-          logCollaborationEvent('ws-error', { roomId: roomInfo?.roomId });
-          setCollaborationStatus('error');
-        });
-      } catch (error) {
-        console.error('Failed to initialize collaboration provider', error);
+        } else {
+          setCollaborationStatus('connecting');
+        }
+      });
+      provider.on('connection-close', () => {
+        logCollaborationEvent('ws-closed', { roomId: roomInfo?.roomId });
+        setCollaborationStatus('disconnected');
+      });
+      provider.on('connection-error', () => {
+        logCollaborationEvent('ws-error', { roomId: roomInfo?.roomId });
         setCollaborationStatus('error');
-        logCollaborationEvent('ws-init-failed', { message: (error as Error).message });
-      }
-    } else {
+      });
+    } catch (error) {
+      console.error('Failed to initialize collaboration provider', error);
       setCollaborationStatus('error');
-      logCollaborationEvent('room-derivation-failed');
+      logCollaborationEvent('ws-init-failed', { message: (error as Error).message });
+      return;
     }
 
     if (isStale()) {
@@ -261,8 +271,7 @@
 
   function buildRoomName(
     info: CollaborationRoomInfo,
-    sessionId: string | null,
-    authToken: string | null
+    sessionToken: string | null
   ) {
     const params = new URLSearchParams({
       tenantId: info.tenantId,
@@ -272,12 +281,9 @@
       authMode: 'session'
     });
 
-    if (sessionId) {
-      params.set('sessionId', sessionId);
-    }
-
-    if (authToken) {
-      params.set('sessionToken', authToken);
+    if (sessionToken) {
+      params.set('sessionId', sessionToken);
+      params.set('sessionToken', sessionToken);
     }
 
     return `collaboration/ws?${params.toString()}`;
