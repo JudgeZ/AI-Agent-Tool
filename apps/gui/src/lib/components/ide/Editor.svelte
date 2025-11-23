@@ -109,6 +109,8 @@
       })
     );
 
+    // Subscriptions fire immediately; use flags so the first callbacks populate cached values
+    // without triggering duplicate sync work before the explicit initial sync below runs.
     let sessionInitialized = false;
     let hasRunInitialActiveFileSync = false;
 
