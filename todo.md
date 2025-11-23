@@ -22,3 +22,4 @@
 
 | id | status | description | source | file_location | line_numbers | impl_plan | test_impact | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| T1 | todo | Document and, if needed, enable shared backend for per-session rate limiting in multi-instance deployments | Reviewer: "Rate limiter state not persisted" | services/orchestrator/src/services/RateLimiter.ts | L1-L80 | Add doc/ADR note on configuring Redis-backed store via env and consider defaulting orchestrator rate limiter to shared backend. | manual only (justify) | Prevents per-instance rate limits from being bypassed; no code change yet, documentation/decision needed. |

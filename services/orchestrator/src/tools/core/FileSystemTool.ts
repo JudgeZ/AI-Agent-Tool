@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import fsSync from "node:fs";
 import path from "node:path";
+import type { Logger } from "pino";
 
 import { applyAgentEditToRoom } from "../../collaboration/index.js";
 import { appLogger, normalizeError } from "../../observability/logger.js";
@@ -30,7 +31,7 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
   private readonly realProjectRoot: string;
   private readonly operationRateLimiter: PerSessionRateLimiter;
 
-  constructor(logger: any, config: Partial<FileSystemToolConfig> = {}) {
+  constructor(logger: Logger, config: Partial<FileSystemToolConfig> = {}) {
     const metadata: ToolMetadata = {
       id: "filesystem",
       name: "File System Tool",
