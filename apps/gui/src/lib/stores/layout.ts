@@ -24,19 +24,48 @@ const defaultState: LayoutState = {
   terminalOpen: false
 };
 
+/**
+ * Constrains a numeric value to lie within the inclusive range defined by `min` and `max`.
+ *
+ * @param value - The number to constrain
+ * @param min - The lower bound of the range (inclusive)
+ * @param max - The upper bound of the range (inclusive)
+ * @returns `value` constrained to the inclusive range `[min, max]`
+ */
 function clamp(value: number, min: number, max: number): number {
   return Math.min(Math.max(value, min), max);
 }
 
+/**
+ * Validate and constrain a numeric layout dimension, returning a fallback for invalid input.
+ *
+ * @param value - The candidate value to validate as a finite number
+ * @param min - Inclusive minimum allowed value
+ * @param max - Inclusive maximum allowed value
+ * @param fallback - Value to return when `value` is not a finite number
+ * @returns A number within `[min, max]` when `value` is finite, otherwise `fallback`
+ */
 function normalizeDimension(value: unknown, min: number, max: number, fallback: number): number {
   if (typeof value !== 'number' || !Number.isFinite(value)) return fallback;
   return clamp(value, min, max);
 }
 
+/**
+ * Return the given value when it is a boolean; otherwise use the provided fallback.
+ *
+ * @param value - The value to validate as a boolean
+ * @param fallback - The boolean to return when `value` is not a boolean
+ * @returns `value` if it is a boolean, `fallback` otherwise
+ */
 function sanitizeBoolean(value: unknown, fallback: boolean): boolean {
   return typeof value === 'boolean' ? value : fallback;
 }
 
+/**
+ * Load the persisted layout state from localStorage, falling back to defaults when unavailable or invalid.
+ *
+ * @returns The hydrated LayoutState — stored values with dimensions clamped to their min/max and `terminalOpen` coerced to a boolean; returns `defaultState` if not running in a browser, if no stored state exists, or if the stored value is invalid or corrupted.
+ */
 function readPersistedState(): LayoutState {
   if (!browser) {
     return defaultState;
@@ -118,6 +147,13 @@ if (browser) {
 
 export const layoutState = layoutStore;
 
+/**
+ * Update the persisted left panel width, ensuring the value is within the specified bounds.
+ *
+ * @param width - Desired left panel width in pixels
+ * @param min - Minimum allowed width; defaults to `LEFT_MIN`
+ * @param max - Maximum allowed width; defaults to `LEFT_MAX`
+ */
 export function setLeftWidth(width: number, min = LEFT_MIN, max = LEFT_MAX): void {
   layoutStore.update((state) => ({
     ...state,
@@ -125,6 +161,13 @@ export function setLeftWidth(width: number, min = LEFT_MIN, max = LEFT_MAX): voi
   }));
 }
 
+/**
+ * Update the persisted right panel width, clamped to the provided bounds.
+ *
+ * @param width - Desired right panel width in pixels
+ * @param min - Minimum allowed width (defaults to `RIGHT_MIN`)
+ * @param max - Maximum allowed width (defaults to `RIGHT_MAX`)
+ */
 export function setRightWidth(width: number, min = RIGHT_MIN, max = RIGHT_MAX): void {
   layoutStore.update((state) => ({
     ...state,
@@ -132,6 +175,16 @@ export function setRightWidth(width: number, min = RIGHT_MIN, max = RIGHT_MAX): 
   }));
 }
 
+/**
+ * Set the terminal panel height, normalized to the provided bounds.
+ *
+ * Normalizes `height` to the inclusive range `[min, max]` and updates the layout store;
+ * if `height` is not a valid number, the current terminal height is retained.
+ *
+ * @param height - Desired terminal height in pixels
+ * @param min - Minimum allowed terminal height (inclusive)
+ * @param max - Maximum allowed terminal height (inclusive)
+ */
 export function setTerminalHeight(height: number, min = TERMINAL_MIN, max = TERMINAL_MAX): void {
   layoutStore.update((state) => ({
     ...state,
@@ -139,10 +192,18 @@ export function setTerminalHeight(height: number, min = TERMINAL_MIN, max = TERM
   }));
 }
 
+/**
+ * Toggles the terminal's visibility in the layout store.
+ */
 export function toggleTerminal(): void {
   layoutStore.update((state) => ({ ...state, terminalOpen: !state.terminalOpen }));
 }
 
+/**
+ * Set whether the terminal panel is open.
+ *
+ * @param open - `true` to open the terminal, `false` to close it. If `open` is not a boolean, the previous `terminalOpen` value is preserved.
+ */
 export function setTerminalOpen(open: boolean): void {
   layoutStore.update((state) => ({
     ...state,
