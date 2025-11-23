@@ -6,6 +6,8 @@
   export let step: PlanStep;
   export let submitting: boolean;
   export let error: string | null;
+  export let onApprove: ((detail: { rationale?: string }) => void) | undefined;
+  export let onReject: ((detail: { rationale?: string }) => void) | undefined;
 
   const dispatch = createEventDispatcher<{ approve: { rationale?: string }; reject: { rationale?: string } }>();
   let rationale = '';
@@ -69,6 +71,18 @@
     previouslyFocused?.focus?.();
   });
 
+  const stateLabels: Record<PlanStep['state'], string> = {
+    queued: 'queued',
+    running: 'running',
+    waiting_approval: 'pending approval',
+    approved: 'approved',
+    rejected: 'rejected',
+    completed: 'completed',
+    failed: 'failed'
+  };
+
+  const formatState = (state: PlanStep['state']) => stateLabels[state] ?? state.replaceAll('_', ' ');
+
   $: diffVisible = step.capability.startsWith('repo.write') && Boolean(step.diff);
   $: egressRequests = extractEgress(step);
   $: egressVisible = step.capability.startsWith('network.egress') && egressRequests.length > 0;
@@ -95,12 +109,16 @@
     return prepared.filter((value): value is EgressRequest => value !== null);
   }
 
-  const onApprove = () => {
-    dispatch('approve', { rationale: rationale.trim() || undefined });
+  const handleApprove = () => {
+    const detail = { rationale: rationale.trim() || undefined };
+    onApprove?.(detail);
+    dispatch('approve', detail);
   };
 
-  const onReject = () => {
-    dispatch('reject', { rationale: rationale.trim() || undefined });
+  const handleReject = () => {
+    const detail = { rationale: rationale.trim() || undefined };
+    onReject?.(detail);
+    dispatch('reject', detail);
   };
 </script>
 
@@ -130,7 +148,7 @@
         </div>
         <div>
           <dt>Current status</dt>
-          <dd>{step.state.replace('_', ' ')}</dd>
+          <dd>{formatState(step.state)}</dd>
         </div>
         {#if step.summary}
           <div>
@@ -176,8 +194,8 @@
         ></textarea>
       </label>
       <footer class="modal__actions">
-        <button class="reject" on:click={onReject} disabled={submitting}>Reject</button>
-        <button class="approve" on:click={onApprove} disabled={submitting}>
+        <button class="reject" on:click={handleReject} disabled={submitting}>Reject</button>
+        <button class="approve" on:click={handleApprove} disabled={submitting}>
           {submitting ? 'Submitting…' : 'Approve'}
         </button>
       </footer>

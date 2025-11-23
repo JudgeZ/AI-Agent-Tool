@@ -5,7 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } 
 import { tick } from 'svelte';
 
 import PlanTimeline from './PlanTimeline.svelte';
-import { timeline } from '$lib/stores/planTimeline';
+import { timeline, __test as timelineTest } from '$lib/stores/planTimeline';
 import { MockEventSource } from '$lib/test-utils/mockEventSource';
 
 const COMPONENT_PLAN_ID = 'plan-550e8400-e29b-41d4-a716-446655440000';
@@ -31,11 +31,13 @@ afterAll(() => {
 
 beforeEach(() => {
   timeline.disconnect();
+  timelineTest.resetState();
   MockEventSource.reset();
 });
 
 afterEach(() => {
   timeline.disconnect();
+  timelineTest.resetState();
   MockEventSource.reset();
 });
 
@@ -108,5 +110,85 @@ describe('PlanTimeline component', () => {
     await waitFor(() => {
       expect(get(timeline).connected).toBe(false);
     });
+  });
+
+  it('renders placeholders and step metadata for repo diffs and egress', async () => {
+    render(PlanTimeline);
+    timeline.connect(COMPONENT_PLAN_ID);
+    await tick();
+    const source = triggerOpen();
+
+    source?.emit('plan.step', {
+      plan_id: COMPONENT_PLAN_ID,
+      step: {
+        id: 's1',
+        capability: 'repo.write',
+        action: 'write',
+        tool: 'apply_patch',
+        timeoutSeconds: 10,
+        state: 'running',
+        labels: ['a', 'b'],
+        summary: 'writes changes',
+        output: { diff: '@@change' }
+      }
+    });
+
+    source?.emit('plan.step', {
+      plan_id: COMPONENT_PLAN_ID,
+      step: {
+        id: 's2',
+        capability: 'network.egress',
+        action: 'egress',
+        tool: 'http',
+        timeoutSeconds: 5,
+        state: 'running',
+        labels: [],
+        summary: 'sends traffic',
+        output: { egress_requests: [{ url: 'https://example.com', method: 'POST', reason: 'sync' }] }
+      }
+    });
+
+    await screen.findByText('write');
+    expect(screen.getAllByText('repo.write').length).toBeGreaterThan(0);
+    await screen.findByText('changes');
+    await screen.findByText('@@change');
+
+    const egressLabels = await screen.findAllByText('network.egress');
+    expect(egressLabels.length).toBeGreaterThan(0);
+    expect(screen.getByText('Requested destinations')).toBeInTheDocument();
+    expect(screen.getByText('https://example.com')).toBeInTheDocument();
+    expect(screen.getByText('POST')).toBeInTheDocument();
+  });
+
+  it('shows the approval modal and forwards approve events', async () => {
+    const submitSpy = vi.spyOn(timeline, 'submitApproval').mockResolvedValue();
+    render(PlanTimeline);
+    timeline.connect(COMPONENT_PLAN_ID);
+    await tick();
+
+    const source = triggerOpen();
+    source?.emit('plan.step', {
+      plan_id: COMPONENT_PLAN_ID,
+      step: {
+        id: 's-approval',
+        capability: 'repo.write',
+        action: 'apply patch',
+        tool: 'apply_patch',
+        timeoutSeconds: 15,
+        state: 'waiting_approval',
+        approval_required: true,
+        labels: [],
+        summary: 'needs approval',
+        output: { diff: '@@change' }
+      }
+    });
+
+    const modal = await screen.findByRole('dialog');
+    expect(modal).toBeInTheDocument();
+
+    const approveButton = screen.getByText('Approve');
+    await approveButton.click();
+
+    expect(submitSpy).toHaveBeenCalledWith('approve', undefined);
   });
 });

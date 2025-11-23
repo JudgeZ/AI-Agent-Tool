@@ -1,11 +1,37 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import * as monaco from 'monaco-editor';
-  import { activeFile, fileContents, saveFile, isDirty } from '$lib/stores/ide';
+  import * as Y from 'yjs';
+  import { MonacoBinding } from 'y-monaco';
+  import { WebsocketProvider } from 'y-websocket';
+  import { Awareness } from 'y-protocols/awareness';
+  import {
+    activeFile,
+    fileContents,
+    saveFile,
+    isDirty,
+    deriveCollaborationRoom,
+    setCollaborationStatus,
+    resetCollaborationConnection,
+    setCollaborationContext,
+    restoreLocalCollaborationContext,
+    getLocalProjectId,
+    collaborationContextVersion,
+    type CollaborationRoomInfo
+  } from '$lib/stores/ide';
+  import { gatewayBaseUrl } from '$lib/config';
+  import { session } from '$lib/stores/session';
 
   let editorContainer: HTMLElement;
   let editor: monaco.editor.IStandaloneCodeEditor;
   let currentModel: monaco.editor.ITextModel | null = null;
+  let binding: MonacoBinding | null = null;
+  let provider: WebsocketProvider | null = null;
+  let doc: Y.Doc | null = null;
+  let yText: Y.Text | null = null;
+  let textObserver: ((event: Y.YTextEvent) => void) | null = null;
+  let attachedFile: string | null = null;
+  let appliedContextVersion = 0;
 
   // Worker setup for Monaco (Vite specific)
   import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
@@ -32,6 +58,8 @@
     }
   };
 
+  const websocketBase = toWebsocketBase(gatewayBaseUrl);
+
   onMount(() => {
     editor = monaco.editor.create(editorContainer, {
       value: '',
@@ -42,69 +70,207 @@
     });
 
     editor.onDidChangeModelContent(() => {
-        if ($activeFile) {
-            const value = editor.getValue();
-            // Update dirty state
-            isDirty.update(d => ({ ...d, [$activeFile!]: true }));
-            // We might want to debounce saving to store or just keep it in editor until explicit save?
-            // For now, let's just mark dirty.
-        }
+      if ($activeFile) {
+        isDirty.update((d) => ({ ...d, [$activeFile!]: true }));
+      }
     });
 
     // Ctrl+S to save
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-        if ($activeFile) {
-            saveFile($activeFile, editor.getValue());
-        }
+      if ($activeFile) {
+        saveFile($activeFile, editor.getValue());
+      }
     });
   });
 
   onDestroy(() => {
+    teardownCollaboration();
     editor?.dispose();
   });
 
-  // React to activeFile changes
-  $: if (editor && $activeFile) {
-    const content = $fileContents[$activeFile] || '';
-    const ext = $activeFile.split('.').pop() || 'txt';
-    const lang = getLangFromExt(ext);
-
-    // Don't replace model if it's the same file to preserve undo stack?
-    // For simplicity, just setValue for now.
-    // Ideally we should manage models per file.
-    
-    // Check if we already have a model for this file
-    // const uri = monaco.Uri.file($activeFile);
-    // let model = monaco.editor.getModel(uri);
-    // if (!model) {
-    //     model = monaco.editor.createModel(content, lang, uri);
-    // }
-    // editor.setModel(model);
-    
-    // Simple approach:
-    const currentVal = editor.getValue();
-    if (currentVal !== content) {
-        // Only update if content is different (e.g. newly loaded)
-        // This is tricky because local edits might be ahead of store if we don't sync back immediately.
-        // Let's assume store is source of truth on file switch.
-        editor.setValue(content);
-        monaco.editor.setModelLanguage(editor.getModel()!, lang);
+  $: {
+    if ($session.authenticated && $session.info) {
+      setCollaborationContext({
+        tenantId: $session.info.tenantId ?? undefined,
+        projectId: $session.info.projectId ?? getLocalProjectId()
+      });
+    } else if (!$session.loading) {
+      restoreLocalCollaborationContext();
     }
   }
 
+  $: if (editor && $activeFile) {
+    const forceReload = $collaborationContextVersion !== appliedContextVersion;
+    void configureForFile($activeFile, forceReload);
+  } else if (editor && !$activeFile) {
+    attachedFile = null;
+    teardownCollaboration();
+    currentModel?.dispose();
+    currentModel = null;
+    editor.setValue('');
+  }
+
+  function toWebsocketBase(httpUrl: string) {
+    const parsed = new URL(httpUrl);
+    parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+    parsed.pathname = '';
+    parsed.search = '';
+    parsed.hash = '';
+    return parsed.toString().replace(/\/$/, '');
+  }
+
+  async function configureForFile(path: string, forceReload = false) {
+    if (path === attachedFile && currentModel && !forceReload) return;
+    attachedFile = path;
+    teardownCollaboration();
+
+    const content = $fileContents[path] ?? '';
+    const lang = getLangFromExt(path.split('.').pop() || 'txt');
+
+    currentModel?.dispose();
+    const model = monaco.editor.createModel(content, lang);
+    currentModel = model;
+    editor.setModel(model);
+    isDirty.update((d) => ({ ...d, [path]: false }));
+
+    await setupCollaboration(model, content, path);
+    appliedContextVersion = $collaborationContextVersion;
+  }
+
+  function setupTextObserver(filePath: string) {
+    if (!yText) return;
+    textObserver = () => {
+      const value = yText?.toString() ?? '';
+      fileContents.update((c) => ({ ...c, [filePath]: value }));
+      isDirty.update((d) => ({ ...d, [filePath]: true }));
+    };
+    yText.observe(textObserver);
+  }
+
+  function setLocalAwareness(awareness: Awareness) {
+    awareness.setLocalStateField('user', {
+      name: $session.info?.name ?? $session.info?.email ?? 'Guest',
+      color: userColor($session.info?.id ?? 'guest')
+    });
+  }
+
+  async function setupCollaboration(
+    model: monaco.editor.ITextModel,
+    initialContent: string,
+    filePath: string
+  ) {
+    setCollaborationStatus('connecting');
+    let roomInfo: CollaborationRoomInfo | null = null;
+
+    try {
+      roomInfo = await deriveCollaborationRoom(filePath);
+    } catch (error) {
+      console.error('Failed to derive collaboration room', error);
+      setCollaborationStatus('error');
+    }
+
+    doc = new Y.Doc({ gc: false });
+    yText = doc.getText('content');
+    if (yText.length === 0 && initialContent) {
+      yText.insert(0, initialContent);
+    }
+
+    const awareness = new Awareness(doc);
+    setupTextObserver(filePath);
+
+    if (roomInfo) {
+      try {
+        provider = new WebsocketProvider(
+          websocketBase,
+          buildRoomName(roomInfo, $session.info?.id ?? null),
+          doc,
+          {
+            awareness,
+            maxBackoffTime: 5000
+          }
+        );
+
+        provider.on('status', (event: { status: string }) => {
+          if (event.status === 'connected') {
+            setCollaborationStatus('connected');
+          } else if (event.status === 'disconnected') {
+            setCollaborationStatus('disconnected');
+          } else {
+            setCollaborationStatus('connecting');
+          }
+        });
+        provider.on('connection-close', () => setCollaborationStatus('disconnected'));
+        provider.on('connection-error', () => setCollaborationStatus('error'));
+      } catch (error) {
+        console.error('Failed to initialize collaboration provider', error);
+        setCollaborationStatus('error');
+      }
+    } else {
+      setCollaborationStatus('error');
+    }
+
+    const activeAwareness = provider?.awareness ?? awareness;
+    setLocalAwareness(activeAwareness);
+    binding = new MonacoBinding(yText, model, new Set([editor]), activeAwareness);
+  }
+
+  function buildRoomName(info: CollaborationRoomInfo, sessionId: string | null) {
+    const params = new URLSearchParams({
+      tenantId: info.tenantId,
+      projectId: info.projectId,
+      filePath: info.filePath,
+      roomId: info.roomId
+    });
+
+    if (sessionId) {
+      params.set('sessionId', sessionId);
+    }
+
+    return `collaboration/ws?${params.toString()}`;
+  }
+
+  function teardownCollaboration() {
+    binding?.destroy();
+    binding = null;
+
+    if (yText && textObserver) {
+      yText.unobserve(textObserver);
+    }
+    textObserver = null;
+
+    provider?.destroy();
+    provider = null;
+
+    doc?.destroy();
+    doc = null;
+    yText = null;
+
+    resetCollaborationConnection();
+  }
+
+  function userColor(seed: string) {
+    let hash = 0;
+    for (let i = 0; i < seed.length; i += 1) {
+      hash = (hash << 5) - hash + seed.charCodeAt(i);
+      hash |= 0;
+    }
+    const hue = Math.abs(hash) % 360;
+    return `hsl(${hue}, 70%, 60%)`;
+  }
+
   function getLangFromExt(ext: string) {
-      const map: Record<string, string> = {
-          ts: 'typescript',
-          js: 'javascript',
-          json: 'json',
-          html: 'html',
-          css: 'css',
-          md: 'markdown',
-          rs: 'rust',
-          go: 'go',
-          py: 'python'
-      };
-      return map[ext] || 'plaintext';
+    const map: Record<string, string> = {
+      ts: 'typescript',
+      js: 'javascript',
+      json: 'json',
+      html: 'html',
+      css: 'css',
+      md: 'markdown',
+      rs: 'rust',
+      go: 'go',
+      py: 'python'
+    };
+    return map[ext] || 'plaintext';
   }
 </script>
 
