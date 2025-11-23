@@ -201,6 +201,10 @@
       if (yText && textObserver) {
         yText.unobserve(textObserver);
       }
+      if (awareness) {
+        awareness.destroy();
+        awareness = null;
+      }
       if (queuedTextObserver !== null) {
         cancelAnimationFrame(queuedTextObserver);
         queuedTextObserver = null;
@@ -321,7 +325,13 @@
       params.set('sessionId', $session.info.id);
     }
 
-    return `collaboration/ws?${params.toString()}`;
+    const roomName = `collaboration/ws?${params.toString()}`;
+
+    if (roomName.length > 2048) {
+      throw new Error('collaboration room name exceeds length limits');
+    }
+
+    return roomName;
   }
 
   function teardownCollaboration() {
@@ -345,6 +355,10 @@
     doc?.destroy();
     doc = null;
     yText = null;
+    if (awareness) {
+      awareness.destroy();
+      awareness = null;
+    }
 
     resetCollaborationConnection();
   }

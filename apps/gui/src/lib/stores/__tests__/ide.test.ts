@@ -22,6 +22,10 @@ async function sha256Hex(value: string) {
     .join('');
 }
 
+function roomKey(tenantId: string, projectId: string, filePath: string) {
+  return [tenantId, projectId, filePath].join('\u0000');
+}
+
 describe('collaboration context', () => {
   beforeEach(() => {
     resetCollaborationState();
@@ -78,7 +82,7 @@ describe('collaboration room derivation', () => {
     expect(room?.filePath).toBe('src/main.ts');
     expect(get(currentRoomId)).toBe(room?.roomId ?? null);
 
-    const expectedId = await sha256Hex('tenant-1:project-1:src/main.ts');
+    const expectedId = await sha256Hex(roomKey('tenant-1', 'project-1', 'src/main.ts'));
     expect(room?.roomId).toBe(expectedId);
   });
 
@@ -110,18 +114,24 @@ describe('collaboration room derivation', () => {
     expect(digestMock).toHaveBeenCalledTimes(3);
   });
 
-  it('avoids cache collisions when identifiers contain colons', async () => {
-    const digestMock = vi.fn(async () => new Uint8Array(32).buffer);
-    vi.stubGlobal('crypto', { subtle: { digest: digestMock } } as unknown as Crypto);
-
+  it('avoids room hash collisions when identifiers include colons', async () => {
     setProjectRootForCollaboration('/workspace/demo');
-    setCollaborationContext({ tenantId: 'tenant:1', projectId: 'project-1' });
-    await deriveCollaborationRoom('/workspace/demo/src/main.ts');
 
-    setCollaborationContext({ tenantId: 'tenant-1', projectId: 'project:1' });
-    await deriveCollaborationRoom('/workspace/demo/src/main.ts');
+    const firstRoom = await deriveCollaborationRoom('/workspace/demo/src/main.ts');
+    const firstHash = await sha256Hex(roomKey('tenant-1', 'project-1', 'src/main.ts'));
+    expect(firstRoom?.roomId).toBe(firstHash);
 
-    expect(digestMock).toHaveBeenCalledTimes(2);
+    setCollaborationContext({ tenantId: 'tenant', projectId: 'a:b' });
+    const colonRoom = await deriveCollaborationRoom('/workspace/demo/src/main.ts');
+    const colonHash = await sha256Hex(roomKey('tenant', 'a:b', 'src/main.ts'));
+
+    setCollaborationContext({ tenantId: 'tenant:a', projectId: 'b' });
+    const shiftedRoom = await deriveCollaborationRoom('/workspace/demo/src/main.ts');
+    const shiftedHash = await sha256Hex(roomKey('tenant:a', 'b', 'src/main.ts'));
+
+    expect(colonHash).not.toBe(shiftedHash);
+    expect(colonRoom?.roomId).toBe(colonHash);
+    expect(shiftedRoom?.roomId).toBe(shiftedHash);
   });
 
   it('preserves cached rooms across connection resets but clears them on full reset', async () => {

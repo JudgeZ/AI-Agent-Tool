@@ -89,13 +89,34 @@ async function consumeRoomDerivationToken() {
         return;
     }
 
-    const waitMs = Math.max(
+    // Use an iterative wait loop to avoid recursive call stacks when under sustained load.
+    let remainingWait = Math.max(
         ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs - (currentTs - ROOM_DERIVATION_RATE_LIMIT.lastRefillTs),
         0
     );
 
-    await new Promise(resolve => setTimeout(resolve, waitMs));
-    return consumeRoomDerivationToken();
+    while (ROOM_DERIVATION_RATE_LIMIT.tokens === 0) {
+        // Wait for the next refill window
+        await new Promise(resolve => setTimeout(resolve, remainingWait));
+
+        const afterWaitTs = nowMs();
+        const elapsedSinceRefill = afterWaitTs - ROOM_DERIVATION_RATE_LIMIT.lastRefillTs;
+        if (elapsedSinceRefill >= ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs) {
+            const refillCount = Math.floor(elapsedSinceRefill / ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs);
+            ROOM_DERIVATION_RATE_LIMIT.tokens = Math.min(
+                ROOM_DERIVATION_RATE_LIMIT.capacity,
+                ROOM_DERIVATION_RATE_LIMIT.tokens + refillCount
+            );
+            ROOM_DERIVATION_RATE_LIMIT.lastRefillTs += refillCount * ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs;
+        }
+
+        remainingWait = Math.max(
+            ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs - (afterWaitTs - ROOM_DERIVATION_RATE_LIMIT.lastRefillTs),
+            0
+        );
+    }
+
+    ROOM_DERIVATION_RATE_LIMIT.tokens -= 1;
 }
 
 async function deriveLocalProjectId(path: string): Promise<string> {
@@ -317,7 +338,8 @@ function toRelativeFilePath(filePath: string, root: string | null): string {
 }
 
 async function computeRoomId(tenantId: string, projectId: string, filePath: string): Promise<string> {
-    const key = `${tenantId}:${projectId}:${filePath}`;
+    // Use a NUL delimiter to avoid collisions when identifiers include colons.
+    const key = [tenantId, projectId, filePath].join('\u0000');
     if (typeof crypto === 'undefined' || !crypto.subtle) {
         throw new Error('crypto.subtle is not available to derive collaboration room id');
     }
@@ -456,6 +478,9 @@ export async function deriveCollaborationRoom(filePath: string | null): Promise<
         const cacheKey = [context.tenantId, context.projectId, root ?? '', normalizedFilePath].join('\u0000');
         const cached = roomCache.get(cacheKey);
         if (cached) {
+            // Refresh position to behave as LRU rather than FIFO
+            roomCache.delete(cacheKey);
+            roomCache.set(cacheKey, cached);
             currentRoomId.set(cached.roomId);
             return cached;
         }

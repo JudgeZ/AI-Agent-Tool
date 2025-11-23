@@ -6,8 +6,8 @@
   export let step: PlanStep;
   export let submitting: boolean;
   export let error: string | null;
-  export let onApprove: ((detail: { rationale?: string }) => void) | undefined;
-  export let onReject: ((detail: { rationale?: string }) => void) | undefined;
+  export let onApprove: (detail: { rationale?: string }) => void = () => {};
+  export let onReject: (detail: { rationale?: string }) => void = () => {};
 
   const dispatch = createEventDispatcher<{ approve: { rationale?: string }; reject: { rationale?: string } }>();
   let rationale = '';
