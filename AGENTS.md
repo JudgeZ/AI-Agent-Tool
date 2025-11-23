@@ -11,6 +11,22 @@
 - Favour **correctness, safety, and observability** over raw speed.
 - Make every change **small, reviewable, auditable**, and **easy to roll back**.
 - Keep the system **principle-of-least-privilege** by default.
+- Keep this document **in sync with the codebase**. Update the repo map and guardrails (security/operational constraints documented below) whenever we add new services, change toolchains, or modify the release process.
+
+---
+
+### 1.1 Repository map & toolchains (keep current)
+
+> Commands assume you `cd` into the component directory; when Makefile targets exist (e.g., `make lint-gateway`), prefer them to stay aligned with automation.
+
+- `apps/gateway-api` (Go 1.24, net/http): public HTTP/SSE/WebSocket entrypoint, auth & policy enforcement. Lint with `gofmt -l` (use `gofmt -w` to fix) + `go vet ./...`, or `make lint-gateway`; run focused tests with `GOTOOLCHAIN=local go test ./...` or `make test-gateway-collab-proxy`.
+- `services/orchestrator` (TypeScript/Node, Express + queues): planning/policy engine and tool execution. Use `npm run lint` and `npm run test`/`npm run test:coverage`; build with `npm run build`.
+- `services/indexer` (Rust 2021, tonic/axum): repo analysis and embeddings. Format + lint with `cargo fmt --all -- --check` and `cargo clippy`; tests via `cargo test`.
+- `apps/gui` (SvelteKit + Tauri): desktop/web UI. Validate with `npm run lint` and `npm run test:unit`; Svelte type checks via `npm run check`; e2e via `npm run test:e2e` when UI changes are user-visible; enable coverage as needed with `npm run test:unit -- --coverage`.
+- `apps/cli` (TypeScript CLI): build with `npm run build`; validate with `npm run lint` and `npm run test:coverage` when behavior changes.
+- `charts/` + `values.local.yaml`: Helm deployment defaults; ensure secure-by-default values for public charts.
+- `infra/policies`: OPA policies and tests (`make opa-build`, `make opa-test`).
+- `docs/` and `plan.md`: architecture, runbooks, and staged roadmap—update when behavior or flows change.
 
 ---
 
@@ -235,11 +251,20 @@ For any new feature or change, explicitly consider:
   - end‑to‑end tests for critical flows.
 - Any bug fix must include a test that fails before the fix and passes after.
 - Avoid relying on real external services in CI; use fakes / mocks.
+- **Lint before you land.** Run the documented lint target/tooling for the area you touch (see §1.1) and treat lint failures as blockers.
 
 Target coverage is a guide, not a religion, but as a rule of thumb:
 
-- Core services (gateway, orchestrator, indexer): aim for **≥ 80%**.
-- CLI and GUI: aim for **≥ 60%** with emphasis on critical paths.
+- Core services (gateway, orchestrator, indexer): aim for **≥ 85%** overall coverage.
+- CLI and GUI: aim for **≥ 85%** coverage on modified files, with emphasis on critical paths and newly added behaviors.
+
+### 6.1 Work tracking files (todo.md, ignored.md, planner.md)
+
+- Location: keep `todo.md`, `ignored.md`, and `planner.md` at the repository root so contributors have a single source of truth.
+- Use `todo.md` for actionable, approved work. Keep IDs sequential as you add new entries (`T1`, `T2`, …), include file locations and test expectations, and remove rows once work ships. Do not renumber existing IDs solely to close gaps after merges.
+- Use `ignored.md` for declined or out-of-scope requests. Record why the item is rejected, when to revisit it, and move it back to `todo.md` (with a new ID) if it becomes actionable.
+- Use `planner.md` for short- to medium-term planning that is not yet committed. Capture owners, dependencies, and next steps, then promote items to `todo.md` or `ignored.md` when decisions are made.
+- Avoid duplicating entries across files. Move tasks between files instead of copying; reuse the next sequential ID when moving items instead of renumbering existing rows.
 
 ---
 

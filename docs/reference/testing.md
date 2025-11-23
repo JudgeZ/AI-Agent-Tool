@@ -406,26 +406,26 @@ jobs:
 
 ## Coverage Targets
 
-Per CLAUDE.md guidelines:
+Per AGENTS.md guidelines:
 
-- **Core Services** (gateway, orchestrator, indexer): ≥ 80%
-- **CLI and GUI**: ≥ 60% with emphasis on critical paths
+- **Core Services** (gateway, orchestrator, indexer): ≥ 85% overall coverage.
+- **CLI and GUI**: ≥ 85% coverage on modified files, with emphasis on critical paths and newly added behaviors.
 
 ### Current Coverage Status
 
 | Service | Current | Target | Status |
 |---------|---------|--------|--------|
-| Gateway API | 56.3% | 80% | ⚠️ Below target |
-| Orchestrator | N/A | 80% | ✅ All tests pass |
-| Indexer | N/A | 80% | ✅ All tests pass |
-| CLI | N/A | 60% | ✅ All tests pass |
-| GUI | N/A | 60% | ✅ All tests pass |
+| Gateway API | 56.3% | 85% | ⚠️ Below target |
+| Orchestrator | N/A | 85% | ✅ All tests pass |
+| Indexer | N/A | 85% | ✅ All tests pass |
+| CLI | N/A | 85% on modified files | ✅ All tests pass |
+| GUI | N/A | 85% on modified files | ✅ All tests pass |
 
 ## Test Quality Standards
 
 ### Required for All Tests
 
-Per CLAUDE.md section 6:
+Per AGENTS.md section 6:
 
 1. ✅ **Deterministic**: Tests produce same results every run
 2. ✅ **Fast**: No unnecessary delays or blocking operations
@@ -581,6 +581,6 @@ All services have comprehensive test coverage with 100% pass rate:
 - ✅ GUI: 29/29 tests passing
 
 For questions or issues, refer to:
-- Project guidelines: `/CLAUDE.md`
+- Project guidelines: `/AGENTS.md`
 - Service READMEs: Each service directory
 - Test files: Look at existing tests for examples
