@@ -13,7 +13,13 @@ export class Terminal {
   dataHandler: ((input: string) => void) | null = null;
   onData = vi.fn((handler: (input: string) => void) => {
     this.dataHandler = handler;
-    return { dispose: vi.fn(() => handler) };
+    return {
+      dispose: vi.fn(() => {
+        if (this.dataHandler === handler) {
+          this.dataHandler = null;
+        }
+      }),
+    };
   });
 
   constructor() {

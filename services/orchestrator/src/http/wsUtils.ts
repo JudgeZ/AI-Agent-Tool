@@ -4,7 +4,7 @@ import ipaddr from "ipaddr.js";
 
 import { sessionStore, type SessionRecord } from "../auth/SessionStore.js";
 import { validateSessionId, type SessionExtractionResult, type SessionSource } from "../auth/sessionValidation.js";
-import { appLogger } from "../observability/logger.js";
+import { appLogger, normalizeError } from "../observability/logger.js";
 
 export type IpAddress = ipaddr.IPv4 | ipaddr.IPv6;
 
@@ -59,8 +59,8 @@ export function isTrustedProxyIp(address: IpAddress, trustedProxyCidrs: readonly
       if (address.match([network, prefixLength])) {
         return true;
       }
-    } catch {
-      // ignore invalid trusted proxy entries
+    } catch (error) {
+      appLogger.warn({ cidr: trimmed, err: normalizeError(error) }, "invalid trusted proxy CIDR entry");
     }
   }
   return false;
@@ -81,7 +81,7 @@ export function resolveClientIp(req: IncomingMessage, trustedProxyCidrs: readonl
     return "unknown";
   }
 
-  if (!isTrustedProxyIp(remote, trustedProxyCidrs) && !isPrivateOrLoopback(remote)) {
+  if (!isTrustedProxyIp(remote, trustedProxyCidrs)) {
     return remote.toString();
   }
 

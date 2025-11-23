@@ -203,6 +203,28 @@ describe("TerminalManager", () => {
     expect(parsed).toMatchObject({ type: "status", status: "connected", clients: 1 });
   });
 
+  it("queues sockets while a session is being created and attaches them after creation", () => {
+    const pty = new MockPty();
+    const manager = new TerminalManager({ spawnImpl: () => pty as any, logger });
+    const socketA = new MockSocket();
+    const socketB = new MockSocket();
+
+    (manager as any).creatingSessions.add("session-queued");
+    const pendingResult = manager.attach("session-queued", socketB as unknown as WebSocket);
+    expect(pendingResult).toBe("pending");
+
+    (manager as any).creatingSessions.delete("session-queued");
+
+    const attachedResult = manager.attach("session-queued", socketA as unknown as WebSocket);
+    expect(attachedResult).toBe("attached");
+
+    const parsedA = JSON.parse(socketA.messages[0] ?? "{}") as { type?: string; status?: string; clients?: number };
+    const parsedB = JSON.parse(socketB.messages[0] ?? "{}") as { type?: string; status?: string; clients?: number };
+
+    expect(parsedA).toMatchObject({ type: "status", status: "connected", clients: 1 });
+    expect(parsedB).toMatchObject({ type: "status", status: "connected", clients: 2 });
+  });
+
   it("normalizes status payload counts after pruning stale connections without emitting disconnects", () => {
     const pty = new MockPty();
     const manager = new TerminalManager({ spawnImpl: () => pty as any, logger });

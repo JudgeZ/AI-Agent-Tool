@@ -12,12 +12,10 @@ import { SessionIdSchema } from "../http/validation.js";
 import {
   authenticateSessionFromUpgrade,
   decrementConnectionCount,
-  extractSessionIdFromUpgrade,
   headerValue,
   incrementConnectionCount,
   requestIdentifiers,
   loggerWithTrace,
-  parseIpAddress,
   resolveClientIp,
   sanitizeHeaderForLog,
 } from "../http/wsUtils.js";

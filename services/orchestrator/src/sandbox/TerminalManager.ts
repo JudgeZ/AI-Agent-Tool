@@ -44,6 +44,7 @@ export class TerminalManager {
   private readonly logger: AppLogger;
   private readonly sessions = new Map<string, TerminalSession>();
   private readonly creatingSessions = new Set<string>();
+  private readonly pendingClients = new Map<string, Set<WebSocket>>();
 
   constructor(options: TerminalManagerOptions = {}) {
     this.shell = options.shell?.trim() || process.env.SHELL || "/bin/bash";
@@ -65,24 +66,45 @@ export class TerminalManager {
     }
 
     if (this.creatingSessions.has(sessionId)) {
-      queueMicrotask(() => this.attach(sessionId, socket));
+      const waiting = this.pendingClients.get(sessionId) ?? new Set<WebSocket>();
+      waiting.add(socket);
+      this.pendingClients.set(sessionId, waiting);
       return "pending";
     }
 
     this.creatingSessions.add(sessionId);
-    const session = this.sessions.get(sessionId) ?? this.safeCreateSession(sessionId, socket);
-    this.creatingSessions.delete(sessionId);
+    let session: TerminalSession | null;
+    try {
+      session = this.sessions.get(sessionId) ?? this.safeCreateSession(sessionId, socket);
+    } finally {
+      this.creatingSessions.delete(sessionId);
+    }
+
     if (!session) {
+      const waiting = this.pendingClients.get(sessionId);
+      if (waiting) {
+        this.pendingClients.delete(sessionId);
+        for (const pendingSocket of waiting) {
+          try {
+            pendingSocket.close(1011, "terminal unavailable");
+          } catch (error) {
+            this.logger.warn({ sessionId, err: normalizeError(error) }, "failed to close pending terminal client");
+          }
+        }
+      }
       return "failed";
     }
-    session.clients.add(socket);
-    this.safeBroadcast(sessionId, { type: "status", status: "connected", clients: session.clients.size });
 
-    socket.on("message", (raw) => this.handleClientMessage(sessionId, socket, raw));
-    socket.on("close", () => this.detach(sessionId, socket));
-    socket.on("error", (error) => {
-      this.logger.warn({ sessionId, err: normalizeError(error) }, "terminal websocket error");
-    });
+    this.attachClient(sessionId, session, socket);
+
+    const waiting = this.pendingClients.get(sessionId);
+    if (waiting) {
+      this.pendingClients.delete(sessionId);
+      for (const pendingSocket of waiting) {
+        this.attachClient(sessionId, session, pendingSocket);
+      }
+    }
+
     return "attached";
   }
 
@@ -145,6 +167,20 @@ export class TerminalManager {
 
     this.sessions.set(sessionId, session);
     return session;
+  }
+
+  private attachClient(sessionId: string, session: TerminalSession, socket: WebSocket): void {
+    if (socket.readyState === WebSocket.CLOSING || socket.readyState === WebSocket.CLOSED) {
+      return;
+    }
+    session.clients.add(socket);
+    this.safeBroadcast(sessionId, { type: "status", status: "connected", clients: session.clients.size });
+
+    socket.on("message", (raw) => this.handleClientMessage(sessionId, socket, raw));
+    socket.on("close", () => this.detach(sessionId, socket));
+    socket.on("error", (error) => {
+      this.logger.warn({ sessionId, err: normalizeError(error) }, "terminal websocket error");
+    });
   }
 
   private destroySession(sessionId: string, closeClients = false): void {

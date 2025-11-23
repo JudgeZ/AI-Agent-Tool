@@ -1,6 +1,6 @@
 import type { IncomingMessage } from "node:http";
 
-const WS_HANDLED_SYMBOL = Symbol.for("orchestrator.wsHandled");
+const WS_HANDLED_SYMBOL = Symbol("orchestrator.wsHandled");
 
 export function markUpgradeHandled(request: IncomingMessage): void {
   (request as Record<symbol, unknown>)[WS_HANDLED_SYMBOL] = true;
