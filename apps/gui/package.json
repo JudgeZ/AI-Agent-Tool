@@ -11,7 +11,7 @@
     "check": "svelte-check --tsconfig ./tsconfig.json",
     "lint": "eslint . && npm run check",
     "test": "npm run test:unit",
-    "playwright:install": "playwright install --with-deps chromium",
+    "playwright:install": "playwright install chromium",
     "test:e2e": "npm run playwright:install && playwright test",
     "test:unit": "vitest run",
     "mock:orchestrator": "node ./tests/mock-orchestrator.js",

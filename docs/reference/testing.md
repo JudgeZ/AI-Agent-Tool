@@ -284,6 +284,9 @@ npm run test:unit
 
 # End-to-end smoke (starts mock orchestrator + dev server automatically)
 npm run test:e2e
+
+# If Playwright reports missing system dependencies (Linux)
+npx playwright install-deps chromium
 ```
 
 #### Test Structure

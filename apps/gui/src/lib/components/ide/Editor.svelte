@@ -109,17 +109,29 @@
       })
     );
 
+    let sessionInitialized = false;
+    let activeFileInitialized = false;
+
     subscriptions = [
       session.subscribe((value) => {
         sessionValue = value;
-        syncCollaborationContext();
+        if (sessionInitialized) {
+          syncCollaborationContext();
+        }
+        sessionInitialized = true;
       }),
       activeFileWithContext.subscribe(({ file, version }) => {
         activeFileValue = file;
         collaborationContextVersionValue = version;
-        syncActiveFile();
+        if (activeFileInitialized) {
+          syncActiveFile();
+        }
+        activeFileInitialized = true;
       })
     ];
+
+    syncCollaborationContext();
+    syncActiveFile();
 
   });
 

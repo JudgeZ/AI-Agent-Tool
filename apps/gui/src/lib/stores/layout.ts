@@ -71,11 +71,12 @@ function readPersistedState(): LayoutState {
 const layoutStore = writable<LayoutState>(defaultState);
 
 if (browser) {
-  layoutStore.set(readPersistedState());
+  const hydratedState = readPersistedState();
+  layoutStore.set(hydratedState);
 
   let rafId: number | null = null;
   let queuedState: LayoutState | null = null;
-  let initialized = false;
+  let hydrating = true;
   let unsubscribe: (() => void) | null = null;
 
   const persistState = () => {
@@ -92,8 +93,8 @@ if (browser) {
   unsubscribe = layoutStore.subscribe((state) => {
     queuedState = state;
 
-    if (!initialized) {
-      initialized = true;
+    if (hydrating) {
+      hydrating = false;
       return;
     }
 

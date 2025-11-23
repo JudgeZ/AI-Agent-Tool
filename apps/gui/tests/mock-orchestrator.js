@@ -176,6 +176,7 @@ const server = http.createServer((req, res) => {
   const requestOrigin = req.headers.origin;
 
   if (requestOrigin && !allowedOrigins.has(requestOrigin)) {
+    console.warn(`[mock-orchestrator] Rejected origin ${requestOrigin}; this server is for local testing only.`);
     res.writeHead(403);
     res.end('Origin not allowed');
     return;
