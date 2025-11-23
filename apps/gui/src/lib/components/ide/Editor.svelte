@@ -42,7 +42,7 @@
   let sessionValue = get(session);
   let activeFileValue = get(activeFile);
   let collaborationContextVersionValue = get(collaborationContextVersion);
-  const subscriptions: Array<() => void> = [];
+  let subscriptions: Array<() => void> = [];
 
   // Worker setup for Monaco (Vite specific)
   import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
@@ -94,7 +94,7 @@
       }
     });
 
-    subscriptions.push(
+    subscriptions = [
       session.subscribe((value) => {
         sessionValue = value;
         syncCollaborationContext();
@@ -107,16 +107,14 @@
         collaborationContextVersionValue = value;
         syncActiveFile();
       })
-    );
-
-    syncCollaborationContext();
-    syncActiveFile();
+    ];
   });
 
   onDestroy(() => {
     teardownCollaboration();
     editor?.dispose();
     subscriptions.forEach((unsubscribe) => unsubscribe());
+    subscriptions = [];
   });
 
   function toWebsocketBase(httpUrl: string) {

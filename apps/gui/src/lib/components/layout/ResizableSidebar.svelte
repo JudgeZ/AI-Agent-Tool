@@ -1,10 +1,11 @@
 <script lang="ts">
   import { onDestroy } from 'svelte';
+  import { LEFT_MAX, LEFT_MIN } from '$lib/stores/layout';
 
   export let side: 'left' | 'right' = 'left';
   export let width = 260;
-  export let minWidth = 200;
-  export let maxWidth = 520;
+  export let minWidth = LEFT_MIN;
+  export let maxWidth = LEFT_MAX;
   export let ariaLabel = 'Sidebar';
   export let onResize: (value: number) => void = () => {};
 
@@ -18,6 +19,7 @@
   let rafId: number | null = null;
   let pointerId: number | null = null;
   let handleEl: HTMLDivElement | null = null;
+  let dragSide: 'left' | 'right' = side;
 
   $: pendingWidth = width;
 
@@ -30,6 +32,7 @@
     if (event.button !== 0) return;
     resizing = true;
     pointerId = event.pointerId;
+    dragSide = side;
     startX = event.clientX;
     startWidth = width;
     pendingWidth = startWidth;
@@ -41,7 +44,7 @@
 
   const handlePointerMove = (event: PointerEvent) => {
     if (!resizing) return;
-    const delta = side === 'left' ? event.clientX - startX : startX - event.clientX;
+    const delta = dragSide === 'left' ? event.clientX - startX : startX - event.clientX;
     pendingWidth = Math.min(Math.max(startWidth + delta, minWidth), maxWidth);
 
     if (rafId === null) {
@@ -51,6 +54,11 @@
 
   const handlePointerUp = () => {
     resizing = false;
+    onResize(pendingWidth);
+    teardownListeners();
+  };
+
+  const teardownListeners = () => {
     if (pointerId !== null) {
       handleEl?.releasePointerCapture(pointerId);
       pointerId = null;
@@ -59,16 +67,6 @@
       cancelAnimationFrame(rafId);
       rafId = null;
     }
-    onResize(pendingWidth);
-    window.removeEventListener('pointermove', handlePointerMove);
-  };
-
-  const teardownListeners = () => {
-    if (rafId !== null) {
-      cancelAnimationFrame(rafId);
-      rafId = null;
-    }
-    pointerId = null;
     window.removeEventListener('pointermove', handlePointerMove);
     window.removeEventListener('pointerup', handlePointerUp);
     window.removeEventListener('pointercancel', handlePointerUp);

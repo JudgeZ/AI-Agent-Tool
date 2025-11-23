@@ -34,7 +34,7 @@ function normalizeDimension(value: unknown, min: number, max: number, fallback: 
 }
 
 function sanitizeIncomingDimension(value: number, min: number, max: number, fallback: number): number {
-  return Number.isFinite(value) ? clamp(value, min, max) : fallback;
+  return normalizeDimension(value, min, max, fallback);
 }
 
 function sanitizeBoolean(value: unknown, fallback: boolean): boolean {
@@ -59,7 +59,7 @@ function readPersistedState(): LayoutState {
         TERMINAL_MAX,
         defaultState.terminalHeight
       ),
-      terminalOpen: typeof parsed.terminalOpen === 'boolean' ? parsed.terminalOpen : defaultState.terminalOpen
+      terminalOpen: sanitizeBoolean(parsed.terminalOpen, defaultState.terminalOpen)
     } satisfies LayoutState;
   } catch (error) {
     console.warn('[layout] Failed to read persisted layout state', error);
