@@ -22,5 +22,4 @@
 
 | id | status | description | source | file_location | line_numbers | impl_plan | test_impact | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-
-No outstanding TODO items.
+| T1 | todo | Add timeout/backoff to restoreSessionLocks to avoid long blocking restores | Reviewer: "Missing timeout on restore operations" | services/orchestrator/src/services/FileLockManager.ts | restoreSessionLocks loop | 249-313 | Add per-lock/global timeout or bounded concurrency when restoring locks and surface partial failures. | requires new tests | Prevents restores from hanging if Redis or locks are slow; ensure existing tracing/logging stays intact. |

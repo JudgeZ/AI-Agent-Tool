@@ -91,7 +91,8 @@ export class FileLockManager {
   }
 
   private sanitizeSessionId(sessionId: string): string {
-    if (!/^[A-Za-z0-9_-]+$/.test(sessionId)) {
+    const MAX_SESSION_ID_LENGTH = 128;
+    if (!/^[A-Za-z0-9_-]+$/.test(sessionId) || sessionId.length > MAX_SESSION_ID_LENGTH) {
       throw new FileLockError("Invalid session id", "busy", { reason: "invalid_session_id" });
     }
     return sessionId;

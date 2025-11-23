@@ -210,6 +210,12 @@ describe("FileLockManager", () => {
     await expect(manager.acquireLock("bad:id", "project/file.txt")).rejects.toBeInstanceOf(FileLockError);
   });
 
+  it("rejects overly long session identifiers", async () => {
+    const manager = new FileLockManager("redis://example");
+    const longId = "a".repeat(129);
+    await expect(manager.acquireLock(longId, "project/file.txt")).rejects.toBeInstanceOf(FileLockError);
+  });
+
   it("throttles repeated lock attempts per session", async () => {
     const manager = new FileLockManager("redis://example", 30_000, 0, 1, 60_000);
 
