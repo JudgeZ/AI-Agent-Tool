@@ -252,8 +252,9 @@ function normalizeRelativePath(path: string): string {
 function normalizeAbsolutePath(path: string): string {
     const sanitized = path.replace(/\\/g, '/');
     const segments = sanitized.split('/');
-    const driveSuffix = sanitized.match(/^[a-zA-Z]:(.*)/)?.[1] ?? '';
-    const isDriveRelative = driveSuffix.length > 0 && !driveSuffix.startsWith('/');
+    // Extract the portion after the drive letter; drive-relative paths like "C:folder" are invalid.
+    const pathAfterDrive = sanitized.match(/^[a-zA-Z]:(.*)/)?.[1] ?? '';
+    const isDriveRelative = pathAfterDrive.length > 0 && !pathAfterDrive.startsWith('/');
     const isAbsolute = sanitized.startsWith('/') || /^[a-zA-Z]:/.test(sanitized);
 
     if (!isAbsolute || isDriveRelative) {
@@ -400,6 +401,8 @@ export function resetCollaborationState() {
     roomCache.clear();
     roomCacheContextVersion = get(collaborationContextVersion);
     roomCacheRootSnapshot = get(projectRoot);
+    ROOM_DERIVATION_RATE_LIMIT.tokens = ROOM_DERIVATION_RATE_LIMIT.capacity;
+    ROOM_DERIVATION_RATE_LIMIT.lastRefillTs = nowMs();
 }
 
 export function restoreLocalCollaborationContext() {

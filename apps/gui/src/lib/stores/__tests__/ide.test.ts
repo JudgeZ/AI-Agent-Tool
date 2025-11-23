@@ -182,6 +182,16 @@ describe('collaboration room derivation', () => {
     expect(digestMock).toHaveBeenCalledTimes(2);
     expect(elapsed).toBeGreaterThanOrEqual(20);
   });
+
+  it('resets the room derivation rate limiter with collaboration state', async () => {
+    __test.setRoomRateLimiterForTest({ capacity: 2, tokens: 1, refillIntervalMs: 1000 });
+    await deriveCollaborationRoom('/workspace/demo/src/a.ts');
+
+    expect(__test.getRoomRateLimiterState().tokens).toBe(0);
+
+    resetCollaborationState();
+    expect(__test.getRoomRateLimiterState().tokens).toBe(2);
+  });
 });
 
 describe('path normalization', () => {

@@ -154,19 +154,21 @@
     return configureQueue;
   }
 
-  function setupTextObserver(filePath: string) {
+  function setupTextObserver(filePath: string, requestId: number) {
     if (!yText) return;
+    const observedText = yText;
     textObserver = () => {
       if (queuedTextObserver !== null) return;
 
       queuedTextObserver = requestAnimationFrame(() => {
         queuedTextObserver = null;
-        const value = yText?.toString() ?? '';
+        if (requestId !== configureRequestId || observedText !== yText) return;
+        const value = observedText.toString();
         fileContents.update((c) => ({ ...c, [filePath]: value }));
         isDirty.update((d) => ({ ...d, [filePath]: true }));
       });
     };
-    yText.observe(textObserver);
+    observedText.observe(textObserver);
   }
 
   function setLocalAwareness(awareness: Awareness) {
@@ -239,7 +241,7 @@
     }
 
     const awareness = new Awareness(doc);
-    setupTextObserver(filePath);
+    setupTextObserver(filePath, requestId);
 
     try {
       if (isStale()) {
@@ -278,6 +280,7 @@
       console.error('Failed to initialize collaboration provider', error);
       setCollaborationStatus('error');
       logCollaborationEvent('ws-init-failed', { message: (error as Error).message });
+      cleanupStaleCollaboration();
       return;
     }
 
@@ -304,6 +307,8 @@
       params.set('sessionId', $session.info.id);
     }
     if ($session.info?.sessionToken) {
+      // NOTE: Query params may be logged by intermediaries; backend currently requires
+      // tokens in the URL until an authenticated subprotocol is available.
       params.set('sessionToken', $session.info.sessionToken);
     }
 
