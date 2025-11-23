@@ -75,3 +75,5 @@ export function selectSandboxType(capabilities: SandboxCapabilities): SandboxTyp
   // WASM sandbox for lightweight, data-only operations
   return SandboxType.WASM;
 }
+
+export { TerminalManager } from "./TerminalManager.js";

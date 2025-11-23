@@ -83,6 +83,10 @@ Layout preferences persist in `localStorage` (`oss.ide.layout`) and are clamped 
 
 ARIA labels and focus styling are enabled on all handles so screen readers can announce control purpose and current size.
 
+### Terminal connection states
+
+The IDE terminal connects to the orchestrator WebSocket at `/sandbox/terminal` using the authenticated session ID. Connection health is surfaced in the status bar with `connected`, `connecting`, `disconnected`, and `error` states. The client applies exponential backoff with up to six automatic retries for transient disconnects, halts retries when policy denials are returned, and exposes a **Reconnect** control when manual recovery is required. See [Sandbox terminal WebSocket](./sandbox-terminal.md) for the full message contract and backend safeguards.
+
 ## SSE timeline
 
 The frontend listens for `plan.step` events emitted by the orchestrator at `/plan/:planId/events`. Every event updates the timeline, appending the latest status transition and highlighting the associated capability badge. Connection state is surfaced at the top of the page so operators can quickly validate the stream health.

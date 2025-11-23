@@ -21,6 +21,7 @@ import { validateSessionId, type SessionExtractionResult, type SessionSource } f
 import { hashIdentifier, logAuditEvent } from "../observability/audit.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
 import { normalizeTenantIdInput } from "../tenants/tenantIds.js";
+import { markUpgradeHandled } from "../server/upgradeMarkers.js";
 
 const DEFAULT_PERSISTENCE_DIR = ".collaboration";
 const AGENT_EDIT_ORIGIN = "agent_edit";
@@ -587,10 +588,10 @@ export async function setupCollaborationServer(
   httpServer.on("upgrade", (request, socket, head) => {
     const { pathname } = new URL(request.url ?? "", "http://localhost");
     if (pathname !== "/collaboration/ws") {
-      socket.destroy();
       return;
     }
 
+    markUpgradeHandled(request);
     const logger = loggerWithTrace(request);
     const identifiers = requestIdentifiers(request);
     const ip = resolveClientIp(request, config.server.trustedProxyCidrs);

@@ -22,9 +22,11 @@
     "@tauri-apps/api": "^2.0.0",
     "@tauri-apps/plugin-dialog": "^2.4.2",
     "@tauri-apps/plugin-fs": "^2.4.4",
+    "@xterm/addon-fit": "^0.10.0",
+    "@xterm/xterm": "^5.5.0",
     "monaco-editor": "^0.55.1",
-    "y-protocols": "^1.0.6",
     "y-monaco": "^0.1.6",
+    "y-protocols": "^1.0.6",
     "y-websocket": "^3.0.0",
     "yjs": "^13.6.27"
   },
