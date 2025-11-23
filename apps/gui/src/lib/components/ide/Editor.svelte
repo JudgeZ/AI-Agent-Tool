@@ -39,6 +39,10 @@
   let appliedContextVersion = 0;
   let configureRequestId = 0;
   let configureQueue: Promise<void> = Promise.resolve();
+  let sessionValue = get(session);
+  let activeFileValue = get(activeFile);
+  let collaborationContextVersionValue = get(collaborationContextVersion);
+  const subscriptions: Array<() => void> = [];
 
   // Worker setup for Monaco (Vite specific)
   import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
@@ -48,7 +52,7 @@
   import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
 
   self.MonacoEnvironment = {
-    getWorker: function (_: any, label: string) {
+    getWorker: function (_: string, label: string) {
       if (label === 'json') {
         return new jsonWorker();
       }
@@ -77,47 +81,46 @@
     });
 
     editor.onDidChangeModelContent(() => {
-      if ($activeFile) {
-        isDirty.update((d) => ({ ...d, [$activeFile!]: true }));
+      if (typeof activeFileValue === 'string') {
+        const activeFileKey = activeFileValue;
+        isDirty.update((d) => ({ ...d, [activeFileKey]: true }));
       }
     });
 
     // Ctrl+S to save
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-      if ($activeFile) {
-        saveFile($activeFile, editor.getValue());
+      if (typeof activeFileValue === 'string') {
+        saveFile(activeFileValue, editor.getValue());
       }
     });
+
+    subscriptions.push(
+      session.subscribe((value) => {
+        sessionValue = value;
+        syncCollaborationContext();
+      }),
+      activeFile.subscribe((value) => {
+        activeFileValue = value;
+        syncActiveFile();
+      }),
+      collaborationContextVersion.subscribe((value) => {
+        collaborationContextVersionValue = value;
+        syncActiveFile();
+      })
+    );
+
+    syncCollaborationContext();
+    syncActiveFile();
   });
 
   onDestroy(() => {
     teardownCollaboration();
     editor?.dispose();
+    subscriptions.forEach((unsubscribe) => unsubscribe());
   });
 
-  $: {
-    if ($session.authenticated && $session.info) {
-      setCollaborationContext({
-        tenantId: $session.info.tenantId ?? undefined,
-        projectId: $session.info.projectId ?? getLocalProjectId()
-      });
-    } else if (!$session.loading) {
-      restoreLocalCollaborationContext();
-    }
-  }
-
-  $: if (editor && $activeFile) {
-    const forceReload = $collaborationContextVersion !== appliedContextVersion;
-    void configureForFile($activeFile, forceReload);
-  } else if (editor && !$activeFile) {
-    attachedFile = null;
-    teardownCollaboration();
-    currentModel?.dispose();
-    currentModel = null;
-    editor.setValue('');
-  }
-
   function toWebsocketBase(httpUrl: string) {
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity
     const parsed = new URL(httpUrl);
     parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
     parsed.pathname = '';
@@ -135,7 +138,7 @@
         attachedFile = path;
         teardownCollaboration();
 
-        const content = $fileContents[path] ?? '';
+        const content = get(fileContents)[path] ?? '';
         const lang = getLangFromExt(path.split('.').pop() || 'txt');
 
         currentModel?.dispose();
@@ -149,7 +152,7 @@
           model.dispose();
           return;
         }
-        appliedContextVersion = $collaborationContextVersion;
+        appliedContextVersion = collaborationContextVersionValue;
       } catch (error) {
         console.error('Failed to configure file for collaboration', { path, error });
         setCollaborationStatus('error');
@@ -177,15 +180,15 @@
 
   function setLocalAwareness(awareness: Awareness) {
     awareness.setLocalStateField('user', {
-      name: $session.info?.name ?? $session.info?.email ?? 'Guest',
-      color: userColor($session.info?.id ?? 'guest')
+      name: sessionValue.info?.name ?? sessionValue.info?.email ?? 'Guest',
+      color: userColor(sessionValue.info?.id ?? 'guest')
     });
   }
 
   function logCollaborationEvent(event: string, detail: Record<string, unknown> = {}) {
     console.info('[collaboration]', event, {
       file: attachedFile,
-      sessionId: $session.info?.id,
+      sessionId: sessionValue.info?.id,
       timestamp: Date.now(),
       ...detail
     });
@@ -224,7 +227,7 @@
 
     if (isStale()) return;
 
-    if (!isCollaborationSessionValid($session)) {
+    if (!isCollaborationSessionValid(sessionValue)) {
       logCollaborationEvent('auth-required');
       setCollaborationStatus('error');
       return;
@@ -326,6 +329,7 @@
   }
 
   function buildRoomName(info: CollaborationRoomInfo) {
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity
     const params = new URLSearchParams({
       tenantId: info.tenantId,
       projectId: info.projectId,
@@ -335,8 +339,8 @@
       authMode: 'session-cookie'
     });
 
-    if ($session.info?.id) {
-      params.set('sessionId', $session.info.id);
+    if (sessionValue.info?.id) {
+      params.set('sessionId', sessionValue.info.id);
     }
 
     const roomName = `collaboration/ws?${params.toString()}`;
@@ -375,6 +379,32 @@
     }
 
     resetCollaborationConnection();
+  }
+
+  function syncCollaborationContext() {
+    if (sessionValue.authenticated && sessionValue.info) {
+      setCollaborationContext({
+        tenantId: sessionValue.info.tenantId ?? undefined,
+        projectId: sessionValue.info.projectId ?? getLocalProjectId()
+      });
+    } else if (!sessionValue.loading) {
+      restoreLocalCollaborationContext();
+    }
+  }
+
+  function syncActiveFile() {
+    if (!editor) return;
+
+    if (activeFileValue) {
+      const forceReload = collaborationContextVersionValue !== appliedContextVersion;
+      void configureForFile(activeFileValue, forceReload);
+    } else {
+      attachedFile = null;
+      teardownCollaboration();
+      currentModel?.dispose();
+      currentModel = null;
+      editor.setValue('');
+    }
   }
 
   function userColor(seed: string) {

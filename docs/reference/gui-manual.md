@@ -60,6 +60,29 @@ npm run tauri        # launches SvelteKit and embeds it in Tauri
 npm run tauri:build  # produces distributable binaries
 ```
 
+## IDE layout and controls
+
+The shell opens with a three-pane layout and an optional terminal:
+
+- **Left file explorer** – resizable between 220–520px.
+- **Center editor** – Monaco-backed editor for the active session.
+- **Right agent panel** – resizable between 320–640px for timeline and agent context.
+- **Bottom terminal** – hidden by default, opens to ~240px high and can expand up to 520px.
+
+Layout preferences persist in `localStorage` (`oss.ide.layout`) and are clamped to the supported bounds during hydration to avoid invalid dimensions. Reset by clearing that key and reloading.
+
+### Resizing with mouse or touchpad
+
+- Drag the vertical separators on either sidebar to change width. Primary-button drags only.
+- Drag the horizontal handle above the terminal to change height; the panel must be open to resize.
+
+### Keyboard accessibility
+
+- **Sidebars:** focus the separator and use **←/→** arrows; increments are bounded by the same limits as mouse drags.
+- **Terminal:** focus the handle and press **↑/↓** arrows to grow/shrink. Pressing an arrow while closed auto-opens the terminal before resizing.
+
+ARIA labels and focus styling are enabled on all handles so screen readers can announce control purpose and current size.
+
 ## SSE timeline
 
 The frontend listens for `plan.step` events emitted by the orchestrator at `/plan/:planId/events`. Every event updates the timeline, appending the latest status transition and highlighting the associated capability badge. Connection state is surfaced at the top of the page so operators can quickly validate the stream health.

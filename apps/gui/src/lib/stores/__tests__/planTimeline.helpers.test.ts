@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 
 import { type TimelineState, __test } from '../planTimeline';
 
+type StepEventPayload = Parameters<typeof __test.upsertStep>[1];
+
 const baseState: TimelineState = {
   planId: 'plan-1',
   connected: false,
@@ -59,7 +61,7 @@ describe('planTimeline helpers', () => {
   });
 
   it('records history entries and awaiting approval state consistently', () => {
-    const initialPayload = {
+    const initialPayload: StepEventPayload = {
       step: {
         id: 's1',
         capability: 'repo.read',
@@ -72,7 +74,7 @@ describe('planTimeline helpers', () => {
     expect(withStep.steps[0].history).toHaveLength(1);
     expect(withStep.awaitingApproval).toBeNull();
 
-    const approvalPayload = {
+    const approvalPayload: StepEventPayload = {
       step: {
         id: 's1',
         capability: 'repo.read',
@@ -89,7 +91,7 @@ describe('planTimeline helpers', () => {
     expect(awaiting.steps[0].diff?.files[0].patch).toBe('@@change');
     expect(awaiting.steps[0].history).toHaveLength(2);
 
-    const completedPayload = {
+    const completedPayload: StepEventPayload = {
       step: {
         id: 's1',
         capability: 'repo.read',

@@ -171,7 +171,10 @@ const server = http.createServer((req, res) => {
   const sseMatch = url.pathname.match(/^\/plan\/([^/]+)\/events$/);
   const approveMatch = url.pathname.match(/^\/plan\/([^/]+)\/steps\/([^/]+)\/approve$/);
 
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  const requestOrigin = req.headers.origin || '*';
+  res.setHeader('Access-Control-Allow-Origin', requestOrigin);
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 
