@@ -23,6 +23,7 @@
   } from '$lib/stores/ide';
   import { gatewayBaseUrl } from '$lib/config';
   import { session } from '$lib/stores/session';
+  import { isCollaborationSessionValid } from './sessionAuth';
 
   let editorContainer: HTMLElement;
   let editor: monaco.editor.IStandaloneCodeEditor;
@@ -222,6 +223,12 @@
     };
 
     if (isStale()) return;
+
+    if (!isCollaborationSessionValid($session)) {
+      logCollaborationEvent('auth-required');
+      setCollaborationStatus('error');
+      return;
+    }
 
     setCollaborationStatus('connecting');
     let roomInfo: CollaborationRoomInfo | null = null;
