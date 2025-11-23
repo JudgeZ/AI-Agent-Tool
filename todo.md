@@ -1,7 +1,7 @@
 # TODO Tasks
 
 **How to maintain this file**
-- Keep task IDs sequential starting from `T1`; renumber the table when adding or removing tasks to avoid gaps.
+- Keep task IDs sequential starting from `T1` as you add new rows; leave existing IDs in place to avoid churn after merges.
 - Add only actionable tasks that are expected to be implemented; declined items belong in `ignored.md`.
 - When a task is completed and merged, remove its row entirely; keep only outstanding work here.
 - Preserve the column structure and concise descriptions so tasks remain actionable with locations and testing expectations.
@@ -10,7 +10,7 @@
 - Use the column descriptions below to keep data consistent and include file paths, line ranges, and a brief implementation plan for each task.
 
 **Column descriptions**
-- `id`: Sequential task identifier (`T1`, `T2`, …) with no gaps.
+- `id`: Sequential task identifier (`T1`, `T2`, …); reuse the next available number when adding new tasks.
 - `status`: `todo` until implemented; remove the row once done/merged.
 - `description`: One-line actionable summary of the change requested.
 - `source`: Who requested it and short quote/context.
