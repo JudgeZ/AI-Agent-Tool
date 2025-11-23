@@ -22,8 +22,15 @@ export class FileWatcherService extends EventEmitter {
     string,
     Map<string, { timer: NodeJS.Timeout; originalPath: string }>
   >();
+  private static readonly DEFAULT_RENAME_WINDOW_MS = 500;
   // Unlink/add pairs within this window are coalesced into renames; longer gaps emit separate delete/create events.
-  private readonly renameWindowMs = 500;
+  private readonly renameWindowMs = (() => {
+    const configured = Number(process.env.FILE_WATCHER_RENAME_WINDOW_MS);
+    if (Number.isFinite(configured) && configured > 0) {
+      return configured;
+    }
+    return FileWatcherService.DEFAULT_RENAME_WINDOW_MS;
+  })();
 
   async watch(projectId: string, projectRoot: string): Promise<void> {
     if (this.watchers.has(projectId)) {
