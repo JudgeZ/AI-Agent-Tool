@@ -1,3 +1,4 @@
+import { register } from "prom-client";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => {
@@ -74,6 +75,15 @@ const {
 } = mocks;
 const sessionKey = (sessionId: string) => `session:locks:${sessionId}`;
 
+async function metricValue(name: string, labels: Record<string, string>): Promise<number> {
+  const metrics = await register.getMetricsAsJSON();
+  const metric = metrics.find((entry) => entry.name === name);
+  const match = metric?.values?.find((value: any) =>
+    Object.entries(labels).every(([key, val]) => value.labels?.[key] === val),
+  );
+  return typeof match?.value === "number" ? match.value : 0;
+}
+
 describe("FileLockManager", () => {
   beforeEach(() => {
     mockStore.clear();
@@ -81,6 +91,7 @@ describe("FileLockManager", () => {
     mockRedisClient.isOpen = false;
     mockIsRoomBusy.mockReturnValue(false);
     mockAcquireLock.mockImplementation(async () => vi.fn(async () => {}));
+    register.resetMetrics();
   });
 
   it("acquires locks with normalized keys and persists history", async () => {
@@ -327,5 +338,54 @@ describe("FileLockManager", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it("emits metrics for successful acquisitions and releases", async () => {
+    const manager = new FileLockManager("redis://example");
+
+    const baselineAttempt = await metricValue("orchestrator_file_lock_attempts_total", {
+      operation: "acquire",
+      outcome: "success",
+    });
+    const baselineRelease = await metricValue("orchestrator_file_lock_release_total", { outcome: "success" });
+
+    const lock = await manager.acquireLock("metrics-session", "project/file.txt");
+    await lock.release();
+
+    expect(
+      await metricValue("orchestrator_file_lock_attempts_total", {
+        operation: "acquire",
+        outcome: "success",
+      }),
+    ).toBeGreaterThan(baselineAttempt);
+    expect(await metricValue("orchestrator_file_lock_release_total", { outcome: "success" })).toBeGreaterThan(
+      baselineRelease,
+    );
+  });
+
+  it("records metrics when rate limiting blocks acquisitions", async () => {
+    const manager = new FileLockManager("redis://example", 30_000, 0, 1, 60_000);
+
+    const baselineBlocked = await metricValue("orchestrator_file_lock_rate_limit_total", { result: "blocked" });
+    const baselineRateLimitedAttempt = await metricValue("orchestrator_file_lock_attempts_total", {
+      operation: "acquire",
+      outcome: "rate_limited",
+    });
+
+    await manager.acquireLock("rate-limited", "project/one.txt");
+    await expect(manager.acquireLock("rate-limited", "project/two.txt")).rejects.toMatchObject({
+      code: "rate_limited",
+    });
+
+    expect(await metricValue("orchestrator_file_lock_rate_limit_total", { result: "blocked" })).toBeGreaterThan(
+      baselineBlocked,
+    );
+
+    expect(
+      await metricValue("orchestrator_file_lock_attempts_total", {
+        operation: "acquire",
+        outcome: "rate_limited",
+      }),
+    ).toBeGreaterThan(baselineRateLimitedAttempt);
   });
 });

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { createRateLimitStore } from "../rateLimit/store.js";
 import { PerSessionRateLimiter } from "./RateLimiter.js";
 
 describe("PerSessionRateLimiter", () => {
@@ -7,23 +8,28 @@ describe("PerSessionRateLimiter", () => {
     vi.useRealTimers();
   });
 
-  it("prunes stale session entries to keep memory bounded", () => {
-    vi.useFakeTimers();
-    const limiter = new PerSessionRateLimiter(2, 1_000);
+  it("shares limits across instances when using a shared store", async () => {
+    const store = createRateLimitStore({ provider: "memory" }, { prefix: "test:shared" });
+    const first = new PerSessionRateLimiter(1, 1_000, { store });
+    const second = new PerSessionRateLimiter(1, 1_000, { store });
 
-    limiter.check("s1");
-    limiter.check("s2");
+    const firstDecision = await first.check("session-1");
+    const secondDecision = await second.check("session-1");
 
-    const internalLimits = (limiter as any).limits as Map<string, { windowStart: number; count: number }>;
-    expect(internalLimits.size).toBe(2);
+    expect(firstDecision.allowed).toBe(true);
+    expect(secondDecision.allowed).toBe(false);
+  });
 
-    // Advance beyond two windows so stale entries are removed during the next check.
-    vi.advanceTimersByTime(2_500);
+  it("resets counts via the underlying store", async () => {
+    const store = createRateLimitStore({ provider: "memory" }, { prefix: "test:reset" });
+    const limiter = new PerSessionRateLimiter(1, 1_000, { store });
 
-    limiter.check("s3");
+    await limiter.check("session-1");
+    const blocked = await limiter.check("session-1");
+    expect(blocked.allowed).toBe(false);
 
-    expect(internalLimits.size).toBe(1);
-    expect(internalLimits.has("s3")).toBe(true);
+    await limiter.reset("session-1");
+    const allowedAfterReset = await limiter.check("session-1");
+    expect(allowedAfterReset.allowed).toBe(true);
   });
 });
-

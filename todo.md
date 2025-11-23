@@ -22,5 +22,3 @@
 
 | id | status | description | source | file_location | line_numbers | impl_plan | test_impact | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| T1 | todo | Persist rate limiter state across orchestrator instances | Reviewer: "Rate limiter state not persisted" | services/orchestrator/src/services/RateLimiter.ts | entire file | Explore Redis-backed limiter shared across instances; keep in-memory fallback. | requires new tests | Current limiter is per-process; follow-up to prevent multi-instance overuse. |
-| T2 | todo | Emit metrics for lock operations and rate-limit hits | Reviewer: "Add metrics for lock operations" | services/orchestrator/src/services/FileLockManager.ts | acquireLock / releaseSessionLocks | 70-330 | Add counters/histograms for lock acquire success/failure and rate-limit denials. | requires new tests | Improve observability for contention and outages. |

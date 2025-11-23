@@ -113,13 +113,14 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
     return createHash("sha256").update(resolvedPath).digest("hex");
   }
 
-  private enforceOperationLimit(sessionId: string): void {
-    const result = this.operationRateLimiter.check(sessionId);
+  private async enforceOperationLimit(sessionId: string): Promise<void> {
+    const result = await this.operationRateLimiter.check(sessionId);
     if (!result.allowed) {
       throw new FileLockError("Filesystem operation rate limit exceeded", "rate_limited", {
         sessionId,
         limit: result.limit,
         windowMs: result.windowMs,
+        retryAfterMs: result.retryAfterMs,
       });
     }
   }
@@ -134,7 +135,7 @@ export class FileSystemTool extends McpTool<FileSystemToolInput, any> {
     try {
       const resolvedPath = this.resolvePath(input.path);
       const sessionId = input.sessionId ?? context.requestId ?? "anonymous-session";
-      this.enforceOperationLimit(sessionId);
+      await this.enforceOperationLimit(sessionId);
       const roomId = this.roomIdForPath(resolvedPath);
       span = startSpan("filesystem.tool", {
         path: resolvedPath,

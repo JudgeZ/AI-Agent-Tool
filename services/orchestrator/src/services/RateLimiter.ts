@@ -1,48 +1,79 @@
-export type RateLimitResult =
-  | { allowed: true; remaining: number; limit: number; windowMs: number }
-  | { allowed: false; remaining: number; limit: number; windowMs: number };
+import { appLogger } from "../observability/logger.js";
+import {
+  createRateLimitStore,
+  type LoggerLike,
+  type RateLimitBackendConfig,
+  type RateLimitStore,
+  type RateLimitDecision,
+} from "../rateLimit/store.js";
+
+export type RateLimitResult = {
+  allowed: boolean;
+  remaining: number;
+  limit: number;
+  windowMs: number;
+  retryAfterMs?: number;
+};
+
+export type SessionRateLimiterOptions = {
+  prefix?: string;
+  backend?: RateLimitBackendConfig;
+  store?: RateLimitStore;
+  logger?: LoggerLike;
+};
+
+const DEFAULT_PREFIX = "orchestrator:session-rate-limit";
+
+function resolveBackendFromEnv(): RateLimitBackendConfig {
+  const providerEnv = process.env.ORCHESTRATOR_RATE_LIMIT_BACKEND?.toLowerCase();
+  const provider: RateLimitBackendConfig["provider"] = providerEnv === "redis" ? "redis" : "memory";
+  const redisUrl = process.env.ORCHESTRATOR_RATE_LIMIT_REDIS_URL ?? process.env.RATE_LIMIT_REDIS_URL;
+  if (provider === "redis" && !redisUrl) {
+    appLogger.warn({ providerEnv }, "redis rate limit backend requested without redis url; falling back to memory");
+    return { provider: "memory" };
+  }
+  return redisUrl ? { provider, redisUrl } : { provider };
+}
 
 export class PerSessionRateLimiter {
-  private readonly limits = new Map<string, { windowStart: number; count: number }>();
-  private lastCleanup = 0;
+  private readonly store: RateLimitStore;
+  private readonly limit: number;
+  private readonly windowMs: number;
 
-  constructor(private readonly limit: number, private readonly windowMs: number) {}
-
-  private cleanup(now: number): void {
-    // Opportunistically prune stale sessions to keep memory bounded; clean at most once per window.
-    if (now - this.lastCleanup < this.windowMs) return;
-    for (const [sessionId, entry] of this.limits.entries()) {
-      if (now - entry.windowStart > this.windowMs * 2) {
-        this.limits.delete(sessionId);
-      }
-    }
-    this.lastCleanup = now;
+  constructor(limit: number, windowMs: number, options: SessionRateLimiterOptions = {}) {
+    this.limit = limit;
+    this.windowMs = windowMs;
+    const backend = options.backend ?? resolveBackendFromEnv();
+    const logger = options.logger ??
+      (typeof appLogger.child === "function"
+        ? appLogger.child({ component: "session-rate-limit" })
+        : appLogger);
+    this.store = options.store ??
+      createRateLimitStore(backend, {
+        prefix: options.prefix ?? DEFAULT_PREFIX,
+        logger,
+      });
   }
 
-  check(sessionId: string): RateLimitResult {
-    const now = Date.now();
-    this.cleanup(now);
-    const current = this.limits.get(sessionId);
-    if (!current || now - current.windowStart >= this.windowMs) {
-      this.limits.set(sessionId, { windowStart: now, count: 1 });
-      return { allowed: true, remaining: Math.max(0, this.limit - 1), limit: this.limit, windowMs: this.windowMs };
-    }
-
-    const nextCount = current.count + 1;
-    if (nextCount > this.limit) {
-      this.limits.set(sessionId, { windowStart: current.windowStart, count: nextCount });
-      return { allowed: false, remaining: 0, limit: this.limit, windowMs: this.windowMs };
-    }
-
-    this.limits.set(sessionId, { windowStart: current.windowStart, count: nextCount });
-    return { allowed: true, remaining: Math.max(0, this.limit - nextCount), limit: this.limit, windowMs: this.windowMs };
+  async check(sessionId: string): Promise<RateLimitResult> {
+    const decision = await this.store.allow(sessionId, this.windowMs, this.limit);
+    return this.toResult(decision);
   }
 
-  reset(sessionId?: string): void {
-    if (sessionId) {
-      this.limits.delete(sessionId);
-      return;
+  async reset(sessionId?: string): Promise<void> {
+    if (typeof this.store.reset === "function") {
+      await this.store.reset(sessionId);
     }
-    this.limits.clear();
+  }
+
+  private toResult(decision: RateLimitDecision): RateLimitResult {
+    const remaining = Math.max(0, decision.remaining ?? (decision.allowed ? this.limit - 1 : 0));
+    return {
+      allowed: decision.allowed,
+      remaining,
+      limit: decision.limit ?? this.limit,
+      windowMs: decision.windowMs ?? this.windowMs,
+      retryAfterMs: decision.retryAfterMs,
+    };
   }
 }
