@@ -33,7 +33,7 @@
 
   {#if node.isDirectory && node.isOpen && node.children}
     <div class="border-l border-gray-800 ml-2">
-      {#each node.children as child}
+      {#each node.children as child (child.path)}
         <svelte:self node={child} />
       {/each}
     </div>

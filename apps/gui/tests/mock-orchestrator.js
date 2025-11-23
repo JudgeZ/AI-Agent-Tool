@@ -171,7 +171,22 @@ const server = http.createServer((req, res) => {
   const sseMatch = url.pathname.match(/^\/plan\/([^/]+)\/events$/);
   const approveMatch = url.pathname.match(/^\/plan\/([^/]+)\/steps\/([^/]+)\/approve$/);
 
-  res.setHeader('Access-Control-Allow-Origin', '*');
+  // MOCK ONLY: development allowlist to avoid reflecting arbitrary origins with credentials
+  const allowedOrigins = new Set(['http://localhost:5173', 'http://localhost:4173', 'http://127.0.0.1:4173']);
+  const requestOrigin = req.headers.origin;
+
+  if (requestOrigin && !allowedOrigins.has(requestOrigin)) {
+    console.warn(`[mock-orchestrator] Rejected origin ${requestOrigin}; this server is for local testing only.`);
+    res.writeHead(403);
+    res.end('Origin not allowed');
+    return;
+  }
+
+  const allowedOrigin = requestOrigin ?? 'http://localhost:5173';
+
+  res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+  res.setHeader('Vary', 'Origin');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
   res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
 

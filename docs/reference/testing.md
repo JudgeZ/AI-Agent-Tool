@@ -270,8 +270,8 @@ All tests are in the `tests/` directory:
 
 ### GUI (Svelte/TypeScript)
 
-**Location**: `apps/gui`  
-**Language**: Svelte + TypeScript  
+**Location**: `apps/gui`
+**Language**: Svelte + TypeScript
 **Test Framework**: Vitest
 
 #### Running Tests
@@ -279,47 +279,35 @@ All tests are in the `tests/` directory:
 ```bash
 cd apps/gui
 
-# Run all tests
-npm test
-
-# Run unit tests specifically
+# Unit tests
 npm run test:unit
 
-# Run with coverage
-npm test -- --coverage
+# End-to-end smoke (starts mock orchestrator + dev server automatically)
+npm run test:e2e
 
-# Watch mode
-npm test -- --watch
+# If Playwright reports missing system dependencies (Linux)
+npx playwright install-deps chromium
 ```
 
 #### Test Structure
 
-All tests use the `.spec.ts` extension:
-- `src/lib/logger.spec.ts` - Logger utilities
-- `src/lib/config.spec.ts` - Configuration management
-- `src/lib/stores/planTimeline.spec.ts` - Plan timeline store
-- `src/lib/components/PlanTimeline.spec.ts` - Timeline component
-- `src/lib/stores/__tests__/session.spec.ts` - Session management
-
-#### Current Status
-
-| Test Suite | Tests | Status |
-|------------|-------|--------|
-| Logger | 3 | ✅ PASS |
-| Config | 5 | ✅ PASS |
-| Plan Timeline Store | 6 | ✅ PASS |
-| Plan Timeline Component | 3 | ✅ PASS |
-| Session Store | 12 | ✅ PASS |
-| **Total** | **29** | ✅ PASS |
+- **Unit tests (`vitest`)** live under `src/lib/**/*.spec.ts` and `src/lib/**/__tests__/*.test.ts`:
+  - Timeline + approval: `src/lib/components/PlanTimeline.spec.ts`, `src/lib/components/__tests__/ApprovalModal.test.ts`
+  - Layout + IDE shell: `src/lib/components/layout/__tests__/layoutHandles.test.ts`, `src/lib/stores/__tests__/ide*.test.ts`
+  - Config + logging: `src/lib/config.spec.ts`, `src/lib/logger.spec.ts`
+  - Session + store helpers: `src/lib/stores/__tests__/session.spec.ts`, `src/lib/stores/planTimeline.spec.ts`, `src/lib/stores/__tests__/planTimeline.helpers.test.ts`
+- **End-to-end tests (`playwright`)** live in `apps/gui/tests/`:
+  - `timeline.spec.ts` streams a plan from the mock orchestrator and steps through approvals.
+  - `auth-callback.spec.ts` exercises the OAuth callback bridge and session persistence.
+  - `mock-orchestrator.js` provides the SSE + approval endpoints with CORS headers for Playwright.
 
 #### Key Test Scenarios
 
-- ✅ Structured logging with context
-- ✅ Configuration validation
-- ✅ Plan timeline state management
-- ✅ Component rendering and interaction
-- ✅ Session token management
-- ✅ SSE (Server-Sent Events) handling
+- ✅ Structured logging and configuration validation
+- ✅ Timeline state management and diff rendering
+- ✅ Session authentication and token refresh
+- ✅ Sidebar/terminal accessibility (keyboard + pointer resizing)
+- ✅ SSE rendering with approval flows via Playwright smoke tests
 
 ## Common Issues and Solutions
 

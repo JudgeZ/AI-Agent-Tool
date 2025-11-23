@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { get } from 'svelte/store';
+  import { derived, get } from 'svelte/store';
   import { onMount, onDestroy } from 'svelte';
   import * as monaco from 'monaco-editor';
   import * as Y from 'yjs';
@@ -24,6 +24,7 @@
   import { gatewayBaseUrl } from '$lib/config';
   import { session } from '$lib/stores/session';
   import { isCollaborationSessionValid } from './sessionAuth';
+  import { notifyError } from '$lib/stores/notifications';
 
   let editorContainer: HTMLElement;
   let editor: monaco.editor.IStandaloneCodeEditor;
@@ -39,6 +40,15 @@
   let appliedContextVersion = 0;
   let configureRequestId = 0;
   let configureQueue: Promise<void> = Promise.resolve();
+  let sessionValue = get(session);
+  let activeFileValue = get(activeFile);
+  let collaborationContextVersionValue = get(collaborationContextVersion);
+  let subscriptions: Array<() => void> = [];
+
+  const cleanupSubscriptions = () => {
+    subscriptions.forEach((unsubscribe) => unsubscribe());
+    subscriptions = [];
+  };
 
   // Worker setup for Monaco (Vite specific)
   import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
@@ -48,7 +58,7 @@
   import tsWorker from 'monaco-editor/esm/vs/language/typescript/ts.worker?worker';
 
   self.MonacoEnvironment = {
-    getWorker: function (_: any, label: string) {
+    getWorker: function (_: string, label: string) {
       if (label === 'json') {
         return new jsonWorker();
       }
@@ -77,45 +87,64 @@
     });
 
     editor.onDidChangeModelContent(() => {
-      if ($activeFile) {
-        isDirty.update((d) => ({ ...d, [$activeFile!]: true }));
+      if (typeof activeFileValue === 'string') {
+        const activeFileKey = activeFileValue;
+        isDirty.update((d) => ({ ...d, [activeFileKey]: true }));
       }
     });
 
     // Ctrl+S to save
     editor.addCommand(monaco.KeyMod.CtrlCmd | monaco.KeyCode.KeyS, () => {
-      if ($activeFile) {
-        saveFile($activeFile, editor.getValue());
+      if (typeof activeFileValue === 'string') {
+        saveFile(activeFileValue, editor.getValue());
       }
     });
+
+    cleanupSubscriptions();
+    const activeFileWithContext = derived(
+      [activeFile, collaborationContextVersion],
+      ([$activeFile, $collaborationContextVersion]) => ({
+        file: $activeFile,
+        version: $collaborationContextVersion
+      })
+    );
+
+    // Subscriptions fire immediately; use flags so the first callbacks populate cached values
+    // without triggering duplicate sync work before the explicit initial sync below runs.
+    let sessionInitialized = false;
+    let hasRunInitialActiveFileSync = false;
+
+    subscriptions = [
+      session.subscribe((value) => {
+        sessionValue = value;
+        if (sessionInitialized) {
+          syncCollaborationContext();
+          if (provider?.awareness) {
+            setLocalAwareness(provider.awareness, sessionValue);
+          }
+        }
+        sessionInitialized = true;
+      }),
+      activeFileWithContext.subscribe(({ file, version }) => {
+        activeFileValue = file;
+        collaborationContextVersionValue = version;
+        if (hasRunInitialActiveFileSync) {
+          syncActiveFile();
+        }
+      })
+    ];
+
+    syncCollaborationContext();
+    syncActiveFile();
+    hasRunInitialActiveFileSync = true;
+
   });
 
   onDestroy(() => {
     teardownCollaboration();
     editor?.dispose();
+    cleanupSubscriptions();
   });
-
-  $: {
-    if ($session.authenticated && $session.info) {
-      setCollaborationContext({
-        tenantId: $session.info.tenantId ?? undefined,
-        projectId: $session.info.projectId ?? getLocalProjectId()
-      });
-    } else if (!$session.loading) {
-      restoreLocalCollaborationContext();
-    }
-  }
-
-  $: if (editor && $activeFile) {
-    const forceReload = $collaborationContextVersion !== appliedContextVersion;
-    void configureForFile($activeFile, forceReload);
-  } else if (editor && !$activeFile) {
-    attachedFile = null;
-    teardownCollaboration();
-    currentModel?.dispose();
-    currentModel = null;
-    editor.setValue('');
-  }
 
   function toWebsocketBase(httpUrl: string) {
     const parsed = new URL(httpUrl);
@@ -124,6 +153,10 @@
     parsed.search = '';
     parsed.hash = '';
     return parsed.toString().replace(/\/$/, '');
+  }
+
+  function notifyCollaborationError(message: string) {
+    notifyError(message, { timeoutMs: 8000 });
   }
 
   async function configureForFile(path: string, forceReload = false) {
@@ -135,7 +168,7 @@
         attachedFile = path;
         teardownCollaboration();
 
-        const content = $fileContents[path] ?? '';
+        const content = get(fileContents)[path] ?? '';
         const lang = getLangFromExt(path.split('.').pop() || 'txt');
 
         currentModel?.dispose();
@@ -149,10 +182,11 @@
           model.dispose();
           return;
         }
-        appliedContextVersion = $collaborationContextVersion;
+        appliedContextVersion = collaborationContextVersionValue;
       } catch (error) {
         console.error('Failed to configure file for collaboration', { path, error });
         setCollaborationStatus('error');
+        notifyCollaborationError('Unable to open the file for collaboration. Please try again.');
       }
     });
     return configureQueue;
@@ -175,17 +209,17 @@
     observedText.observe(textObserver);
   }
 
-  function setLocalAwareness(awareness: Awareness) {
+  function setLocalAwareness(awareness: Awareness, currentSession: typeof sessionValue) {
     awareness.setLocalStateField('user', {
-      name: $session.info?.name ?? $session.info?.email ?? 'Guest',
-      color: userColor($session.info?.id ?? 'guest')
+      name: currentSession.info?.name ?? currentSession.info?.email ?? 'Guest',
+      color: userColor(currentSession.info?.id ?? 'guest')
     });
   }
 
   function logCollaborationEvent(event: string, detail: Record<string, unknown> = {}) {
     console.info('[collaboration]', event, {
       file: attachedFile,
-      sessionId: $session.info?.id,
+      sessionId: sessionValue.info?.id,
       timestamp: Date.now(),
       ...detail
     });
@@ -224,7 +258,7 @@
 
     if (isStale()) return;
 
-    if (!isCollaborationSessionValid($session)) {
+    if (!isCollaborationSessionValid(sessionValue)) {
       logCollaborationEvent('auth-required');
       setCollaborationStatus('error');
       return;
@@ -240,6 +274,7 @@
       console.error('Failed to derive collaboration room', error);
       setCollaborationStatus('error');
       logCollaborationEvent('room-derivation-failed', { message: (error as Error).message });
+      notifyCollaborationError('Could not start collaboration. Check your session and retry.');
       return;
     }
 
@@ -304,6 +339,7 @@
       console.error('Failed to initialize collaboration provider', error);
       setCollaborationStatus('error');
       logCollaborationEvent('ws-init-failed', { message: (error as Error).message });
+      notifyCollaborationError('Collaboration connection failed to initialize. Please retry.');
       cleanupStaleCollaboration();
       return;
     }
@@ -321,11 +357,12 @@
       return;
     }
 
-    setLocalAwareness(activeAwareness);
+    setLocalAwareness(activeAwareness, sessionValue);
     binding = new MonacoBinding(yText, model, new Set([editor]), activeAwareness);
   }
 
   function buildRoomName(info: CollaborationRoomInfo) {
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity
     const params = new URLSearchParams({
       tenantId: info.tenantId,
       projectId: info.projectId,
@@ -335,8 +372,8 @@
       authMode: 'session-cookie'
     });
 
-    if ($session.info?.id) {
-      params.set('sessionId', $session.info.id);
+    if (sessionValue.info?.id) {
+      params.set('sessionId', sessionValue.info.id);
     }
 
     const roomName = `collaboration/ws?${params.toString()}`;
@@ -375,6 +412,32 @@
     }
 
     resetCollaborationConnection();
+  }
+
+  function syncCollaborationContext() {
+    if (sessionValue.authenticated && sessionValue.info) {
+      setCollaborationContext({
+        tenantId: sessionValue.info.tenantId ?? undefined,
+        projectId: sessionValue.info.projectId ?? getLocalProjectId()
+      });
+    } else if (!sessionValue.loading) {
+      restoreLocalCollaborationContext();
+    }
+  }
+
+  function syncActiveFile() {
+    if (!editor) return;
+
+    if (activeFileValue) {
+      const forceReload = collaborationContextVersionValue !== appliedContextVersion;
+      void configureForFile(activeFileValue, forceReload);
+    } else {
+      attachedFile = null;
+      teardownCollaboration();
+      currentModel?.dispose();
+      currentModel = null;
+      editor.setValue('');
+    }
   }
 
   function userColor(seed: string) {
