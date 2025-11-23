@@ -262,6 +262,12 @@
       }
 
       awareness = new Awareness(doc);
+
+      if (isStale()) {
+        cleanupStaleCollaboration();
+        return;
+      }
+
       setupTextObserver(filePath, requestId);
 
       provider = new WebsocketProvider(
@@ -325,6 +331,7 @@
       projectId: info.projectId,
       filePath: info.filePath,
       roomId: info.roomId,
+      // Authentication relies on same-origin session cookies; avoid embedding tokens in URLs.
       authMode: 'session-cookie'
     });
 
