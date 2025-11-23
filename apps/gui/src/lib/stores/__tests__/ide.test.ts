@@ -61,6 +61,7 @@ describe('collaboration room derivation', () => {
     resetCollaborationState();
     setProjectRootForCollaboration('/workspace/demo');
     setCollaborationContext({ tenantId: 'tenant-1', projectId: 'project-1' });
+    __test.setRoomRateLimiterForTest({ capacity: 16, tokens: 16, refillIntervalMs: 1000 });
   });
 
   afterEach(() => {
@@ -148,5 +149,32 @@ describe('collaboration room derivation', () => {
     expect(() => __test.toRelativeFilePath('/etc/passwd', '/workspace/demo/../../etc')).toThrow(
       'invalid path'
     );
+  });
+
+  it('applies rate limiting to uncached derivations', async () => {
+    __test.setRoomRateLimiterForTest({ capacity: 1, tokens: 1, refillIntervalMs: 25 });
+    const digestMock = vi.fn(async () => new Uint8Array(32).buffer);
+    vi.stubGlobal('crypto', { subtle: { digest: digestMock } } as unknown as Crypto);
+
+    const start = performance.now();
+    await Promise.all([
+      deriveCollaborationRoom('/workspace/demo/src/a.ts'),
+      deriveCollaborationRoom('/workspace/demo/src/b.ts')
+    ]);
+    const elapsed = performance.now() - start;
+
+    expect(digestMock).toHaveBeenCalledTimes(2);
+    expect(elapsed).toBeGreaterThanOrEqual(20);
+  });
+});
+
+describe('path normalization', () => {
+  it('accepts filesystem roots', () => {
+    expect(__test.normalizeAbsolutePath('/')).toBe('/');
+    expect(__test.normalizeAbsolutePath('C:\\')).toBe('C:/');
+  });
+
+  it('rejects drive-relative paths', () => {
+    expect(() => __test.normalizeAbsolutePath('C:folder/file.txt')).toThrow('invalid path');
   });
 });

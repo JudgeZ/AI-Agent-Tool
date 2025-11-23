@@ -30,8 +30,11 @@
   let doc: Y.Doc | null = null;
   let yText: Y.Text | null = null;
   let textObserver: ((event: Y.YTextEvent) => void) | null = null;
+  let queuedTextObserver: number | null = null;
   let attachedFile: string | null = null;
   let appliedContextVersion = 0;
+  let configureRequestId = 0;
+  let configureQueue: Promise<void> = Promise.resolve();
 
   // Worker setup for Monaco (Vite specific)
   import editorWorker from 'monaco-editor/esm/vs/editor/editor.worker?worker';
@@ -120,29 +123,43 @@
   }
 
   async function configureForFile(path: string, forceReload = false) {
-    if (path === attachedFile && currentModel && !forceReload) return;
-    attachedFile = path;
-    teardownCollaboration();
+    const requestId = ++configureRequestId;
+    configureQueue = configureQueue.then(async () => {
+      if (requestId !== configureRequestId) return;
+      if (path === attachedFile && currentModel && !forceReload) return;
+      attachedFile = path;
+      teardownCollaboration();
 
-    const content = $fileContents[path] ?? '';
-    const lang = getLangFromExt(path.split('.').pop() || 'txt');
+      const content = $fileContents[path] ?? '';
+      const lang = getLangFromExt(path.split('.').pop() || 'txt');
 
-    currentModel?.dispose();
-    const model = monaco.editor.createModel(content, lang);
-    currentModel = model;
-    editor.setModel(model);
-    isDirty.update((d) => ({ ...d, [path]: false }));
+      currentModel?.dispose();
+      const model = monaco.editor.createModel(content, lang);
+      currentModel = model;
+      editor.setModel(model);
+      isDirty.update((d) => ({ ...d, [path]: false }));
 
-    await setupCollaboration(model, content, path);
-    appliedContextVersion = $collaborationContextVersion;
+      await setupCollaboration(model, content, path, requestId);
+      if (requestId !== configureRequestId) {
+        model.dispose();
+        return;
+      }
+      appliedContextVersion = $collaborationContextVersion;
+    });
+    return configureQueue;
   }
 
   function setupTextObserver(filePath: string) {
     if (!yText) return;
     textObserver = () => {
-      const value = yText?.toString() ?? '';
-      fileContents.update((c) => ({ ...c, [filePath]: value }));
-      isDirty.update((d) => ({ ...d, [filePath]: true }));
+      if (queuedTextObserver !== null) return;
+
+      queuedTextObserver = requestAnimationFrame(() => {
+        queuedTextObserver = null;
+        const value = yText?.toString() ?? '';
+        fileContents.update((c) => ({ ...c, [filePath]: value }));
+        isDirty.update((d) => ({ ...d, [filePath]: true }));
+      });
     };
     yText.observe(textObserver);
   }
@@ -154,16 +171,30 @@
     });
   }
 
+  function logCollaborationEvent(event: string, detail: Record<string, unknown> = {}) {
+    console.info('[collaboration]', event, {
+      file: attachedFile,
+      sessionId: $session.info?.id,
+      ...detail
+    });
+  }
+
   async function setupCollaboration(
     model: monaco.editor.ITextModel,
     initialContent: string,
-    filePath: string
+    filePath: string,
+    requestId: number
   ) {
+    const isStale = () => requestId !== configureRequestId;
+
+    if (isStale()) return;
+
     setCollaborationStatus('connecting');
     let roomInfo: CollaborationRoomInfo | null = null;
 
     try {
       roomInfo = await deriveCollaborationRoom(filePath);
+      if (isStale()) return;
     } catch (error) {
       console.error('Failed to derive collaboration room', error);
       setCollaborationStatus('error');
@@ -180,9 +211,10 @@
 
     if (roomInfo) {
       try {
+        if (isStale()) return;
         provider = new WebsocketProvider(
           websocketBase,
-          buildRoomName(roomInfo, $session.info?.id ?? null),
+          buildRoomName(roomInfo, $session.info?.id ?? null, $session.info?.id ?? null),
           doc,
           {
             awareness,
@@ -191,6 +223,7 @@
         );
 
         provider.on('status', (event: { status: string }) => {
+          logCollaborationEvent('ws-status', { status: event.status, roomId: roomInfo?.roomId });
           if (event.status === 'connected') {
             setCollaborationStatus('connected');
           } else if (event.status === 'disconnected') {
@@ -199,14 +232,26 @@
             setCollaborationStatus('connecting');
           }
         });
-        provider.on('connection-close', () => setCollaborationStatus('disconnected'));
-        provider.on('connection-error', () => setCollaborationStatus('error'));
+        provider.on('connection-close', () => {
+          logCollaborationEvent('ws-closed', { roomId: roomInfo?.roomId });
+          setCollaborationStatus('disconnected');
+        });
+        provider.on('connection-error', () => {
+          logCollaborationEvent('ws-error', { roomId: roomInfo?.roomId });
+          setCollaborationStatus('error');
+        });
       } catch (error) {
         console.error('Failed to initialize collaboration provider', error);
         setCollaborationStatus('error');
+        logCollaborationEvent('ws-init-failed', { message: (error as Error).message });
       }
     } else {
       setCollaborationStatus('error');
+      logCollaborationEvent('room-derivation-failed');
+    }
+
+    if (isStale()) {
+      return;
     }
 
     const activeAwareness = provider?.awareness ?? awareness;
@@ -214,16 +259,25 @@
     binding = new MonacoBinding(yText, model, new Set([editor]), activeAwareness);
   }
 
-  function buildRoomName(info: CollaborationRoomInfo, sessionId: string | null) {
+  function buildRoomName(
+    info: CollaborationRoomInfo,
+    sessionId: string | null,
+    authToken: string | null
+  ) {
     const params = new URLSearchParams({
       tenantId: info.tenantId,
       projectId: info.projectId,
       filePath: info.filePath,
-      roomId: info.roomId
+      roomId: info.roomId,
+      authMode: 'session'
     });
 
     if (sessionId) {
       params.set('sessionId', sessionId);
+    }
+
+    if (authToken) {
+      params.set('sessionToken', authToken);
     }
 
     return `collaboration/ws?${params.toString()}`;
@@ -237,6 +291,10 @@
       yText.unobserve(textObserver);
     }
     textObserver = null;
+    if (queuedTextObserver !== null) {
+      cancelAnimationFrame(queuedTextObserver);
+      queuedTextObserver = null;
+    }
 
     provider?.destroy();
     provider = null;

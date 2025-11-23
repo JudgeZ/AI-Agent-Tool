@@ -37,6 +37,12 @@ const sharedTextEncoder = new TextEncoder();
 const sharedTextDecoder = new TextDecoder();
 const ROOM_CACHE_LIMIT = 256;
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9._:-]{1,64}$/;
+const ROOM_DERIVATION_RATE_LIMIT = {
+    capacity: 16,
+    tokens: 16,
+    refillIntervalMs: 1000,
+    lastRefillTs: typeof performance !== 'undefined' ? performance.now() : Date.now()
+};
 export const collaborationContext = writable<CollaborationContext>({
     tenantId: defaultTenantId ?? 'default',
     projectId: 'default-project'
@@ -51,12 +57,45 @@ function sanitizeLocalProjectId(base: string | undefined | null): string {
         return 'default-project';
     }
 
+    // This sanitizer emits identifiers that conform to SAFE_ID_PATTERN so they can be
+    // safely reused by sanitizeContextId without further mutation.
     const safeBase = base
         .replace(/[^a-zA-Z0-9._:-]+/g, '-')
         .replace(/^-+|-+$/g, '')
         .slice(0, 48);
 
     return safeBase ? `local-${safeBase}` : 'default-project';
+}
+
+function nowMs(): number {
+    return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+async function consumeRoomDerivationToken() {
+    const currentTs = nowMs();
+    const elapsed = currentTs - ROOM_DERIVATION_RATE_LIMIT.lastRefillTs;
+
+    if (elapsed >= ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs) {
+        const refillCount = Math.floor(elapsed / ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs);
+        ROOM_DERIVATION_RATE_LIMIT.tokens = Math.min(
+            ROOM_DERIVATION_RATE_LIMIT.capacity,
+            ROOM_DERIVATION_RATE_LIMIT.tokens + refillCount
+        );
+        ROOM_DERIVATION_RATE_LIMIT.lastRefillTs += refillCount * ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs;
+    }
+
+    if (ROOM_DERIVATION_RATE_LIMIT.tokens > 0) {
+        ROOM_DERIVATION_RATE_LIMIT.tokens -= 1;
+        return;
+    }
+
+    const waitMs = Math.max(
+        ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs - (currentTs - ROOM_DERIVATION_RATE_LIMIT.lastRefillTs),
+        0
+    );
+
+    await new Promise(resolve => setTimeout(resolve, waitMs));
+    return consumeRoomDerivationToken();
 }
 
 async function deriveLocalProjectId(path: string): Promise<string> {
@@ -213,9 +252,10 @@ function normalizeRelativePath(path: string): string {
 function normalizeAbsolutePath(path: string): string {
     const sanitized = path.replace(/\\/g, '/');
     const segments = sanitized.split('/');
+    const isDriveRelative = /^[a-zA-Z]:[^/]*$/.test(segments[0]) && !/^[a-zA-Z]:$/.test(segments[0]);
     const isAbsolute = sanitized.startsWith('/') || /^[a-zA-Z]:/.test(segments[0]);
 
-    if (!isAbsolute) {
+    if (!isAbsolute || isDriveRelative) {
         throw new Error('invalid path');
     }
 
@@ -239,7 +279,7 @@ function normalizeAbsolutePath(path: string): string {
     }
 
     if (normalized.length === 0) {
-        throw new Error('invalid path');
+        return prefix || '/';
     }
 
     return `${prefix}${normalized.join('/')}`;
@@ -294,7 +334,26 @@ export const __test = {
     computeRoomId,
     setLocalProjectId: (projectId: string) => localProjectId.set(projectId),
     ROOM_CACHE_LIMIT,
-    getRoomCacheSize: () => roomCache.size
+    getRoomCacheSize: () => roomCache.size,
+    resetRoomRateLimiter: () => {
+        ROOM_DERIVATION_RATE_LIMIT.tokens = ROOM_DERIVATION_RATE_LIMIT.capacity;
+        ROOM_DERIVATION_RATE_LIMIT.lastRefillTs = nowMs();
+    },
+    setRoomRateLimiterForTest: ({
+        capacity,
+        tokens,
+        refillIntervalMs
+    }: {
+        capacity: number;
+        tokens?: number;
+        refillIntervalMs?: number;
+    }) => {
+        ROOM_DERIVATION_RATE_LIMIT.capacity = capacity;
+        ROOM_DERIVATION_RATE_LIMIT.tokens = tokens ?? capacity;
+        ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs = refillIntervalMs ?? ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs;
+        ROOM_DERIVATION_RATE_LIMIT.lastRefillTs = nowMs();
+    },
+    getRoomRateLimiterState: () => ({ ...ROOM_DERIVATION_RATE_LIMIT })
 };
 
 function sanitizeContextId(value: string, fallback: string): string {
@@ -397,6 +456,7 @@ export async function deriveCollaborationRoom(filePath: string | null): Promise<
             return cached;
         }
 
+        await consumeRoomDerivationToken();
         const relativePath = toRelativeFilePath(normalizedFilePath, root);
         const roomId = await computeRoomId(context.tenantId, context.projectId, relativePath);
         const info: CollaborationRoomInfo = {
