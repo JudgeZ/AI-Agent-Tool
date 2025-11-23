@@ -193,6 +193,27 @@ describe('collaboration room derivation', () => {
     expect(elapsed).toBeGreaterThanOrEqual(20);
   });
 
+  it('serializes token consumption even when calls overlap before decrement', async () => {
+    __test.setRoomRateLimiterForTest({ capacity: 1, tokens: 1, refillIntervalMs: 40 });
+    __test.setRoomRateLimiterYield(async () => {
+      // Simulate async work before decrementing the available token
+      await Promise.resolve();
+    });
+
+    const digestMock = vi.fn(async () => new Uint8Array(32).buffer);
+    vi.stubGlobal('crypto', { subtle: { digest: digestMock } } as unknown as Crypto);
+
+    const start = performance.now();
+    await Promise.all([
+      deriveCollaborationRoom('/workspace/demo/src/a.ts'),
+      deriveCollaborationRoom('/workspace/demo/src/b.ts')
+    ]);
+    const elapsed = performance.now() - start;
+
+    expect(elapsed).toBeGreaterThanOrEqual(35);
+    expect(__test.getRoomRateLimiterState().tokens).toBe(0);
+  });
+
   it('resets the room derivation rate limiter with collaboration state', async () => {
     __test.setRoomRateLimiterForTest({ capacity: 2, tokens: 1, refillIntervalMs: 1000 });
     await deriveCollaborationRoom('/workspace/demo/src/a.ts');

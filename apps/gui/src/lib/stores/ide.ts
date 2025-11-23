@@ -37,6 +37,8 @@ const sharedTextEncoder = new TextEncoder();
 const sharedTextDecoder = new TextDecoder();
 const ROOM_CACHE_LIMIT = 256;
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9._:-]{1,64}$/;
+let rateLimiterLock: Promise<void> = Promise.resolve();
+let rateLimiterYield: (() => Promise<void>) | null = null;
 const ROOM_DERIVATION_RATE_LIMIT = {
     capacity: 16,
     tokens: 16,
@@ -71,52 +73,41 @@ function nowMs(): number {
     return typeof performance !== 'undefined' ? performance.now() : Date.now();
 }
 
+function withRateLimiterLock(fn: () => Promise<void>): Promise<void> {
+    rateLimiterLock = rateLimiterLock.then(fn, fn);
+    return rateLimiterLock;
+}
+
 async function consumeRoomDerivationToken() {
-    const currentTs = nowMs();
-    const elapsed = currentTs - ROOM_DERIVATION_RATE_LIMIT.lastRefillTs;
+    return withRateLimiterLock(async () => {
+        while (true) {
+            const currentTs = nowMs();
+            const elapsed = currentTs - ROOM_DERIVATION_RATE_LIMIT.lastRefillTs;
 
-    if (elapsed >= ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs) {
-        const refillCount = Math.floor(elapsed / ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs);
-        ROOM_DERIVATION_RATE_LIMIT.tokens = Math.min(
-            ROOM_DERIVATION_RATE_LIMIT.capacity,
-            ROOM_DERIVATION_RATE_LIMIT.tokens + refillCount
-        );
-        ROOM_DERIVATION_RATE_LIMIT.lastRefillTs += refillCount * ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs;
-    }
+            if (elapsed >= ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs) {
+                const refillCount = Math.floor(elapsed / ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs);
+                ROOM_DERIVATION_RATE_LIMIT.tokens = Math.min(
+                    ROOM_DERIVATION_RATE_LIMIT.capacity,
+                    ROOM_DERIVATION_RATE_LIMIT.tokens + refillCount
+                );
+                ROOM_DERIVATION_RATE_LIMIT.lastRefillTs += refillCount * ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs;
+            }
 
-    if (ROOM_DERIVATION_RATE_LIMIT.tokens > 0) {
-        ROOM_DERIVATION_RATE_LIMIT.tokens -= 1;
-        return;
-    }
+            if (ROOM_DERIVATION_RATE_LIMIT.tokens > 0) {
+                if (rateLimiterYield) {
+                    await rateLimiterYield();
+                }
+                ROOM_DERIVATION_RATE_LIMIT.tokens -= 1;
+                return;
+            }
 
-    // Use an iterative wait loop to avoid recursive call stacks when under sustained load.
-    let remainingWait = Math.max(
-        ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs - (currentTs - ROOM_DERIVATION_RATE_LIMIT.lastRefillTs),
-        0
-    );
-
-    while (ROOM_DERIVATION_RATE_LIMIT.tokens === 0) {
-        // Wait for the next refill window
-        await new Promise(resolve => setTimeout(resolve, remainingWait));
-
-        const afterWaitTs = nowMs();
-        const elapsedSinceRefill = afterWaitTs - ROOM_DERIVATION_RATE_LIMIT.lastRefillTs;
-        if (elapsedSinceRefill >= ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs) {
-            const refillCount = Math.floor(elapsedSinceRefill / ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs);
-            ROOM_DERIVATION_RATE_LIMIT.tokens = Math.min(
-                ROOM_DERIVATION_RATE_LIMIT.capacity,
-                ROOM_DERIVATION_RATE_LIMIT.tokens + refillCount
+            const waitDuration = Math.max(
+                ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs - (currentTs - ROOM_DERIVATION_RATE_LIMIT.lastRefillTs),
+                0
             );
-            ROOM_DERIVATION_RATE_LIMIT.lastRefillTs += refillCount * ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs;
+            await new Promise(resolve => setTimeout(resolve, waitDuration));
         }
-
-        remainingWait = Math.max(
-            ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs - (afterWaitTs - ROOM_DERIVATION_RATE_LIMIT.lastRefillTs),
-            0
-        );
-    }
-
-    ROOM_DERIVATION_RATE_LIMIT.tokens -= 1;
+    });
 }
 
 async function deriveLocalProjectId(path: string): Promise<string> {
@@ -362,6 +353,8 @@ export const __test = {
     resetRoomRateLimiter: () => {
         ROOM_DERIVATION_RATE_LIMIT.tokens = ROOM_DERIVATION_RATE_LIMIT.capacity;
         ROOM_DERIVATION_RATE_LIMIT.lastRefillTs = nowMs();
+        rateLimiterYield = null;
+        rateLimiterLock = Promise.resolve();
     },
     setRoomRateLimiterForTest: ({
         capacity,
@@ -376,8 +369,13 @@ export const __test = {
         ROOM_DERIVATION_RATE_LIMIT.tokens = tokens ?? capacity;
         ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs = refillIntervalMs ?? ROOM_DERIVATION_RATE_LIMIT.refillIntervalMs;
         ROOM_DERIVATION_RATE_LIMIT.lastRefillTs = nowMs();
+        rateLimiterYield = null;
+        rateLimiterLock = Promise.resolve();
     },
-    getRoomRateLimiterState: () => ({ ...ROOM_DERIVATION_RATE_LIMIT })
+    getRoomRateLimiterState: () => ({ ...ROOM_DERIVATION_RATE_LIMIT }),
+    setRoomRateLimiterYield: (fn: (() => Promise<void>) | null) => {
+        rateLimiterYield = fn;
+    }
 };
 
 function sanitizeContextId(value: string, fallback: string): string {
@@ -425,6 +423,8 @@ export function resetCollaborationState() {
     roomCacheRootSnapshot = get(projectRoot);
     ROOM_DERIVATION_RATE_LIMIT.tokens = ROOM_DERIVATION_RATE_LIMIT.capacity;
     ROOM_DERIVATION_RATE_LIMIT.lastRefillTs = nowMs();
+    rateLimiterYield = null;
+    rateLimiterLock = Promise.resolve();
 }
 
 export function restoreLocalCollaborationContext() {
