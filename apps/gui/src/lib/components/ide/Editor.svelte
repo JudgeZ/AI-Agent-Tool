@@ -31,6 +31,7 @@
   let provider: WebsocketProvider | null = null;
   let doc: Y.Doc | null = null;
   let yText: Y.Text | null = null;
+  let awareness: Awareness | null = null;
   let textObserver: ((event: Y.YTextEvent) => void) | null = null;
   let queuedTextObserver: number | null = null;
   let attachedFile: string | null = null;
@@ -249,7 +250,7 @@
         yText.insert(0, initialContent);
       }
 
-      const awareness = new Awareness(doc);
+      awareness = new Awareness(doc);
       setupTextObserver(filePath, requestId);
 
       provider = new WebsocketProvider(
@@ -296,6 +297,13 @@
     }
 
     const activeAwareness = provider?.awareness ?? awareness;
+    if (!activeAwareness) {
+      logCollaborationEvent('awareness-init-failed');
+      setCollaborationStatus('error');
+      cleanupStaleCollaboration();
+      return;
+    }
+
     setLocalAwareness(activeAwareness);
     binding = new MonacoBinding(yText, model, new Set([editor]), activeAwareness);
   }
