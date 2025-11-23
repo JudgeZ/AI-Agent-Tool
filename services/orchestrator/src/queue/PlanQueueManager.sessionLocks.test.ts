@@ -1,5 +1,8 @@
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
 
+import * as DistributedLockService from "../services/DistributedLockService.js";
+import * as PlanStateStore from "./PlanStateStore.js";
+
 import { PlanQueueManager } from "./PlanQueueManager.js";
 
 const dummyStep = { id: "step-1", action: "test", tool: "noop", capability: "run", capabilityLabel: "Run" } as any;
@@ -13,6 +16,37 @@ describe("PlanQueueManager session lock tracking", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+  });
+
+  it("prefers LOCK_REDIS_URL when selecting the distributed lock service", async () => {
+    const originalLockRedisUrl = process.env.LOCK_REDIS_URL;
+    const originalRedisUrl = process.env.REDIS_URL;
+
+    const lockRedisUrl = "redis://lock-specific:6379";
+    const rateLimitRedisUrl = "redis://rate-limit:6379";
+    process.env.LOCK_REDIS_URL = lockRedisUrl;
+    process.env.REDIS_URL = "redis://general:6379";
+
+    const getLockServiceSpy = vi
+      .spyOn(DistributedLockService, "getDistributedLockService")
+      .mockResolvedValue({} as any);
+    vi.spyOn(PlanStateStore, "createPlanStateStore").mockReturnValue({} as any);
+
+    const anyManager = manager as unknown as { config: any; setupServices: () => Promise<void> };
+    anyManager.config = {
+      planState: { backend: "file" },
+      retention: { planStateDays: 0, contentCapture: { enabled: false } },
+      server: { rateLimits: { backend: { provider: "redis", redisUrl: rateLimitRedisUrl } } },
+    };
+
+    try {
+      await anyManager.setupServices();
+    } finally {
+      process.env.LOCK_REDIS_URL = originalLockRedisUrl;
+      process.env.REDIS_URL = originalRedisUrl;
+    }
+
+    expect(getLockServiceSpy).toHaveBeenCalledWith(lockRedisUrl);
   });
 
   it("rolls back session tracking when submission fails after restore", async () => {

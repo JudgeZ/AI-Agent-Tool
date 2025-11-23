@@ -53,8 +53,12 @@ export class PlanQueueManager {
   private async setupServices() {
     const pool = this.config.planState.backend === "postgres" ? getPostgresPool() : undefined;
 
-    const redisUrl = this.config.server.rateLimits.backend.redisUrl ?? process.env.REDIS_URL ?? "redis://localhost:6379";
-    const lockService = await getDistributedLockService(redisUrl);
+    const lockRedisUrl =
+      process.env.LOCK_REDIS_URL ??
+      this.config.server.rateLimits.backend.redisUrl ??
+      process.env.REDIS_URL ??
+      "redis://localhost:6379";
+    const lockService = await getDistributedLockService(lockRedisUrl);
     const store = createPlanStateStore({
         backend: this.config.planState.backend,
         retentionMs: this.config.retention.planStateDays > 0 ? this.config.retention.planStateDays * 24 * 60 * 60 * 1000 : undefined,
