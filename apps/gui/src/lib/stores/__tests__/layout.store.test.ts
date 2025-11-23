@@ -87,4 +87,15 @@ describe('layout store', () => {
     expect(globalThis.requestAnimationFrame).toHaveBeenCalled();
     expect(storage.setItem).toHaveBeenCalled();
   });
+
+  it('skips persisting during initial hydration until state changes', async () => {
+    const { setLeftWidth } = await import('../layout');
+    const storage = globalThis.localStorage as Storage;
+
+    expect(storage.setItem).not.toHaveBeenCalled();
+
+    setLeftWidth(300);
+
+    expect(storage.setItem).toHaveBeenCalled();
+  });
 });

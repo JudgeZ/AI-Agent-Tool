@@ -16,6 +16,7 @@ type NotifyOptions = {
 const notificationsStore = writable<Notification[]>([]);
 
 let counter = 0;
+const timeouts = new Map<number, number>();
 
 export const notifications = {
   subscribe: notificationsStore.subscribe
@@ -27,7 +28,8 @@ function enqueue(message: string, level: NotificationLevel, { timeoutMs = 6000 }
   notificationsStore.update((current) => [...current, { id, message, level }]);
 
   if (browser && timeoutMs > 0) {
-    window.setTimeout(() => dismiss(id), timeoutMs);
+    const timeoutId = window.setTimeout(() => dismiss(id), timeoutMs);
+    timeouts.set(id, timeoutId);
   }
 
   return id;
@@ -46,10 +48,17 @@ export function notifyError(message: string, options?: NotifyOptions) {
 }
 
 export function dismiss(id: number) {
+  const timeoutId = timeouts.get(id);
+  if (timeoutId) {
+    clearTimeout(timeoutId);
+    timeouts.delete(id);
+  }
   notificationsStore.update((current) => current.filter((notification) => notification.id !== id));
 }
 
 export function clearNotifications() {
+  timeouts.forEach((timeoutId) => clearTimeout(timeoutId));
+  timeouts.clear();
   notificationsStore.set([]);
 }
 

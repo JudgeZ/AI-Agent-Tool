@@ -120,6 +120,8 @@
         syncActiveFile();
       })
     ];
+
+    return cleanupSubscriptions;
   });
 
   onDestroy(() => {
@@ -190,10 +192,10 @@
     observedText.observe(textObserver);
   }
 
-  function setLocalAwareness(awareness: Awareness) {
+  function setLocalAwareness(awareness: Awareness, currentSession: typeof sessionValue) {
     awareness.setLocalStateField('user', {
-      name: sessionValue.info?.name ?? sessionValue.info?.email ?? 'Guest',
-      color: userColor(sessionValue.info?.id ?? 'guest')
+      name: currentSession.info?.name ?? currentSession.info?.email ?? 'Guest',
+      color: userColor(currentSession.info?.id ?? 'guest')
     });
   }
 
@@ -338,7 +340,7 @@
       return;
     }
 
-    setLocalAwareness(activeAwareness);
+    setLocalAwareness(activeAwareness, sessionValue);
     binding = new MonacoBinding(yText, model, new Set([editor]), activeAwareness);
   }
 

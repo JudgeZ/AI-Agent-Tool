@@ -70,6 +70,8 @@ if (browser) {
 
   let rafId: number | null = null;
   let queuedState: LayoutState | null = null;
+  let initialized = false;
+  let unsubscribe: (() => void) | null = null;
 
   const persistState = () => {
     rafId = null;
@@ -82,13 +84,30 @@ if (browser) {
     }
   };
 
-  layoutStore.subscribe((state) => {
+  unsubscribe = layoutStore.subscribe((state) => {
     queuedState = state;
+
+    if (!initialized) {
+      initialized = true;
+      return;
+    }
 
     if (rafId === null) {
       rafId = requestAnimationFrame(persistState);
     }
   });
+
+  const teardown = () => {
+    if (rafId !== null) {
+      cancelAnimationFrame(rafId);
+      rafId = null;
+    }
+    unsubscribe?.();
+  };
+
+  if (import.meta.hot) {
+    import.meta.hot.dispose(teardown);
+  }
 }
 
 export const layoutState = layoutStore;

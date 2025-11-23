@@ -45,3 +45,21 @@ test('manual dismissal keeps remaining notifications intact', () => {
   expect(states.at(-1)?.map((notification) => notification.id)).toEqual([errorId]);
   unsubscribe();
 });
+
+test('clears pending timeouts on manual dismiss and clear', () => {
+  const unsubscribe = notifications.subscribe(() => {});
+
+  const firstId = notifySuccess('saved', { timeoutMs: 1000 });
+  notifyError('oops', { timeoutMs: 1000 });
+
+  dismiss(firstId);
+  vi.advanceTimersByTime(1100);
+
+  expect(() => vi.runOnlyPendingTimers()).not.toThrow();
+
+  clearNotifications();
+  vi.advanceTimersByTime(1100);
+
+  expect(() => vi.runOnlyPendingTimers()).not.toThrow();
+  unsubscribe();
+});
