@@ -1,0 +1,39 @@
+name: Jules Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  jules-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Jules
+        run: npm install -g @google/jules
+
+      - name: Run Jules Review
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          jules new \
+            --repo . \
+            "Review pull request #${{ github.event.pull_request.number }}. \
+            Analyze the changes in this PR for correctness, security, and alignment with AGENTS.md. \
+            Post a summary comment on the PR. \
+            Post inline comments on specific lines of code that need to be fixed, describing the problem clearly. \
+            Use the 'gh' CLI tool if necessary to post these comments."
