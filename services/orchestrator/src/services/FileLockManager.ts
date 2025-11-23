@@ -42,7 +42,7 @@ export class FileLockError extends Error {
 
 export class FileLockManager {
   private readonly lockServicePromise: Promise<Awaited<ReturnType<typeof getDistributedLockService>>>;
-  private readonly redisClientPromise: Promise<RedisClientType>;
+  private redisClientPromise: Promise<RedisClientType> | null = null;
   private readonly lockTtlMs: number;
   private readonly sessionHistoryTtlSeconds: number | null;
   private readonly lockRateLimiter: PerSessionRateLimiter;
@@ -77,22 +77,23 @@ export class FileLockManager {
     this.lockRateLimiter = new PerSessionRateLimiter(limit, windowMs, {
       prefix: "orchestrator:file-locks",
     });
-    this.redisClientPromise = this.lockServicePromise.then(async (service) => {
-      await service.connect();
-      const client = service.getClient();
-      client.on("error", (err) => {
-        appLogger.warn({ err: normalizeError(err) }, "file lock redis error");
-      });
-      return client;
-    });
   }
 
   async connect(): Promise<void> {
-    const redis = await this.redisClientPromise;
-    if (redis.isOpen) return;
     try {
-      await redis.connect();
+      const redis = await this.getRedisClient();
+      if (redis.isOpen) return;
+      try {
+        await redis.connect();
+      } catch (error) {
+        this.resetRedisClient(error);
+        throw new FileLockError("Lock service unavailable", "unavailable", { err: normalizeError(error) });
+      }
     } catch (error) {
+      if (error instanceof FileLockError) {
+        throw error;
+      }
+      this.resetRedisClient(error);
       throw new FileLockError("Lock service unavailable", "unavailable", { err: normalizeError(error) });
     }
   }
@@ -132,7 +133,7 @@ export class FileLockManager {
     try {
       await this.connect();
       const history = Array.from(this.lockHistory.get(sessionId) ?? []);
-      const redis = await this.redisClientPromise;
+      const redis = await this.getRedisClient();
       if (this.sessionHistoryTtlSeconds) {
         await redis.set(this.sessionHistoryKey(sessionId), JSON.stringify(history), {
           EX: this.sessionHistoryTtlSeconds,
@@ -162,6 +163,31 @@ export class FileLockManager {
       this.lockHistory.set(sessionId, new Set());
     }
     this.lockHistory.get(sessionId)!.add(normalizedPath);
+  }
+
+  private getRedisClient(): Promise<RedisClientType> {
+    if (!this.redisClientPromise) {
+      this.redisClientPromise = this.lockServicePromise.then(async (service) => {
+        await service.connect();
+        const client = service.getClient();
+        client.on("error", (err) => {
+          appLogger.warn({ err: normalizeError(err) }, "file lock redis error");
+        });
+        return client;
+      });
+      void this.redisClientPromise.catch((error) => {
+        this.resetRedisClient(error);
+      });
+    }
+
+    return this.redisClientPromise;
+  }
+
+  private resetRedisClient(error?: unknown): void {
+    if (error) {
+      appLogger.warn({ err: normalizeError(error) }, "file lock redis client reset");
+    }
+    this.redisClientPromise = null;
   }
 
   async acquireLock(
@@ -287,7 +313,7 @@ export class FileLockManager {
 
     let raw: string | null = null;
     try {
-      const redis = await this.redisClientPromise;
+      const redis = await this.getRedisClient();
       raw = await redis.get(this.sessionHistoryKey(sessionId));
     } catch (error) {
       appLogger.warn({ err: normalizeError(error), sessionId }, "failed to read lock history");
@@ -340,9 +366,15 @@ export class FileLockManager {
   }
 
   async close(): Promise<void> {
-    const redis = await this.redisClientPromise;
-    if (redis.isOpen) {
-      await redis.quit();
+    if (!this.redisClientPromise) return;
+
+    try {
+      const redis = await this.redisClientPromise;
+      if (redis.isOpen) {
+        await redis.quit();
+      }
+    } finally {
+      this.redisClientPromise = null;
     }
   }
 

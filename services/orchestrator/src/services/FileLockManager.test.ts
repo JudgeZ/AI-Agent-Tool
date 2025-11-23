@@ -200,6 +200,18 @@ describe("FileLockManager", () => {
     expect(mockAcquireLock).not.toHaveBeenCalled();
   });
 
+  it("retries redis client creation after an initial failure", async () => {
+    mocks.mockConnect.mockRejectedValueOnce(new Error("redis unavailable"));
+    mocks.mockConnect.mockResolvedValueOnce(undefined);
+    const manager = new FileLockManager("redis://example");
+
+    await expect(manager.acquireLock("s1", "retry.txt")).rejects.toMatchObject({ code: "unavailable" });
+
+    const lock = await manager.acquireLock("s1", "retry.txt");
+    expect(lock.path).toBe("/retry.txt");
+    expect(mocks.mockConnect).toHaveBeenCalledTimes(2);
+  });
+
   it("rolls back and surfaces errors when persisting history fails", async () => {
     const releaseSpy = vi.fn(async () => {});
     mockAcquireLock.mockResolvedValueOnce(releaseSpy);
