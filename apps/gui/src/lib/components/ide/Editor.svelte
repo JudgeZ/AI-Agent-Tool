@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { get } from 'svelte/store';
   import { onMount, onDestroy } from 'svelte';
   import * as monaco from 'monaco-editor';
   import * as Y from 'yjs';
@@ -182,6 +183,7 @@
     console.info('[collaboration]', event, {
       file: attachedFile,
       sessionId: $session.info?.id,
+      timestamp: Date.now(),
       ...detail
     });
   }
@@ -234,20 +236,21 @@
       return;
     }
 
-    doc = new Y.Doc({ gc: false });
-    yText = doc.getText('content');
-    if (yText.length === 0 && initialContent) {
-      yText.insert(0, initialContent);
-    }
-
-    const awareness = new Awareness(doc);
-    setupTextObserver(filePath, requestId);
-
     try {
       if (isStale()) {
         cleanupStaleCollaboration();
         return;
       }
+
+      doc = new Y.Doc({ gc: false });
+      yText = doc.getText('content');
+      if (yText.length === 0 && initialContent) {
+        yText.insert(0, initialContent);
+      }
+
+      const awareness = new Awareness(doc);
+      setupTextObserver(filePath, requestId);
+
       provider = new WebsocketProvider(
         websocketBase,
         buildRoomName(roomInfo),
@@ -262,8 +265,10 @@
         logCollaborationEvent('ws-status', { status: event.status, roomId: roomInfo?.roomId });
         if (event.status === 'connected') {
           setCollaborationStatus('connected');
+          logCollaborationEvent('room-joined', { roomId: roomInfo?.roomId });
         } else if (event.status === 'disconnected') {
           setCollaborationStatus('disconnected');
+          logCollaborationEvent('room-left', { roomId: roomInfo?.roomId });
         } else {
           setCollaborationStatus('connecting');
         }
@@ -300,16 +305,11 @@
       projectId: info.projectId,
       filePath: info.filePath,
       roomId: info.roomId,
-      authMode: 'session'
+      authMode: 'session-cookie'
     });
 
     if ($session.info?.id) {
       params.set('sessionId', $session.info.id);
-    }
-    if ($session.info?.sessionToken) {
-      // NOTE: Query params may be logged by intermediaries; backend currently requires
-      // tokens in the URL until an authenticated subprotocol is available.
-      params.set('sessionToken', $session.info.sessionToken);
     }
 
     return `collaboration/ws?${params.toString()}`;
@@ -330,6 +330,8 @@
 
     provider?.destroy();
     provider = null;
+
+    logCollaborationEvent('room-teardown', { roomId: get(currentRoomId) });
 
     doc?.destroy();
     doc = null;

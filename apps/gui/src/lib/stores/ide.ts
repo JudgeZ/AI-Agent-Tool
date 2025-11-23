@@ -255,7 +255,7 @@ function normalizeAbsolutePath(path: string): string {
     // Extract the portion after the drive letter; drive-relative paths like "C:folder" are invalid.
     const pathAfterDrive = sanitized.match(/^[a-zA-Z]:(.*)/)?.[1] ?? '';
     const isDriveRelative = pathAfterDrive.length > 0 && !pathAfterDrive.startsWith('/');
-    const isAbsolute = sanitized.startsWith('/') || /^[a-zA-Z]:/.test(sanitized);
+    const isAbsolute = sanitized.startsWith('/') || /^[a-zA-Z]:\//.test(sanitized);
 
     if (!isAbsolute || isDriveRelative) {
         throw new Error('invalid path');
