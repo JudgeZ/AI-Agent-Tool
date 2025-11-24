@@ -48,7 +48,7 @@ Instructions:
 1. Fetch PR changes (git fetch origin pull/${PR_NUMBER}/head:pr-${PR_NUMBER} && git checkout pr-${PR_NUMBER}).
 2. Read AGENTS.md for coding standards.
 3. Review the code changes (git diff origin/${BASE_REF}...HEAD).
-4. Reply with a comment on the review with your code review.
+4. Reply on pull/${PR_NUMBER} with a comment containing your code review.
 "
 
 PAYLOAD=$(jq -n \
