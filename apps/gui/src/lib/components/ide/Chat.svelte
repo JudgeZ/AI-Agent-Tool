@@ -5,41 +5,28 @@
   import { WebsocketProvider } from 'y-websocket';
   import { collaborationContext } from '$lib/stores/ide';
   import { session, type SessionState } from '$lib/stores/session';
-import { gatewayBaseUrl } from '$lib/config';
-import { notifyError } from '$lib/stores/notifications';
-import { toWebsocketBase } from '$lib/utils/websocket';
-import { isCollaborationSessionValid } from './sessionAuth';
-
-  type ChatMessage = {
-    id: string;
-    userId: string;
-    userName: string;
-    text: string;
-    timestamp: number;
-  };
-
-  type ConnectionState = 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error';
-
+  import { gatewayBaseUrl } from '$lib/config';
+  import { notifyError } from '$lib/stores/notifications';
+  import { toWebsocketBase } from '$lib/utils/websocket';
+  import { isCollaborationSessionValid } from './sessionAuth';
   import {
-    MAX_CONTEXT_ID_LENGTH,
-    MAX_MESSAGE_ID_LENGTH,
-    MAX_MESSAGE_LENGTH,
-    MAX_RENDERED_MESSAGES,
-    MAX_STORED_MESSAGES,
-    MAX_USER_ID_LENGTH,
-    MAX_USER_NAME_LENGTH
-  } from './chat.constants';
+    computeStatusLabel,
+    buildRoomName,
+    resolveConnectionMessage,
+    connectionMessageDefaults
+  } from './chat.connection';
+  import { buildRenderedMessages, pruneHistory, areMessagesEqual } from './chat.crdt';
+  import {
+    obfuscateEmail,
+    sanitizeContextId,
+    sanitizeDisplayName,
+    sanitizeIdentifier,
+    sanitizeMessageText
+  } from './chat.sanitization';
+  import { MAX_MESSAGE_LENGTH, MAX_USER_ID_LENGTH } from './chat.constants';
+  import type { ChatMessage, ConnectionState, MessageCaches } from './chat.types';
 
   const websocketBase = toWebsocketBase(gatewayBaseUrl);
-
-  const connectionMessageDefaults: Record<ConnectionState, string | ((userName: string) => string)> = {
-    idle: 'Sign in to chat with your team.',
-    connecting: 'Connecting to live chat…',
-    connected: (userName: string) =>
-      `You are live as ${userName}. Messages sync instantly across collaborators.`,
-    disconnected: 'Reconnecting… check your connection if this persists.',
-    error: 'Unable to reach chat server. Please retry.'
-  };
 
   let doc: Y.Doc | null = null;
   let provider: WebsocketProvider | null = null;
@@ -66,9 +53,10 @@ import { isCollaborationSessionValid } from './sessionAuth';
   let providerConnected = false;
   // Internal caches; reactive tracking is not required.
   // eslint-disable-next-line svelte/prefer-svelte-reactivity
-  const messageCache = new Map<string, ChatMessage>();
-  // eslint-disable-next-line svelte/prefer-svelte-reactivity
-  const messageSignatureCache = new Map<string, string>();
+  const messageCaches: MessageCaches = {
+    messageCache: new Map<string, ChatMessage>(),
+    messageSignatureCache: new Map<string, string>()
+  };
 
   const subscriptions = [
     session.subscribe((value) => {
@@ -96,28 +84,6 @@ import { isCollaborationSessionValid } from './sessionAuth';
     subscriptions.forEach((unsubscribe) => unsubscribe());
     teardown();
   });
-
-  function buildRoomName(roomId: string) {
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity
-    const params = new URLSearchParams({
-      roomId,
-      authMode: 'session-cookie',
-      tenantId: safeTenantId,
-      projectId: safeProjectId
-    });
-
-    if (sessionValue.info?.id) {
-      params.set('sessionId', sessionValue.info.id);
-    }
-
-    const roomName = `collaboration/ws?${params.toString()}`;
-
-    if (roomName.length > 2048) {
-      throw new Error('chat room name exceeds length limits');
-    }
-
-    return roomName;
-  }
 
   function maybeReconnect() {
     if (!isCollaborationSessionValid(sessionValue)) {
@@ -182,9 +148,14 @@ import { isCollaborationSessionValid } from './sessionAuth';
       messageArray.observe(syncMessages);
 
       providerConnected = false;
-      provider = new WebsocketProvider(websocketBase, buildRoomName(roomId), doc, {
-        maxBackoffTime: 5000
-      });
+      provider = new WebsocketProvider(
+        websocketBase,
+        buildRoomName(roomId, sessionValue, safeTenantId, safeProjectId),
+        doc,
+        {
+          maxBackoffTime: 5000
+        }
+      );
 
       provider.on('status', (event: { status: string }) => {
         providerConnected = event.status === 'connected';
@@ -223,8 +194,8 @@ import { isCollaborationSessionValid } from './sessionAuth';
     doc?.destroy();
     doc = null;
 
-    messageCache.clear();
-    messageSignatureCache.clear();
+    messageCaches.messageCache.clear();
+    messageCaches.messageSignatureCache.clear();
     providerConnected = false;
     setConnectionState(targetState, overrideMessage);
     messages = [];
@@ -239,9 +210,9 @@ import { isCollaborationSessionValid } from './sessionAuth';
       return;
     }
 
-    pruneHistory(messageArray, doc);
+    pruneHistorySafely();
 
-    const nextMessages = buildRenderedMessages(messageArray);
+    const nextMessages = buildRenderedMessages(messageArray, messageCaches);
 
     if (areMessagesEqual(messages, nextMessages)) {
       return;
@@ -251,191 +222,17 @@ import { isCollaborationSessionValid } from './sessionAuth';
     scrollToBottom();
   }
 
-  function sanitizeContextId(value: unknown) {
-    if (typeof value !== 'string') return null;
-
-    const trimmed = value.trim();
-    if (!trimmed || trimmed.length > MAX_CONTEXT_ID_LENGTH || hasControlCharacters(trimmed)) {
-      return null;
-    }
-
-    if (!/^[-\w.:]+$/.test(trimmed)) {
-      return null;
-    }
-
-    return trimmed;
-  }
-
-  function pruneHistory(history: Y.Array<ChatMessage> | null, historyDoc: Y.Doc | null) {
-    if (!history || isPruningHistory) {
-      return;
-    }
-
-    if (history.length <= MAX_STORED_MESSAGES) {
+  function pruneHistorySafely() {
+    if (!messageArray || isPruningHistory) {
       return;
     }
 
     isPruningHistory = true;
     try {
-      const excess = history.length - MAX_STORED_MESSAGES;
-      historyDoc?.transact(() => history.delete(0, excess));
+      pruneHistory(messageArray, doc);
     } finally {
       isPruningHistory = false;
     }
-  }
-
-  function buildRenderedMessages(history: Y.Array<ChatMessage> | null): ChatMessage[] {
-    if (!history) {
-      return [];
-    }
-
-    const length = history.length;
-    const start = Math.max(0, length - MAX_RENDERED_MESSAGES);
-    const nextMessages: ChatMessage[] = [];
-    const activeMessageIds = new Set<string>();
-
-    for (let index = start; index < length; index += 1) {
-      const sanitized = getSanitizedMessage(history.get(index), activeMessageIds);
-      if (sanitized) {
-        nextMessages.push(sanitized);
-      }
-    }
-
-    pruneMessageCaches(activeMessageIds);
-
-    return nextMessages;
-  }
-
-  function getSanitizedMessage(
-    message: unknown,
-    activeMessageIds: Set<string>
-  ): ChatMessage | null {
-    const candidate = message as Partial<ChatMessage>;
-    const signature = buildMessageSignature(candidate);
-    const messageId = typeof candidate?.id === 'string' ? candidate.id : null;
-
-    if (signature && messageId) {
-      activeMessageIds.add(messageId);
-
-      const cachedSignature = messageSignatureCache.get(messageId);
-      const cachedMessage = messageCache.get(messageId);
-
-      if (cachedSignature === signature && cachedMessage) {
-        return cachedMessage;
-      }
-    }
-
-    const sanitized = sanitizeIncomingMessage(message);
-
-    if (sanitized && messageId && signature) {
-      messageCache.set(messageId, sanitized);
-      messageSignatureCache.set(messageId, signature);
-      activeMessageIds.add(messageId);
-    }
-
-    return sanitized;
-  }
-
-  function pruneMessageCaches(activeMessageIds: Set<string>) {
-    if (activeMessageIds.size === 0) {
-      messageCache.clear();
-      messageSignatureCache.clear();
-      return;
-    }
-
-    for (const cachedId of messageCache.keys()) {
-      if (!activeMessageIds.has(cachedId)) {
-        messageCache.delete(cachedId);
-        messageSignatureCache.delete(cachedId);
-      }
-    }
-  }
-
-  function areMessagesEqual(current: ChatMessage[], next: ChatMessage[]) {
-    if (current.length !== next.length) {
-      return false;
-    }
-
-    return current.every((message, index) => {
-      const candidate = next[index];
-
-      return (
-        message.id === candidate.id &&
-        message.userId === candidate.userId &&
-        message.userName === candidate.userName &&
-        message.text === candidate.text &&
-        message.timestamp === candidate.timestamp
-      );
-    });
-  }
-
-  function sanitizeIncomingMessage(message: unknown): ChatMessage | null {
-    if (!message || typeof message !== 'object') {
-      return null;
-    }
-
-    const candidate = message as Partial<ChatMessage>;
-
-    const id = sanitizeIdentifier(candidate.id, MAX_MESSAGE_ID_LENGTH);
-    const userId = sanitizeIdentifier(candidate.userId, MAX_USER_ID_LENGTH);
-
-    if (
-      !id ||
-      !userId ||
-      typeof candidate.text !== 'string' ||
-      typeof candidate.timestamp !== 'number'
-    ) {
-      console.warn('Dropping malformed chat message');
-      return null;
-    }
-
-    if (!Number.isFinite(candidate.timestamp)) {
-      console.warn('Dropping chat message with invalid timestamp');
-      return null;
-    }
-
-    const safeText = sanitizeMessageText(candidate.text).slice(0, MAX_MESSAGE_LENGTH).trim();
-    if (!safeText) {
-      console.warn('Dropping chat message with unsafe content');
-      return null;
-    }
-    const safeUserName = sanitizeDisplayName(candidate.userName) || 'Unknown user';
-
-    return {
-      id,
-      userId,
-      userName: safeUserName,
-      text: safeText,
-      timestamp: candidate.timestamp
-    };
-  }
-
-  function buildMessageSignature(message: unknown): string | null {
-    if (!message || typeof message !== 'object') {
-      return null;
-    }
-
-    const candidate = message as Partial<ChatMessage>;
-
-    const id = sanitizeIdentifier(candidate.id, MAX_MESSAGE_ID_LENGTH);
-    const userId = sanitizeIdentifier(candidate.userId, MAX_USER_ID_LENGTH);
-
-    if (
-      !id ||
-      !userId ||
-      typeof candidate.text !== 'string' ||
-      typeof candidate.timestamp !== 'number'
-    ) {
-      return null;
-    }
-
-    const boundedText = sanitizeMessageText(candidate.text).slice(0, MAX_MESSAGE_LENGTH).trim();
-    if (!boundedText) {
-      return null;
-    }
-    const boundedUserName = sanitizeUserName(candidate.userName);
-
-    return `${id}|${userId}|${boundedUserName}|${boundedText}|${candidate.timestamp}`;
   }
 
   function scrollToBottom() {
@@ -483,93 +280,6 @@ import { isCollaborationSessionValid } from './sessionAuth';
     return (name?.trim()[0] || 'U').toUpperCase();
   }
 
-  function sanitizeUserName(name: unknown) {
-    if (typeof name !== 'string') return '';
-
-    const trimmed = name.trim();
-    if (!trimmed || hasControlCharacters(trimmed)) return '';
-
-    return trimmed.slice(0, MAX_USER_NAME_LENGTH);
-  }
-
-  function sanitizeIdentifier(value: unknown, maxLength: number) {
-    if (typeof value !== 'string') return null;
-
-    const trimmed = value.trim();
-
-    if (!trimmed || trimmed.length > maxLength || hasControlCharacters(trimmed)) {
-      return null;
-    }
-
-    return trimmed;
-  }
-
-  function hasControlCharacters(value: string) {
-    for (let index = 0; index < value.length; index += 1) {
-      const code = value.charCodeAt(index);
-      if ((code >= 0 && code <= 31) || code === 127) {
-        return true;
-      }
-    }
-
-    return false;
-  }
-
-  function sanitizeDisplayName(name: unknown) {
-    const sanitized = sanitizeUserName(name);
-    if (!sanitized) return '';
-
-    return sanitized.includes('@') ? obfuscateEmail(sanitized) : sanitized;
-  }
-
-  function obfuscateEmail(email: unknown) {
-    if (typeof email !== 'string') return '';
-
-    const trimmed = email.trim();
-    if (!trimmed || !trimmed.includes('@')) return '';
-
-    const atIndex = trimmed.indexOf('@');
-    const localPart = trimmed.slice(0, atIndex);
-    const domain = trimmed.slice(atIndex + 1);
-    if (!localPart || !domain) return '';
-
-    const safeLocal = `${localPart[0]}***`;
-    const safeDomain = domain
-      .split('.')
-      .filter(Boolean)
-      .map((part) => {
-        if (part.length <= 2) {
-          return `${part[0]}*`;
-        }
-
-        return `${part[0]}***${part.slice(-1)}`;
-      })
-      .join('.');
-
-    return sanitizeUserName(`${safeLocal}@${safeDomain}`);
-  }
-
-  function sanitizeMessageText(value: unknown) {
-    if (typeof value !== 'string') return '';
-
-    let result = '';
-    for (let index = 0; index < value.length; index += 1) {
-      const code = value.charCodeAt(index);
-
-      if (code === 9 || code === 10 || code === 13) {
-        result += value[index];
-        continue;
-      }
-
-      if ((code >= 0 && code <= 31) || code === 127) {
-        continue;
-      }
-
-      result += value[index];
-    }
-
-    return result;
-  }
 
   function updateDraft(rawValue: string) {
     const sanitizedValue = sanitizeMessageText(rawValue);
@@ -603,20 +313,9 @@ import { isCollaborationSessionValid } from './sessionAuth';
     updateDraft(messageInput);
   }
 
-  function resolveConnectionMessage(
-    state: ConnectionState,
-    overrideMessage?: string,
-    userName: string = userDisplayName
-  ) {
-    if (overrideMessage) return overrideMessage;
-
-    const defaultMessage = connectionMessageDefaults[state];
-    return typeof defaultMessage === 'function' ? defaultMessage(userName) : defaultMessage;
-  }
-
   function setConnectionState(state: ConnectionState, overrideMessage?: string) {
     const hasStateChanged = connectionState !== state || connectionMessageOverride !== overrideMessage;
-    const nextConnectionMessage = resolveConnectionMessage(state, overrideMessage);
+    const nextConnectionMessage = resolveConnectionMessage(state, overrideMessage, userDisplayName);
 
     if (!hasStateChanged && nextConnectionMessage === connectionMessage) {
       return;
@@ -696,20 +395,7 @@ import { isCollaborationSessionValid } from './sessionAuth';
     messageInputEl.focus();
   }
 
-  $: statusLabel = (() => {
-    switch (connectionState) {
-      case 'connected':
-        return 'Connected';
-      case 'connecting':
-        return 'Connecting…';
-      case 'disconnected':
-        return 'Disconnected';
-      case 'error':
-        return 'Error';
-      default:
-        return 'Idle';
-    }
-  })();
+  $: statusLabel = computeStatusLabel(connectionState);
 
   $: showRetry = connectionState === 'error' || connectionState === 'disconnected';
 
