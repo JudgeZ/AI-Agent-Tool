@@ -22,15 +22,8 @@ jobs:
         with:
           node-version: '20'
 
-      - name: Install Jules
-        run: |
-          npm install -g @google/jules
-          jules version
-
       - name: Run Jules Review
         env:
-          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.JULES_API_KEY }}
-          X_GOOG_API_KEY: ${{ secrets.JULES_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./scripts/jules-ci-review.sh ${{ github.event.pull_request.number }}
+        run: ./scripts/jules-ci-review.sh ${{ github.event.pull_request.number }} ${{ github.repository }} ${{ github.base_ref }}
