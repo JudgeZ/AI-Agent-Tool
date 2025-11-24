@@ -53,7 +53,7 @@ Instructions:
 3. Review the code changes (git diff origin/${BASE_REF}...HEAD).
     a. Do a comprehensive review.
     b. Review the tests.
-    c. Review linters.
+    c. Run up to date linters on the code changes.
     d. Review for vulnerabilities.
     e. Review for performance.
     f. Review for UX.
