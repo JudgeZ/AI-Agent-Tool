@@ -29,8 +29,6 @@ const terminalParamsSchema = z.object({
   sessionId: SessionIdSchema,
 });
 
-const ipConnectionCounts = new Map<string, number>();
-
 function resolveConnectionLimitFromEnv(): number {
   const parsed = Number.parseInt(process.env.TERMINAL_CONNECTIONS_PER_IP ?? "", 10);
   if (Number.isFinite(parsed) && parsed > 0) {
@@ -39,11 +37,21 @@ function resolveConnectionLimitFromEnv(): number {
   return DEFAULT_CONNECTIONS_PER_IP;
 }
 
+function resolveUniqueIpLimitFromEnv(): number {
+  const parsed = Number.parseInt(process.env.TERMINAL_MAX_UNIQUE_IPS ?? "", 10);
+  if (Number.isFinite(parsed) && parsed > 0) {
+    return parsed;
+  }
+  return 1000;
+}
+
 export function setupTerminalServer(httpServer: http.Server | https.Server, config: AppConfig): void {
   const wss = new WebSocketServer({ noServer: true, maxPayload: MAX_TERMINAL_PAYLOAD_BYTES });
   const sessionCookieName = config.auth.oidc.session.cookieName;
   const allowedOrigins = new Set(config.server.cors.allowedOrigins ?? []);
   const connectionLimitPerIp = resolveConnectionLimitFromEnv();
+  const maxUniqueIpConnections = resolveUniqueIpLimitFromEnv();
+  const ipConnectionCounts = new Map<string, number>();
   const terminalManager = new TerminalManager({ logger: appLogger.child({ component: "terminal" }) });
 
   httpServer.on("close", () => {
@@ -88,6 +96,21 @@ export function setupTerminalServer(httpServer: http.Server | https.Server, conf
         socket.destroy();
         return;
       }
+    }
+
+    if (!ipConnectionCounts.has(ip) && ipConnectionCounts.size >= maxUniqueIpConnections) {
+      logger.warn({ ip: hashedIp, capacity: maxUniqueIpConnections }, "rejecting terminal connection due to unique IP limit");
+      logAuditEvent({
+        action: "terminal.connection",
+        outcome: "denied",
+        resource: "sandbox.terminal",
+        requestId: identifiers.requestId,
+        traceId: identifiers.traceId,
+        details: { reason: "ip_capacity_exceeded", ip: hashedIp, capacity: maxUniqueIpConnections },
+      });
+      socket.write("HTTP/1.1 503 Service Unavailable\r\nConnection: close\r\nRetry-After: 60\r\n\r\n");
+      socket.destroy();
+      return;
     }
 
     if (!incrementConnectionCount(ip, connectionLimitPerIp, ipConnectionCounts)) {

@@ -81,7 +81,9 @@ export function resolveClientIp(req: IncomingMessage, trustedProxyCidrs: readonl
     return "unknown";
   }
 
-  if (!isTrustedProxyIp(remote, trustedProxyCidrs)) {
+  const allowPrivateForwarding = trustedProxyCidrs.length === 0 && isPrivateOrLoopback(remote);
+
+  if (!isTrustedProxyIp(remote, trustedProxyCidrs) && !allowPrivateForwarding) {
     return remote.toString();
   }
 

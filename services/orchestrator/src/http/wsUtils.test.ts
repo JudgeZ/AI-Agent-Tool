@@ -22,13 +22,22 @@ function createIncomingMessage(options: MockRequestOptions): IncomingMessage {
 }
 
 describe("resolveClientIp", () => {
-  it("ignores forwarded headers from untrusted private origins", () => {
+  it("honors forwarded headers from private origins when no trusted proxies are configured", () => {
     const req = createIncomingMessage({
       remoteAddress: "10.0.0.5",
       forwardedFor: "203.0.113.10",
     });
 
-    expect(resolveClientIp(req, [])).toBe("10.0.0.5");
+    expect(resolveClientIp(req, [])).toBe("203.0.113.10");
+  });
+
+  it("ignores forwarded headers from private origins when trusted proxies are configured", () => {
+    const req = createIncomingMessage({
+      remoteAddress: "10.0.0.5",
+      forwardedFor: "203.0.113.10",
+    });
+
+    expect(resolveClientIp(req, ["192.168.0.0/16"])).toBe("10.0.0.5");
   });
 });
 
