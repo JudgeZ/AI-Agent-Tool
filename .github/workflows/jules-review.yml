@@ -23,11 +23,15 @@ jobs:
           node-version: '20'
 
       - name: Install Jules
-        run: npm install -g @google/jules
+        run: |
+          npm install -g @google/jules
+          jules version
 
       - name: Run Jules Review
         env:
           JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          GOOGLE_API_KEY: ${{ secrets.JULES_API_KEY }}
+          X_GOOG_API_KEY: ${{ secrets.JULES_API_KEY }}
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           jules new \
