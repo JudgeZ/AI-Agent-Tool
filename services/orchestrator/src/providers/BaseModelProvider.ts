@@ -60,14 +60,18 @@ export abstract class BaseModelProvider<TClient, TCredentials> implements ModelP
   /**
    * Compare two credential objects for equality.
    * Override for credentials with multiple fields.
-   * Default implementation compares by JSON serialization.
+   * Default implementation compares by JSON serialization with sorted keys.
    */
   protected areCredentialsEqual(
     previous: TCredentials | undefined,
     next: TCredentials | undefined
   ): previous is TCredentials {
     if (!previous || !next) return false;
-    return JSON.stringify(previous) === JSON.stringify(next);
+    // Use sorted keys to ensure deterministic comparison
+    const sortedStringify = (obj: unknown): string => {
+      return JSON.stringify(obj, Object.keys(obj as object).sort());
+    };
+    return sortedStringify(previous) === sortedStringify(next);
   }
 
   /**
@@ -149,17 +153,21 @@ export abstract class BaseModelProvider<TClient, TCredentials> implements ModelP
   }
 
   /**
-   * Sanitize a string by redacting any credentials.
-   * Override in subclasses to handle provider-specific credential patterns.
-   * Default implementation redacts apiKey if credentials have one.
+   * Sanitize a string by redacting all credential values.
+   * Iterates over all string-valued credential fields and replaces all occurrences.
    */
   protected sanitize(text: string): string {
     if (!text || !this.clientCredentials) return text;
+    let result = text;
     const creds = this.clientCredentials as Record<string, unknown>;
-    if (typeof creds.apiKey === "string" && creds.apiKey) {
-      return text.replace(creds.apiKey, "[REDACTED]");
+    for (const key of Object.keys(creds)) {
+      const value = creds[key];
+      if (typeof value === "string" && value.length > 0) {
+        // Use split/join for global replacement (works in all JS versions)
+        result = result.split(value).join("[REDACTED]");
+      }
     }
-    return text;
+    return result;
   }
 
   /**
@@ -197,20 +205,21 @@ export abstract class BaseModelProvider<TClient, TCredentials> implements ModelP
     const message = this.sanitize(rawMessage);
     const status = statusCandidate;
 
-    // Determine retryability
-    let retryable = status === 429 || status === 408 || (typeof status === "number" ? status >= 500 : true);
+    // Determine retryability - only retry on explicit 5xx, 429, or 408
+    // Do not default to retryable when status is unknown
+    let retryable = status === 429 || status === 408 || (typeof status === "number" && status >= 500);
     if (retryableCodes && typeof code === "string" && retryableCodes.has(code)) {
       retryable = true;
     }
 
-    // Sanitize cause if needed
+    // Sanitize cause to prevent credential leakage in stack traces
     let cause = error;
     if (error && typeof error === "object") {
       try {
         const json = JSON.stringify(error);
-        const creds = this.clientCredentials as Record<string, unknown> | undefined;
-        if (creds && typeof creds.apiKey === "string" && json.includes(creds.apiKey)) {
-          cause = new Error(this.sanitize(json));
+        const sanitizedJson = this.sanitize(json);
+        if (json !== sanitizedJson) {
+          cause = new Error(sanitizedJson);
         }
       } catch {
         // Ignore serialization errors
@@ -229,13 +238,14 @@ export abstract class BaseModelProvider<TClient, TCredentials> implements ModelP
 
 /**
  * Base class for providers that need to return credentials alongside the client.
+ * Extends BaseModelProvider and overrides getClient() to return credentials.
  * Used by Azure OpenAI and Bedrock which need credential data for URL construction.
  *
  * @template TClient - The SDK client type
  * @template TCredentials - The credentials shape
  */
-export abstract class BaseModelProviderWithCredentials<TClient, TCredentials> implements ModelProvider {
-  abstract readonly name: string;
+export abstract class BaseModelProviderWithCredentials<TClient, TCredentials>
+  extends BaseModelProvider<TClient, TCredentials> {
 
   /**
    * Display name for error messages. Defaults to capitalized name.
@@ -245,39 +255,20 @@ export abstract class BaseModelProviderWithCredentials<TClient, TCredentials> im
     return this.name.charAt(0).toUpperCase() + this.name.slice(1);
   }
 
-  protected clientPromise?: Promise<TClient>;
-  protected clientCredentials?: TCredentials;
-
-  constructor(protected readonly secrets: SecretsStore) {}
-
-  /**
-   * Create a new client instance with the given credentials.
-   */
-  protected abstract createClient(credentials: TCredentials): Promise<TClient> | TClient;
-
-  /**
-   * Resolve current credentials from secrets store and/or environment.
-   */
-  protected abstract resolveCredentials(): Promise<TCredentials>;
-
   /**
    * Compare two credential objects for equality.
+   * Must be implemented by subclasses for complex credential types.
    */
-  protected abstract areCredentialsEqual(
+  protected abstract override areCredentialsEqual(
     previous: TCredentials | undefined,
     next: TCredentials | undefined
   ): previous is TCredentials;
 
   /**
-   * Chat implementation - must be provided by each provider.
-   */
-  abstract chat(req: ChatRequest, context?: ProviderContext): Promise<ChatResponse>;
-
-  /**
    * Get or create a cached client, returning both client and credentials.
    * Used by providers that need credential data for request construction.
    */
-  protected async getClient(): Promise<{ client: TClient; credentials: TCredentials }> {
+  protected async getClientWithCredentials(): Promise<{ client: TClient; credentials: TCredentials }> {
     const currentPromise = this.clientPromise;
     let credentials: TCredentials;
 
@@ -332,71 +323,10 @@ export abstract class BaseModelProviderWithCredentials<TClient, TCredentials> im
   }
 
   /**
-   * @internal - exposed for testing
+   * Override getClient to use getClientWithCredentials internally.
+   * This maintains compatibility with the base class while returning credentials.
    */
-  async resetClientForTests(): Promise<void> {
-    await this.disposeExistingClient(this.clientPromise);
-  }
-
-  protected async disposeExistingClient(promise?: Promise<TClient>): Promise<void> {
-    if (!promise) return;
-    try {
-      const client = await promise.catch(() => undefined);
-      if (client) {
-        await disposeClient(client);
-      }
-    } catch {
-      // ignore disposal errors
-    } finally {
-      if (this.clientPromise === promise) {
-        this.clientPromise = undefined;
-        this.clientCredentials = undefined;
-      }
-    }
-  }
-
-  /**
-   * Normalize an error into a ProviderError.
-   */
-  protected normalizeError(error: unknown, options: NormalizeErrorOptions = {}): ProviderError {
-    if (error instanceof ProviderError) {
-      return error;
-    }
-
-    const { defaultMessage = `${this.name} request failed`, retryableCodes } = options;
-
-    const details: ProviderErrorLike | undefined =
-      typeof error === "object" && error !== null ? (error as ProviderErrorLike) : undefined;
-
-    const statusCandidate =
-      typeof details?.$metadata?.httpStatusCode === "number"
-        ? details.$metadata.httpStatusCode
-        : typeof details?.status === "number"
-          ? details.status
-          : typeof details?.statusCode === "number"
-            ? details.statusCode
-            : undefined;
-
-    const code = typeof details?.code === "string"
-      ? details.code
-      : typeof details?.name === "string"
-        ? details.name
-        : undefined;
-
-    const message = typeof details?.message === "string" ? details.message : defaultMessage;
-    const status = statusCandidate;
-
-    let retryable = status === 429 || status === 408 || (typeof status === "number" ? status >= 500 : true);
-    if (retryableCodes && typeof code === "string" && retryableCodes.has(code)) {
-      retryable = true;
-    }
-
-    return new ProviderError(message, {
-      status: status ?? 502,
-      code: typeof code === "string" ? code : undefined,
-      provider: this.name,
-      retryable,
-      cause: error
-    });
+  protected override async getClient(): Promise<{ client: TClient; credentials: TCredentials }> {
+    return this.getClientWithCredentials();
   }
 }

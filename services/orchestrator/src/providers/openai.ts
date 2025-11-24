@@ -35,7 +35,8 @@ interface OpenAIClient {
   };
 }
 
-type OpenAICredentials = { apiKey: string };
+/** Credentials required for OpenAI API authentication */
+export type OpenAICredentials = { apiKey: string };
 
 export type OpenAIProviderOptions = {
   defaultModel?: string;

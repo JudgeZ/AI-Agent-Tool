@@ -33,7 +33,8 @@ interface AzureOpenAIClient {
   ) => Promise<AzureChatResponse>;
 }
 
-type AzureCredentials = { apiKey: string; endpoint: string };
+/** Credentials required for Azure OpenAI API authentication */
+export type AzureCredentials = { apiKey: string; endpoint: string };
 
 export type AzureOpenAIProviderOptions = {
   defaultDeployment?: string;

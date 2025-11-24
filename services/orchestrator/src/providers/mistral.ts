@@ -27,7 +27,8 @@ interface MistralApiClient {
   }) => Promise<MistralChatResponse>;
 }
 
-type MistralCredentials = { apiKey: string };
+/** Credentials required for Mistral API authentication */
+export type MistralCredentials = { apiKey: string };
 
 export type MistralProviderOptions = {
   defaultModel?: string;

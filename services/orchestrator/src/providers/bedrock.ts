@@ -32,7 +32,8 @@ interface BedrockClient {
   destroy?: () => void | Promise<void>;
 }
 
-type BedrockCredentials = {
+/** Credentials required for AWS Bedrock API authentication */
+export type BedrockCredentials = {
   region: string;
   accessKeyId: string;
   secretAccessKey: string;

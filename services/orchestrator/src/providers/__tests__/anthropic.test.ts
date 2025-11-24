@@ -65,14 +65,17 @@ describe("AnthropicProvider", () => {
     });
 
     expect(clientFactory).toHaveBeenCalledTimes(1);
-    expect(create).toHaveBeenCalledWith({
-      model: "claude-3",
-      system: "be nice",
-      max_tokens: 1024,
-      messages: [
-        { role: "user", content: [{ type: "text", text: "hi" }] }
-      ]
-    });
+    expect(create).toHaveBeenCalledWith(
+      {
+        model: "claude-3",
+        system: "be nice",
+        max_tokens: 1024,
+        messages: [
+          { role: "user", content: [{ type: "text", text: "hi" }] }
+        ]
+      },
+      expect.objectContaining({ signal: expect.any(AbortSignal) })
+    );
     expect(response).toEqual({
       output: "Hello world",
       provider: "anthropic",

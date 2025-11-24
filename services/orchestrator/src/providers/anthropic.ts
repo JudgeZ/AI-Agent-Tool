@@ -11,7 +11,8 @@ import {
   coalesceText,
   ProviderError,
   requireSecret,
-  ensureProviderEgress
+  ensureProviderEgress,
+  withProviderTimeout
 } from "./utils.js";
 
 const ANTHROPIC_MESSAGES_URL = "https://api.anthropic.com/v1/messages";
@@ -34,21 +35,26 @@ interface AnthropicChatResponse {
 
 interface AnthropicClient {
   messages: {
-    create: (payload: {
-      model: string;
-      system?: string;
-      max_tokens: number;
-      messages: Array<{ role: "user" | "assistant"; content: Array<{ type: "text"; text: string }> }>;
-    }) => Promise<AnthropicChatResponse>;
+    create: (
+      payload: {
+        model: string;
+        system?: string;
+        max_tokens: number;
+        messages: Array<{ role: "user" | "assistant"; content: Array<{ type: "text"; text: string }> }>;
+      },
+      options?: { signal?: AbortSignal }
+    ) => Promise<AnthropicChatResponse>;
   };
 }
 
-type AnthropicCredentials = { apiKey: string };
+/** Credentials required for Anthropic API authentication */
+export type AnthropicCredentials = { apiKey: string };
 
 export type AnthropicProviderOptions = {
   defaultModel?: string;
   maxTokens?: number;
   retryAttempts?: number;
+  timeoutMs?: number;
   clientFactory?: (config: AnthropicCredentials) => Promise<AnthropicClient> | AnthropicClient;
 };
 
@@ -88,7 +94,8 @@ export class AnthropicProvider extends BaseModelProvider<AnthropicClient, Anthro
       options: {
         defaultModel: this.options.defaultModel,
         maxTokens: this.options.maxTokens,
-        retryAttempts: this.options.retryAttempts
+        retryAttempts: this.options.retryAttempts,
+        timeoutMs: this.options.timeoutMs
       }
     };
   }
@@ -127,12 +134,19 @@ export class AnthropicProvider extends BaseModelProvider<AnthropicClient, Anthro
           metadata: { operation: "messages.create", model }
         });
         try {
-          return await client.messages.create({
-            model,
-            system: systemMessage,
-            max_tokens: maxTokens,
-            messages: toAnthropicMessages(req.messages)
-          });
+          return await withProviderTimeout(
+            ({ signal }) =>
+              client.messages.create(
+                {
+                  model,
+                  system: systemMessage,
+                  max_tokens: maxTokens,
+                  messages: toAnthropicMessages(req.messages)
+                },
+                { signal }
+              ),
+            { provider: this.name, timeoutMs: this.options.timeoutMs, action: "messages.create" }
+          );
         } catch (error) {
           throw this.normalizeError(error);
         }
