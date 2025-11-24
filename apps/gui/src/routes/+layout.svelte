@@ -3,6 +3,7 @@
   import FileTree from '$lib/components/ide/FileTree.svelte';
   import Editor from '$lib/components/ide/Editor.svelte';
   import Terminal from '$lib/components/ide/Terminal.svelte';
+  import Chat from '$lib/components/ide/Chat.svelte';
   import ResizableSidebar from '$lib/components/layout/ResizableSidebar.svelte';
   import TerminalPanel from '$lib/components/layout/TerminalPanel.svelte';
   import Notifications from '$lib/components/Notifications.svelte';
@@ -54,7 +55,10 @@
       ariaLabel="Agent panel"
       onResize={setRightWidth}
     >
-      <slot />
+      <div class="agent-pane">
+        <slot />
+        <Chat />
+      </div>
     </ResizableSidebar>
   </div>
 
@@ -112,6 +116,14 @@
     border-radius: 16px;
     border: 1px solid rgba(148, 163, 184, 0.12);
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
+  }
+
+  .agent-pane {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    height: 100%;
+    overflow: hidden;
   }
 
 </style>

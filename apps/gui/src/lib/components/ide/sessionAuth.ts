@@ -1,5 +1,9 @@
 import type { SessionState } from '$lib/stores/session';
 
-export function isCollaborationSessionValid(session: SessionState): boolean {
-  return Boolean(session.authenticated && session.info?.id);
+export function isCollaborationSessionValid(sessionValue: SessionState): boolean {
+  if (!sessionValue?.authenticated || !sessionValue.info?.id) {
+    return false;
+  }
+
+  return Boolean(sessionValue.info.id.trim());
 }

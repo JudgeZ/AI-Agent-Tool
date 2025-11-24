@@ -43,7 +43,7 @@ const initialState: SessionState = {
   error: null
 };
 
-const sessionStore = writable<SessionState>({ ...initialState, loading: true });
+export const sessionStore = writable<SessionState>({ ...initialState, loading: true });
 
 let messageHandler: ((event: MessageEvent) => void) | null = null;
 const bindingStorageKey = 'oss.oidc.binding';
