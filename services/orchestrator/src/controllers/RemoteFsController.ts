@@ -61,6 +61,11 @@ export class RemoteFsController {
     }
 
     try {
+      if (!(await this.ensurePathWithinRoot(resolvedPath))) {
+        this.respondOutsideRoot(res, normalizedPath);
+        return;
+      }
+
       const stats = await fs.stat(resolvedPath);
       if (!stats.isDirectory()) {
         respondWithError(res, 400, {
@@ -177,7 +182,18 @@ export class RemoteFsController {
     }
 
     try {
-      await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
+      const parentDir = path.dirname(resolvedPath);
+      if (!(await this.ensurePathWithinRoot(parentDir))) {
+        this.respondOutsideRoot(res, normalizedPath);
+        return;
+      }
+
+      if (!(await this.ensurePathWithinRoot(resolvedPath))) {
+        this.respondOutsideRoot(res, normalizedPath);
+        return;
+      }
+
+      await fs.mkdir(parentDir, { recursive: true });
       if (!(await this.ensurePathWithinRoot(resolvedPath))) {
         this.respondOutsideRoot(res, normalizedPath);
         return;
@@ -208,16 +224,20 @@ export class RemoteFsController {
 
   private toRelativeRemotePath(remotePath: string): string {
     const normalizedRemote = this.normalizeRemotePath(remotePath);
+    const normalizedRoot = this.normalizeRemotePath(this.config.server.remoteFs.root);
     const remoteSegments = normalizedRemote.split("/").filter(Boolean);
-    const rootSegments = this.toPosixPath(this.root).split("/").filter(Boolean);
 
-    let offset = 0;
-    while (offset < rootSegments.length && remoteSegments[offset] === rootSegments[offset]) {
-      offset += 1;
+    if (normalizedRemote === normalizedRoot || normalizedRemote.startsWith(`${normalizedRoot}/`)) {
+      return this.toPosixPath(path.posix.relative(normalizedRoot, normalizedRemote));
     }
 
-    const relativeSegments = remoteSegments.slice(offset);
-    return relativeSegments.join(path.sep);
+    const virtualRootSegment = normalizedRoot.split("/").filter(Boolean).at(-1);
+    const allowedVirtualRoots = new Set([virtualRootSegment, "workspace"].filter(Boolean));
+    if (remoteSegments[0] && allowedVirtualRoots.has(remoteSegments[0])) {
+      return remoteSegments.slice(1).join(path.sep);
+    }
+
+    return remoteSegments.join(path.sep);
   }
 
   private toPosixPath(input: string): string {
@@ -229,6 +249,10 @@ export class RemoteFsController {
     const candidate = path.resolve(this.root, relativeRemotePath);
     if (!this.isWithinRoot(candidate)) {
       return null;
+    }
+
+    if (candidate === this.root) {
+      return this.root;
     }
 
     const parent = path.dirname(candidate);
@@ -264,8 +288,9 @@ export class RemoteFsController {
       try {
         const resolved = await fs.realpath(current);
         return { realpath: resolved, remaining: remaining.reverse() };
-      } catch (error: any) {
-        if (error?.code === "ENOENT") {
+      } catch (error: unknown) {
+        const normalized = normalizeError(error);
+        if (normalized.code === "ENOENT") {
           const parent = path.dirname(current);
           remaining.push(path.basename(current));
 
@@ -364,8 +389,9 @@ export class RemoteFsController {
         return this.isWithinRoot(realTarget);
       }
       return this.isWithinRoot(target);
-    } catch (error: any) {
-      if (error?.code === "ENOENT") {
+    } catch (error: unknown) {
+      const normalized = normalizeError(error);
+      if (normalized.code === "ENOENT") {
         return true;
       }
       throw error;
