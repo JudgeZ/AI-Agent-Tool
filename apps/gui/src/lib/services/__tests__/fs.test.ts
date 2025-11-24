@@ -261,6 +261,7 @@ describe('fs service', () => {
     expect(normalizeRemotePath('../relative/path')).toBe('/workspace/relative/path');
     expect(normalizeRemotePath('/workspace/deep/../../sibling')).toBe('/workspace/sibling');
     expect(normalizeRemotePath('/workspace/../etc/passwd')).toBe('/workspace/etc/passwd');
+    expect(normalizeRemotePath('/workspace/..')).toBe('/workspace');
   });
 
   it('issues remote writes with normalized payloads', async () => {

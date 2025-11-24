@@ -130,6 +130,38 @@ describe("RemoteFsController", () => {
     await fs.rm(outsideDir, { recursive: true, force: true });
   });
 
+  it("creates nested missing directories without dropping intermediate segments", async () => {
+    const config = buildConfig(tempDir, { auth: { oidc: { enabled: false } } });
+    const app = buildApp(config, rateLimiter);
+
+    const res = await request(app)
+      .post("/remote-fs/write")
+      .send({ path: `${tempDir}/new/subdir/file.txt`, content: "data" });
+
+    expect(res.status).toBe(204);
+    const content = await fs.readFile(path.join(tempDir, "new", "subdir", "file.txt"), "utf8");
+    expect(content).toBe("data");
+  });
+
+  it("rejects reads that resolve through symlinks outside the root", async () => {
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "remote-fs-outside-"));
+    const outsideFile = path.join(outsideDir, "secret.txt");
+    await fs.writeFile(outsideFile, "secret");
+    await fs.symlink(outsideFile, path.join(tempDir, "link.txt"));
+
+    const config = buildConfig(tempDir, { auth: { oidc: { enabled: false } } });
+    const app = buildApp(config, rateLimiter);
+
+    const res = await request(app)
+      .get("/remote-fs/read")
+      .query({ path: path.join(tempDir, "link.txt") });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("invalid_request");
+
+    await fs.rm(outsideDir, { recursive: true, force: true });
+  });
+
   it("enforces the configured max write size", async () => {
     const config = buildConfig(tempDir, {
       auth: { oidc: { enabled: false } },

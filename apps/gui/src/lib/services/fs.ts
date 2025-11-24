@@ -49,18 +49,16 @@ const normalizeRemotePath = (inputPath: string): string => {
   const normalized = collapseDuplicateSlashes(normalizeSlashes(inputPath));
   const absolute = normalized.startsWith('/') ? normalized : `/${normalized}`;
 
+  // Remove any existing root prefix before resolving segments to avoid duplicating the root.
+  const relativeInput = absolute.startsWith(remoteFsRoot)
+    ? absolute.slice(remoteFsRoot.length)
+    : absolute;
+
   const rootSegments = remoteFsRoot.split('/').filter(Boolean);
-  const incomingSegments = absolute.split('/').filter(Boolean);
-
-  let offset = 0;
-  while (offset < rootSegments.length && incomingSegments[offset] === rootSegments[offset]) {
-    offset += 1;
-  }
-
-  const relativeSegments = incomingSegments.slice(offset);
+  const incomingSegments = relativeInput.split('/').filter(Boolean);
   const resolved = [...rootSegments];
 
-  for (const segment of relativeSegments) {
+  for (const segment of incomingSegments) {
     if (segment === '..') {
       if (resolved.length > rootSegments.length) {
         resolved.pop();
