@@ -48,7 +48,12 @@ Instructions:
 1. Fetch PR changes (git fetch origin pull/${PR_NUMBER}/head:pr-${PR_NUMBER} && git checkout pr-${PR_NUMBER}).
 2. Read AGENTS.md for coding standards.
 3. Review the code changes (git diff origin/${BASE_REF}...HEAD).
-4. Reply on pull/${PR_NUMBER} with a comment containing your code review.
+4. **MANDATORY**: Create a file named 'REVIEW.md' with your summary and specific comments.
+   - Format it as Markdown.
+   - List any Critical Issues (Blocking).
+   - List Suggestions (Non-blocking).
+5. Do NOT use gh CLI.
+6. If you find no issues, create 'REVIEW.md' with 'LGTM'.
 "
 
 PAYLOAD=$(jq -n \
@@ -112,26 +117,36 @@ if [ "$STATUS" != "COMPLETED" ]; then
   exit 1
 fi
 
-# 4. Extract Patch
-echo "Extracting Patch..."
+# 4. Extract Result
+echo "Extracting Result..."
+
+# Try patch extraction
 PATCH=$(echo "$FINAL_ACT_RESP" | jq -r '[.activities[]?.artifacts[]? | .changeSet.gitPatch.unidiffPatch | select(. != null)] | last')
 
-if [ -z "$PATCH" ] || [ "$PATCH" == "null" ]; then
-  echo "Error: No patch found in activities."
-  echo "$FINAL_ACT_RESP"
-  exit 1
+if [ ! -z "$PATCH" ] && [ "$PATCH" != "null" ]; then
+    echo "Found patch. Applying..."
+    echo "$PATCH" > review.patch
+    git apply review.patch || echo "Warning: Failed to apply patch. Continuing check for fallback..."
 fi
 
-echo "$PATCH" > review.patch
+if [ ! -f "REVIEW.md" ]; then
+    echo "REVIEW.md not found in patch. Checking for text summary..."
+    # Fallback to description from progressUpdated
+    SUMMARY=$(echo "$FINAL_ACT_RESP" | jq -r '[.activities[]?.progressUpdated?.description | select(. != null)] | last')
 
-echo "Applying patch..."
-git apply review.patch || { echo "Git apply failed. Patch content:"; cat review.patch; exit 1; }
-
-if [ -f "REVIEW.md" ]; then
-  echo "Posting Review..."
-  gh pr comment "$PR_NUMBER" --body-file REVIEW.md
-  echo "Success."
-else
-  echo "Error: REVIEW.md not found after patch."
-  exit 1
+    if [ ! -z "$SUMMARY" ] && [ "$SUMMARY" != "null" ]; then
+        echo "Found text summary."
+        echo "# Jules Review (Summary)" > REVIEW.md
+        echo "" >> REVIEW.md
+        echo "$SUMMARY" >> REVIEW.md
+    else
+         echo "No review content found (neither file nor text summary)."
+         echo "Debug: Activities dump"
+         echo "$FINAL_ACT_RESP"
+         exit 1
+    fi
 fi
+
+echo "Posting Review..."
+gh pr comment "$PR_NUMBER" --body-file REVIEW.md
+echo "Success."
