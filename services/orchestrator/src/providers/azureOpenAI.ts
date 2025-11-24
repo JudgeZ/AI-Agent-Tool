@@ -3,14 +3,13 @@ import type {
   ChatMessage,
   ChatRequest,
   ChatResponse,
-  ModelProvider,
   ProviderContext,
 } from "./interfaces.js";
+import { BaseModelProviderWithCredentials } from "./BaseModelProvider.js";
 import {
   callWithRetry,
   ProviderError,
   requireSecret,
-  disposeClient,
   ensureProviderEgress,
   withProviderTimeout,
 } from "./utils.js";
@@ -29,10 +28,12 @@ interface AzureChatResponse {
 interface AzureOpenAIClient {
   getChatCompletions: (
     deployment: string,
-    messages: Array<{ role: "system" | "user" | "assistant"; content: string }> ,
+    messages: Array<{ role: "system" | "user" | "assistant"; content: string }>,
     options?: { temperature?: number; abortSignal?: AbortSignal }
   ) => Promise<AzureChatResponse>;
 }
+
+type AzureCredentials = { apiKey: string; endpoint: string };
 
 export type AzureOpenAIProviderOptions = {
   defaultDeployment?: string;
@@ -71,73 +72,26 @@ function toAzureMessages(messages: ChatMessage[]) {
   return messages.map(msg => ({ role: msg.role, content: msg.content }));
 }
 
-export class AzureOpenAIProvider implements ModelProvider {
-  name = "azureopenai";
-  private clientPromise?: Promise<AzureOpenAIClient>;
-  private clientCredentials?: { apiKey: string; endpoint: string };
+export class AzureOpenAIProvider extends BaseModelProviderWithCredentials<AzureOpenAIClient, AzureCredentials> {
+  readonly name = "azureopenai";
 
-  constructor(private readonly secrets: SecretsStore, private readonly options: AzureOpenAIProviderOptions = {}) {}
+  protected override get displayName(): string {
+    return "Azure OpenAI";
+  }
 
-  private async getClient(): Promise<{ client: AzureOpenAIClient; credentials: { apiKey: string; endpoint: string } }> {
-    const currentPromise = this.clientPromise;
-    let credentials!: { apiKey: string; endpoint: string };
-    try {
-      credentials = await this.resolveCredentials();
-    } catch (error) {
-      if (currentPromise) {
-        const snapshot = this.clientCredentials;
-        if (!snapshot) {
-          throw new ProviderError("Azure OpenAI credentials are not available", {
-            status: 500,
-            provider: this.name,
-            retryable: false,
-          });
-        }
-        const client = await currentPromise;
-        return { client, credentials: snapshot };
-      }
-      throw error;
-    }
+  constructor(
+    secrets: SecretsStore,
+    private readonly options: AzureOpenAIProviderOptions = {}
+  ) {
+    super(secrets);
+  }
 
-    if (currentPromise && this.areCredentialsEqual(this.clientCredentials, credentials)) {
-      const snapshot = this.clientCredentials;
-      if (!snapshot) {
-        throw new ProviderError("Azure OpenAI credentials are not available", {
-          status: 500,
-          provider: this.name,
-          retryable: false,
-        });
-      }
-      const client = await currentPromise;
-      return { client, credentials: snapshot };
-    }
-
+  protected async createClient(credentials: AzureCredentials): Promise<AzureOpenAIClient> {
     const factory = this.options.clientFactory ?? defaultClientFactory;
-    const nextPromise = Promise.resolve(factory({ ...credentials, apiVersion: this.options.apiVersion }));
-    const wrappedPromise = nextPromise.then(
-      client => client,
-      error => {
-        if (this.clientPromise === wrappedPromise) {
-          this.clientPromise = undefined;
-          this.clientCredentials = undefined;
-        }
-        throw error;
-      }
-    );
-
-    this.clientPromise = wrappedPromise;
-    this.clientCredentials = credentials;
-    void this.disposeExistingClient(currentPromise);
-    const client = await wrappedPromise;
-    return { client, credentials };
+    return factory({ ...credentials, apiVersion: this.options.apiVersion });
   }
 
-  /** @internal */
-  async resetClientForTests(): Promise<void> {
-    await this.disposeExistingClient(this.clientPromise);
-  }
-
-  private async resolveCredentials(): Promise<{ apiKey: string; endpoint: string }> {
+  protected async resolveCredentials(): Promise<AzureCredentials> {
     const apiKey = await requireSecret(this.secrets, this.name, {
       key: "provider:azureopenai:apiKey",
       env: "AZURE_OPENAI_API_KEY",
@@ -151,33 +105,16 @@ export class AzureOpenAIProvider implements ModelProvider {
     return { apiKey, endpoint };
   }
 
-  private areCredentialsEqual(
-    previous?: { apiKey: string; endpoint: string },
-    next?: { apiKey: string; endpoint: string }
-  ): previous is { apiKey: string; endpoint: string } {
+  protected areCredentialsEqual(
+    previous: AzureCredentials | undefined,
+    next: AzureCredentials | undefined
+  ): previous is AzureCredentials {
     return Boolean(
       previous &&
         next &&
         previous.apiKey === next.apiKey &&
         previous.endpoint === next.endpoint
     );
-  }
-
-  private async disposeExistingClient(promise?: Promise<AzureOpenAIClient>): Promise<void> {
-    if (!promise) return;
-    try {
-      const client = await promise.catch(() => undefined);
-      if (client) {
-        await disposeClient(client);
-      }
-    } catch {
-      // ignore disposal errors
-    } finally {
-      if (this.clientPromise === promise) {
-        this.clientPromise = undefined;
-        this.clientCredentials = undefined;
-      }
-    }
   }
 
   async chat(req: ChatRequest, _context?: ProviderContext): Promise<ChatResponse> {
@@ -256,37 +193,5 @@ export class AzureOpenAIProvider implements ModelProvider {
           }
         : undefined
     };
-  }
-
-  private normalizeError(error: unknown): ProviderError {
-    if (error instanceof ProviderError) {
-      return error;
-    }
-    type AzureErrorLike = {
-      statusCode?: unknown;
-      status?: unknown;
-      code?: unknown;
-      message?: unknown;
-    };
-    const details: AzureErrorLike | undefined =
-      typeof error === "object" && error !== null ? (error as AzureErrorLike) : undefined;
-    const statusCandidate =
-      typeof details?.statusCode === "number"
-        ? details.statusCode
-        : typeof details?.status === "number"
-          ? details.status
-          : undefined;
-    const code = typeof details?.code === "string" ? details.code : undefined;
-    const message =
-      typeof details?.message === "string" ? details.message : "Azure OpenAI request failed";
-    const status = statusCandidate;
-    const retryable = status === 429 || status === 408 || (typeof status === "number" ? status >= 500 : true);
-    return new ProviderError(message, {
-      status: status ?? 502,
-      code,
-      provider: this.name,
-      retryable,
-      cause: error
-    });
   }
 }

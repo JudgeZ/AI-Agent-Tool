@@ -3,15 +3,14 @@ import type {
   ChatMessage,
   ChatRequest,
   ChatResponse,
-  ModelProvider,
   ProviderContext,
 } from "./interfaces.js";
+import { BaseModelProviderWithCredentials } from "./BaseModelProvider.js";
 import {
   callWithRetry,
   decodeBedrockBody,
   ProviderError,
   requireSecret,
-  disposeClient,
   ensureProviderEgress,
   withProviderTimeout
 } from "./utils.js";
@@ -32,6 +31,13 @@ interface BedrockClient {
   ) => Promise<BedrockInvokeResult>;
   destroy?: () => void | Promise<void>;
 }
+
+type BedrockCredentials = {
+  region: string;
+  accessKeyId: string;
+  secretAccessKey: string;
+  sessionToken?: string;
+};
 
 export type BedrockProviderOptions = {
   defaultModel?: string;
@@ -100,94 +106,34 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-export class BedrockProvider implements ModelProvider {
-  name = "bedrock";
-  private clientPromise?: Promise<BedrockClient>;
-  private clientCredentials?: {
-    region: string;
-    accessKeyId: string;
-    secretAccessKey: string;
-    sessionToken?: string;
-  };
+/** AWS Bedrock error codes that indicate a retryable error */
+const BEDROCK_RETRYABLE_CODES = new Set([
+  "ThrottlingException",
+  "InternalServerException",
+  "ServiceUnavailableException"
+]);
 
-  constructor(private readonly secrets: SecretsStore, private readonly options: BedrockProviderOptions = {}) {}
+export class BedrockProvider extends BaseModelProviderWithCredentials<BedrockClient, BedrockCredentials> {
+  readonly name = "bedrock";
 
-  private async getClient(): Promise<{
-    client: BedrockClient;
-    credentials: { region: string; accessKeyId: string; secretAccessKey: string; sessionToken?: string };
-  }> {
-    const currentPromise = this.clientPromise;
-    let credentials!: {
-      region: string;
-      accessKeyId: string;
-      secretAccessKey: string;
-      sessionToken?: string;
-    };
-    try {
-      credentials = await this.resolveCredentials();
-    } catch (error) {
-      if (currentPromise) {
-        const snapshot = this.clientCredentials;
-        if (!snapshot) {
-          throw new ProviderError("Bedrock credentials are not available", {
-            status: 500,
-            provider: this.name,
-            retryable: false,
-          });
-        }
-        const client = await currentPromise;
-        return { client, credentials: snapshot };
-      }
-      throw error;
-    }
+  protected override get displayName(): string {
+    return "Bedrock";
+  }
 
-    if (currentPromise && this.areCredentialsEqual(this.clientCredentials, credentials)) {
-      const snapshot = this.clientCredentials;
-      if (!snapshot) {
-        throw new ProviderError("Bedrock credentials are not available", {
-          status: 500,
-          provider: this.name,
-          retryable: false,
-        });
-      }
-      const client = await currentPromise;
-      return { client, credentials: snapshot };
-    }
+  constructor(
+    secrets: SecretsStore,
+    private readonly options: BedrockProviderOptions = {}
+  ) {
+    super(secrets);
+  }
 
+  protected async createClient(credentials: BedrockCredentials): Promise<BedrockClient> {
     const factory = this.options.clientFactory ?? defaultClientFactory;
     const { region, accessKeyId, secretAccessKey, sessionToken } = credentials;
-    const nextPromise = Promise.resolve(
-      factory({ region, credentials: { accessKeyId, secretAccessKey, sessionToken } })
-    );
-    const wrappedPromise = nextPromise.then(
-      client => client,
-      error => {
-        if (this.clientPromise === wrappedPromise) {
-          this.clientPromise = undefined;
-          this.clientCredentials = undefined;
-        }
-        throw error;
-      }
-    );
-
-    this.clientPromise = wrappedPromise;
-    this.clientCredentials = credentials;
-    void this.disposeExistingClient(currentPromise);
-    const client = await wrappedPromise;
-    return { client, credentials };
+    return factory({ region, credentials: { accessKeyId, secretAccessKey, sessionToken } });
   }
 
-  /** @internal */
-  async resetClientForTests(): Promise<void> {
-    await this.disposeExistingClient(this.clientPromise);
-  }
-
-  private async resolveCredentials(): Promise<{
-    region: string;
-    accessKeyId: string;
-    secretAccessKey: string;
-    sessionToken?: string;
-  }> {
+  protected async resolveCredentials(): Promise<BedrockCredentials> {
     const region =
       this.options.region ??
       (await this.secrets.get("provider:bedrock:region")) ??
@@ -208,25 +154,10 @@ export class BedrockProvider implements ModelProvider {
     return { region, accessKeyId, secretAccessKey, sessionToken: sessionToken ?? undefined };
   }
 
-  private areCredentialsEqual(
-    previous?: {
-      region: string;
-      accessKeyId: string;
-      secretAccessKey: string;
-      sessionToken?: string;
-    },
-    next?: {
-      region: string;
-      accessKeyId: string;
-      secretAccessKey: string;
-      sessionToken?: string;
-    }
-  ): previous is {
-    region: string;
-    accessKeyId: string;
-    secretAccessKey: string;
-    sessionToken?: string;
-  } {
+  protected areCredentialsEqual(
+    previous: BedrockCredentials | undefined,
+    next: BedrockCredentials | undefined
+  ): previous is BedrockCredentials {
     return Boolean(
       previous &&
         next &&
@@ -235,23 +166,6 @@ export class BedrockProvider implements ModelProvider {
         previous.secretAccessKey === next.secretAccessKey &&
         (previous.sessionToken ?? "") === (next.sessionToken ?? "")
     );
-  }
-
-  private async disposeExistingClient(promise?: Promise<BedrockClient>): Promise<void> {
-    if (!promise) return;
-    try {
-      const client = await promise.catch(() => undefined);
-      if (client) {
-        await disposeClient(client);
-      }
-    } catch {
-      // ignore disposal errors
-    } finally {
-      if (this.clientPromise === promise) {
-        this.clientPromise = undefined;
-        this.clientCredentials = undefined;
-      }
-    }
   }
 
   async chat(req: ChatRequest, _context?: ProviderContext): Promise<ChatResponse> {
@@ -296,7 +210,7 @@ export class BedrockProvider implements ModelProvider {
             { provider: this.name, timeoutMs: this.options.timeoutMs, action: "invokeModel" },
           );
         } catch (error) {
-          throw this.normalizeError(error);
+          throw this.normalizeError(error, { retryableCodes: BEDROCK_RETRYABLE_CODES });
         }
       },
       { attempts: this.options.retryAttempts ?? 2 }
@@ -350,43 +264,5 @@ export class BedrockProvider implements ModelProvider {
             }
           : undefined
     };
-  }
-
-  private normalizeError(error: unknown): ProviderError {
-    if (error instanceof ProviderError) {
-      return error;
-    }
-    type BedrockMetadata = { httpStatusCode?: unknown };
-    type BedrockErrorLike = {
-      $metadata?: BedrockMetadata;
-      statusCode?: unknown;
-      name?: unknown;
-      code?: unknown;
-      message?: unknown;
-    };
-    const details: BedrockErrorLike | undefined =
-      typeof error === "object" && error !== null ? (error as BedrockErrorLike) : undefined;
-    const statusCandidate =
-      typeof details?.$metadata?.httpStatusCode === "number"
-        ? details.$metadata.httpStatusCode
-        : typeof details?.statusCode === "number"
-          ? details.statusCode
-          : undefined;
-    const name = typeof details?.name === "string" ? details.name : undefined;
-    const code = typeof details?.code === "string" ? details.code : name;
-    const message =
-      typeof details?.message === "string" ? details.message : "Bedrock request failed";
-    const status = statusCandidate;
-    const retryableCodes = new Set(["ThrottlingException", "InternalServerException", "ServiceUnavailableException"]);
-    const retryable =
-      status === 429 || status === 408 || (typeof status === "number" ? status >= 500 : false) ||
-      (typeof code === "string" && retryableCodes.has(code));
-    return new ProviderError(message, {
-      status: status ?? 502,
-      code: typeof code === "string" ? code : undefined,
-      provider: this.name,
-      retryable,
-      cause: error
-    });
   }
 }

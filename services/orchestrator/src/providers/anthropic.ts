@@ -3,15 +3,14 @@ import type {
   ChatMessage,
   ChatRequest,
   ChatResponse,
-  ModelProvider,
   ProviderContext,
 } from "./interfaces.js";
+import { BaseModelProvider } from "./BaseModelProvider.js";
 import {
   callWithRetry,
   coalesceText,
   ProviderError,
   requireSecret,
-  disposeClient,
   ensureProviderEgress
 } from "./utils.js";
 
@@ -44,14 +43,16 @@ interface AnthropicClient {
   };
 }
 
+type AnthropicCredentials = { apiKey: string };
+
 export type AnthropicProviderOptions = {
   defaultModel?: string;
   maxTokens?: number;
   retryAttempts?: number;
-  clientFactory?: (config: { apiKey: string }) => Promise<AnthropicClient> | AnthropicClient;
+  clientFactory?: (config: AnthropicCredentials) => Promise<AnthropicClient> | AnthropicClient;
 };
 
-async function defaultClientFactory({ apiKey }: { apiKey: string }): Promise<AnthropicClient> {
+async function defaultClientFactory({ apiKey }: AnthropicCredentials): Promise<AnthropicClient> {
   const { Anthropic } = await import("@anthropic-ai/sdk");
   return new Anthropic({ apiKey }) as unknown as AnthropicClient;
 }
@@ -71,12 +72,15 @@ function toAnthropicMessages(messages: ChatMessage[]): Array<{
     });
 }
 
-export class AnthropicProvider implements ModelProvider {
-  name = "anthropic";
-  private clientPromise?: Promise<AnthropicClient>;
-  private clientCredentials?: { apiKey: string };
+export class AnthropicProvider extends BaseModelProvider<AnthropicClient, AnthropicCredentials> {
+  readonly name = "anthropic";
 
-  constructor(private readonly secrets: SecretsStore, private readonly options: AnthropicProviderOptions = {}) {}
+  constructor(
+    secrets: SecretsStore,
+    private readonly options: AnthropicProviderOptions = {}
+  ) {
+    super(secrets);
+  }
 
   toJSON() {
     return {
@@ -89,47 +93,12 @@ export class AnthropicProvider implements ModelProvider {
     };
   }
 
-  private async getClient(): Promise<AnthropicClient> {
-    const currentPromise = this.clientPromise;
-    let credentials!: { apiKey: string };
-    try {
-      credentials = await this.resolveCredentials();
-    } catch (error) {
-      if (currentPromise && this.clientCredentials) {
-        return currentPromise;
-      }
-      throw error;
-    }
-
-    if (currentPromise && this.areCredentialsEqual(this.clientCredentials, credentials)) {
-      return currentPromise;
-    }
-
+  protected async createClient(credentials: AnthropicCredentials): Promise<AnthropicClient> {
     const factory = this.options.clientFactory ?? defaultClientFactory;
-    const nextPromise = Promise.resolve(factory(credentials));
-    const wrappedPromise = nextPromise.then(
-      client => client,
-      error => {
-        if (this.clientPromise === wrappedPromise) {
-          this.clientPromise = undefined;
-          this.clientCredentials = undefined;
-        }
-        throw error;
-      }
-    );
-
-    this.clientPromise = wrappedPromise;
-    this.clientCredentials = credentials;
-    void this.disposeExistingClient(currentPromise);
-    return wrappedPromise;
+    return factory(credentials);
   }
 
-  /** @internal */
-  async resetClientForTests(): Promise<void> {
-    await this.disposeExistingClient(this.clientPromise);
-  }
-
-  private async resolveCredentials(): Promise<{ apiKey: string }> {
+  protected async resolveCredentials(): Promise<AnthropicCredentials> {
     const apiKey = await requireSecret(this.secrets, this.name, {
       key: "provider:anthropic:apiKey",
       env: "ANTHROPIC_API_KEY",
@@ -138,28 +107,11 @@ export class AnthropicProvider implements ModelProvider {
     return { apiKey };
   }
 
-  private areCredentialsEqual(
-    previous?: { apiKey: string },
-    next?: { apiKey: string }
-  ): previous is { apiKey: string } {
+  protected areCredentialsEqual(
+    previous: AnthropicCredentials | undefined,
+    next: AnthropicCredentials | undefined
+  ): previous is AnthropicCredentials {
     return Boolean(previous && next && previous.apiKey === next.apiKey);
-  }
-
-  private async disposeExistingClient(promise?: Promise<AnthropicClient>): Promise<void> {
-    if (!promise) return;
-    try {
-      const client = await promise.catch(() => undefined);
-      if (client) {
-        await disposeClient(client);
-      }
-    } catch {
-      // ignore disposal errors
-    } finally {
-      if (this.clientPromise === promise) {
-        this.clientPromise = undefined;
-        this.clientCredentials = undefined;
-      }
-    }
   }
 
   async chat(req: ChatRequest, _context?: ProviderContext): Promise<ChatResponse> {
@@ -213,61 +165,5 @@ export class AnthropicProvider implements ModelProvider {
           }
         : undefined
     };
-  }
-
-  private sanitize(text: string): string {
-    if (!text || !this.clientCredentials?.apiKey) return text;
-    return text.replace(this.clientCredentials.apiKey, "[REDACTED]");
-  }
-
-  private normalizeError(error: unknown): ProviderError {
-    if (error instanceof ProviderError) {
-      return error;
-    }
-    type AnthropicErrorLike = {
-      status?: unknown;
-      statusCode?: unknown;
-      code?: unknown;
-      message?: unknown;
-    };
-    const details: AnthropicErrorLike | undefined =
-      typeof error === "object" && error !== null ? (error as AnthropicErrorLike) : undefined;
-    const statusCandidate =
-      typeof details?.status === "number"
-        ? details.status
-        : typeof details?.statusCode === "number"
-          ? details.statusCode
-          : undefined;
-    const code = typeof details?.code === "string" ? details.code : undefined;
-    const rawMessage =
-      typeof details?.message === "string" ? details.message : "Anthropic request failed";
-    
-    const message = this.sanitize(rawMessage);
-    
-    const status = statusCandidate;
-    const retryable = status === 429 || status === 408 || (typeof status === "number" ? status >= 500 : true);
-    
-    // Sanitize cause if needed, or omit if we can't be sure
-    let cause = error;
-    if (error && typeof error === "object") {
-        try {
-            const json = JSON.stringify(error);
-            if (this.clientCredentials?.apiKey && json.includes(this.clientCredentials.apiKey)) {
-                // If cause contains secret, redact it or use sanitized message
-                cause = new Error(this.sanitize(json));
-            }
-        } catch {
-            // If circular or whatever, keep it as is or omit? 
-            // Safer to omit if we suspect secrets, but we only check string representation
-        }
-    }
-
-    return new ProviderError(message, {
-      status: status ?? 502,
-      code,
-      provider: this.name,
-      retryable,
-      cause
-    });
   }
 }
