@@ -258,14 +258,6 @@ Target coverage is a guide, not a religion, but as a rule of thumb:
 - Core services (gateway, orchestrator, indexer): aim for **≥ 85%** overall coverage.
 - CLI and GUI: aim for **≥ 85%** coverage on modified files, with emphasis on critical paths and newly added behaviors.
 
-### 6.1 Work tracking files (todo.md, ignored.md, planner.md)
-
-- Location: keep `todo.md`, `ignored.md`, and `planner.md` at the repository root so contributors have a single source of truth.
-- Use `todo.md` for actionable, approved work. Keep IDs sequential as you add new entries (`T1`, `T2`, …), include file locations and test expectations, and remove rows once work ships. Do not renumber existing IDs solely to close gaps after merges.
-- Use `ignored.md` for declined or out-of-scope requests. Record why the item is rejected, when to revisit it, and move it back to `todo.md` (with a new ID) if it becomes actionable.
-- Use `planner.md` for short- to medium-term planning that is not yet committed. Capture owners, dependencies, and next steps, then promote items to `todo.md` or `ignored.md` when decisions are made.
-- Avoid duplicating entries across files. Move tasks between files instead of copying; reuse the next sequential ID when moving items instead of renumbering existing rows.
-
 ---
 
 ## 7. Anti‑Patterns (don’t do this)
