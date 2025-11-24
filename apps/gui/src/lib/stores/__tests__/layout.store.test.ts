@@ -1,7 +1,7 @@
 import { get } from 'svelte/store';
 import { beforeEach, describe, expect, it, vi, afterEach } from 'vitest';
 
-vi.mock('$app/environment', () => ({ browser: true }), { virtual: true });
+vi.mock('$app/environment', () => ({ browser: true }));
 
 const createLocalStorage = () => {
   let store: Record<string, string> = {};
@@ -15,7 +15,11 @@ const createLocalStorage = () => {
     }),
     clear: vi.fn(() => {
       store = {};
-    })
+    }),
+    key: vi.fn((index: number) => Object.keys(store)[index] ?? null),
+    get length() {
+      return Object.keys(store).length;
+    }
   } satisfies Storage;
 };
 

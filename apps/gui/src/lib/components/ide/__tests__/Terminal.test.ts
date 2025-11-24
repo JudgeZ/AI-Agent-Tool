@@ -3,6 +3,41 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('$lib/config', () => ({ orchestratorBaseUrl: 'https://example.com' }));
 
+vi.mock('@xterm/xterm', () => {
+  class Terminal {
+    static instances: Terminal[] = [];
+    cols = 80;
+    rows = 24;
+    dataHandler: ((input: string) => void) | null = null;
+    write = vi.fn();
+    dispose = vi.fn();
+    loadAddon = vi.fn();
+    open = vi.fn();
+    focus = vi.fn();
+    constructor() {
+      Terminal.instances.push(this);
+    }
+    onData(handler: (input: string) => void) {
+      this.dataHandler = handler;
+    }
+  }
+
+  return { Terminal };
+});
+
+vi.mock('@xterm/addon-fit', () => {
+  class FitAddon {
+    static instances: FitAddon[] = [];
+    dispose = vi.fn();
+    fit = vi.fn();
+    constructor() {
+      FitAddon.instances.push(this);
+    }
+  }
+
+  return { FitAddon };
+});
+
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
   static readonly CONNECTING = 0;
@@ -34,14 +69,21 @@ class MockWebSocket {
   }
 }
 
-declare global {
-  // eslint-disable-next-line no-var
-  var WebSocket: typeof MockWebSocket;
-}
-
 vi.mock('$lib/stores/session', async () => {
   const { writable: createWritable } = await import('svelte/store');
-  const sessionStore = createWritable({ authenticated: true, info: { id: 'session-1' }, loading: false, error: null });
+  const sessionStore = createWritable({
+    authenticated: true,
+    info: {
+      id: 'session-1',
+      subject: 'user-1',
+      roles: [],
+      scopes: [],
+      issuedAt: 'now',
+      expiresAt: 'later'
+    },
+    loading: false,
+    error: null
+  });
   return {
     session: {
       subscribe: sessionStore.subscribe,
@@ -55,7 +97,7 @@ import Terminal from '../Terminal.svelte';
 describe('Terminal', () => {
   beforeEach(() => {
     vi.useFakeTimers();
-    vi.stubGlobal('WebSocket', MockWebSocket);
+    vi.stubGlobal('WebSocket', MockWebSocket as unknown as typeof WebSocket);
     class MockResizeObserver {
       observe = vi.fn();
       disconnect = vi.fn();
@@ -74,12 +116,28 @@ describe('Terminal', () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     MockWebSocket.instances.splice(0, MockWebSocket.instances.length);
-    const terminalModule = await import('@xterm/xterm');
+    const terminalModule = (await import('@xterm/xterm')) as unknown as {
+      Terminal: { instances: unknown[] };
+    };
     terminalModule.Terminal.instances.splice(0, terminalModule.Terminal.instances.length);
-    const fitModule = await import('@xterm/addon-fit');
+    const fitModule = (await import('@xterm/addon-fit')) as unknown as {
+      FitAddon: { instances: unknown[] };
+    };
     fitModule.FitAddon.instances.splice(0, fitModule.FitAddon.instances.length);
     const { sessionStore } = await import('$lib/stores/session');
-    sessionStore.set({ authenticated: true, info: { id: 'session-1' }, loading: false, error: null });
+    sessionStore.set({
+      authenticated: true,
+      info: {
+        id: 'session-1',
+        subject: 'user-1',
+        roles: [],
+        scopes: [],
+        issuedAt: 'now',
+        expiresAt: 'later'
+      },
+      loading: false,
+      error: null
+    });
   });
 
   it('does not tear down an in-flight terminal connection when session updates with the same id', async () => {
@@ -91,7 +149,19 @@ describe('Terminal', () => {
     expect(socket.readyState).toBe(MockWebSocket.CONNECTING);
 
     await act(() => {
-      sessionStore.set({ authenticated: true, info: { id: 'session-1' }, loading: false, error: null });
+      sessionStore.set({
+        authenticated: true,
+        info: {
+          id: 'session-1',
+          subject: 'user-1',
+          roles: [],
+          scopes: [],
+          issuedAt: 'now',
+          expiresAt: 'later'
+        },
+        loading: false,
+        error: null
+      });
     });
 
     expect(MockWebSocket.instances).toHaveLength(1);
@@ -112,7 +182,19 @@ describe('Terminal', () => {
     socket.close(1008);
 
     await act(() => {
-      sessionStore.set({ authenticated: true, info: { id: 'session-1' }, loading: false, error: null });
+      sessionStore.set({
+        authenticated: true,
+        info: {
+          id: 'session-1',
+          subject: 'user-1',
+          roles: [],
+          scopes: [],
+          issuedAt: 'now',
+          expiresAt: 'later'
+        },
+        loading: false,
+        error: null
+      });
     });
 
     expect(MockWebSocket.instances).toHaveLength(1);
@@ -156,7 +238,9 @@ describe('Terminal', () => {
     await act(() => Promise.resolve());
     const [socket] = MockWebSocket.instances;
     socket.open();
-    const terminalModule = await import('@xterm/xterm');
+    const terminalModule = (await import('@xterm/xterm')) as unknown as {
+      Terminal: { instances: Array<{ write: ReturnType<typeof vi.fn>; dataHandler: ((input: string) => void) | null }> };
+    };
     expect(terminalModule.Terminal.instances).toHaveLength(1);
     const terminal = terminalModule.Terminal.instances.at(-1) as unknown as {
       write: ReturnType<typeof vi.fn>;
@@ -255,8 +339,12 @@ describe('Terminal', () => {
     const { unmount } = render(Terminal);
     await act(() => Promise.resolve());
 
-    const terminalModule = await import('@xterm/xterm');
-    const fitModule = await import('@xterm/addon-fit');
+    const terminalModule = (await import('@xterm/xterm')) as unknown as {
+      Terminal: { instances: Array<{ dispose: ReturnType<typeof vi.fn> }> };
+    };
+    const fitModule = (await import('@xterm/addon-fit')) as unknown as {
+      FitAddon: { instances: Array<{ dispose: ReturnType<typeof vi.fn> }> };
+    };
 
     const terminal = terminalModule.Terminal.instances.at(-1)!;
     const fitAddon = fitModule.FitAddon.instances.at(-1)!;
@@ -273,7 +361,12 @@ describe('Terminal', () => {
     const [socket] = MockWebSocket.instances;
     socket.open();
 
-    const terminal = (await import('@xterm/xterm')).Terminal.instances.at(-1) as unknown as { dataHandler: ((input: string) => void) | null };
+    const terminalModule = (await import('@xterm/xterm')) as unknown as {
+      Terminal: { instances: Array<{ dataHandler: ((input: string) => void) | null }> };
+    };
+    const terminal = terminalModule.Terminal.instances.at(-1) as unknown as {
+      dataHandler: ((input: string) => void) | null;
+    };
     terminal.dataHandler?.('ls -la');
 
     expect(socket.send.mock.calls.at(-1)).toEqual([JSON.stringify({ type: 'input', data: 'ls -la' })]);

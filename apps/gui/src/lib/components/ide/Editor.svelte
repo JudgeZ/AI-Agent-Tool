@@ -147,6 +147,7 @@
   });
 
   function toWebsocketBase(httpUrl: string) {
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity
     const parsed = new URL(httpUrl);
     parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
     parsed.pathname = '';

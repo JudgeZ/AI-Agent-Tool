@@ -32,6 +32,7 @@
   let lastSentRows = 0;
 
   const toWebsocketUrl = (baseHttpUrl: string, sessionId: string): string => {
+    // eslint-disable-next-line svelte/prefer-svelte-reactivity
     const url = new URL(baseHttpUrl);
     url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
     url.pathname = '/sandbox/terminal';
@@ -168,7 +169,7 @@
     term.open(container);
     fitAddon.fit();
     term.focus();
-    term.onData((data) => {
+    term.onData((data: string) => {
       if (socket?.readyState === WebSocket.OPEN) {
         socket.send(JSON.stringify({ type: 'input', data }));
       }

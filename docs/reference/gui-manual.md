@@ -87,6 +87,19 @@ ARIA labels and focus styling are enabled on all handles so screen readers can a
 
 The IDE terminal connects to the orchestrator WebSocket at `/sandbox/terminal` using the authenticated session ID. Connection health is surfaced in the status bar with `connected`, `connecting`, `disconnected`, and `error` states. The client applies exponential backoff with up to six automatic retries for transient disconnects, halts retries when policy denials are returned, and exposes a **Reconnect** control when manual recovery is required. See [Sandbox terminal WebSocket](./sandbox-terminal.md) for the full message contract and backend safeguards.
 
+## Collaborative project chat
+
+The agent sidebar includes a real-time project chat backed by the same collaboration WebSocket used for co-editing. The client joins room IDs shaped like `chat:<tenantId>:<projectId>` and connects through `collaboration/ws` with the active session cookie. The panel automatically:
+
+- Stays idle when the user is signed out or the tenant/project context fails validation, raising a banner notification if context identifiers are invalid.
+- Shows connection state and descriptive messaging (idle, connecting, connected, disconnected, error) and lets operators manually **Retry** when a disconnect occurs.
+- Renders a signed-in identity badge derived from the session name or an obfuscated email fallback so addresses are never exposed to collaborators.
+- Strips control characters from inbound and outbound text, enforces the 2,000-character message limit, and drops malformed payloads before caching or rendering.
+- Maintains a bounded Yjs history (latest 500 stored, most recent 200 rendered) and scrolls to the newest messages automatically; caches are cleared on teardown before reconnecting.
+- Disables sending unless both the collaboration socket and session are ready; the send button reflects the sanitized, trimmed draft value shown in the textarea.
+
+Messages sync instantly across collaborators inside the same tenant/project once the connection reaches the `connected` state.
+
 ## SSE timeline
 
 The frontend listens for `plan.step` events emitted by the orchestrator at `/plan/:planId/events`. Every event updates the timeline, appending the latest status transition and highlighting the associated capability badge. Connection state is surfaced at the top of the page so operators can quickly validate the stream health.
