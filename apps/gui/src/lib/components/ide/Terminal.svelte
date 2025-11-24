@@ -12,6 +12,7 @@
   type ConnectionStatus = 'disconnected' | 'connecting' | 'connected' | 'error';
 
   const MAX_RECONNECT_ATTEMPTS = 6;
+  const MAX_RECONNECT_DELAY_MS = 30_000;
 
   let container: HTMLDivElement | null = null;
   let term: Xterm | null = null;
@@ -82,7 +83,7 @@
       return;
     }
     clearReconnectTimer();
-    const delay = Math.min(30000, 1000 * 2 ** Math.min(reconnectAttempts, 5));
+    const delay = Math.min(MAX_RECONNECT_DELAY_MS, 1000 * 2 ** Math.min(reconnectAttempts, 5));
     setStatus('connecting', `Reconnecting in ${Math.round(delay / 1000)}s...`);
     reconnectTimer = setTimeout(() => {
       reconnectAttempts += 1;

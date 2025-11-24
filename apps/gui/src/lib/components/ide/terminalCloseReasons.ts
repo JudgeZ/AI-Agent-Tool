@@ -1,3 +1,10 @@
+/**
+ * Maps terminal WebSocket close codes and reasons to user-facing halt messages.
+ *
+ * 1008 – policy/validation errors (invalid input)
+ * 1009 – oversized payloads
+ * 1011 – server-side errors (terminal unavailable or session ended)
+ */
 type TerminalHaltReason = { message: string; status: 'error' | 'disconnected' };
 
 const SESSION_ENDED_REASON = 'terminal session ended';

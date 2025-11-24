@@ -124,6 +124,17 @@ describe("TerminalManager", () => {
     process.env.SHELL = originalShell;
   });
 
+  it("falls back to default shell when provided shell path does not exist", () => {
+    const pty = new MockPty();
+    const spawnImpl = vi.fn(() => pty as any);
+    const manager = new TerminalManager({ shell: "/this/does/not/exist", spawnImpl, logger });
+    const socket = new MockSocket();
+
+    manager.attach("missing-shell-session", socket as unknown as WebSocket);
+
+    expect(spawnImpl).toHaveBeenCalledWith("/bin/bash", [], expect.any(Object));
+  });
+
   it("broadcasts terminal output to all attached clients", () => {
     const pty = new MockPty();
     const manager = new TerminalManager({ spawnImpl: () => pty as any, logger });

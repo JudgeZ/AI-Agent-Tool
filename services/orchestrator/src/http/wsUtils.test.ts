@@ -39,6 +39,15 @@ describe("resolveClientIp", () => {
 
     expect(resolveClientIp(req, ["192.168.0.0/16"])).toBe("10.0.0.5");
   });
+
+  it("ignores private forwarded entries even when remote is private", () => {
+    const req = createIncomingMessage({
+      remoteAddress: "10.0.0.5",
+      forwardedFor: "10.0.0.6",
+    });
+
+    expect(resolveClientIp(req, [])).toBe("10.0.0.5");
+  });
 });
 
 describe("isTrustedProxyIp", () => {

@@ -96,7 +96,7 @@ export function resolveClientIp(req: IncomingMessage, trustedProxyCidrs: readonl
 
     for (let i = entries.length - 1; i >= 0; i -= 1) {
       const candidate = parseIpAddress(entries[i]);
-      if (candidate && !isTrustedProxyIp(candidate, trustedProxyCidrs)) {
+      if (candidate && !isTrustedProxyIp(candidate, trustedProxyCidrs) && !isPrivateOrLoopback(candidate)) {
         return candidate.toString();
       }
     }

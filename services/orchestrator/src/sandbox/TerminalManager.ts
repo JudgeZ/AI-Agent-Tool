@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import { spawn, type IPty, type IDisposable } from "node-pty";
 import { WebSocket } from "ws";
@@ -54,7 +55,12 @@ export class TerminalManager {
     this.logger = (options.logger ?? appLogger).child({ component: "terminal" });
     const requestedShell = options.shell?.trim() || process.env.SHELL;
     if (requestedShell && path.isAbsolute(requestedShell)) {
-      this.shell = requestedShell;
+      if (fs.existsSync(requestedShell)) {
+        this.shell = requestedShell;
+      } else {
+        this.logger.warn({ shell: requestedShell }, "terminal shell path does not exist; using default");
+        this.shell = "/bin/bash";
+      }
     } else {
       if (requestedShell) {
         this.logger.warn({ shell: requestedShell }, "invalid terminal shell path; using default");
@@ -347,6 +353,7 @@ export class TerminalManager {
     const recipients: WebSocket[] = [];
     let prunedBeforeSend = false;
 
+    // Snapshot the current clients so removal during iteration does not skip entries.
     for (const client of Array.from(session.clients)) {
       if (client.readyState === WebSocket.CLOSED || client.readyState === WebSocket.CLOSING) {
         prunedBeforeSend = true;
