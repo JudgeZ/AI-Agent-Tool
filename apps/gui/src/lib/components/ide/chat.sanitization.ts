@@ -112,7 +112,7 @@ export function obfuscateEmail(email: unknown) {
   const [localPart, ...domainPartsRaw] = trimmed.split('@');
   if (!localPart || domainPartsRaw.length === 0) return '';
 
-  const domainCombined = domainPartsRaw.join('@').replace(/@+/g, '');
+  const domainCombined = domainPartsRaw.join('@');
   const domainSegments = domainCombined.split('.').filter(Boolean);
 
   if (domainSegments.length < 2 || domainSegments[domainSegments.length - 1].length < 2) {
