@@ -110,6 +110,20 @@ describe("TerminalManager", () => {
     vi.clearAllMocks();
   });
 
+  it("falls back to default shell when provided shell path is not absolute", () => {
+    const originalShell = process.env.SHELL;
+    process.env.SHELL = "";
+    const pty = new MockPty();
+    const spawnImpl = vi.fn(() => pty as any);
+    const manager = new TerminalManager({ shell: "bash", spawnImpl, logger });
+    const socket = new MockSocket();
+
+    manager.attach("shell-session", socket as unknown as WebSocket);
+
+    expect(spawnImpl).toHaveBeenCalledWith("/bin/bash", [], expect.any(Object));
+    process.env.SHELL = originalShell;
+  });
+
   it("broadcasts terminal output to all attached clients", () => {
     const pty = new MockPty();
     const manager = new TerminalManager({ spawnImpl: () => pty as any, logger });

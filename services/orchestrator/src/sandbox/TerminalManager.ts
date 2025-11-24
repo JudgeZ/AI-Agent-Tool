@@ -1,3 +1,4 @@
+import path from "node:path";
 import { spawn, type IPty, type IDisposable } from "node-pty";
 import { WebSocket } from "ws";
 import { z } from "zod";
@@ -50,11 +51,19 @@ export class TerminalManager {
   private readonly maxPendingClients: number;
 
   constructor(options: TerminalManagerOptions = {}) {
-    this.shell = options.shell?.trim() || process.env.SHELL || "/bin/bash";
+    this.logger = (options.logger ?? appLogger).child({ component: "terminal" });
+    const requestedShell = options.shell?.trim() || process.env.SHELL;
+    if (requestedShell && path.isAbsolute(requestedShell)) {
+      this.shell = requestedShell;
+    } else {
+      if (requestedShell) {
+        this.logger.warn({ shell: requestedShell }, "invalid terminal shell path; using default");
+      }
+      this.shell = "/bin/bash";
+    }
     this.cwd = options.cwd ?? process.cwd();
     this.env = { ...process.env, ...options.env };
     this.spawnImpl = options.spawnImpl ?? spawn;
-    this.logger = (options.logger ?? appLogger).child({ component: "terminal" });
     this.maxPendingClients = options.maxPendingClients ?? DEFAULT_MAX_PENDING_CLIENTS;
   }
 

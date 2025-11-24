@@ -7,11 +7,13 @@ import type { Express } from "express";
 import { loadConfig, type AppConfig } from "./config.js";
 import { initializePlanQueueRuntime } from "./queue/PlanQueueRuntime.js";
 import { appLogger, normalizeError } from "./observability/logger.js";
+import { logAuditEvent } from "./observability/audit.js";
 import { createServer as createAppServer } from "./server/app.js";
 import { SLOMonitor } from "./monitoring/SLOMonitor.js";
 import { setupCollaborationServer } from "./collaboration/index.js";
 import { setupTerminalServer } from "./sandbox/terminalServer.js";
 import { isUpgradeHandled } from "./server/upgradeMarkers.js";
+import { headerValue, requestIdentifiers, sanitizeHeaderForLog } from "./http/wsUtils.js";
 
 // Global singleton for monitoring
 export const sloMonitor = new SLOMonitor();
@@ -76,6 +78,17 @@ export async function bootstrapOrchestrator(
   setupTerminalServer(server, config);
   server.on("upgrade", (request, socket) => {
     if (!isUpgradeHandled(request)) {
+      const identifiers = requestIdentifiers(request);
+      const origin = sanitizeHeaderForLog(headerValue(request.headers["origin"]));
+      logAuditEvent({
+        action: "websocket.upgrade",
+        outcome: "denied",
+        resource: "upgrade",
+        requestId: identifiers.requestId,
+        traceId: identifiers.traceId,
+        details: { reason: "unhandled_upgrade", path: request.url ?? undefined, origin },
+      });
+      appLogger.warn({ path: request.url, origin }, "destroying unhandled upgrade socket");
       socket.destroy();
     }
   });
