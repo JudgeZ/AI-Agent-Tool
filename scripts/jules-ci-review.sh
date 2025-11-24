@@ -99,19 +99,19 @@ FINAL_ACT_RESP=""
 
 for i in {1..60}; do
   sleep 10
-
+  
   ACT_RESP=$(curl -s -H "X-Goog-Api-Key: ${API_KEY}" "${BASE_URL}/${SESSION_ID}/activities")
-
+  
   # Check for sessionCompleted activity
   IS_COMPLETED=$(echo "$ACT_RESP" | jq -r '.activities[]? | select(.sessionCompleted != null) | .name')
-
+  
   if [ ! -z "$IS_COMPLETED" ]; then
     echo "Session Completed."
     STATUS="COMPLETED"
     FINAL_ACT_RESP="$ACT_RESP"
     break
   fi
-
+  
   echo "Poll $i: Running..."
 done
 
@@ -139,7 +139,7 @@ if [ ! -f "REVIEW.md" ]; then
     echo "REVIEW.md not found in patch. Checking for text summary..."
     # Fallback to description from progressUpdated
     SUMMARY=$(echo "$FINAL_ACT_RESP" | jq -r '[.activities[]?.progressUpdated?.description | select(. != null)] | last')
-
+    
     if [ ! -z "$SUMMARY" ] && [ "$SUMMARY" != "null" ]; then
         echo "Found text summary."
         echo "# Jules Review (Summary)" > REVIEW.md
