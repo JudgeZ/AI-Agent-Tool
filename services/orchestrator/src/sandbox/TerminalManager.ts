@@ -146,6 +146,16 @@ export class TerminalManager {
   }
 
   shutdown(): void {
+    for (const [sessionId, waiting] of this.pendingClients.entries()) {
+      for (const socket of waiting) {
+        try {
+          socket.close(1011, "terminal session ended");
+        } catch (error) {
+          this.logger.warn({ sessionId, err: normalizeError(error) }, "failed to close pending terminal client");
+        }
+      }
+    }
+    this.pendingClients.clear();
     for (const sessionId of Array.from(this.sessions.keys())) {
       this.destroySession(sessionId, true);
     }

@@ -482,4 +482,20 @@ describe("TerminalManager", () => {
     expect(socket.closeReason).toBe("terminal session ended");
     expect(pty.killed).toBe(true);
   });
+
+  it("closes pending clients when shutting down during session creation", () => {
+    const manager = new TerminalManager({ spawnImpl: () => new MockPty() as any, logger });
+    (manager as any).creatingSessions.add("session-pending-shutdown");
+    const pendingSocket = new MockSocket();
+
+    const result = manager.attach("session-pending-shutdown", pendingSocket as unknown as WebSocket);
+    expect(result).toBe("pending");
+
+    manager.shutdown();
+
+    expect(pendingSocket.closed).toBe(true);
+    expect(pendingSocket.closeCode).toBe(1011);
+    expect(pendingSocket.closeReason).toBe("terminal session ended");
+    expect((manager as any).pendingClients.get("session-pending-shutdown")).toBeUndefined();
+  });
 });

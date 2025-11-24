@@ -46,7 +46,11 @@ export function setupTerminalServer(httpServer: http.Server | https.Server, conf
   const connectionLimitPerIp = resolveConnectionLimitFromEnv();
   const terminalManager = new TerminalManager({ logger: appLogger.child({ component: "terminal" }) });
 
-  httpServer.on("close", () => terminalManager.shutdown());
+  httpServer.on("close", () => {
+    terminalManager.shutdown();
+    ipConnectionCounts.clear();
+    wss.close();
+  });
 
   httpServer.on("upgrade", (request, socket, head) => {
     const { pathname, searchParams } = new URL(request.url ?? "", "http://localhost");
