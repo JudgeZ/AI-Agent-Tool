@@ -48,11 +48,7 @@ Instructions:
 1. Fetch PR changes (git fetch origin pull/${PR_NUMBER}/head:pr-${PR_NUMBER} && git checkout pr-${PR_NUMBER}).
 2. Read AGENTS.md for coding standards.
 3. Review the code changes (git diff origin/${BASE_REF}...HEAD).
-4. Create a file named 'REVIEW.md' with your summary and specific comments.
-   - Format it as Markdown.
-   - List any Critical Issues (Blocking).
-   - List Suggestions (Non-blocking).
-5. Do NOT use gh CLI.
+4. Reply with a comment on the review with your code review.
 "
 
 PAYLOAD=$(jq -n \
