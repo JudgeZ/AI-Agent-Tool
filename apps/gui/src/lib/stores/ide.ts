@@ -134,14 +134,24 @@ async function buildTree(path: string): Promise<FileNode[]> {
     try {
         const entries = await fs.readDir(path);
         const nodes: FileNode[] = [];
+        const normalizedParent = path.replace(/\\/g, '/').replace(/\/+$/, '');
 
         for (const entry of entries) {
             // Skip hidden files/dirs for now
             if (entry.name.startsWith('.')) continue;
 
+            const entryPath = entry.path?.replace(/\\/g, '/') ?? (await fs.join(normalizedParent, entry.name));
+            if (
+                entryPath !== normalizedParent &&
+                !entryPath.startsWith(`${normalizedParent}/`)
+            ) {
+                console.warn('Discarding entry outside project root', { entry, normalizedParent });
+                continue;
+            }
+
             nodes.push({
                 name: entry.name,
-                path: entry.path,
+                path: entryPath,
                 isDirectory: entry.isDirectory,
                 children: entry.isDirectory ? [] : undefined
             });

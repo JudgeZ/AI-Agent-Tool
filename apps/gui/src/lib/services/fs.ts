@@ -1,4 +1,5 @@
 import { orchestratorBaseUrl } from '$lib/config';
+import { z } from 'zod';
 
 export interface FileEntry {
   name: string;
@@ -74,7 +75,10 @@ const normalizeRemotePath = (path: string): string => {
   return `/${resolved.join('/')}`;
 };
 
-export const isDesktop = () => typeof window !== 'undefined' && Boolean((window as any).__TAURI__);
+type DesktopWindow = typeof window & { __TAURI__?: unknown };
+
+export const isDesktop = () =>
+  typeof window !== 'undefined' && Boolean((window as DesktopWindow).__TAURI__);
 
 class TauriFsService implements FsService {
   private encoder = new TextEncoder();
@@ -91,7 +95,10 @@ class TauriFsService implements FsService {
       entries.map(async (entry) => {
         if (!entry.name) return null;
 
-        const resolvedPath = entry.path ?? (await join(path, entry.name));
+        const resolvedPath =
+          'path' in entry && typeof (entry as { path?: string }).path === 'string'
+            ? (entry as { path: string }).path
+            : await join(path, entry.name);
         return {
           name: entry.name,
           path: resolvedPath,
@@ -140,6 +147,8 @@ type RemoteFsOptions = {
 class RemoteFsService implements FsService {
   private baseUrl: string;
   private fetchImpl: typeof fetch;
+  private lastRequestAt = 0;
+  private readonly minIntervalMs = 100;
 
   constructor({ baseUrl, fetchImpl }: RemoteFsOptions = {}) {
     const sanitizedBaseUrl = normalizeRemoteBaseUrl(baseUrl ?? orchestratorBaseUrl);
@@ -147,10 +156,20 @@ class RemoteFsService implements FsService {
     this.fetchImpl = fetchImpl ?? fetch;
   }
 
+  private async throttle() {
+    const now = Date.now();
+    const waitMs = Math.max(0, this.lastRequestAt + this.minIntervalMs - now);
+    if (waitMs > 0) {
+      await new Promise((resolve) => setTimeout(resolve, waitMs));
+    }
+    this.lastRequestAt = Date.now();
+  }
+
   private async request(path: string, init?: RequestInit): Promise<Response> {
     let response: Response;
 
     try {
+      await this.throttle();
       response = await this.fetchImpl(`${this.baseUrl}${path}`, {
         credentials: 'include',
         ...init,
@@ -175,29 +194,48 @@ class RemoteFsService implements FsService {
   async readDir(path: string): Promise<FileEntry[]> {
     const normalizedPath = normalizeRemotePath(path);
     const response = await this.request(`/list?path=${encodeURIComponent(normalizedPath)}`);
-    const payload = (await response.json()) as { entries?: FileEntry[] };
-    if (!Array.isArray(payload.entries)) {
+    const payload = await response.json();
+
+    const entrySchema = z.object({
+      name: z.string().min(1),
+      path: z.string().optional(),
+      isDirectory: z.boolean().optional()
+    });
+    const parsed = z.object({ entries: z.array(entrySchema) }).safeParse(payload);
+
+    if (!parsed.success) {
       throw new Error('Remote FS returned an invalid directory listing');
     }
-    return payload.entries.map((entry) => {
-      const resolvedPath = this.normalizePath(entry.path ?? this.joinSync(normalizedPath, entry.name));
 
-      return {
-        name: entry.name,
-        path: resolvedPath,
-        isDirectory: Boolean(entry.isDirectory)
-      } satisfies FileEntry;
-    });
+    return parsed.data.entries
+      .filter((entry) => entry.name)
+      .map((entry) => {
+        // Note: normalizedPath is the parent directory passed to readDir.
+        const pathSource = entry.path || entry.name;
+        const pathCandidate = pathSource.startsWith('/')
+          ? pathSource
+          : this.joinSync(normalizedPath, pathSource);
+        const resolvedPath = this.normalizePath(pathCandidate);
+
+        return {
+          name: entry.name,
+          path: resolvedPath,
+          isDirectory: Boolean(entry.isDirectory)
+        } satisfies FileEntry;
+      });
   }
 
   async readFile(path: string): Promise<string> {
     const normalizedPath = normalizeRemotePath(path);
     const response = await this.request(`/read?path=${encodeURIComponent(normalizedPath)}`);
-    const payload = (await response.json()) as { content?: string };
-    if (typeof payload.content !== 'string') {
+    const payload = await response.json();
+
+    const schema = z.object({ content: z.string() });
+    const parsed = schema.safeParse(payload);
+    if (!parsed.success) {
       throw new Error('Remote FS returned an invalid file payload');
     }
-    return payload.content;
+    return parsed.data.content;
   }
 
   async writeFile(path: string, content: string): Promise<void> {
@@ -229,8 +267,14 @@ class RemoteFsService implements FsService {
     return remoteFsRoot;
   }
 
+  /**
+   * Temporary implementation: uses window.prompt for directory selection.
+   * This provides a poor user experience and is inconsistent with the native picker in TauriFsService.
+   * TODO: Replace with a proper modal dialog component.
+   * In SSR contexts, returns null to indicate directory picking is not supported.
+   */
   async pickDirectory(): Promise<string | null> {
-    if (typeof window === 'undefined') return remoteFsRoot;
+    if (typeof window === 'undefined') return null;
     const choice = window.prompt('Enter remote directory path', remoteFsRoot);
     return choice ? normalizeRemotePath(choice.trim()) : null;
   }
@@ -242,6 +286,10 @@ export const fsService = (): FsService => {
   if (cachedService) return cachedService;
   cachedService = isDesktop() ? new TauriFsService() : new RemoteFsService();
   return cachedService;
+};
+
+export const resetFsService = () => {
+  cachedService = null;
 };
 
 export const __fsTest = {

@@ -22,3 +22,4 @@
 
 | id | status | description | source | file_location | line_numbers | impl_plan | test_impact | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| T1 | todo | Add server-side validation and path anchoring for /remote-fs endpoints to enforce workspace root | Reviewer: "Verify orchestrator Remote FS endpoints have server-side path validation" | services/orchestrator (remote-fs API) | n/a | Define schemas/root checks for list/read/write and reject traversal; add auth/validation middleware. | requires new tests | GUI now validates client-side; backend implementation needed to satisfy security guidance. |

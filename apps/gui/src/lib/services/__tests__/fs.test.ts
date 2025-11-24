@@ -24,8 +24,11 @@ import { __fsTest } from '../fs';
 
 const { RemoteFsService, TauriFsService, normalizeRemoteRoot, normalizeRemotePath } = __fsTest;
 
+const createFetchMock = (response: Response) => vi.fn<typeof fetch>().mockResolvedValue(response);
+
 describe('fs service', () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     vi.clearAllMocks();
@@ -45,7 +48,7 @@ describe('fs service', () => {
       json: vi.fn().mockResolvedValue({ entries: [] })
     } as unknown as Response;
 
-    const fetchSpy = vi.fn().mockResolvedValue(mockResponse);
+    const fetchSpy = createFetchMock(mockResponse);
     vi.stubGlobal('fetch', fetchSpy);
 
     const service = new RemoteFsService();
@@ -66,8 +69,8 @@ describe('fs service', () => {
       json: vi.fn().mockResolvedValue({ entries: [] })
     } as unknown as Response;
 
-    const fetchSpy = vi.fn().mockResolvedValue(mockResponse);
-    const service = new RemoteFsService({ baseUrl: 'http://example.com///', fetchImpl: fetchSpy as any });
+    const fetchSpy = createFetchMock(mockResponse);
+    const service = new RemoteFsService({ baseUrl: 'http://example.com///', fetchImpl: fetchSpy });
 
     await service.readDir('/workspace');
 
@@ -85,8 +88,8 @@ describe('fs service', () => {
       json: vi.fn().mockResolvedValue({ entries: [] })
     } as unknown as Response;
 
-    const fetchSpy = vi.fn().mockResolvedValue(mockResponse);
-    const service = new RemoteFsService({ baseUrl: '   ///   ', fetchImpl: fetchSpy as any });
+    const fetchSpy = createFetchMock(mockResponse);
+    const service = new RemoteFsService({ baseUrl: '   ///   ', fetchImpl: fetchSpy });
 
     await service.readDir('/workspace');
 
@@ -120,7 +123,7 @@ describe('fs service', () => {
   });
 
   it('fills missing entry paths using normalized joins', async () => {
-    const fetchSpy = vi.fn().mockResolvedValue({
+    const fetchSpy = createFetchMock({
       ok: true,
       json: vi.fn().mockResolvedValue({
         entries: [
@@ -130,7 +133,7 @@ describe('fs service', () => {
       })
     } as unknown as Response);
 
-    const service = new RemoteFsService({ baseUrl: 'http://example.com', fetchImpl: fetchSpy as any });
+    const service = new RemoteFsService({ baseUrl: 'http://example.com', fetchImpl: fetchSpy });
     const entries = await service.readDir('/workspace//project/');
 
     expect(entries).toEqual([
@@ -139,8 +142,34 @@ describe('fs service', () => {
     ]);
   });
 
+  it('rejects malformed directory payloads', async () => {
+    const fetchSpy = createFetchMock({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ entries: [{ name: '', isDirectory: true }] })
+    } as unknown as Response);
+
+    const service = new RemoteFsService({ baseUrl: 'http://example.com', fetchImpl: fetchSpy });
+
+    await expect(service.readDir('/workspace')).rejects.toThrow(
+      'Remote FS returned an invalid directory listing'
+    );
+  });
+
+  it('rejects malformed file payloads', async () => {
+    const fetchSpy = createFetchMock({
+      ok: true,
+      json: vi.fn().mockResolvedValue({ content: 123 })
+    } as unknown as Response);
+
+    const service = new RemoteFsService({ baseUrl: 'http://example.com', fetchImpl: fetchSpy });
+
+    await expect(service.readFile('/workspace/file.txt')).rejects.toThrow(
+      'Remote FS returned an invalid file payload'
+    );
+  });
+
   it('normalizes remote entry paths provided by the server', async () => {
-    const fetchSpy = vi.fn().mockResolvedValue({
+    const fetchSpy = createFetchMock({
       ok: true,
       json: vi.fn().mockResolvedValue({
         entries: [
@@ -150,7 +179,7 @@ describe('fs service', () => {
       })
     } as unknown as Response);
 
-    const service = new RemoteFsService({ baseUrl: 'http://example.com', fetchImpl: fetchSpy as any });
+    const service = new RemoteFsService({ baseUrl: 'http://example.com', fetchImpl: fetchSpy });
     const entries = await service.readDir('/workspace/project/child');
 
     expect(entries).toEqual([
@@ -160,12 +189,12 @@ describe('fs service', () => {
   });
 
   it('anchors remote requests to the configured root', async () => {
-    const fetchSpy = vi.fn().mockResolvedValue({
+    const fetchSpy = createFetchMock({
       ok: true,
       json: vi.fn().mockResolvedValue({ content: 'data' })
     } as unknown as Response);
 
-    const service = new RemoteFsService({ baseUrl: 'http://example.com', fetchImpl: fetchSpy as any });
+    const service = new RemoteFsService({ baseUrl: 'http://example.com', fetchImpl: fetchSpy });
 
     await service.readFile('/etc/passwd');
 
@@ -178,12 +207,12 @@ describe('fs service', () => {
   });
 
   it('normalizes joined remote paths inside the root', async () => {
-    const fetchSpy = vi.fn().mockResolvedValue({
+    const fetchSpy = createFetchMock({
       ok: true,
       json: vi.fn().mockResolvedValue({ entries: [] })
     } as unknown as Response);
 
-    const service = new RemoteFsService({ baseUrl: 'http://example.com', fetchImpl: fetchSpy as any });
+    const service = new RemoteFsService({ baseUrl: 'http://example.com', fetchImpl: fetchSpy });
 
     const joined = await service.join('/workspace/project', '../secrets/../file.txt');
 
@@ -193,11 +222,38 @@ describe('fs service', () => {
   it('sanitizes picked directories to remain within the root', async () => {
     const promptSpy = vi.spyOn(window, 'prompt').mockReturnValue('/../../escape');
 
-    const service = new RemoteFsService({ baseUrl: 'http://example.com', fetchImpl: vi.fn() as any });
+    const service = new RemoteFsService({ baseUrl: 'http://example.com', fetchImpl: createFetchMock({} as Response) });
     const selection = await service.pickDirectory();
 
     expect(selection).toBe('/workspace/escape');
     promptSpy.mockRestore();
+  });
+
+  it('rate limits sequential remote requests to avoid bursts', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+
+    const responses = [
+      { ok: true, json: vi.fn().mockResolvedValue({ entries: [] }) },
+      { ok: true, json: vi.fn().mockResolvedValue({ content: 'data' }) }
+    ] as unknown as Response[];
+
+    const callTimes: number[] = [];
+    const fetchSpy = vi
+      .fn<typeof fetch>()
+      .mockImplementation(async () => {
+        callTimes.push(Date.now());
+        const next = responses.shift();
+        return (next ?? responses[0]) as Response;
+      });
+
+    const service = new RemoteFsService({ baseUrl: 'http://example.com', fetchImpl: fetchSpy });
+
+    const requests = Promise.all([service.readDir('/workspace'), service.readFile('/workspace/file.txt')]);
+    await vi.runAllTimersAsync();
+    await requests;
+
+    expect(callTimes[1] - callTimes[0]).toBeGreaterThanOrEqual(100);
   });
 
   it('normalizes arbitrary remote paths for reuse', () => {
@@ -207,13 +263,13 @@ describe('fs service', () => {
   });
 
   it('issues remote writes with normalized payloads', async () => {
-    const fetchSpy = vi.fn().mockResolvedValue({
+    const fetchSpy = createFetchMock({
       ok: true,
       json: vi.fn(),
       text: vi.fn()
     } as unknown as Response);
 
-    const service = new RemoteFsService({ baseUrl: 'http://example.com/', fetchImpl: fetchSpy as any });
+    const service = new RemoteFsService({ baseUrl: 'http://example.com/', fetchImpl: fetchSpy });
 
     await service.writeFile('/workspace//project/../file.txt', 'content');
 
@@ -227,7 +283,7 @@ describe('fs service', () => {
   });
 
   it('reports the configured remote root by default', async () => {
-    const service = new RemoteFsService({ baseUrl: 'http://example.com', fetchImpl: vi.fn() as any });
+    const service = new RemoteFsService({ baseUrl: 'http://example.com', fetchImpl: createFetchMock({} as Response) });
 
     await expect(service.getDefaultRoot()).resolves.toBe('/workspace');
   });
@@ -253,7 +309,7 @@ describe('fs service', () => {
     it('reads and writes files with encoder and decoder helpers', async () => {
       const encoded = new TextEncoder().encode('hello');
       tauriFsMock.readFile.mockResolvedValue(encoded);
-      tauriFsMock.writeFile.mockResolvedValue();
+      tauriFsMock.writeFile.mockResolvedValue(undefined);
 
       const service = new TauriFsService();
 

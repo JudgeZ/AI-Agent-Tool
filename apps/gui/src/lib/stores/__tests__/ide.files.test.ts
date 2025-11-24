@@ -1,5 +1,5 @@
 import { get } from 'svelte/store';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 
 import { fsService } from '$lib/services/fs';
 
@@ -44,10 +44,12 @@ vi.mock('$lib/services/fs', () => {
 });
 
 const mockFs = fsService() as unknown as {
-  readDir: ReturnType<typeof vi.fn>;
-  readFile: ReturnType<typeof vi.fn>;
-  writeFile: ReturnType<typeof vi.fn>;
+  readDir: MockInstance;
+  readFile: MockInstance;
+  writeFile: MockInstance;
 };
+
+type FileEntries = Array<{ name: string; isDirectory: boolean; path?: string }>;
 
 const decoder = new TextDecoder();
 
@@ -82,7 +84,7 @@ describe('ide store file operations and helpers', () => {
     vi.mocked(mockFs.readDir).mockResolvedValue([
       { name: 'src', isDirectory: true },
       { name: 'README.md', isDirectory: false }
-    ] as unknown as Awaited<ReturnType<typeof mockFs.readDir>>);
+    ] as unknown as FileEntries);
 
     const projectPath = '/workspace/demo';
     await loadProject(projectPath);
@@ -103,7 +105,7 @@ describe('ide store file operations and helpers', () => {
     vi.mocked(mockFs.readDir).mockResolvedValue([
       { name: 'main.ts', isDirectory: false },
       { name: 'lib', isDirectory: true }
-    ] as unknown as Awaited<ReturnType<typeof mockFs.readDir>>);
+    ] as unknown as FileEntries);
 
     await loadProject('/workspace/demo');
     const [root] = get(fileTree);

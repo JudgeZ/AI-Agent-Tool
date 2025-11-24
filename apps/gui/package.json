@@ -28,7 +28,8 @@
     "y-monaco": "^0.1.6",
     "y-protocols": "^1.0.6",
     "y-websocket": "^3.0.0",
-    "yjs": "^13.6.27"
+    "yjs": "^13.6.27",
+    "zod": "^4.1.13"
   },
   "devDependencies": {
     "@eslint/js": "^9.39.1",
