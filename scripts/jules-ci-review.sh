@@ -1,4 +1,5 @@
 #!/bin/bash
+set -x # Enable debug
 set -e
 
 PR_NUMBER="${1}"
@@ -32,36 +33,43 @@ Instructions:
 echo "Launching session..."
 # Capture stdout and stderr
 OUTPUT=$(jules new --repo . "$PROMPT" 2>&1)
+echo "DEBUG: Output from jules new:"
 echo "$OUTPUT"
+echo "--------------------------------"
 
-# Extract session ID. Format usually includes "sessions/<number>"
-SESSION_ID=$(echo "$OUTPUT" | grep -oE "sessions/[0-9]+" | head -n 1)
+# Extract session ID.
+# Try to find 'sessions/12345'
+RAW_ID=$(echo "$OUTPUT" | grep -oE "sessions/[0-9]+" | head -n 1)
 
-if [ -z "$SESSION_ID" ]; then
-    echo "Error: Could not extract Session ID."
-    # Fallback: check if the command failed
+# If failed, look for any long number sequence (e.g. 15+ digits)
+if [ -z "$RAW_ID" ]; then
+  RAW_ID=$(echo "$OUTPUT" | grep -oE "[0-9]{15,}" | head -n 1)
+fi
+
+if [ -z "$RAW_ID" ]; then
+    echo "Error: Could not extract Session ID from output."
     exit 1
 fi
 
-echo "Session ID: $SESSION_ID"
+# Clean ID (remove sessions/ prefix)
+SESSION_ID=${RAW_ID##sessions/}
+
+echo "Extracted Session ID: $SESSION_ID"
 
 # Poll loop
 echo "Waiting for session to complete..."
 STATUS="UNKNOWN"
 for i in {1..60}; do
     sleep 10
-    # List sessions and find ours.
-    # We assume 'jules remote list --session' output contains the ID and a status column.
-    LIST_OUTPUT=$(jules remote list --session 2>/dev/null || true)
+
+    # Check remote list
+    LIST_OUTPUT=$(jules remote list --session 2>&1 || true)
+
+    # Grep for the ID
     LINE=$(echo "$LIST_OUTPUT" | grep "$SESSION_ID" || true)
 
-    # If output is empty, maybe auth failed in list?
-    if [ -z "$LIST_OUTPUT" ]; then
-       echo "Warning: failed to list sessions."
-    fi
+    echo "DEBUG: Status check $i: $LINE"
 
-    # Simple check for keywords
-    # If the session disappears or is marked done
     if [[ "$LINE" == *"COMPLETED"* ]] || [[ "$LINE" == *"SUCCEEDED"* ]] || [[ "$LINE" == *"DONE"* ]]; then
         STATUS="COMPLETED"
         break
@@ -70,16 +78,13 @@ for i in {1..60}; do
         echo "Session failed: $LINE"
         exit 1
     fi
-
-    echo "Status check $i: $LINE"
 done
 
 if [ "$STATUS" != "COMPLETED" ]; then
-    echo "Timed out waiting for session or status unknown."
-    # Try to pull anyway, maybe it finished?
+    echo "Timed out waiting for session or status unknown. Attempting pull anyway..."
 fi
 
-echo "Pulling results..."
+echo "Pulling results for Session $SESSION_ID..."
 jules remote pull --session "$SESSION_ID" --apply
 
 if [ -f "REVIEW.md" ]; then
@@ -88,5 +93,6 @@ if [ -f "REVIEW.md" ]; then
     echo "Done."
 else
     echo "Error: REVIEW.md not generated."
+    ls -la # Debug: show what files exist
     exit 1
 fi
