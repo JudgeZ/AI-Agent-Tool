@@ -1,4 +1,5 @@
 import { vi } from 'vitest';
+import { obfuscateEmail } from '../../chat.sanitization';
 
 export const defaultSessionState = {
   authenticated: true,
@@ -222,17 +223,7 @@ export async function clearCollaborationMocks() {
 }
 
 export function buildObfuscatedExpectation(email: string) {
-  const trimmed = email.trim();
-  const atIndex = trimmed.indexOf('@');
-  const local = trimmed.slice(0, atIndex);
-  const domain = trimmed.slice(atIndex + 1);
-  const safeLocal = `${local[0]}***`;
-  const safeDomain = domain
-    .split('.')
-    .filter(Boolean)
-    .map((part) => (part.length <= 2 ? `${part[0]}*` : `${part[0]}***${part.slice(-1)}`))
-    .join('.');
-  return `${safeLocal}@${safeDomain}`;
+  return obfuscateEmail(email);
 }
 
 export function buildLongMessage(length: number, fill = 'x') {
@@ -263,4 +254,5 @@ export const latestMessageLog = async () => {
   return array;
 };
 
+// Note: JSON-based structuredClone fallback does not support functions, symbols, circular refs, or special objects.
 vi.stubGlobal('structuredClone', globalThis.structuredClone ?? ((value: unknown) => JSON.parse(JSON.stringify(value))));

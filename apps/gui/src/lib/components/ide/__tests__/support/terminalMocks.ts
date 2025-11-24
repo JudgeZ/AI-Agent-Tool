@@ -15,6 +15,7 @@ export class MockTerminal {
   }
   onData(handler: (input: string) => void) {
     this.dataHandler = handler;
+    return { dispose: () => { this.dataHandler = null; } };
   }
 }
 

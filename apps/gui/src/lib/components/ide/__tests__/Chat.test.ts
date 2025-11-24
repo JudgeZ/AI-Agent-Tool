@@ -319,6 +319,13 @@ describe('Chat collaboration', () => {
     expect((messageLog.items[0] as { userName: string }).userName).toBe(obfuscated);
   });
 
+  it('obfuscates emails with multiple @ symbols without dropping content', async () => {
+    const complexEmail = 'person@test@example.com';
+    const obfuscated = buildObfuscatedExpectation(complexEmail);
+
+    expect(obfuscated).toBe('p***@t***e.c***m');
+  });
+
   it('obfuscates session names that look like emails before displaying or sending', async () => {
     await act(() =>
       resetSessionState({

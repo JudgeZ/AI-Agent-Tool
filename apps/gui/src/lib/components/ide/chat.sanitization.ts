@@ -47,7 +47,8 @@ export function sanitizeIncomingMessage(message: unknown): ChatMessage | null {
     return null;
   }
 
-  const safeText = sanitizeMessageText(candidate.text).slice(0, MAX_MESSAGE_LENGTH).trim();
+  const truncated = candidate.text.slice(0, MAX_MESSAGE_LENGTH);
+  const safeText = sanitizeMessageText(truncated).trim();
   if (!safeText) {
     console.warn('Dropping chat message with unsafe content');
     return null;
@@ -106,17 +107,20 @@ export function obfuscateEmail(email: unknown) {
   if (typeof email !== 'string') return '';
 
   const trimmed = email.trim();
-  if (!trimmed || !trimmed.includes('@')) return '';
+  if (!trimmed || hasControlCharacters(trimmed)) return '';
 
-  const atIndex = trimmed.indexOf('@');
-  const localPart = trimmed.slice(0, atIndex);
-  const domain = trimmed.slice(atIndex + 1);
-  if (!localPart || !domain) return '';
+  const [localPart, ...domainPartsRaw] = trimmed.split('@');
+  if (!localPart || domainPartsRaw.length === 0) return '';
+
+  const domainCombined = domainPartsRaw.join('@').replace(/@+/g, '');
+  const domainSegments = domainCombined.split('.').filter(Boolean);
+
+  if (domainSegments.length < 2 || domainSegments[domainSegments.length - 1].length < 2) {
+    return '';
+  }
 
   const safeLocal = `${localPart[0]}***`;
-  const safeDomain = domain
-    .split('.')
-    .filter(Boolean)
+  const safeDomain = domainSegments
     .map((part) => {
       if (part.length <= 2) {
         return `${part[0]}*`;

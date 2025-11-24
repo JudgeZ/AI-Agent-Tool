@@ -28,10 +28,8 @@ const mockAnimationFrame = () => {
     callbacks.set(id, cb);
     return id;
   });
-  const cancelSpy = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id?: number) => {
-    if (typeof id === 'number') {
-      callbacks.delete(id);
-    }
+  const cancelSpy = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id: number) => {
+    callbacks.delete(id);
   });
 
   const flushFrames = () => {

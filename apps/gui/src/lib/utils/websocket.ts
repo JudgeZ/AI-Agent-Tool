@@ -1,7 +1,14 @@
 export function toWebsocketBase(httpUrl: string): string {
-  // eslint-disable-next-line svelte/prefer-svelte-reactivity
   const parsed = new URL(httpUrl);
-  parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
+
+  if (parsed.protocol === 'https:') {
+    parsed.protocol = 'wss:';
+  } else if (parsed.protocol === 'http:') {
+    parsed.protocol = 'ws:';
+  } else if (parsed.protocol !== 'ws:' && parsed.protocol !== 'wss:') {
+    throw new Error(`Unsupported websocket base protocol: ${parsed.protocol}`);
+  }
+
   parsed.pathname = '';
   parsed.search = '';
   parsed.hash = '';

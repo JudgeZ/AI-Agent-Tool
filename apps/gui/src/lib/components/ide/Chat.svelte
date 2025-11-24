@@ -12,8 +12,7 @@
   import {
     computeStatusLabel,
     buildRoomName,
-    resolveConnectionMessage,
-    connectionMessageDefaults
+    resolveConnectionMessage
   } from './chat.connection';
   import { buildRenderedMessages, pruneHistory, areMessagesEqual } from './chat.crdt';
   import {
@@ -51,6 +50,9 @@
   let sanitizedDraft = '';
   let sanitizedDraftTrimmed = '';
   let providerConnected = false;
+  let sanitizedSessionUserId = sanitizeIdentifier(sessionValue.info?.id, MAX_USER_ID_LENGTH);
+  let lastMessageAt = 0;
+  const MESSAGE_SEND_COOLDOWN_MS = 500;
   // Internal caches; reactive tracking is not required.
   // eslint-disable-next-line svelte/prefer-svelte-reactivity
   const messageCaches: MessageCaches = {
@@ -142,7 +144,7 @@
     setConnectionState('connecting');
 
     try {
-      doc = new Y.Doc({ gc: false });
+      doc = new Y.Doc();
       messageArray = doc.getArray<ChatMessage>('messages');
       syncMessages();
       messageArray.observe(syncMessages);
@@ -172,7 +174,7 @@
       });
 
       provider.on('connection-error', () => {
-        setConnectionState('error');
+        teardown('error', 'Chat connection failed. Please retry.');
         notifyError('Chat connection failed. Please retry.', { timeoutMs: 8000 });
       });
     } catch (error) {
@@ -246,7 +248,7 @@
     const nextDisplayName = resolveUserName(nextSession);
     const didUpdateDisplayName = nextDisplayName !== userDisplayName;
 
-    if (nextDisplayName !== userDisplayName) {
+    if (didUpdateDisplayName) {
       userDisplayName = nextDisplayName;
     }
 
@@ -302,13 +304,6 @@
     }
   }
 
-  function handleInput(event: Event) {
-    const target = (event.currentTarget ?? event.target) as HTMLTextAreaElement | null;
-    if (!target) return;
-
-    updateDraft(target.value);
-  }
-
   $: if (messageInput !== sanitizedDraft) {
     updateDraft(messageInput);
   }
@@ -339,12 +334,6 @@
   }
 
   function isCollaborationReady() {
-    const connectionStatus = provider?.wsconnected === true;
-
-    if (connectionStatus !== providerConnected) {
-      providerConnected = connectionStatus;
-    }
-
     return (
       Boolean(messageArray) &&
       Boolean(doc) &&
@@ -354,6 +343,11 @@
   }
 
   function sendMessage() {
+    if (!isCollaborationSessionValid(sessionValue)) {
+      notifyError('Your session is invalid. Please sign in again.', { timeoutMs: 6000 });
+      return;
+    }
+
     if (!isCollaborationReady()) return;
 
     updateDraft(messageInput);
@@ -361,6 +355,11 @@
     const trimmedDraft = sanitizedDraftTrimmed;
 
     if (!trimmedDraft) return;
+
+    const now = Date.now();
+    if (now - lastMessageAt < MESSAGE_SEND_COOLDOWN_MS) {
+      return;
+    }
 
     if (trimmedDraft.length > MAX_MESSAGE_LENGTH) {
       notifyError(`Messages are limited to ${MAX_MESSAGE_LENGTH} characters.`, { timeoutMs: 6000 });
@@ -386,10 +385,13 @@
       messageArray?.push([message]);
     });
 
+    lastMessageAt = now;
     updateDraft('');
   }
 
-  $: canSend = isCollaborationReady() && sanitizeMessageText(messageInput).trim().length > 0;
+  $: sanitizedSessionUserId = sanitizeIdentifier(sessionValue.info?.id, MAX_USER_ID_LENGTH);
+
+  $: canSend = isCollaborationReady() && sanitizedDraftTrimmed.length > 0;
 
   $: if (connectionState === 'connected' && messageInputEl) {
     messageInputEl.focus();
@@ -455,7 +457,7 @@
       <p class="empty">No messages yet. Start the conversation!</p>
     {:else}
       {#each messages as message (message.id)}
-        <article class={`message ${message.userId === sessionValue.info?.id ? 'mine' : ''}`}>
+        <article class={`message ${message.userId === sanitizedSessionUserId ? 'mine' : ''}`}>
           <header>
             <div class="identity">
               <span class="avatar" aria-hidden="true">{message.userName.slice(0, 1).toUpperCase()}</span>
@@ -477,7 +479,7 @@
       rows={2}
       aria-label="Chat message"
       title="Press Enter to send, Shift+Enter for a new line"
-      on:input={handleInput}
+      maxlength={MAX_MESSAGE_LENGTH}
       on:keydown={(event) => {
         if (event.key === 'Enter' && !event.shiftKey) {
           event.preventDefault();

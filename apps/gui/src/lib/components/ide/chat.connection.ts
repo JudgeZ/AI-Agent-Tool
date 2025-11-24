@@ -1,5 +1,6 @@
 import type { SessionState } from '$lib/stores/session';
 
+import { MAX_ROOM_NAME_LENGTH } from './chat.constants';
 import type { ConnectionState } from './chat.types';
 
 export const connectionMessageDefaults: Record<
@@ -19,7 +20,7 @@ export function buildRoomName(
   sessionValue: SessionState,
   safeTenantId: string,
   safeProjectId: string
-) {
+): string {
   const params = new URLSearchParams({
     roomId,
     authMode: 'session-cookie',
@@ -33,7 +34,7 @@ export function buildRoomName(
 
   const roomName = `collaboration/ws?${params.toString()}`;
 
-  if (roomName.length > 2048) {
+  if (roomName.length > MAX_ROOM_NAME_LENGTH) {
     throw new Error('chat room name exceeds length limits');
   }
 
