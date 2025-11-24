@@ -64,7 +64,8 @@ Instructions:
     k. Review code quality.
     l. Review styling.
     m. Review for adherence to repo standards.
-4. Your final comment *ALWAYS* will be your findings organized into blocking issues and non-blocking suggestions.
+4. Comment on pull/${PR_NUMBER} with your findings organized into blocking issues and non-blocking suggestions.
+    a. If you have no findings, respond with LGTM.
 "
 
 PAYLOAD=$(jq -n \
