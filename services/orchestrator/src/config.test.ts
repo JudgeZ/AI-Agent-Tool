@@ -254,6 +254,9 @@ server:
   sseSendTimeoutMs: 1500
   sseMaxBufferEvents: 42
   sseMaxBufferBytes: 32768
+  remoteFs:
+    root: /var/workspace
+    maxWriteBytes: 2048
   rateLimits:
     plan:
       windowMs: 120000
@@ -268,6 +271,12 @@ server:
     auth:
       windowMs: 45000
       maxRequests: 50
+    secrets:
+      windowMs: 70000
+      maxRequests: 15
+    remoteFs:
+      windowMs: 20000
+      maxRequests: 10
   sseQuotas:
     perIp: 3
     perSubject: 1
@@ -360,6 +369,10 @@ observability:
     expect(config.server.sseSendTimeoutMs).toBe(1500);
     expect(config.server.sseMaxBufferEvents).toBe(42);
     expect(config.server.sseMaxBufferBytes).toBe(32768);
+    expect(config.server.remoteFs).toEqual({
+      root: path.resolve("/var/workspace"),
+      maxWriteBytes: 2048,
+    });
     expect(config.server.rateLimits.backend).toEqual({ provider: "memory" });
     expect(config.server.rateLimits.plan).toEqual({
       windowMs: 120000,
@@ -377,7 +390,19 @@ observability:
       windowMs: 45000,
       maxRequests: 50,
       identityWindowMs: 60000,
-      identityMaxRequests: 20
+      identityMaxRequests: 20,
+    });
+    expect(config.server.rateLimits.secrets).toEqual({
+      windowMs: 70000,
+      maxRequests: 15,
+      identityWindowMs: null,
+      identityMaxRequests: null,
+    });
+    expect(config.server.rateLimits.remoteFs).toEqual({
+      windowMs: 20000,
+      maxRequests: 10,
+      identityWindowMs: null,
+      identityMaxRequests: null,
     });
     expect(config.server.sseQuotas).toEqual({ perIp: 3, perSubject: 1 });
     expect(config.server.cors.allowedOrigins).toEqual(["https://ui.example.com"]);
@@ -519,6 +544,10 @@ runMode: enterprise
       tenantMappings: {}
     });
     expect(config.planState.backend).toBe("postgres");
+    expect(config.server.remoteFs).toEqual({
+      root: path.resolve("/workspace"),
+      maxWriteBytes: 1_048_576,
+    });
     expect(config.server.rateLimits.backend).toEqual({ provider: "memory" });
     expect(config.server.rateLimits.plan).toEqual({
       windowMs: 60000,
@@ -537,6 +566,18 @@ runMode: enterprise
       maxRequests: 120,
       identityWindowMs: 60000,
       identityMaxRequests: 20
+    });
+    expect(config.server.rateLimits.secrets).toEqual({
+      windowMs: 60000,
+      maxRequests: 60,
+      identityWindowMs: 60000,
+      identityMaxRequests: 10,
+    });
+    expect(config.server.rateLimits.remoteFs).toEqual({
+      windowMs: 60000,
+      maxRequests: 120,
+      identityWindowMs: null,
+      identityMaxRequests: null,
     });
     expect(config.server.sseSendTimeoutMs).toBe(2500);
     expect(config.server.sseMaxBufferEvents).toBe(55);
@@ -639,6 +680,18 @@ runMode: enterprise
       maxRequests: 20,
       identityWindowMs: 4000,
       identityMaxRequests: 5,
+    });
+    expect(config.server.rateLimits.secrets).toEqual({
+      windowMs: 60000,
+      maxRequests: 60,
+      identityWindowMs: 60000,
+      identityMaxRequests: 10,
+    });
+    expect(config.server.rateLimits.remoteFs).toEqual({
+      windowMs: 60000,
+      maxRequests: 120,
+      identityWindowMs: null,
+      identityMaxRequests: null,
     });
   });
 
@@ -806,6 +859,10 @@ secrets:
     expect(config.secrets.backend).toBe("localfile");
     expect(config.providers.rateLimit).toEqual({ windowMs: 60000, maxRequests: 120 });
     expect(config.providers.circuitBreaker).toEqual({ failureThreshold: 5, resetTimeoutMs: 30000 });
+    expect(config.server.remoteFs).toEqual({
+      root: path.resolve("/workspace"),
+      maxWriteBytes: 1_048_576,
+    });
     expect(config.server.rateLimits.backend).toEqual({ provider: "memory" });
     expect(config.server.rateLimits.plan).toEqual({
       windowMs: 60000,
@@ -824,6 +881,18 @@ secrets:
       maxRequests: 120,
       identityWindowMs: 60000,
       identityMaxRequests: 20
+    });
+    expect(config.server.rateLimits.secrets).toEqual({
+      windowMs: 60000,
+      maxRequests: 60,
+      identityWindowMs: 60000,
+      identityMaxRequests: 10,
+    });
+    expect(config.server.rateLimits.remoteFs).toEqual({
+      windowMs: 60000,
+      maxRequests: 120,
+      identityWindowMs: null,
+      identityMaxRequests: null,
     });
     expect(config.observability.tracing).toEqual({
       enabled: false,

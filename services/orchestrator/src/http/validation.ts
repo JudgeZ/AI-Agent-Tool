@@ -17,6 +17,8 @@ const MAX_SESSION_ID_LENGTH = 64;
 const MAX_SECRET_LABEL_ENTRIES = 20;
 const MAX_SECRET_VALUE_LENGTH = 8192;
 const MAX_TENANT_ID_LENGTH = 128;
+const MAX_REMOTE_FS_PATH_LENGTH = 4096;
+const MAX_REMOTE_FS_CONTENT_LENGTH = 1_048_576;
 
 const LEGACY_PLAN_ID_REGEX = /^plan-[0-9a-f]{8}$/i;
 const UUID_PLAN_ID_REGEX =
@@ -148,6 +150,33 @@ export const ChatRequestSchema = z
     }
     return payload;
   });
+
+export const RemoteFsPathSchema = z
+  .string({ required_error: "path is required" })
+  .trim()
+  .min(1, { message: "path is required" })
+  .max(MAX_REMOTE_FS_PATH_LENGTH, {
+    message: `path must not exceed ${MAX_REMOTE_FS_PATH_LENGTH} characters`,
+  })
+  .refine((value) => value.startsWith("/"), {
+    message: "path must be absolute",
+  });
+
+export const RemoteFsPathQuerySchema = z.object({
+  path: z.preprocess(
+    (value) => (typeof value === "string" ? value : Array.isArray(value) ? value[0] : undefined),
+    RemoteFsPathSchema,
+  ),
+});
+
+export const RemoteFsWriteSchema = z.object({
+  path: RemoteFsPathSchema,
+  content: z
+    .string({ required_error: "content is required" })
+    .max(MAX_REMOTE_FS_CONTENT_LENGTH, {
+      message: `content must not exceed ${MAX_REMOTE_FS_CONTENT_LENGTH} characters`,
+    }),
+});
 
 export type PlanRequestPayload = z.infer<typeof PlanRequestSchema>;
 export type PlanApprovalPayload = z.infer<typeof PlanApprovalSchema>;

@@ -38,6 +38,11 @@ export type RequestSizeLimitsConfig = {
   urlEncodedBytes: number;
 };
 
+export type RemoteFsConfig = {
+  root: string;
+  maxWriteBytes: number;
+};
+
 export type CircuitBreakerConfig = {
   failureThreshold: number;
   resetTimeoutMs: number;
@@ -131,6 +136,7 @@ export type ServerRateLimitsConfig = {
   chat: IdentityAwareRateLimitConfig;
   auth: IdentityAwareRateLimitConfig;
   secrets: IdentityAwareRateLimitConfig;
+  remoteFs: IdentityAwareRateLimitConfig;
 };
 
 export type NetworkEgressMode = "enforce" | "report-only" | "allow";
@@ -264,6 +270,7 @@ export type AppConfig = {
     sseMaxBufferEvents: number;
     sseMaxBufferBytes: number;
     requestLimits: RequestSizeLimitsConfig;
+    remoteFs: RemoteFsConfig;
     rateLimits: ServerRateLimitsConfig;
     sseQuotas: SseQuotaConfig;
     tls: TlsConfig;
@@ -767,6 +774,10 @@ export const DEFAULT_CONFIG: AppConfig = {
       jsonBytes: 1_048_576,
       urlEncodedBytes: 1_048_576,
     },
+    remoteFs: {
+      root: "/workspace",
+      maxWriteBytes: 1_048_576,
+    },
     rateLimits: {
       backend: {
         provider: "memory",
@@ -794,6 +805,12 @@ export const DEFAULT_CONFIG: AppConfig = {
         maxRequests: 60,
         identityWindowMs: 60_000,
         identityMaxRequests: 10,
+      },
+      remoteFs: {
+        windowMs: 60_000,
+        maxRequests: 120,
+        identityWindowMs: null,
+        identityMaxRequests: null,
       }
     },
     sseQuotas: {
@@ -933,11 +950,17 @@ type PartialServerRateLimitsConfig = {
   chat?: PartialIdentityAwareRateLimitConfig;
   auth?: PartialIdentityAwareRateLimitConfig;
   secrets?: PartialIdentityAwareRateLimitConfig;
+  remoteFs?: PartialIdentityAwareRateLimitConfig;
 };
 
 type PartialRequestSizeLimitsConfig = {
   jsonBytes?: number;
   urlEncodedBytes?: number;
+};
+
+type PartialRemoteFsConfig = {
+  root?: string;
+  maxWriteBytes?: number;
 };
 
 type PartialServerConfig = {
@@ -946,6 +969,7 @@ type PartialServerConfig = {
   sseMaxBufferEvents?: number;
   sseMaxBufferBytes?: number;
   requestLimits?: PartialRequestSizeLimitsConfig;
+  remoteFs?: PartialRemoteFsConfig;
   rateLimits?: PartialServerRateLimitsConfig;
   tls?: PartialTlsConfig;
   sseQuotas?: PartialSseQuotaConfig;
@@ -2364,6 +2388,9 @@ export function loadConfig(): AppConfig {
           ? parseProviderSettingsRecord(providers.settings)
           : undefined;
         const serverRateLimits = server ? asRecord(server.rateLimits) : undefined;
+        const serverRemoteFs = server
+          ? asRecord(server.remoteFs ?? server.remote_fs ?? server.remoteFilesystem)
+          : undefined;
         const serverRateLimitBackend = serverRateLimits
           ? parseRateLimitBackendConfig(
               serverRateLimits.backend ??
@@ -2380,6 +2407,13 @@ export function loadConfig(): AppConfig {
           : undefined;
         const serverRateLimitAuth = serverRateLimits
           ? parseIdentityAwareRateLimitConfig(serverRateLimits.auth)
+          : undefined;
+        const serverRateLimitRemoteFs = serverRateLimits
+          ? parseIdentityAwareRateLimitConfig(
+              serverRateLimits.remoteFs ??
+                serverRateLimits.remote_fs ??
+                serverRateLimits.remoteFilesystem,
+            )
           : undefined;
         const serverSseQuotas = server
           ? parseSseQuotaConfig(server.sseQuotas ?? server.sse_quotas ?? server.quotas)
@@ -2490,12 +2524,24 @@ export function loadConfig(): AppConfig {
                 sseSendTimeoutMs: serverSseSendTimeout,
                 sseMaxBufferEvents: serverSseMaxBufferEvents,
                 sseMaxBufferBytes: serverSseMaxBufferBytes,
+                remoteFs: serverRemoteFs
+                  ? {
+                      root: typeof serverRemoteFs.root === "string"
+                        ? serverRemoteFs.root
+                        : undefined,
+                      maxWriteBytes: asNumber(
+                        serverRemoteFs.maxWriteBytes ?? serverRemoteFs.max_write_bytes,
+                      ),
+                    }
+                  : undefined,
                 rateLimits: serverRateLimits
                   ? {
                       backend: serverRateLimitBackend,
                       plan: serverRateLimitPlan,
                       chat: serverRateLimitChat,
                       auth: serverRateLimitAuth,
+                      secrets: serverSecretsRateLimit,
+                      remoteFs: serverRateLimitRemoteFs,
                     }
                   : undefined,
                 tls: parseTlsConfig(server.tls),
@@ -2566,6 +2612,12 @@ export function loadConfig(): AppConfig {
   const envServerRequestLimitUrlEncoded = asNumber(
     process.env.SERVER_REQUEST_LIMIT_URLENCODED_BYTES,
   );
+  const envRemoteFsRoot = asString(
+    process.env.REMOTE_FS_ROOT ?? process.env.ORCHESTRATOR_REMOTE_FS_ROOT,
+  );
+  const envRemoteFsMaxWriteBytes = asNumber(
+    process.env.REMOTE_FS_MAX_WRITE_BYTES ?? process.env.SERVER_REMOTE_FS_MAX_WRITE_BYTES,
+  );
   const envRateLimitBackendProvider = asRateLimitBackendProvider(
     process.env.ORCHESTRATOR_RATE_LIMIT_BACKEND ??
       process.env.SERVER_RATE_LIMIT_BACKEND ??
@@ -2622,6 +2674,22 @@ export function loadConfig(): AppConfig {
   const envServerRateLimitAuthIdentityMaxRequests = asNumber(
     process.env.SERVER_RATE_LIMIT_AUTH_IDENTITY_MAX_REQUESTS ??
       process.env.ORCHESTRATOR_RATE_LIMIT_AUTH_IDENTITY_MAX_REQUESTS,
+  );
+  const envServerRateLimitRemoteFsWindowMs = asNumber(
+    process.env.SERVER_RATE_LIMIT_REMOTE_FS_WINDOW_MS ??
+      process.env.ORCHESTRATOR_RATE_LIMIT_REMOTE_FS_WINDOW_MS,
+  );
+  const envServerRateLimitRemoteFsMaxRequests = asNumber(
+    process.env.SERVER_RATE_LIMIT_REMOTE_FS_MAX_REQUESTS ??
+      process.env.ORCHESTRATOR_RATE_LIMIT_REMOTE_FS_MAX_REQUESTS,
+  );
+  const envServerRateLimitRemoteFsIdentityWindowMs = asNumber(
+    process.env.SERVER_RATE_LIMIT_REMOTE_FS_IDENTITY_WINDOW_MS ??
+      process.env.ORCHESTRATOR_RATE_LIMIT_REMOTE_FS_IDENTITY_WINDOW_MS,
+  );
+  const envServerRateLimitRemoteFsIdentityMaxRequests = asNumber(
+    process.env.SERVER_RATE_LIMIT_REMOTE_FS_IDENTITY_MAX_REQUESTS ??
+      process.env.ORCHESTRATOR_RATE_LIMIT_REMOTE_FS_IDENTITY_MAX_REQUESTS,
   );
   const envPolicyCacheEnabled = asBoolean(process.env.POLICY_CACHE_ENABLED);
   const envPolicyCacheProvider = asPolicyCacheProvider(process.env.POLICY_CACHE_PROVIDER);
@@ -2961,6 +3029,31 @@ export function loadConfig(): AppConfig {
     "server.rateLimits.secrets",
   );
 
+  const fileServerRemoteFsRateLimit = fileCfg.server?.rateLimits?.remoteFs;
+  const serverRemoteFsRateLimit = ensurePositiveRateLimit<IdentityAwareRateLimitConfig>(
+    {
+      windowMs:
+        envServerRateLimitRemoteFsWindowMs ??
+        fileServerRemoteFsRateLimit?.windowMs ??
+        DEFAULT_CONFIG.server.rateLimits.remoteFs.windowMs,
+      maxRequests:
+        envServerRateLimitRemoteFsMaxRequests ??
+        fileServerRemoteFsRateLimit?.maxRequests ??
+        DEFAULT_CONFIG.server.rateLimits.remoteFs.maxRequests,
+      identityWindowMs: resolveIdentityLimitValue(
+        envServerRateLimitRemoteFsIdentityWindowMs,
+        fileServerRemoteFsRateLimit?.identityWindowMs,
+        DEFAULT_CONFIG.server.rateLimits.remoteFs.identityWindowMs,
+      ),
+      identityMaxRequests: resolveIdentityLimitValue(
+        envServerRateLimitRemoteFsIdentityMaxRequests,
+        fileServerRemoteFsRateLimit?.identityMaxRequests,
+        DEFAULT_CONFIG.server.rateLimits.remoteFs.identityMaxRequests,
+      ),
+    },
+    "server.rateLimits.remoteFs",
+  );
+
   const serverRequestLimits: RequestSizeLimitsConfig = {
     jsonBytes: sanitizeRequestLimit(
       envServerRequestLimitJson ?? fileCfg.server?.requestLimits?.jsonBytes,
@@ -2969,6 +3062,16 @@ export function loadConfig(): AppConfig {
     urlEncodedBytes: sanitizeRequestLimit(
       envServerRequestLimitUrlEncoded ?? fileCfg.server?.requestLimits?.urlEncodedBytes,
       DEFAULT_CONFIG.server.requestLimits.urlEncodedBytes,
+    ),
+  };
+
+  const serverRemoteFsConfig: RemoteFsConfig = {
+    root: path.resolve(
+      envRemoteFsRoot ?? fileCfg.server?.remoteFs?.root ?? DEFAULT_CONFIG.server.remoteFs.root,
+    ),
+    maxWriteBytes: sanitizePositiveInteger(
+      envRemoteFsMaxWriteBytes ?? fileCfg.server?.remoteFs?.maxWriteBytes,
+      DEFAULT_CONFIG.server.remoteFs.maxWriteBytes,
     ),
   };
 
@@ -3413,12 +3516,14 @@ export function loadConfig(): AppConfig {
       sseMaxBufferEvents: serverSseMaxBufferEvents,
       sseMaxBufferBytes: serverSseMaxBufferBytes,
       requestLimits: serverRequestLimits,
+      remoteFs: serverRemoteFsConfig,
       rateLimits: {
         backend: serverRateLimitBackend,
         plan: serverPlanRateLimit,
         chat: serverChatRateLimit,
         auth: serverAuthRateLimit,
-        secrets: serverSecretsRateLimit
+        secrets: serverSecretsRateLimit,
+        remoteFs: serverRemoteFsRateLimit
       },
       sseQuotas: serverSseQuotaConfig,
       tls: {

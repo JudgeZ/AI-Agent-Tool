@@ -26,6 +26,7 @@ import { PlanController } from "../controllers/PlanController.js";
 import { ChatController } from "../controllers/ChatController.js";
 import { SecretController } from "../controllers/SecretController.js";
 import { AuthController } from "../controllers/AuthController.js";
+import { RemoteFsController } from "../controllers/RemoteFsController.js";
 
 function resolveConfig(config?: AppConfig): AppConfig {
   return config ?? loadConfig();
@@ -43,6 +44,7 @@ export function createServer(config?: AppConfig): Express {
   const chatController = new ChatController(appConfig, rateLimiter, policy);
   const secretController = new SecretController(appConfig, policy, rateLimiter);
   const authController = new AuthController(appConfig, rateLimiter);
+  const remoteFsController = new RemoteFsController(appConfig, rateLimiter);
 
   if (appConfig.server.trustedProxyCidrs.length > 0) {
     app.set("trust proxy", (ip: string) =>
@@ -190,6 +192,10 @@ export function createServer(config?: AppConfig): Express {
   app.post("/secrets/:key/rotate", (req, res) => secretController.rotateSecret(req as ExtendedRequest, res));
   app.post("/secrets/:key/promote", (req, res) => secretController.promoteSecret(req as ExtendedRequest, res));
   app.get("/secrets/:key/versions", (req, res) => secretController.getSecretVersions(req as ExtendedRequest, res));
+
+  app.get("/remote-fs/list", (req, res) => remoteFsController.list(req as ExtendedRequest, res));
+  app.get("/remote-fs/read", (req, res) => remoteFsController.read(req as ExtendedRequest, res));
+  app.post("/remote-fs/write", (req, res) => remoteFsController.write(req as ExtendedRequest, res));
 
   app.get("/auth/oauth/:provider/authorize", (req, res) => authController.oauthAuthorize(req as ExtendedRequest, res));
   app.post("/auth/oauth/:provider/callback", (req, res) => authController.oauthCallback(req as ExtendedRequest, res));
