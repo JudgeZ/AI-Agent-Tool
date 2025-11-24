@@ -2408,6 +2408,9 @@ export function loadConfig(): AppConfig {
         const serverRateLimitAuth = serverRateLimits
           ? parseIdentityAwareRateLimitConfig(serverRateLimits.auth)
           : undefined;
+        const serverRateLimitSecrets = serverRateLimits
+          ? parseIdentityAwareRateLimitConfig(serverRateLimits.secrets)
+          : undefined;
         const serverRateLimitRemoteFs = serverRateLimits
           ? parseIdentityAwareRateLimitConfig(
               serverRateLimits.remoteFs ??
@@ -2540,7 +2543,7 @@ export function loadConfig(): AppConfig {
                       plan: serverRateLimitPlan,
                       chat: serverRateLimitChat,
                       auth: serverRateLimitAuth,
-                      secrets: serverSecretsRateLimit,
+                      secrets: serverRateLimitSecrets,
                       remoteFs: serverRateLimitRemoteFs,
                     }
                   : undefined,
@@ -3007,6 +3010,14 @@ export function loadConfig(): AppConfig {
   );
 
   const fileServerSecretsRateLimit = fileCfg.server?.rateLimits?.secrets;
+  const hasSecretsOverride = !!fileServerSecretsRateLimit;
+  const secretsIdentityWindowDefault = hasSecretsOverride
+    ? null
+    : DEFAULT_CONFIG.server.rateLimits.secrets.identityWindowMs;
+  const secretsIdentityMaxDefault = hasSecretsOverride
+    ? null
+    : DEFAULT_CONFIG.server.rateLimits.secrets.identityMaxRequests;
+
   const serverSecretsRateLimit = ensurePositiveRateLimit<IdentityAwareRateLimitConfig>(
     {
       windowMs:
@@ -3018,12 +3029,12 @@ export function loadConfig(): AppConfig {
       identityWindowMs: resolveIdentityLimitValue(
         undefined,
         fileServerSecretsRateLimit?.identityWindowMs,
-        DEFAULT_CONFIG.server.rateLimits.secrets.identityWindowMs,
+        secretsIdentityWindowDefault,
       ),
       identityMaxRequests: resolveIdentityLimitValue(
         undefined,
         fileServerSecretsRateLimit?.identityMaxRequests,
-        DEFAULT_CONFIG.server.rateLimits.secrets.identityMaxRequests,
+        secretsIdentityMaxDefault,
       ),
     },
     "server.rateLimits.secrets",

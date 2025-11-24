@@ -45,21 +45,21 @@ const normalizeRemoteBaseUrl = (value: string | undefined | null) => {
   return normalized.length > 0 ? normalized : orchestratorBaseUrl;
 };
 
-const normalizeRemotePath = (path: string): string => {
-  const normalized = collapseDuplicateSlashes(normalizeSlashes(path));
+const normalizeRemotePath = (inputPath: string): string => {
+  const normalized = collapseDuplicateSlashes(normalizeSlashes(inputPath));
+  const absolute = normalized.startsWith('/') ? normalized : `/${normalized}`;
+
   const rootSegments = remoteFsRoot.split('/').filter(Boolean);
-  const normalizedRootPrefix = remoteFsRoot.endsWith('/') ? remoteFsRoot : `${remoteFsRoot}/`;
+  const incomingSegments = absolute.split('/').filter(Boolean);
 
-  const relativeSegments = normalized === remoteFsRoot || normalized === normalizedRootPrefix.slice(0, -1)
-    ? []
-    : (normalized.startsWith(normalizedRootPrefix)
-        ? normalized.slice(remoteFsRoot.length).replace(/^\/+/, '')
-        : normalized.replace(/^\/+/, '')
-      )
-        .split('/')
-        .filter(Boolean);
+  let offset = 0;
+  while (offset < rootSegments.length && incomingSegments[offset] === rootSegments[offset]) {
+    offset += 1;
+  }
 
+  const relativeSegments = incomingSegments.slice(offset);
   const resolved = [...rootSegments];
+
   for (const segment of relativeSegments) {
     if (segment === '..') {
       if (resolved.length > rootSegments.length) {
@@ -149,6 +149,7 @@ class RemoteFsService implements FsService {
   private fetchImpl: typeof fetch;
   private lastRequestAt = 0;
   private readonly minIntervalMs = 100;
+  private throttleChain: Promise<void> = Promise.resolve();
 
   constructor({ baseUrl, fetchImpl }: RemoteFsOptions = {}) {
     const sanitizedBaseUrl = normalizeRemoteBaseUrl(baseUrl ?? orchestratorBaseUrl);
@@ -156,13 +157,17 @@ class RemoteFsService implements FsService {
     this.fetchImpl = fetchImpl ?? fetch;
   }
 
-  private async throttle() {
-    const now = Date.now();
-    const waitMs = Math.max(0, this.lastRequestAt + this.minIntervalMs - now);
-    if (waitMs > 0) {
-      await new Promise((resolve) => setTimeout(resolve, waitMs));
-    }
-    this.lastRequestAt = Date.now();
+  private throttle(): Promise<void> {
+    this.throttleChain = this.throttleChain.then(async () => {
+      const now = Date.now();
+      const waitMs = Math.max(0, this.lastRequestAt + this.minIntervalMs - now);
+      if (waitMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, waitMs));
+      }
+      this.lastRequestAt = Date.now();
+    });
+
+    return this.throttleChain;
   }
 
   private async request(path: string, init?: RequestInit): Promise<Response> {

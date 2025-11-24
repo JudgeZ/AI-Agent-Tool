@@ -53,7 +53,7 @@ export class RemoteFsController {
     }
 
     const normalizedPath = this.normalizeRemotePath(parsed.data.path);
-    const resolvedPath = this.resolvePath(normalizedPath);
+    const resolvedPath = await this.resolvePath(normalizedPath);
 
     if (!resolvedPath) {
       this.respondOutsideRoot(res, normalizedPath);
@@ -77,6 +77,16 @@ export class RemoteFsController {
         isDirectory: entry.isDirectory(),
       }));
 
+      const { requestId, traceId } = getRequestIds(res);
+      logAuditEvent({
+        action: "remote_fs.list",
+        outcome: "allowed",
+        requestId,
+        traceId,
+        subject: toAuditSubject(session),
+        details: { path: normalizedPath },
+      });
+
       res.json({ entries: payload });
     } catch (error) {
       this.handleFsError(res, error);
@@ -98,7 +108,7 @@ export class RemoteFsController {
     }
 
     const normalizedPath = this.normalizeRemotePath(parsed.data.path);
-    const resolvedPath = this.resolvePath(normalizedPath);
+    const resolvedPath = await this.resolvePath(normalizedPath);
     if (!resolvedPath) {
       this.respondOutsideRoot(res, normalizedPath);
       return;
@@ -115,6 +125,15 @@ export class RemoteFsController {
       }
 
       const content = await fs.readFile(resolvedPath, "utf8");
+      const { requestId, traceId } = getRequestIds(res);
+      logAuditEvent({
+        action: "remote_fs.read",
+        outcome: "allowed",
+        requestId,
+        traceId,
+        subject: toAuditSubject(session),
+        details: { path: normalizedPath },
+      });
       res.json({ content });
     } catch (error) {
       this.handleFsError(res, error);
@@ -136,7 +155,7 @@ export class RemoteFsController {
     }
 
     const normalizedPath = this.normalizeRemotePath(parsed.data.path);
-    const resolvedPath = this.resolvePath(normalizedPath);
+    const resolvedPath = await this.resolvePath(normalizedPath);
     if (!resolvedPath) {
       this.respondOutsideRoot(res, normalizedPath);
       return;
@@ -155,6 +174,15 @@ export class RemoteFsController {
     try {
       await fs.mkdir(path.dirname(resolvedPath), { recursive: true });
       await fs.writeFile(resolvedPath, parsed.data.content, { encoding: "utf8" });
+      const { requestId, traceId } = getRequestIds(res);
+      logAuditEvent({
+        action: "remote_fs.write",
+        outcome: "allowed",
+        requestId,
+        traceId,
+        subject: toAuditSubject(session),
+        details: { path: normalizedPath, bytes: contentBytes },
+      });
       res.status(204).end();
     } catch (error) {
       this.handleFsError(res, error);
@@ -168,25 +196,68 @@ export class RemoteFsController {
     return normalized.startsWith("/") ? normalized : `/${normalized}`;
   }
 
+  private toRelativeRemotePath(remotePath: string): string {
+    const normalizedRemote = this.normalizeRemotePath(remotePath);
+    const remoteSegments = normalizedRemote.split("/").filter(Boolean);
+    const rootSegments = this.toPosixPath(this.root).split("/").filter(Boolean);
+
+    let offset = 0;
+    while (offset < rootSegments.length && remoteSegments[offset] === rootSegments[offset]) {
+      offset += 1;
+    }
+
+    const relativeSegments = remoteSegments.slice(offset);
+    return relativeSegments.join(path.sep);
+  }
+
   private toPosixPath(input: string): string {
     return input.replace(/\\/g, "/");
   }
 
-  private resolvePath(remotePath: string): string | null {
-    const candidate = path.resolve(this.root, `.${path.sep}${remotePath.slice(1)}`);
+  private async resolvePath(remotePath: string): Promise<string | null> {
+    const relativeRemotePath = this.toRelativeRemotePath(remotePath);
+    const candidate = path.resolve(this.root, relativeRemotePath);
     if (!this.isWithinRoot(candidate)) {
       return null;
     }
-    const realized = this.realpathSafe(candidate);
+
+    const parent = path.dirname(candidate);
+    const realizedParent = await this.realpathExistingParent(parent);
+    if (!realizedParent || !this.isWithinRoot(realizedParent)) {
+      return null;
+    }
+
+    const realized = path.resolve(realizedParent, path.basename(candidate));
     if (!this.isWithinRoot(realized)) {
       return null;
     }
+
     return realized;
   }
 
   private isWithinRoot(target: string): boolean {
     const relative = path.relative(this.root, target);
     return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+  }
+
+  private async realpathExistingParent(target: string): Promise<string | null> {
+    let current = target;
+
+    while (true) {
+      try {
+        return await fs.realpath(current);
+      } catch (error: any) {
+        if (error?.code === "ENOENT") {
+          const parent = path.dirname(current);
+          if (parent === current) {
+            return null;
+          }
+          current = parent;
+          continue;
+        }
+        return null;
+      }
+    }
   }
 
   private realpathSafe(target: string): string {

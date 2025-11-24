@@ -107,6 +107,29 @@ describe("RemoteFsController", () => {
     );
   });
 
+  it("blocks writes that traverse symlinks outside the root", async () => {
+    const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "remote-fs-outside-"));
+    await fs.symlink(outsideDir, path.join(tempDir, "link"));
+
+    const config = buildConfig(tempDir, { auth: { oidc: { enabled: false } } });
+    const app = buildApp(config, rateLimiter);
+
+    const res = await request(app)
+      .post("/remote-fs/write")
+      .send({ path: `${tempDir}/link/escape.txt`, content: "data" });
+
+    expect(res.status).toBe(400);
+    expect(res.body.code).toBe("invalid_request");
+
+    const escapedExists = await fs
+      .stat(path.join(outsideDir, "escape.txt"))
+      .then(() => true)
+      .catch(() => false);
+    expect(escapedExists).toBe(false);
+
+    await fs.rm(outsideDir, { recursive: true, force: true });
+  });
+
   it("enforces the configured max write size", async () => {
     const config = buildConfig(tempDir, {
       auth: { oidc: { enabled: false } },

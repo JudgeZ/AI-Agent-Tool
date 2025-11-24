@@ -4,6 +4,11 @@ import { vitePreprocess } from '@sveltejs/vite-plugin-svelte';
 
 // Use SVELTE_ADAPTER=node to opt into serverful deployments; default stays static for browser-only builds.
 const adapterChoice = process.env.SVELTE_ADAPTER?.trim().toLowerCase();
+if (adapterChoice && adapterChoice !== 'node' && adapterChoice !== 'static') {
+  console.warn(
+    `Unknown SVELTE_ADAPTER value: "${adapterChoice}". Valid values: "node", "static". Defaulting to static.`
+  );
+}
 const useNodeAdapter = adapterChoice === 'node';
 
 const config = {

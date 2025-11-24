@@ -173,8 +173,17 @@ export const RemoteFsWriteSchema = z.object({
   path: RemoteFsPathSchema,
   content: z
     .string({ required_error: "content is required" })
-    .max(MAX_REMOTE_FS_CONTENT_LENGTH, {
-      message: `content must not exceed ${MAX_REMOTE_FS_CONTENT_LENGTH} characters`,
+    .superRefine((value, ctx) => {
+      const bytes = Buffer.byteLength(value, "utf8");
+      if (bytes > MAX_REMOTE_FS_CONTENT_LENGTH) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.too_big,
+          maximum: MAX_REMOTE_FS_CONTENT_LENGTH,
+          type: "string",
+          inclusive: true,
+          message: `content must not exceed ${MAX_REMOTE_FS_CONTENT_LENGTH} bytes`,
+        });
+      }
     }),
 });
 
