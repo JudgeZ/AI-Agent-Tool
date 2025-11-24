@@ -51,12 +51,20 @@ Instructions:
 1. Fetch PR changes (git fetch origin pull/${PR_NUMBER}/head:pr-${PR_NUMBER} && git checkout pr-${PR_NUMBER}).
 2. Read AGENTS.md for coding standards.
 3. Review the code changes (git diff origin/${BASE_REF}...HEAD).
-4. **MANDATORY**: Create a file named 'REVIEW.md' in the root directory of the repository with your summary and specific comments.
-   - Format it as Markdown.
-   - List any Critical Issues (Blocking).
-   - List Suggestions (Non-blocking).
-5. Do NOT use gh CLI.
-6. If you find no issues, create 'REVIEW.md' with 'LGTM'.
+    a. Do a comprehensive review.
+    b. Review the tests.
+    c. Review linters.
+    d. Review for vulnerabilities.
+    e. Review for performance.
+    f. Review for UX.
+    g. Review for maintainability.
+    h. Review for bugs.
+    i. Review for secrets in the code.
+    j. Review for leaks.
+    k. Review code quality.
+    l. Review styling.
+    m. Review for adherence to repo standards.
+4. Your final comment *ALWAYS* will be your findings organized into blocking issues and non-blocking suggestions.
 "
 
 PAYLOAD=$(jq -n \
