@@ -1,0 +1,58 @@
+name: Jules Code Review
+
+on:
+  pull_request:
+    types: [opened, synchronize]
+
+jobs:
+  jules-review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install Jules
+        run: npm install -g @google/jules
+
+      - name: Run Jules Review
+        env:
+          JULES_API_KEY: ${{ secrets.JULES_API_KEY }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          jules new \
+            --repo . \
+            "You are a Senior Reviewer Agent. Your task is to review Pull Request #${{ github.event.pull_request.number }}.
+
+            **Step 1: Context & Diff**
+            - Run 'gh pr diff ${{ github.event.pull_request.number }}' to retrieve the changes.
+            - Read 'AGENTS.md' to understand the Engineering Standards and Security Requirements (Sections 2.2, 2.3, 3, and 4).
+
+            **Step 2: Analysis**
+            Analyze the changes for:
+            - **Security**: Missing input validation, auth checks, secrets exposure.
+            - **Reliability**: Error handling, resource limits, concurrency issues.
+            - **Observability**: Structured logging, tracing, metrics.
+            - **Testing**: Presence of tests for new functionality.
+            - **Correctness**: Logic errors, edge cases.
+
+            **Step 3: Reporting**
+            - Post a **Summary Review** using:
+              \`gh pr review ${{ github.event.pull_request.number }} --comment --body \"Your summary here...\"\`
+            - Post **Inline Comments** on specific lines that need fixing. Use the GitHub API to post structured review comments:
+              \`gh api /repos/${{ github.repository }}/pulls/${{ github.event.pull_request.number }}/reviews -f event='COMMENT' -f comments='[{\"path\":\"<file_path>\",\"line\":<line_number>,\"body\":\"<comment>\"}]'\`
+
+            **Important:**
+            - Be specific and constructive.
+            - Distinguish between blocking issues (Security/Correctness) and non-blocking suggestions (Style/Refactoring).
+            - Do not generate code fixes, only provide the review."
