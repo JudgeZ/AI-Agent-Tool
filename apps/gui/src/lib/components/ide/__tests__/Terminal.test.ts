@@ -1,42 +1,11 @@
 import { render, act, screen } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { resetTerminalMocks } from './support/terminalMocks';
 
 vi.mock('$lib/config', () => ({ orchestratorBaseUrl: 'https://example.com' }));
 
-vi.mock('@xterm/xterm', () => {
-  class Terminal {
-    static instances: Terminal[] = [];
-    cols = 80;
-    rows = 24;
-    dataHandler: ((input: string) => void) | null = null;
-    write = vi.fn();
-    dispose = vi.fn();
-    loadAddon = vi.fn();
-    open = vi.fn();
-    focus = vi.fn();
-    constructor() {
-      Terminal.instances.push(this);
-    }
-    onData(handler: (input: string) => void) {
-      this.dataHandler = handler;
-    }
-  }
-
-  return { Terminal };
-});
-
-vi.mock('@xterm/addon-fit', () => {
-  class FitAddon {
-    static instances: FitAddon[] = [];
-    dispose = vi.fn();
-    fit = vi.fn();
-    constructor() {
-      FitAddon.instances.push(this);
-    }
-  }
-
-  return { FitAddon };
-});
+vi.mock('@xterm/xterm', async () => ({ Terminal: (await import('./support/terminalMocks')).MockTerminal }));
+vi.mock('@xterm/addon-fit', async () => ({ FitAddon: (await import('./support/terminalMocks')).MockFitAddon }));
 
 class MockWebSocket {
   static instances: MockWebSocket[] = [];
@@ -116,14 +85,7 @@ describe('Terminal', () => {
     vi.unstubAllGlobals();
     vi.restoreAllMocks();
     MockWebSocket.instances.splice(0, MockWebSocket.instances.length);
-    const terminalModule = (await import('@xterm/xterm')) as unknown as {
-      Terminal: { instances: unknown[] };
-    };
-    terminalModule.Terminal.instances.splice(0, terminalModule.Terminal.instances.length);
-    const fitModule = (await import('@xterm/addon-fit')) as unknown as {
-      FitAddon: { instances: unknown[] };
-    };
-    fitModule.FitAddon.instances.splice(0, fitModule.FitAddon.instances.length);
+    resetTerminalMocks();
     const { sessionStore } = await import('$lib/stores/session');
     sessionStore.set({
       authenticated: true,

@@ -91,7 +91,7 @@ The IDE terminal connects to the orchestrator WebSocket at `/sandbox/terminal` u
 
 The agent sidebar includes a real-time project chat backed by the same collaboration WebSocket used for co-editing. The client joins room IDs shaped like `chat:<tenantId>:<projectId>` and connects through `collaboration/ws` with the active session cookie. The panel automatically:
 
-- Stays idle when the user is signed out or the tenant/project context fails validation, raising a banner notification if context identifiers are invalid.
+- Stays idle when the user is signed out and surfaces an error state (with a banner notification) when tenant/project context identifiers are invalid.
 - Shows connection state and descriptive messaging (idle, connecting, connected, disconnected, error) and lets operators manually **Retry** when a disconnect occurs.
 - Renders a signed-in identity badge derived from the session name or an obfuscated email fallback so addresses are never exposed to collaborators.
 - Strips control characters from inbound and outbound text, enforces the 2,000-character message limit, and drops malformed payloads before caching or rendering.

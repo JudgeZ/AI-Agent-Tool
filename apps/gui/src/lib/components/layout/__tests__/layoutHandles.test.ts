@@ -21,16 +21,23 @@ if (typeof PointerEvent === 'undefined') {
 }
 
 const mockAnimationFrame = () => {
-  const callbacks: FrameRequestCallback[] = [];
+  let idCounter = 0;
+  const callbacks = new Map<number, FrameRequestCallback>();
   const rafSpy = vi.spyOn(window, 'requestAnimationFrame').mockImplementation((cb: FrameRequestCallback) => {
-    callbacks.push(cb);
-    return callbacks.length;
+    const id = ++idCounter;
+    callbacks.set(id, cb);
+    return id;
   });
-  const cancelSpy = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation(() => {});
+  const cancelSpy = vi.spyOn(window, 'cancelAnimationFrame').mockImplementation((id?: number) => {
+    if (typeof id === 'number') {
+      callbacks.delete(id);
+    }
+  });
 
   const flushFrames = () => {
-    while (callbacks.length) {
-      callbacks.shift()?.(0);
+    for (const [id, cb] of Array.from(callbacks.entries())) {
+      callbacks.delete(id);
+      cb(0);
     }
   };
 
@@ -97,6 +104,26 @@ describe('ResizableSidebar', () => {
     await fireEvent(handle, new PointerEvent('pointerup', { bubbles: true, pointerId: 5 }));
     expect(onResize).toHaveBeenLastCalledWith(360);
     expect(handle.releasePointerCapture).toHaveBeenCalledWith(5);
+  });
+
+  it('clamps pointer drag width to the minimum when dragged past bounds', async () => {
+    const onResize = vi.fn();
+    const { flushFrames } = mockAnimationFrame();
+    const { getByRole } = render(ResizableSidebar, {
+      props: { width: 320, minWidth: 280, maxWidth: 360, onResize, ariaLabel: 'Sidebar' }
+    });
+
+    const handle = getByRole('separator', { name: /resize handle/i }) as HTMLDivElement;
+    handle.setPointerCapture = vi.fn();
+    handle.releasePointerCapture = vi.fn();
+
+    await fireEvent(handle, new PointerEvent('pointerdown', { bubbles: true, button: 0, pointerId: 9, clientX: 300 }));
+    await fireEvent(handle, new PointerEvent('pointermove', { bubbles: true, pointerId: 9, clientX: 100 }));
+    flushFrames();
+
+    expect(onResize).toHaveBeenLastCalledWith(280);
+    await fireEvent(handle, new PointerEvent('pointerup', { bubbles: true, pointerId: 9 }));
+    expect(handle.releasePointerCapture).toHaveBeenCalledWith(9);
   });
 });
 

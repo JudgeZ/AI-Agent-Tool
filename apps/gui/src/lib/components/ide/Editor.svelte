@@ -21,10 +21,11 @@
     collaborationContextVersion,
     type CollaborationRoomInfo
   } from '$lib/stores/ide';
-  import { gatewayBaseUrl } from '$lib/config';
-  import { session } from '$lib/stores/session';
-  import { isCollaborationSessionValid } from './sessionAuth';
-  import { notifyError } from '$lib/stores/notifications';
+import { gatewayBaseUrl } from '$lib/config';
+import { notifyError } from '$lib/stores/notifications';
+import { session } from '$lib/stores/session';
+import { toWebsocketBase } from '$lib/utils/websocket';
+import { isCollaborationSessionValid } from './sessionAuth';
 
   let editorContainer: HTMLElement;
   let editor: monaco.editor.IStandaloneCodeEditor;
@@ -145,16 +146,6 @@
     editor?.dispose();
     cleanupSubscriptions();
   });
-
-  function toWebsocketBase(httpUrl: string) {
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity
-    const parsed = new URL(httpUrl);
-    parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
-    parsed.pathname = '';
-    parsed.search = '';
-    parsed.hash = '';
-    return parsed.toString().replace(/\/$/, '');
-  }
 
   function notifyCollaborationError(message: string) {
     notifyError(message, { timeoutMs: 8000 });

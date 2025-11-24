@@ -22,3 +22,4 @@
 
 | id | status | description | source | file_location | line_numbers | impl_plan | test_impact | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| T1 | todo | Modularize Chat.svelte by splitting connection, sanitization, and CRDT helpers into separate modules | Reviewer & CodeRabbit | apps/gui/src/lib/components/ide/Chat.svelte | ~1-1120 | Extract connection management, text sanitization, and Yjs helpers into focused modules while preserving behavior | requires new tests | Large refactor; defer to keep current change set small |

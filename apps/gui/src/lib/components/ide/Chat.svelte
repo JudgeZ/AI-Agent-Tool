@@ -5,9 +5,10 @@
   import { WebsocketProvider } from 'y-websocket';
   import { collaborationContext } from '$lib/stores/ide';
   import { session, type SessionState } from '$lib/stores/session';
-  import { gatewayBaseUrl } from '$lib/config';
-  import { isCollaborationSessionValid } from './sessionAuth';
-  import { notifyError } from '$lib/stores/notifications';
+import { gatewayBaseUrl } from '$lib/config';
+import { notifyError } from '$lib/stores/notifications';
+import { toWebsocketBase } from '$lib/utils/websocket';
+import { isCollaborationSessionValid } from './sessionAuth';
 
   type ChatMessage = {
     id: string;
@@ -95,16 +96,6 @@
     subscriptions.forEach((unsubscribe) => unsubscribe());
     teardown();
   });
-
-  function toWebsocketBase(httpUrl: string) {
-    // eslint-disable-next-line svelte/prefer-svelte-reactivity
-    const parsed = new URL(httpUrl);
-    parsed.protocol = parsed.protocol === 'https:' ? 'wss:' : 'ws:';
-    parsed.pathname = '';
-    parsed.search = '';
-    parsed.hash = '';
-    return parsed.toString().replace(/\/$/, '');
-  }
 
   function buildRoomName(roomId: string) {
     // eslint-disable-next-line svelte/prefer-svelte-reactivity
@@ -537,7 +528,9 @@
     const trimmed = email.trim();
     if (!trimmed || !trimmed.includes('@')) return '';
 
-    const [localPart, domain] = trimmed.split('@');
+    const atIndex = trimmed.indexOf('@');
+    const localPart = trimmed.slice(0, atIndex);
+    const domain = trimmed.slice(atIndex + 1);
     if (!localPart || !domain) return '';
 
     const safeLocal = `${localPart[0]}***`;
@@ -697,7 +690,7 @@
     updateDraft('');
   }
 
-  $: canSend = sanitizeMessageText(messageInput).trim().length > 0;
+  $: canSend = isCollaborationReady() && sanitizeMessageText(messageInput).trim().length > 0;
 
   $: if (connectionState === 'connected' && messageInputEl) {
     messageInputEl.focus();
@@ -750,15 +743,28 @@
   </header>
 
   {#if connectionMessage}
-    <div class="connection-hint" role="status">
+    <div class="connection-hint" role="status" id="chat-connection-hint">
       <span>{connectionMessage}</span>
       {#if showRetry}
-        <button class="retry" type="button" on:click={handleRetry}>Retry</button>
+        <button
+          class="retry"
+          type="button"
+          aria-describedby="chat-connection-hint"
+          on:click={handleRetry}
+        >
+          Retry
+        </button>
       {/if}
     </div>
   {/if}
 
-  <div class="chat-body" bind:this={scrollContainer}>
+  <div
+    class="chat-body"
+    bind:this={scrollContainer}
+    role="log"
+    aria-live="polite"
+    aria-relevant="additions text"
+  >
     {#if messages.length === 0}
       <p class="empty">No messages yet. Start the conversation!</p>
     {:else}
