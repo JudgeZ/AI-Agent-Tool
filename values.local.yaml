@@ -9,7 +9,8 @@ messaging:
 postgres:
   enabled: true
   image: ankane/pgvector:v0.5.1
-  password: "dev-password"
+  # Provide the Postgres password via a secure override or secret; empty by default to avoid shipping credentials.
+  password: ""
   podSecurityContext:
     runAsNonRoot: false
     fsGroup: 0
