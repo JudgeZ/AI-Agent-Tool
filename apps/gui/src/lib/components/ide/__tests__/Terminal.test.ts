@@ -1,7 +1,7 @@
 import { render, act, screen } from '@testing-library/svelte';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('$lib/config', () => ({ gatewayBaseUrl: 'https://example.com' }));
+vi.mock('$lib/config', () => ({ orchestratorBaseUrl: 'https://example.com' }));
 
 class MockWebSocket {
   static instances: MockWebSocket[] = [];

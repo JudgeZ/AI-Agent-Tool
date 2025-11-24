@@ -5,7 +5,7 @@
   import { FitAddon } from '@xterm/addon-fit';
   import '@xterm/xterm/css/xterm.css';
 
-  import { gatewayBaseUrl } from '$lib/config';
+  import { orchestratorBaseUrl } from '$lib/config';
   import { session } from '$lib/stores/session';
   import { resolveTerminalHaltMessage } from './terminalCloseReasons';
 
@@ -205,7 +205,7 @@
     reconnectionHalted = false;
     clearReconnectTimer();
     detachSocket();
-    const wsUrl = toWebsocketUrl(gatewayBaseUrl, sessionId);
+    const wsUrl = toWebsocketUrl(orchestratorBaseUrl, sessionId);
     setStatus('connecting', 'Opening terminal connection...');
     socket = new WebSocket(wsUrl);
     currentSessionId = sessionId;
