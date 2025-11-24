@@ -13,14 +13,28 @@ import { z } from "zod";
 import * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness.js";
 import { createMutex } from "lib0/mutex.js";
-import ipaddr from "ipaddr.js";
-
 import type { AppConfig } from "../config.js";
 import { SessionRecord, sessionStore } from "../auth/SessionStore.js";
-import { validateSessionId, type SessionExtractionResult, type SessionSource } from "../auth/sessionValidation.js";
+import { type SessionSource } from "../auth/sessionValidation.js";
 import { hashIdentifier, logAuditEvent } from "../observability/audit.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
 import { normalizeTenantIdInput } from "../tenants/tenantIds.js";
+import { markUpgradeHandled } from "../server/upgradeMarkers.js";
+import {
+  auditSubjectFromSession,
+  authenticateSessionFromUpgrade,
+  decrementConnectionCount,
+  extractSessionIdFromUpgrade,
+  headerValue,
+  incrementConnectionCount,
+  isPrivateOrLoopback,
+  isTrustedProxyIp,
+  loggerWithTrace,
+  parseIpAddress,
+  requestIdentifiers,
+  resolveClientIp,
+  sanitizeHeaderForLog,
+} from "../http/wsUtils.js";
 
 const DEFAULT_PERSISTENCE_DIR = ".collaboration";
 const AGENT_EDIT_ORIGIN = "agent_edit";
@@ -69,6 +83,15 @@ type RoomState = {
 
 const rooms = new Map<string, RoomState>();
 const ipConnectionCounts = new Map<string, number>();
+const incrementConnection = (ip: string, limit: number) => incrementConnectionCount(ip, limit, ipConnectionCounts);
+const decrementConnection = (ip: string) => decrementConnectionCount(ip, ipConnectionCounts);
+const authenticateCollaborationRequest = (
+  req: IncomingMessage,
+  cookieName: string,
+):
+  | { status: "ok"; session: SessionRecord; sessionId: string; source?: SessionSource }
+  | { status: "error"; reason: string; source?: SessionSource } =>
+  authenticateSessionFromUpgrade(req, cookieName);
 
 function resolvePersistenceDir(): string {
   const rawDir = process.env.COLLAB_PERSISTENCE_DIR ?? DEFAULT_PERSISTENCE_DIR;
@@ -118,97 +141,6 @@ async function ensurePersistenceDir(): Promise<void> {
   }
 }
 
-function headerValue(value: string | string[] | undefined): string | undefined {
-  if (Array.isArray(value)) {
-    return value.find((entry) => typeof entry === "string" && entry.trim().length > 0)?.trim();
-  }
-  if (typeof value === "string") {
-    const trimmed = value.trim();
-    return trimmed.length > 0 ? trimmed : undefined;
-  }
-  return undefined;
-}
-
-type IpAddress = ipaddr.IPv4 | ipaddr.IPv6;
-
-function parseIpAddress(raw: string | undefined): IpAddress | undefined {
-  if (!raw) {
-    return undefined;
-  }
-  const sanitized = raw.includes("%") ? raw.split("%", 1)[0] : raw;
-  try {
-    const parsed = ipaddr.parse(sanitized.trim());
-    if (parsed.kind() === "ipv6" && (parsed as ipaddr.IPv6).isIPv4MappedAddress()) {
-      return (parsed as ipaddr.IPv6).toIPv4Address();
-    }
-    return parsed as IpAddress;
-  } catch {
-    return undefined;
-  }
-}
-
-function isTrustedProxyIp(address: IpAddress, trustedProxyCidrs: readonly string[]): boolean {
-  if (trustedProxyCidrs.length === 0) {
-    return false;
-  }
-  for (const entry of trustedProxyCidrs) {
-    const trimmed = entry.trim();
-    if (!trimmed) {
-      continue;
-    }
-    try {
-      const [network, prefixLength] = ipaddr.parseCIDR(trimmed);
-      if (network.kind() !== address.kind()) {
-        continue;
-      }
-      if (address.match([network, prefixLength])) {
-        return true;
-      }
-    } catch {
-      // ignore invalid trusted proxy entries
-    }
-  }
-  return false;
-}
-
-function isPrivateOrLoopback(address: IpAddress): boolean {
-  if (address.kind() === "ipv4") {
-    const range = (address as ipaddr.IPv4).range();
-    return range === "loopback" || range === "linkLocal" || range === "private";
-  }
-  const range = (address as ipaddr.IPv6).range();
-  return range === "loopback" || range === "linkLocal" || range === "uniqueLocal";
-}
-
-function resolveClientIp(req: IncomingMessage, trustedProxyCidrs: readonly string[]): string {
-  const remote = parseIpAddress(req.socket.remoteAddress ?? undefined);
-  if (!remote) {
-    return "unknown";
-  }
-
-  if (!isTrustedProxyIp(remote, trustedProxyCidrs) && !isPrivateOrLoopback(remote)) {
-    return remote.toString();
-  }
-
-  const forwarded = headerValue(req.headers["x-forwarded-for"]);
-  if (forwarded) {
-    const entries = forwarded
-      .split(",")
-      .map((entry) => entry.trim())
-      .filter((entry) => entry.length > 0);
-
-    for (let i = entries.length - 1; i >= 0; i -= 1) {
-      const parsed = parseIpAddress(entries[i]);
-      if (!parsed || isTrustedProxyIp(parsed, trustedProxyCidrs)) {
-        continue;
-      }
-      return parsed.toString();
-    }
-  }
-
-  return remote.toString();
-}
-
 function resolveConnectionLimitFromEnv(): number {
   const parsed = Number.parseInt(process.env.COLLAB_WS_IP_LIMIT ?? "", 10);
   if (Number.isFinite(parsed) && parsed > 0) {
@@ -225,120 +157,6 @@ function resolveRoomLimitFromEnv(): number {
   return MAX_ROOMS_DEFAULT;
 }
 
-function requestIdentifiers(req: IncomingMessage): {
-  requestId?: string;
-  traceId?: string;
-} {
-  return {
-    requestId: headerValue(req.headers["x-request-id"]),
-    traceId: headerValue(req.headers["x-trace-id"]),
-  };
-}
-
-function sanitizeHeaderForLog(value: string | undefined): string | undefined {
-  if (!value) {
-    return undefined;
-  }
-  return value.replace(/\r|\n/g, "").slice(0, 512);
-}
-
-function auditSubjectFromSession(session: SessionRecord | undefined) {
-  if (!session) {
-    return undefined;
-  }
-  return {
-    sessionId: session.id,
-    userId: session.subject,
-    tenantId: session.tenantId ?? undefined,
-    email: session.email ?? undefined,
-  };
-}
-
-function incrementConnection(ip: string, limit: number): boolean {
-  const current = ipConnectionCounts.get(ip) ?? 0;
-  if (current >= limit) {
-    return false;
-  }
-  ipConnectionCounts.set(ip, current + 1);
-  return true;
-}
-
-function decrementConnection(ip: string): void {
-  const current = ipConnectionCounts.get(ip) ?? 0;
-  if (current <= 1) {
-    ipConnectionCounts.delete(ip);
-    return;
-  }
-  ipConnectionCounts.set(ip, current - 1);
-}
-
-function extractSessionIdFromUpgrade(
-  req: IncomingMessage,
-  cookieName: string,
-): SessionExtractionResult {
-  const authHeader = headerValue(req.headers.authorization);
-  const bearerPrefix = "bearer ";
-  if (authHeader && authHeader.toLowerCase().startsWith(bearerPrefix)) {
-    const token = authHeader.slice(bearerPrefix.length).trim();
-    return validateSessionId(token, "authorization");
-  }
-
-  const cookieHeader = headerValue(req.headers.cookie);
-  if (!cookieHeader) {
-    return { status: "missing" };
-  }
-
-  for (const part of cookieHeader.split(";")) {
-    const [rawName, ...rest] = part.split("=");
-    if (!rawName) {
-      continue;
-    }
-    const name = rawName.trim();
-    if (name !== cookieName) {
-      continue;
-    }
-    const rawValue = rest.join("=");
-    const trimmedValue = rawValue.trim();
-    let decoded = trimmedValue;
-    try {
-      decoded = decodeURIComponent(trimmedValue);
-    } catch {
-      // Preserve raw value so validation can surface helpful errors.
-    }
-    return validateSessionId(decoded, "cookie");
-  }
-
-  return { status: "missing" };
-}
-
-function authenticateCollaborationRequest(
-  req: IncomingMessage,
-  cookieName: string,
-):
-  | { status: "ok"; session: SessionRecord; sessionId: string; source?: SessionSource }
-  | { status: "error"; reason: string; source?: SessionSource } {
-  sessionStore.cleanupExpired();
-  const sessionResult = extractSessionIdFromUpgrade(req, cookieName);
-  if (sessionResult.status === "invalid") {
-    return { status: "error", reason: "invalid session", source: sessionResult.source };
-  }
-  if (sessionResult.status === "missing") {
-    return { status: "error", reason: "missing session" };
-  }
-  const session = sessionStore.getSession(sessionResult.sessionId);
-  if (!session) {
-    return { status: "error", reason: "unknown session", source: sessionResult.source };
-  }
-  return { status: "ok", session, sessionId: sessionResult.sessionId, source: sessionResult.source };
-}
-
-function loggerWithTrace(req: IncomingMessage) {
-  const traceId = headerValue(req.headers["x-trace-id"]) ?? headerValue(req.headers["x-request-id"]);
-  if (!traceId) {
-    return appLogger;
-  }
-  return appLogger.child({ trace_id: traceId });
-}
 
 function deriveRoomId(
   req: IncomingMessage,
@@ -587,10 +405,10 @@ export async function setupCollaborationServer(
   httpServer.on("upgrade", (request, socket, head) => {
     const { pathname } = new URL(request.url ?? "", "http://localhost");
     if (pathname !== "/collaboration/ws") {
-      socket.destroy();
       return;
     }
 
+    markUpgradeHandled(request);
     const logger = loggerWithTrace(request);
     const identifiers = requestIdentifiers(request);
     const ip = resolveClientIp(request, config.server.trustedProxyCidrs);

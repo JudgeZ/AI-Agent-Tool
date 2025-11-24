@@ -2,6 +2,7 @@
   import '../app.css';
   import FileTree from '$lib/components/ide/FileTree.svelte';
   import Editor from '$lib/components/ide/Editor.svelte';
+  import Terminal from '$lib/components/ide/Terminal.svelte';
   import ResizableSidebar from '$lib/components/layout/ResizableSidebar.svelte';
   import TerminalPanel from '$lib/components/layout/TerminalPanel.svelte';
   import Notifications from '$lib/components/Notifications.svelte';
@@ -65,9 +66,7 @@
     onResize={setTerminalHeight}
     onToggle={toggleTerminal}
   >
-    <div class="terminal-placeholder" aria-live="polite">
-      <p>Terminal output will appear here.</p>
-    </div>
+    <Terminal />
   </TerminalPanel>
 
   <Notifications />
@@ -115,13 +114,4 @@
     box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.03);
   }
 
-  .terminal-placeholder {
-    color: rgba(226, 232, 240, 0.8);
-    font-size: 0.95rem;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    min-height: 140px;
-    text-align: center;
-  }
 </style>
