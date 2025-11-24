@@ -65,8 +65,10 @@ Instructions:
     l. Review styling.
     m. Review for adherence to repo standards.
 4. Comment on pull/${PR_NUMBER} with your findings organized into blocking issues and non-blocking suggestions.
-    a. If you have no findings, respond with LGTM.
-"
+    a. use gh pr comment
+    b. If you have no findings, respond with LGTM.
+5. Your final comment will ALWAYS be your findings organized into blocking issues and non-blocking suggestions.
+" 
 
 PAYLOAD=$(jq -n \
   --arg src "$SOURCE_ID" \
