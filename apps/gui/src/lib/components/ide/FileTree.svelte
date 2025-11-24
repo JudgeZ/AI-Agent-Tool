@@ -2,15 +2,16 @@
   import { fileTree, loadProject } from '$lib/stores/ide';
   import FileTreeNode from './FileTreeNode.svelte';
   import { onMount } from 'svelte';
-  import { documentDir } from '@tauri-apps/api/path';
-  import { open } from '@tauri-apps/plugin-dialog';
+  import { fsService } from '$lib/services/fs';
+
+  const fs = fsService();
 
   let rootPath = '';
 
   onMount(async () => {
     // Default to document dir for now, or we could ask user to pick
     try {
-      rootPath = await documentDir();
+      rootPath = await fs.getDefaultRoot();
       await loadProject(rootPath);
     } catch (e) {
       console.error('Failed to load initial dir', e);
@@ -19,11 +20,8 @@
 
   async function pickFolder() {
     try {
-      const selected = await open({ directory: true });
-      if (selected) {
-        const path = Array.isArray(selected) ? selected[0] : selected;
-        if (path) loadProject(path);
-      }
+      const path = await fs.pickDirectory();
+      if (path) loadProject(path);
     } catch (e) {
       console.error('Failed to open dialog', e);
     }
