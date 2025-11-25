@@ -236,12 +236,24 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
     // Handle messages for local agents
     const targetAgentId = typeof message.to === "string" ? message.to : undefined;
     if (targetAgentId && this.localAgents.has(targetAgentId)) {
-      this.deliverToLocalAgent(targetAgentId, message, sourceInstance);
+      this.deliverToLocalAgent(targetAgentId, message, sourceInstance).catch((error) => {
+        logger.warn(
+          { err: normalizeError(error), agentId: targetAgentId, messageId: message.id, event: "msgbus.delivery.failed" },
+          "Failed to deliver message to local agent",
+        );
+        this.emit("error", { error, agentId: targetAgentId, messageId: message.id, event: "delivery.failed" });
+      });
     } else if (message.type === MessageType.BROADCAST) {
       // Deliver broadcast to all local agents except sender
       for (const agentId of this.localAgents) {
         if (agentId !== message.from) {
-          this.deliverToLocalAgent(agentId, message, sourceInstance);
+          this.deliverToLocalAgent(agentId, message, sourceInstance).catch((error) => {
+            logger.warn(
+              { err: normalizeError(error), agentId, messageId: message.id, event: "msgbus.broadcast.delivery.failed" },
+              "Failed to deliver broadcast message to local agent",
+            );
+            this.emit("error", { error, agentId, messageId: message.id, event: "broadcast.delivery.failed" });
+          });
         }
       }
     }
@@ -315,12 +327,23 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
   private async sendErrorResponse(request: Message, error: Error, targetInstance: string): Promise<void> {
     if (!this.publisher) return;
 
+    // Sanitize error message to prevent internal info leakage
+    // Only expose known safe error messages; replace others with generic message
+    const safeErrorPatterns = [
+      /^Request timeout:/,
+      /^No handler registered/,
+      /^Agent not found/,
+      /^Message bus shutting down$/,
+    ];
+    const isSafeMessage = safeErrorPatterns.some((pattern) => pattern.test(error.message));
+    const sanitizedError = isSafeMessage ? error.message : "Request processing failed";
+
     const response: Message = {
       id: this.generateMessageId(),
       type: MessageType.ERROR,
       from: request.to as string,
       to: request.from,
-      payload: { type: "error", error: error.message },
+      payload: { type: "error", error: sanitizedError },
       correlationId: request.correlationId,
       priority: MessagePriority.HIGH,
       timestamp: new Date(),

@@ -17,6 +17,12 @@ type RedisClient = ReturnType<typeof createClient>;
 
 const DEFAULT_KEY_PREFIX = "context";
 
+/**
+ * Maximum number of SCAN iterations to prevent unbounded operations.
+ * With COUNT=100 per iteration, this allows scanning up to ~100,000 keys.
+ */
+const MAX_SCAN_ITERATIONS = 1000;
+
 export type RedisSharedContextConfig = Partial<SharedContextConfig> & {
   redisUrl: string;
   keyPrefix?: string;
@@ -365,11 +371,13 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
     const results: ContextEntry[] = [];
     const pattern = `${this.keyPrefix}:entry:${options.prefix ?? ""}*`;
 
-    // Scan for matching keys
+    // Scan for matching keys with iteration cap to prevent unbounded operations
     let cursor = 0;
+    let iterations = 0;
     do {
       const result = await client.scan(cursor, { MATCH: pattern, COUNT: 100 });
       cursor = result.cursor;
+      iterations++;
 
       for (const key of result.keys) {
         const raw = await client.get(key);
@@ -389,6 +397,15 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
 
         results.push(entry);
       }
+
+      // Prevent unbounded iteration
+      if (iterations >= MAX_SCAN_ITERATIONS) {
+        logger.warn(
+          { iterations, pattern, resultsCount: results.length, event: "context.redis.query.iteration_limit" },
+          "Query reached maximum iteration limit; results may be incomplete",
+        );
+        break;
+      }
     } while (cursor !== 0);
 
     return results;
@@ -403,11 +420,22 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
     const pattern = `${this.keyPrefix}:entry:*`;
     let count = 0;
     let cursor = 0;
+    let iterations = 0;
 
     do {
       const result = await client.scan(cursor, { MATCH: pattern, COUNT: 100 });
       cursor = result.cursor;
       count += result.keys.length;
+      iterations++;
+
+      // Prevent unbounded iteration
+      if (iterations >= MAX_SCAN_ITERATIONS) {
+        logger.warn(
+          { iterations, pattern, count, event: "context.redis.count.iteration_limit" },
+          "Entry count reached maximum iteration limit; count may be incomplete",
+        );
+        break;
+      }
     } while (cursor !== 0);
 
     return count;
@@ -422,10 +450,12 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
     const pattern = `${this.keyPrefix}:entry:*`;
     const keys: string[] = [];
     let cursor = 0;
+    let iterations = 0;
 
     do {
       const result = await client.scan(cursor, { MATCH: pattern, COUNT: 100 });
       cursor = result.cursor;
+      iterations++;
 
       for (const redisKey of result.keys) {
         // Extract the context key from Redis key
@@ -443,6 +473,15 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
         } else {
           keys.push(contextKey);
         }
+      }
+
+      // Prevent unbounded iteration
+      if (iterations >= MAX_SCAN_ITERATIONS) {
+        logger.warn(
+          { iterations, pattern, keysCount: keys.length, event: "context.redis.keys.iteration_limit" },
+          "getKeys reached maximum iteration limit; results may be incomplete",
+        );
+        break;
       }
     } while (cursor !== 0);
 

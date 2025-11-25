@@ -47,6 +47,9 @@ interface L1CacheEntry {
  * Redis Key Structure:
  * - Session data: `{prefix}:{sessionId}` → JSON SessionRecord
  */
+// Default L1 cache cleanup interval (60 seconds)
+const DEFAULT_L1_CLEANUP_INTERVAL_MS = 60 * 1000;
+
 export class RedisSessionStore implements ISessionStore {
   private readonly redisUrl: string;
   private readonly keyPrefix: string;
@@ -56,6 +59,7 @@ export class RedisSessionStore implements ISessionStore {
   private client: RedisClient | null = null;
   private connecting: Promise<RedisClient> | null = null;
   private closed = false;
+  private l1CleanupTimer?: NodeJS.Timeout;
 
   constructor(config: RedisSessionStoreConfig) {
     this.redisUrl = config.redisUrl;
@@ -63,6 +67,27 @@ export class RedisSessionStore implements ISessionStore {
     this.enableL1Cache = config.enableL1Cache ?? false;
     this.l1CacheTtlMs = Math.max(1000, config.l1CacheTtlMs ?? 30000);
     this.l1Cache = new Map();
+
+    // Start periodic L1 cache cleanup if L1 caching is enabled
+    if (this.enableL1Cache) {
+      this.startL1Cleanup();
+    }
+  }
+
+  /**
+   * Start periodic L1 cache cleanup to prevent unbounded memory growth.
+   */
+  private startL1Cleanup(): void {
+    this.l1CleanupTimer = setInterval(() => {
+      this.cleanupExpired().catch((error) => {
+        logger.warn(
+          { err: normalizeError(error), event: "session.store.l1.cleanup_failed" },
+          "L1 cache cleanup failed",
+        );
+      });
+    }, DEFAULT_L1_CLEANUP_INTERVAL_MS);
+    // Don't prevent Node from exiting
+    this.l1CleanupTimer.unref();
   }
 
   private formatKey(sessionId: string): string {
@@ -353,7 +378,6 @@ export class RedisSessionStore implements ISessionStore {
   async cleanupExpired(): Promise<void> {
     // Redis handles TTL-based expiration automatically
     // Clean up expired entries in L1 cache
-    const now = Date.now();
     for (const [id, entry] of this.l1Cache) {
       if (!this.isL1CacheValid(entry)) {
         this.l1Cache.delete(id);
@@ -363,6 +387,12 @@ export class RedisSessionStore implements ISessionStore {
 
   async close(): Promise<void> {
     this.closed = true;
+
+    // Stop L1 cache cleanup timer
+    if (this.l1CleanupTimer) {
+      clearInterval(this.l1CleanupTimer);
+      this.l1CleanupTimer = undefined;
+    }
 
     // Clear L1 cache
     this.l1Cache.clear();

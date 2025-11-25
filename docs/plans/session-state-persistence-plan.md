@@ -242,20 +242,17 @@ export type DedupeServiceConfig = {
 
 ```typescript
 // services/orchestrator/src/agents/IMessageBus.ts
-export interface IMessageBus {
+// NOTE: All I/O operations are async to support both in-memory and distributed backends.
+export interface IMessageBus extends EventEmitter {
   registerAgent(agentId: string): Promise<void>;
   unregisterAgent(agentId: string): Promise<void>;
-  registerHandler(agentId: string, type: MessageType, handler: MessageHandler): void;
+  registerHandler(agentId: string, type: MessageType, handler: MessageHandler): Promise<void>;
   send(message: Omit<Message, "id" | "timestamp">): Promise<string>;
   request(from: string, to: string, payload: MessagePayload, timeout?: number): Promise<unknown>;
-  getMetrics(): MessageBusMetrics;
-  getQueueSize(agentId: string): number;
-  getRegisteredAgents(): string[];
+  getMetrics(): Promise<MessageBusMetrics>;
+  getQueueSize(agentId: string): Promise<number>;
+  getRegisteredAgents(): Promise<string[]>;
   shutdown(): Promise<void>;
-
-  // Event subscription
-  on(event: string, listener: (...args: unknown[]) => void): this;
-  off(event: string, listener: (...args: unknown[]) => void): this;
 }
 ```
 
