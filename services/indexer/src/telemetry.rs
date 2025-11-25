@@ -39,7 +39,8 @@ pub enum TelemetryError {
 /// Initializes tracing with console output and optional OTLP export.
 ///
 /// When `OTEL_EXPORTER_OTLP_ENDPOINT` is set, traces are exported to the
-/// configured endpoint (typically Jaeger). If the variable is unset or empty,
+/// configured OTLP-compatible collector (e.g., Jaeger, Tempo, or any
+/// OpenTelemetry-compatible backend). If the variable is unset or empty,
 /// only console logging is enabled.
 ///
 /// This function is idempotent; subsequent calls are no-ops.
@@ -55,13 +56,13 @@ pub fn init_tracing() -> Result<(), TelemetryError> {
         .ok()
         .filter(|s| !s.trim().is_empty());
 
-    let has_otlp = otlp_endpoint.is_some();
-
     // Build optional OTLP layer if endpoint is configured
     let otel_layer = otlp_endpoint
         .map(|endpoint| init_otlp_tracer(&endpoint))
         .transpose()?
         .map(OpenTelemetryLayer::new);
+
+    let has_otlp = otel_layer.is_some();
 
     tracing_subscriber::registry()
         .with(env_filter)
@@ -121,9 +122,11 @@ fn init_otlp_tracer(endpoint: &str) -> Result<Tracer, TelemetryError> {
 /// Shuts down the OpenTelemetry tracer provider, flushing any pending spans.
 ///
 /// This should be called during graceful shutdown to ensure all traces are
-/// exported before the process exits.
+/// exported before the process exits. The function resets the initialization
+/// flag, allowing reinitialization if needed (e.g., in test scenarios).
 pub fn shutdown_tracing() {
-    if OTLP_INITIALIZED.load(Ordering::SeqCst) {
+    // Use swap to atomically check and reset the flag, preventing double-shutdown
+    if OTLP_INITIALIZED.swap(false, Ordering::SeqCst) {
         opentelemetry::global::shutdown_tracer_provider();
     }
 }
