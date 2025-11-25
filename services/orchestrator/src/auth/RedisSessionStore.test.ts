@@ -136,9 +136,13 @@ describe("RedisSessionStore", () => {
       expect(session.roles).toEqual(["admin", "user"]);
     });
 
-    it("should handle Redis connection failure gracefully", async () => {
+    it("should handle Redis connection failure gracefully with L1 fallback", async () => {
       redisState.shouldFailConnect = true;
-      store = new RedisSessionStore(defaultConfig);
+      store = new RedisSessionStore({
+        ...defaultConfig,
+        enableL1Cache: true,
+        l1CacheTtlMs: 30000,
+      });
 
       const session = await store.createSession(
         {
@@ -150,9 +154,29 @@ describe("RedisSessionStore", () => {
         60,
       );
 
-      // Session should still be created even if Redis fails
+      // Session should be created in L1 cache when Redis fails
       expect(session.subject).toBe("user-3");
       expect(session.id).toBeDefined();
+      // Verify session is retrievable from L1 cache
+      const retrieved = await store.getSession(session.id);
+      expect(retrieved?.subject).toBe("user-3");
+    });
+
+    it("should throw when Redis fails and L1 cache is disabled", async () => {
+      redisState.shouldFailConnect = true;
+      store = new RedisSessionStore(defaultConfig);
+
+      await expect(
+        store.createSession(
+          {
+            subject: "user-3b",
+            roles: [],
+            scopes: [],
+            claims: {},
+          },
+          60,
+        ),
+      ).rejects.toThrow("Redis unavailable and L1 cache disabled");
     });
 
     it("should use custom expiresAt override", async () => {

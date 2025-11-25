@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { createClient } from "redis";
 
 import { appLogger, normalizeError } from "../observability/logger.js";
+import { recordSessionStoreFallback } from "../observability/metrics.js";
 import type { ISessionStore } from "./ISessionStore.js";
 import type { CreateSessionInput, SessionRecord } from "./SessionStore.js";
 import { normalizeRoles, SessionRecordSchema } from "./sessionUtils.js";
@@ -26,6 +27,11 @@ export type RedisSessionStoreConfig = {
    * Default: 30000 (30 seconds)
    */
   l1CacheTtlMs?: number;
+  /**
+   * Interval in milliseconds for L1 cache cleanup. Only applies if enableL1Cache is true.
+   * Default: 60000 (60 seconds)
+   */
+  l1CleanupIntervalMs?: number;
 };
 
 interface L1CacheEntry {
@@ -55,6 +61,7 @@ export class RedisSessionStore implements ISessionStore {
   private readonly keyPrefix: string;
   private readonly enableL1Cache: boolean;
   private readonly l1CacheTtlMs: number;
+  private readonly l1CleanupIntervalMs: number;
   private readonly l1Cache: Map<string, L1CacheEntry>;
   private client: RedisClient | null = null;
   private connecting: Promise<RedisClient> | null = null;
@@ -66,6 +73,7 @@ export class RedisSessionStore implements ISessionStore {
     this.keyPrefix = config.keyPrefix ?? DEFAULT_KEY_PREFIX;
     this.enableL1Cache = config.enableL1Cache ?? false;
     this.l1CacheTtlMs = Math.max(1000, config.l1CacheTtlMs ?? 30000);
+    this.l1CleanupIntervalMs = Math.max(1000, config.l1CleanupIntervalMs ?? DEFAULT_L1_CLEANUP_INTERVAL_MS);
     this.l1Cache = new Map();
 
     // Start periodic L1 cache cleanup if L1 caching is enabled
@@ -85,7 +93,7 @@ export class RedisSessionStore implements ISessionStore {
           "L1 cache cleanup failed",
         );
       });
-    }, DEFAULT_L1_CLEANUP_INTERVAL_MS);
+    }, this.l1CleanupIntervalMs);
     // Don't prevent Node from exiting
     this.l1CleanupTimer.unref();
   }
@@ -243,6 +251,7 @@ export class RedisSessionStore implements ISessionStore {
     if (!redisSuccess) {
       if (this.enableL1Cache) {
         this.setL1Cache(session);
+        recordSessionStoreFallback("create");
         logger.warn(
           { sessionId: id, event: "session.store.redis.fallback" },
           "Session stored in L1 cache only (Redis unavailable); session may not be visible to other replicas",

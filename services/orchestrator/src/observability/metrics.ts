@@ -130,6 +130,8 @@ const FILE_LOCK_RELEASE_NAME = "orchestrator_file_lock_release_total";
 const FILE_LOCK_RATE_LIMIT_NAME = "orchestrator_file_lock_rate_limit_total";
 const FILE_LOCK_ACQUIRE_SECONDS_NAME = "orchestrator_file_lock_acquire_seconds";
 const FILE_LOCK_CONTENTION_NAME = "orchestrator_file_lock_contention_total";
+const SESSION_STORE_FALLBACK_NAME = "orchestrator_session_store_fallback_total";
+
 function getOrCreateRateLimitHitCounter(): Counter<string> {
   const existing = register.getSingleMetric(RATE_LIMIT_HITS_NAME) as Counter<string> | undefined;
   if (existing) {
@@ -228,6 +230,18 @@ function getOrCreateFileLockContentionCounter(): Counter<string> {
   });
 }
 
+function getOrCreateSessionStoreFallbackCounter(): Counter<string> {
+  const existing = register.getSingleMetric(SESSION_STORE_FALLBACK_NAME) as Counter<string> | undefined;
+  if (existing) {
+    return existing;
+  }
+  return new Counter({
+    name: SESSION_STORE_FALLBACK_NAME,
+    help: "Count of session store operations that fell back to L1 cache due to Redis unavailability",
+    labelNames: ["operation"],
+  });
+}
+
 function getOrCreateGauge(): Gauge<string> {
   const existing = register.getSingleMetric(QUEUE_DEPTH_NAME) as Gauge<string> | undefined;
   if (existing) {
@@ -316,6 +330,7 @@ const fileLockReleaseCounter = getOrCreateFileLockReleaseCounter();
 const fileLockRateLimitCounter = getOrCreateFileLockRateLimitCounter();
 const fileLockAcquisitionHistogram = getOrCreateFileLockAcquisitionHistogram();
 const fileLockContentionCounter = getOrCreateFileLockContentionCounter();
+const sessionStoreFallbackCounter = getOrCreateSessionStoreFallbackCounter();
 
 export function resetMetrics(): void {
   register.resetMetrics();
@@ -335,6 +350,7 @@ export function resetMetrics(): void {
   fileLockRateLimitCounter.reset();
   fileLockAcquisitionHistogram.reset();
   fileLockContentionCounter.reset();
+  sessionStoreFallbackCounter.reset();
 }
 
 function getOrCreateResultCounter(): Counter<string> {
@@ -413,6 +429,16 @@ export function recordFileLockContention(
   reason: FileLockContentionReason,
 ): void {
   fileLockContentionCounter.labels({ operation, reason }).inc();
+}
+
+type SessionStoreOperation = "create" | "get" | "revoke";
+
+/**
+ * Record when a session store operation falls back to L1 cache due to Redis unavailability.
+ * This metric helps monitor graceful degradation events.
+ */
+export function recordSessionStoreFallback(operation: SessionStoreOperation): void {
+  sessionStoreFallbackCounter.labels({ operation }).inc();
 }
 
 export function recordMetric(name: string, value: number, labels: Record<string, string> = {}): void {
