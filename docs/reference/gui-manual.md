@@ -43,6 +43,15 @@ By default the UI connects to `http://127.0.0.1:4000`. Override the orchestrator
 VITE_ORCHESTRATOR_URL=http://localhost:4010 npm run dev
 ```
 
+### Filesystem modes (desktop vs. browser)
+
+The IDE uses a shared filesystem service so desktop and browser builds behave the same way:
+
+* **Desktop/Tauri** builds call the local filesystem through the Tauri plugins bundled in `src/lib/services/fs.ts`. The default root comes from the host OS (`documentDir()`), and directory selection uses the native picker.
+* **Browser** builds proxy filesystem access through the orchestrator's Remote FS endpoints at `/remote-fs`. Requests always include credentials and are anchored to the configured workspace root to prevent traversal outside the allowed path.
+
+Configure the remote workspace root with `VITE_REMOTE_FS_ROOT` (defaults to `/workspace` if omitted). Paths are normalized by the client before being sent to the orchestrator so inputs like `./app/../` are resolved safely under the configured root. Operators running the GUI purely in the browser can point the root at the orchestrator's workspace directory to keep the IDE file tree aligned with the server-side execution context.
+
 > **Security defaults:** The bundled Tauri shell enforces a restrictive Content Security Policy (CSP) and capability guard. Only the local orchestrator endpoints (`http://127.0.0.1:4000`, `http://localhost:4000`, and `https://localhost:4000`) are permitted for API traffic. If you need to target a different host, update the CSP `connect-src` directive in `apps/gui/src-tauri/tauri.conf.json` and extend the capability manifest in `apps/gui/src-tauri/capabilities/main.json`.
 
 The timeline page accepts a `plan` query parameter to start streaming immediately:

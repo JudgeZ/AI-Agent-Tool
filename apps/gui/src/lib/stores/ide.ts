@@ -1,7 +1,6 @@
 import { writable, get } from 'svelte/store';
-import { readFile, writeFile, readDir } from '@tauri-apps/plugin-fs';
-import { join } from '@tauri-apps/api/path';
 import { defaultTenantId } from '$lib/config';
+import { fsService } from '$lib/services/fs';
 
 export type CollaborationStatus = 'idle' | 'connecting' | 'connected' | 'disconnected' | 'error';
 
@@ -34,7 +33,7 @@ export const collaborationContextVersion = writable<number>(0);
 
 const localProjectId = writable<string>('default-project');
 const sharedTextEncoder = new TextEncoder();
-const sharedTextDecoder = new TextDecoder();
+const fs = fsService();
 const ROOM_CACHE_LIMIT = 256;
 const SAFE_ID_PATTERN = /^[a-zA-Z0-9._:-]{1,64}$/;
 let rateLimiterLock: Promise<void> = Promise.resolve();
@@ -133,17 +132,26 @@ async function deriveLocalProjectId(path: string): Promise<string> {
 // Helper to recursively build tree
 async function buildTree(path: string): Promise<FileNode[]> {
     try {
-        const entries = await readDir(path);
+        const entries = await fs.readDir(path);
         const nodes: FileNode[] = [];
+        const normalizedParent = path.replace(/\\/g, '/').replace(/\/+$/, '');
 
         for (const entry of entries) {
             // Skip hidden files/dirs for now
             if (entry.name.startsWith('.')) continue;
 
-            const fullPath = await join(path, entry.name);
+            const entryPath = entry.path?.replace(/\\/g, '/') ?? (await fs.join(normalizedParent, entry.name));
+            if (
+                entryPath !== normalizedParent &&
+                !entryPath.startsWith(`${normalizedParent}/`)
+            ) {
+                console.warn('Discarding entry outside project root', { entry, normalizedParent });
+                continue;
+            }
+
             nodes.push({
                 name: entry.name,
-                path: fullPath,
+                path: entryPath,
                 isDirectory: entry.isDirectory,
                 children: entry.isDirectory ? [] : undefined
             });
@@ -210,8 +218,7 @@ export async function openFile(path: string) {
         // Load content if not already loaded
         const contents = get(fileContents);
         if (contents[path] === undefined) {
-            const data = await readFile(path);
-            const text = sharedTextDecoder.decode(data);
+            const text = await fs.readFile(path);
             fileContents.update(c => ({ ...c, [path]: text }));
         }
 
@@ -223,7 +230,7 @@ export async function openFile(path: string) {
 
 export async function saveFile(path: string, content: string) {
     try {
-        await writeFile(path, sharedTextEncoder.encode(content));
+        await fs.writeFile(path, content);
         fileContents.update(c => ({ ...c, [path]: content }));
         isDirty.update(d => ({ ...d, [path]: false }));
     } catch (e) {
@@ -238,7 +245,17 @@ export function closeFile(path: string) {
         const remaining = get(openFiles);
         activeFile.set(remaining.length > 0 ? remaining[remaining.length - 1] : null);
     }
-    // Optional: clear content from memory to save RAM
+    fileContents.update(contents => {
+        if (!(path in contents)) return contents;
+        const { [path]: _removed, ...rest } = contents;
+        return rest;
+    });
+
+    isDirty.update(status => {
+        if (!(path in status)) return status;
+        const { [path]: _removed, ...rest } = status;
+        return rest;
+    });
 }
 
 function normalizeRelativePath(path: string): string {

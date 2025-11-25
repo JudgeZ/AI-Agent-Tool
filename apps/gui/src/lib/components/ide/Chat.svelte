@@ -54,7 +54,6 @@
   let lastMessageAt = 0;
   const MESSAGE_SEND_COOLDOWN_MS = 500;
   // Internal caches; reactive tracking is not required.
-  // eslint-disable-next-line svelte/prefer-svelte-reactivity
   const messageCaches: MessageCaches = {
     messageCache: new Map<string, ChatMessage>(),
     messageSignatureCache: new Map<string, string>()

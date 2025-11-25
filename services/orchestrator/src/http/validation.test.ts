@@ -11,6 +11,8 @@ import {
   SessionIdSchema,
   StepIdSchema,
   formatValidationIssues,
+  RemoteFsListQuerySchema,
+  RemoteFsWriteSchema,
 } from "./validation.js";
 
 describe("PlanIdSchema", () => {
@@ -321,6 +323,39 @@ describe("OidcCallbackSchema", () => {
       client_id: "  tenant-client  ",
     });
     expect(result.clientId).toBe("tenant-client");
+  });
+});
+
+describe("RemoteFsWriteSchema", () => {
+  it("rejects payloads that exceed the byte limit with multibyte characters", () => {
+    const oversized = "😀".repeat(Math.floor(1_048_576 / 4) + 1);
+
+    const result = RemoteFsWriteSchema.safeParse({
+      path: "/workspace/file.txt",
+      content: oversized,
+    });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toBe("content must not exceed 1048576 bytes");
+    }
+  });
+});
+
+describe("RemoteFsListQuerySchema", () => {
+  it("coerces numeric query parameters", () => {
+    const result = RemoteFsListQuerySchema.parse({ path: "/workspace", limit: "10" });
+
+    expect(result.limit).toBe(10);
+  });
+
+  it("rejects cursors containing path separators", () => {
+    const result = RemoteFsListQuerySchema.safeParse({ path: "/workspace", cursor: "nested/dir" });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toBe("cursor must be a file or directory name");
+    }
   });
 });
 

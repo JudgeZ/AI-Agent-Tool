@@ -66,11 +66,14 @@ function buildConfig(overrides: DeepPartial<AppConfig> = {}): AppConfig {
     },
     server: {
       ...base.server,
+      remoteFs: { ...base.server.remoteFs },
       rateLimits: {
         backend: { ...base.server.rateLimits.backend },
         plan: { ...base.server.rateLimits.plan },
         chat: { ...base.server.rateLimits.chat },
         auth: { ...base.server.rateLimits.auth },
+        secrets: { ...base.server.rateLimits.secrets },
+        remoteFs: { ...base.server.rateLimits.remoteFs },
       },
       securityHeaders: {
         contentSecurityPolicy: {
@@ -129,10 +132,14 @@ function buildConfig(overrides: DeepPartial<AppConfig> = {}): AppConfig {
   if (serverOverrides) {
     const {
       rateLimits: rateLimitOverrides,
+      remoteFs: remoteFsOverrides,
       securityHeaders: securityHeaderOverrides,
       ...serverRest
     } = serverOverrides;
     Object.assign(config.server, serverRest);
+    if (remoteFsOverrides) {
+      Object.assign(config.server.remoteFs, remoteFsOverrides);
+    }
     if (rateLimitOverrides) {
       if (rateLimitOverrides.backend) {
         Object.assign(
@@ -156,6 +163,18 @@ function buildConfig(overrides: DeepPartial<AppConfig> = {}): AppConfig {
         Object.assign(
           config.server.rateLimits.auth,
           rateLimitOverrides.auth,
+        );
+      }
+      if (rateLimitOverrides.secrets) {
+        Object.assign(
+          config.server.rateLimits.secrets,
+          rateLimitOverrides.secrets,
+        );
+      }
+      if (rateLimitOverrides.remoteFs) {
+        Object.assign(
+          config.server.rateLimits.remoteFs,
+          rateLimitOverrides.remoteFs,
         );
       }
     }

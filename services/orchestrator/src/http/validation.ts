@@ -17,6 +17,9 @@ const MAX_SESSION_ID_LENGTH = 64;
 const MAX_SECRET_LABEL_ENTRIES = 20;
 const MAX_SECRET_VALUE_LENGTH = 8192;
 const MAX_TENANT_ID_LENGTH = 128;
+const MAX_REMOTE_FS_PATH_LENGTH = 4096;
+const MAX_REMOTE_FS_CONTENT_LENGTH = 1_048_576;
+const MAX_REMOTE_FS_LIST_LIMIT = 1_000;
 
 const LEGACY_PLAN_ID_REGEX = /^plan-[0-9a-f]{8}$/i;
 const UUID_PLAN_ID_REGEX =
@@ -148,6 +151,64 @@ export const ChatRequestSchema = z
     }
     return payload;
   });
+
+export const RemoteFsPathSchema = z
+  .string({ required_error: "path is required" })
+  .trim()
+  .min(1, { message: "path is required" })
+  .max(MAX_REMOTE_FS_PATH_LENGTH, {
+    message: `path must not exceed ${MAX_REMOTE_FS_PATH_LENGTH} characters`,
+  })
+  .refine((value) => value.startsWith("/"), {
+    message: "path must be absolute",
+  });
+
+const coerceQueryString = (value: unknown): string | undefined => {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return typeof value[0] === "string" ? value[0] : undefined;
+  return undefined;
+};
+
+const coerceQueryNumber = (value: unknown): number | undefined => {
+  const candidate = coerceQueryString(value);
+  if (candidate === undefined) return undefined;
+  const parsed = Number(candidate);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
+export const RemoteFsPathQuerySchema = z.object({
+  path: z.preprocess(coerceQueryString, RemoteFsPathSchema),
+});
+
+export const RemoteFsListQuerySchema = RemoteFsPathQuerySchema.extend({
+  limit: z
+    .preprocess(coerceQueryNumber, z.number().int().min(1).max(MAX_REMOTE_FS_LIST_LIMIT))
+    .optional(),
+  cursor: z
+    .preprocess(coerceQueryString, z.string().trim().min(1).max(255))
+    .optional()
+    .refine((value) => !value?.includes("/") && !value?.includes("\\"), {
+      message: "cursor must be a file or directory name",
+    }),
+});
+
+export const RemoteFsWriteSchema = z.object({
+  path: RemoteFsPathSchema,
+  content: z
+    .string({ required_error: "content is required" })
+    .superRefine((value, ctx) => {
+      const bytes = Buffer.byteLength(value, "utf8");
+      if (bytes > MAX_REMOTE_FS_CONTENT_LENGTH) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.too_big,
+          maximum: MAX_REMOTE_FS_CONTENT_LENGTH,
+          type: "string",
+          inclusive: true,
+          message: `content must not exceed ${MAX_REMOTE_FS_CONTENT_LENGTH} bytes`,
+        });
+      }
+    }),
+});
 
 export type PlanRequestPayload = z.infer<typeof PlanRequestSchema>;
 export type PlanApprovalPayload = z.infer<typeof PlanApprovalSchema>;

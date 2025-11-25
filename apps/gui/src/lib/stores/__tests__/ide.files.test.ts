@@ -1,7 +1,7 @@
 import { get } from 'svelte/store';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi, type MockInstance } from 'vitest';
 
-import { readDir, readFile, writeFile } from '@tauri-apps/plugin-fs';
+import { fsService } from '$lib/services/fs';
 
 import {
   activeFile,
@@ -26,19 +26,30 @@ import {
   __test
 } from '../ide';
 
-vi.mock('@tauri-apps/plugin-fs', () => {
-  return {
+vi.mock('$lib/services/fs', () => {
+  const adapter = {
     readDir: vi.fn(),
     readFile: vi.fn(),
-    writeFile: vi.fn()
+    writeFile: vi.fn(),
+    join: vi.fn((...segments: string[]) => segments.join('/')),
+    getDefaultRoot: vi.fn(),
+    pickDirectory: vi.fn()
+  };
+
+  return {
+    fsService: () => adapter,
+    isDesktop: () => true,
+    __mockFs: adapter
   };
 });
 
-vi.mock('@tauri-apps/api/path', () => {
-  return {
-    join: vi.fn((...segments: string[]) => segments.join('/'))
-  };
-});
+const mockFs = fsService() as unknown as {
+  readDir: MockInstance;
+  readFile: MockInstance;
+  writeFile: MockInstance;
+};
+
+type FileEntries = Array<{ name: string; isDirectory: boolean; path?: string }>;
 
 const decoder = new TextDecoder();
 
@@ -70,10 +81,10 @@ describe('ide store file operations and helpers', () => {
   });
 
   it('derives and normalizes project metadata when loading a project', async () => {
-    vi.mocked(readDir).mockResolvedValue([
+    vi.mocked(mockFs.readDir).mockResolvedValue([
       { name: 'src', isDirectory: true },
       { name: 'README.md', isDirectory: false }
-    ] as unknown as Awaited<ReturnType<typeof readDir>>);
+    ] as unknown as FileEntries);
 
     const projectPath = '/workspace/demo';
     await loadProject(projectPath);
@@ -91,10 +102,10 @@ describe('ide store file operations and helpers', () => {
   });
 
   it('expands directory nodes lazily and marks them as open', async () => {
-    vi.mocked(readDir).mockResolvedValue([
+    vi.mocked(mockFs.readDir).mockResolvedValue([
       { name: 'main.ts', isDirectory: false },
       { name: 'lib', isDirectory: true }
-    ] as unknown as Awaited<ReturnType<typeof readDir>>);
+    ] as unknown as FileEntries);
 
     await loadProject('/workspace/demo');
     const [root] = get(fileTree);
@@ -108,7 +119,7 @@ describe('ide store file operations and helpers', () => {
   it('opens files, caches contents, and keeps the active file in sync', async () => {
     const filePath = '/workspace/demo/main.ts';
     const payload = new TextEncoder().encode('console.log("hi")');
-    vi.mocked(readFile).mockResolvedValue(payload as unknown as Awaited<ReturnType<typeof readFile>>);
+    vi.mocked(mockFs.readFile).mockResolvedValue(new TextDecoder().decode(payload));
 
     await openFile(filePath);
 
@@ -117,7 +128,7 @@ describe('ide store file operations and helpers', () => {
     expect(get(fileContents)[filePath]).toBe(decoder.decode(payload));
 
     await openFile(filePath);
-    expect(readFile).toHaveBeenCalledTimes(1);
+    expect(mockFs.readFile).toHaveBeenCalledTimes(1);
   });
 
   it('saves file contents and clears dirty state', async () => {
@@ -126,7 +137,7 @@ describe('ide store file operations and helpers', () => {
 
     await saveFile(filePath, 'updated');
 
-    expect(writeFile).toHaveBeenCalledTimes(1);
+    expect(mockFs.writeFile).toHaveBeenCalledTimes(1);
     expect(get(fileContents)[filePath]).toBe('updated');
     expect(get(isDirty)[filePath]).toBe(false);
   });
@@ -134,14 +145,20 @@ describe('ide store file operations and helpers', () => {
   it('closes files and reassigns the active file predictably', () => {
     openFiles.set(['/workspace/demo/a.ts', '/workspace/demo/b.ts']);
     activeFile.set('/workspace/demo/b.ts');
+    fileContents.set({ '/workspace/demo/a.ts': 'a', '/workspace/demo/b.ts': 'b' });
+    isDirty.set({ '/workspace/demo/a.ts': true, '/workspace/demo/b.ts': false });
 
     closeFile('/workspace/demo/b.ts');
 
     expect(get(openFiles)).toEqual(['/workspace/demo/a.ts']);
     expect(get(activeFile)).toBe('/workspace/demo/a.ts');
+    expect(get(fileContents)).toEqual({ '/workspace/demo/a.ts': 'a' });
+    expect(get(isDirty)).toEqual({ '/workspace/demo/a.ts': true });
 
     closeFile('/workspace/demo/a.ts');
     expect(get(activeFile)).toBeNull();
+    expect(get(fileContents)).toEqual({});
+    expect(get(isDirty)).toEqual({});
   });
 
   it('restores local collaboration context when remote data is missing', () => {

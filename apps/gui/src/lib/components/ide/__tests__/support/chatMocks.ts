@@ -230,9 +230,15 @@ export function buildLongMessage(length: number, fill = 'x') {
   return fill.repeat(length);
 }
 
+type MockProvider = {
+  wsconnected: boolean;
+  emit: (event: 'status' | 'connection-error' | 'connection-close' | 'sync', payload: unknown) => void;
+  destroy: () => void;
+};
+
 export const latestWebsocketProvider = async () => {
   const websocketModule = (await import('y-websocket')) as unknown as {
-    __mock: { instances: Array<{ wsconnected: boolean }> };
+    __mock: { instances: MockProvider[] };
   };
   const { instances } = websocketModule.__mock;
   const provider = instances.at(-1);
@@ -242,9 +248,16 @@ export const latestWebsocketProvider = async () => {
   return provider;
 };
 
+type MockMessageLog = {
+  items: unknown[];
+  push: (entries: unknown[]) => void;
+  replace: (index: number, entry: unknown) => void;
+  delete: (index: number, length: number) => void;
+};
+
 export const latestMessageLog = async () => {
   const yjsModule = (await import('yjs')) as unknown as {
-    __mock: { yArrayInstances: Array<{ items: unknown[] }> };
+    __mock: { yArrayInstances: MockMessageLog[] };
   };
   const { yArrayInstances } = yjsModule.__mock;
   const array = yArrayInstances.at(-1);
