@@ -2,6 +2,8 @@
 {{- $root := . -}}
 {{- $fullname := include "oss-ai-agent-tool.fullname" $root -}}
 {{- $defaultIndexerEnv := dict "RUST_LOG" ($root.Values.indexer.logLevel | default "info") -}}
+{{- $_ := set $defaultIndexerEnv "INDEXER_GRPC_ADDR" (printf "0.0.0.0:%d" (int ($root.Values.indexer.containerPort | default 7070))) -}}
+{{- $_ := set $defaultIndexerEnv "INDEXER_LISTEN_ADDR" (printf "0.0.0.0:%d" (int ($root.Values.indexer.httpContainerPort | default 7071))) -}}
 {{- if .Values.postgres.enabled -}}
   {{- $_ := set $defaultIndexerEnv "DATABASE_URL" (printf "postgres://%s:%s@%s-postgres:5432/%s" (.Values.postgres.username | default "ossaat") (.Values.postgres.password | default "ossaat") $fullname (.Values.postgres.database | default "ossaat")) -}}
 {{- end -}}
@@ -81,8 +83,10 @@ spec:
           image: {{ include "oss-ai-agent-tool.image" (dict "Values" .Values "Chart" .Chart "component" "indexer") }}
           imagePullPolicy: {{ .Values.image.pullPolicy | default "IfNotPresent" }}
           ports:
-            - name: http
+            - name: grpc
               containerPort: {{ .Values.indexer.containerPort | default 7070 }}
+            - name: http
+              containerPort: {{ .Values.indexer.httpContainerPort | default 7071 }}
           env:
           {{- range $key, $value := $indexerEnv }}
             - name: {{ $key }}

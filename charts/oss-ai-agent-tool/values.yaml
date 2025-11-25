@@ -302,7 +302,8 @@ orchestrator:
 indexer:
   enabled: true
   replicas: 1
-  containerPort: 7070
+  containerPort: 7070      # gRPC port
+  httpContainerPort: 7071  # HTTP port (health checks, REST API)
   logLevel: info
   requestLimitBytes: 1048576
   env: {}
@@ -336,7 +337,8 @@ indexer:
         - ALL
   service:
     type: ClusterIP
-    port: 7070
+    port: 7070      # gRPC port
+    httpPort: 7071  # HTTP port (health checks, REST API)
   resources:
     requests: { cpu: "100m", memory: "128Mi" }
     limits: { cpu: "500m", memory: "256Mi" }

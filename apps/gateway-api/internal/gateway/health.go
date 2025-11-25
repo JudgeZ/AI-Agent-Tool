@@ -118,7 +118,7 @@ func checkOrchestrator(ctx context.Context) dependencyResult {
 
 func checkIndexer(ctx context.Context) dependencyResult {
 	start := time.Now()
-	baseURL := strings.TrimRight(GetEnv("INDEXER_URL", "http://127.0.0.1:7070"), "/")
+	baseURL := strings.TrimRight(GetEnv("INDEXER_URL", "http://127.0.0.1:7071"), "/")
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, baseURL+indexerHealthPath, nil)
 	if err != nil {
 		return failureResult(start, fmt.Sprintf("failed to create indexer request: %v", err))

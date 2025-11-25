@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"testing"
 	"time"
 
@@ -144,5 +145,34 @@ func TestCheckIndexer(t *testing.T) {
 		result := checkIndexer(ctx)
 		assert.Equal(t, "fail", result.Status)
 		assert.NotNil(t, result.Error)
+	})
+}
+
+func TestIndexerDefaultPort(t *testing.T) {
+	// Verify the default INDEXER_URL uses port 7071 (HTTP port, not gRPC 7070)
+	// This ensures health checks target the correct HTTP endpoint
+	t.Run("default URL uses HTTP port 7071", func(t *testing.T) {
+		// Save original value and completely unset INDEXER_URL to test default behavior
+		originalValue, wasSet := os.LookupEnv("INDEXER_URL")
+		os.Unsetenv("INDEXER_URL")
+		defer func() {
+			if wasSet {
+				os.Setenv("INDEXER_URL", originalValue)
+			}
+		}()
+
+		// Call checkIndexer which will fail (no server listening)
+		// but the error message will reveal which URL it tried to connect to
+		ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+		defer cancel()
+
+		result := checkIndexer(ctx)
+
+		// The check will fail, but we verify it attempted the correct default port
+		assert.Equal(t, "fail", result.Status)
+		assert.NotNil(t, result.Error)
+		// Verify the error references port 7071 (HTTP), not 7070 (gRPC)
+		assert.Contains(t, *result.Error, "127.0.0.1:7071",
+			"checkIndexer should use default HTTP port 7071, not gRPC port 7070")
 	})
 }
