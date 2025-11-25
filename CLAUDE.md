@@ -1,6 +1,6 @@
 # OSS-AI-Agent-Tool – Agents & Engineering Guidelines
 
-> This document defines how humans and AI agents (Code Writer, Reviewers, etc.) work on this repo.  
+> This document defines how humans and AI agents (Code Writer, Reviewers, etc.) work on this repo.
 > It encodes our expectations for security, reliability, and review. If something conflicts with this file, this file wins.
 
 ---
@@ -16,7 +16,7 @@
 
 ## 2. Agents
 
-### 2.1 Code Writer 
+### 2.1 Code Writer
 
 **Mission:** Implement small, safe, reviewable changes to this repository.
 
@@ -37,7 +37,8 @@
 2. **Security first. Never introduce:**
    - plaintext credentials, tokens, or API keys,
    - default passwords or backdoor accounts,
-   - secrets in logs, comments, or example configs.
+   - secrets in logs, comments, or example configs,
+   - `eval()` or `new Function()` anywhere.
 3. **Every new or changed external entry point _must_ have:**
    - explicit input validation at the boundary (schema / type‑safe parsing),
    - clear, user‑safe error handling (no stack traces / internals),
@@ -45,12 +46,18 @@
 4. **Tests are not optional.**
    - Any behavior change must add or update tests.
    - Bug fixes must include a regression test.
+   - Frontend tests (Playwright) must use explicit waits and long timeouts.
 5. **Keep diffs small and scoped.**
    - Prefer one concern per PR (e.g. “add rate limiting to gateway”).
    - Avoid large cross‑cutting refactors unless explicitly requested.
+   - **Do not edit build artifacts** (files in `dist`, `build`, etc.); find the source.
 6. **Respect performance budgets.**
    - Avoid unnecessary allocations, blocking calls in hot paths, or unbounded loops.
    - Avoid N+1 patterns when touching DB or external APIs.
+7. **Environment & Tooling:**
+   - **Do not use `gh` CLI.** Use `curl` or native API calls.
+   - **Do not use `git pull`.** Use `git fetch` and `git reset` to update branches.
+   - When using Git Merge Diffs, conflict markers must be exact and on their own lines.
 
 **Deliverables (per change)**
 
@@ -83,6 +90,8 @@
 - A list of **blocking issues** (must fix before merge).
 - A list of **non‑blocking suggestions** (nice to have).
 - Quick **risk assessment**: impact on security, performance, and operability.
+- If no findings, output **LGTM**.
+- **Do not commit review artifacts** (e.g., `REVIEW.md`) to the repository.
 
 ---
 
@@ -111,6 +120,8 @@ For the code under review, explicitly check:
 - **Session management**:
   - session IDs are regenerated on login,
   - cookies are `Secure`, `HttpOnly`, and `SameSite` where possible.
+- **Code Execution**:
+  - Verify no usage of `eval()`, `new Function()`, or unsafe dynamic imports.
 
 ---
 
@@ -158,6 +169,7 @@ For the code under review, explicitly check:
   - readable contrast ratios.
 - Handle network failures gracefully with retries and exponential backoff.
 - Never rely on client‑side checks for security decisions.
+- **Testing**: Use explicit waits/timeouts in Playwright; mock auth via session key.
 
 ### 3.6 YAML / Helm / Infra
 
@@ -165,6 +177,13 @@ For the code under review, explicitly check:
 - Never hard‑code secrets or passwords.
 - Use resource limits and pod security settings where applicable.
 - Make feature flags explicit and documented.
+
+### 3.7 Bash & Scripting
+
+- Always use `set -o pipefail` to catch pipeline errors.
+- Explicitly check variables for emptiness before use (e.g. `if [[ -z "$VAR" ]]; then ...`).
+- Use `curl -s` (silent) for requests containing secrets to prevent log leakage.
+- Do not use `set -x` in scripts handling secrets.
 
 ---
 
@@ -254,6 +273,10 @@ The following are **never acceptable**:
 - Hiding errors instead of handling them or surfacing them appropriately.
 - Introducing global mutable state that is accessed from multiple goroutines/threads without clear synchronization.
 - Writing huge PRs that mix refactors, features, and fixes in one change.
+- **Using `eval()` or `new Function()`** (RCE risk).
+- **Using `gh` CLI** (use `curl` or native API).
+- **Using `git pull`** (use fetch/reset).
+- **Editing build artifacts** directly.
 
 If you must violate a guideline, call it out explicitly with rationale in the PR description and in a comment near the code.
 
