@@ -16,19 +16,21 @@ import type {
  * - Broadcast messaging
  * - Request-response patterns
  * - Priority-based message delivery
+ *
+ * All I/O operations are async to support both in-memory and distributed backends.
  */
 export interface IMessageBus extends EventEmitter {
   /**
    * Register an agent with the message bus.
    * Creates a message queue for the agent.
    */
-  registerAgent(agentId: string): void;
+  registerAgent(agentId: string): Promise<void>;
 
   /**
    * Unregister an agent from the message bus.
    * Removes the agent's message queue.
    */
-  unregisterAgent(agentId: string): void;
+  unregisterAgent(agentId: string): Promise<void>;
 
   /**
    * Register a message handler for an agent.
@@ -37,7 +39,7 @@ export interface IMessageBus extends EventEmitter {
    * @param type - The message type to handle
    * @param handler - The handler implementation
    */
-  registerHandler(agentId: string, type: MessageType, handler: MessageHandler): void;
+  registerHandler(agentId: string, type: MessageType, handler: MessageHandler): Promise<void>;
 
   /**
    * Send a message.
@@ -66,21 +68,21 @@ export interface IMessageBus extends EventEmitter {
   /**
    * Get current metrics.
    */
-  getMetrics(): MessageBusMetrics;
+  getMetrics(): Promise<MessageBusMetrics>;
 
   /**
    * Get the queue size for an agent.
    */
-  getQueueSize(agentId: string): number;
+  getQueueSize(agentId: string): Promise<number>;
 
   /**
    * Get all registered agent IDs.
    */
-  getRegisteredAgents(): string[];
+  getRegisteredAgents(): Promise<string[]>;
 
   /**
    * Shutdown the message bus.
    * Cleans up resources and rejects pending requests.
    */
-  shutdown(): void;
+  shutdown(): Promise<void>;
 }

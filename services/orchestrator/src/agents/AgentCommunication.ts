@@ -179,7 +179,7 @@ export class MessageBus extends EventEmitter implements IMessageBus {
   // Agent Registration
   // ============================================================================
 
-  public registerAgent(agentId: string): void {
+  public async registerAgent(agentId: string): Promise<void> {
     if (!this.queues.has(agentId)) {
       this.queues.set(agentId, []);
       this.handlers.set(agentId, new Map());
@@ -187,19 +187,19 @@ export class MessageBus extends EventEmitter implements IMessageBus {
     }
   }
 
-  public unregisterAgent(agentId: string): void {
+  public async unregisterAgent(agentId: string): Promise<void> {
     this.queues.delete(agentId);
     this.handlers.delete(agentId);
     this.emit("agent:unregistered", { agentId, timestamp: new Date() });
   }
 
-  public registerHandler(
+  public async registerHandler(
     agentId: string,
     type: MessageType,
     handler: MessageHandler,
-  ): void {
+  ): Promise<void> {
     if (!this.handlers.has(agentId)) {
-      this.registerAgent(agentId);
+      await this.registerAgent(agentId);
     }
     this.handlers.get(agentId)!.set(type, handler);
     this.emit("handler:registered", { agentId, type });
@@ -492,11 +492,13 @@ export class MessageBus extends EventEmitter implements IMessageBus {
   ): Promise<void> {
     if (!requestMessage.correlationId) return;
 
+    // Do not expose internal error details (stack traces) in responses
+    // to prevent information disclosure
     await this.send({
       type: MessageType.ERROR,
       from: requestMessage.to as string,
       to: requestMessage.from,
-      payload: { message: error.message, stack: error.stack },
+      payload: { type: "error", error: error.message },
       correlationId: requestMessage.correlationId,
       priority: MessagePriority.HIGH,
     });
@@ -548,13 +550,13 @@ export class MessageBus extends EventEmitter implements IMessageBus {
     this.metrics.messagesExpired += expiredCount;
   }
 
-  public shutdown(): void {
+  public async shutdown(): Promise<void> {
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
     }
 
     // Reject all pending requests
-    for (const [correlationId, pending] of this.pendingRequests) {
+    for (const [_correlationId, pending] of this.pendingRequests) {
       clearTimeout(pending.timeout);
       pending.reject(new Error("Message bus shutting down"));
     }
@@ -601,15 +603,15 @@ export class MessageBus extends EventEmitter implements IMessageBus {
   // Query Methods
   // ============================================================================
 
-  public getMetrics(): MessageBusMetrics {
+  public async getMetrics(): Promise<MessageBusMetrics> {
     return { ...this.metrics };
   }
 
-  public getQueueSize(agentId: string): number {
+  public async getQueueSize(agentId: string): Promise<number> {
     return this.queues.get(agentId)?.length || 0;
   }
 
-  public getRegisteredAgents(): string[] {
+  public async getRegisteredAgents(): Promise<string[]> {
     return Array.from(this.queues.keys());
   }
 }
@@ -662,13 +664,13 @@ export class SharedContextManager extends EventEmitter implements ISharedContext
   // Context Operations
   // ============================================================================
 
-  public set(
+  public async set(
     key: string,
     value: unknown,
     ownerId: string,
     scope: ContextScope = ContextScope.PRIVATE,
     ttl?: number,
-  ): void {
+  ): Promise<void> {
     if (this.entries.size >= this.config.maxEntries) {
       throw new Error("Context store is full");
     }
@@ -692,7 +694,7 @@ export class SharedContextManager extends EventEmitter implements ISharedContext
     this.emit("context:set", { key, ownerId, scope, version: entry.version });
   }
 
-  public get(key: string, requesterId: string): unknown | undefined {
+  public async get(key: string, requesterId: string): Promise<unknown | undefined> {
     const entry = this.entries.get(key);
     if (!entry) return undefined;
 
@@ -714,7 +716,7 @@ export class SharedContextManager extends EventEmitter implements ISharedContext
     return entry.value;
   }
 
-  public delete(key: string, requesterId: string): boolean {
+  public async delete(key: string, requesterId: string): Promise<boolean> {
     const entry = this.entries.get(key);
     if (!entry) return false;
 
@@ -731,7 +733,7 @@ export class SharedContextManager extends EventEmitter implements ISharedContext
     return true;
   }
 
-  public share(key: string, ownerId: string, agentIds: string[]): void {
+  public async share(key: string, ownerId: string, agentIds: string[]): Promise<void> {
     const entry = this.entries.get(key);
     if (!entry) {
       throw new Error(`Context key not found: ${key}`);
@@ -758,10 +760,10 @@ export class SharedContextManager extends EventEmitter implements ISharedContext
     this.emit("context:shared", { key, ownerId, agentIds });
   }
 
-  public query(
+  public async query(
     options: ContextQueryOptions,
     requesterId: string,
-  ): ContextEntry[] {
+  ): Promise<ContextEntry[]> {
     const results: ContextEntry[] = [];
 
     for (const entry of this.entries.values()) {
@@ -851,7 +853,7 @@ export class SharedContextManager extends EventEmitter implements ISharedContext
     }
   }
 
-  public shutdown(): void {
+  public async shutdown(): Promise<void> {
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
     }
@@ -866,11 +868,11 @@ export class SharedContextManager extends EventEmitter implements ISharedContext
   // Query Methods
   // ============================================================================
 
-  public getEntryCount(): number {
+  public async getEntryCount(): Promise<number> {
     return this.entries.size;
   }
 
-  public getKeys(scope?: ContextScope): string[] {
+  public async getKeys(scope?: ContextScope): Promise<string[]> {
     if (!scope) {
       return Array.from(this.entries.keys());
     }

@@ -14,6 +14,8 @@ import type {
  * - Owner-based permissions
  * - TTL-based expiration
  * - Version tracking
+ *
+ * All I/O operations are async to support both in-memory and distributed backends.
  */
 export interface ISharedContext extends EventEmitter {
   /**
@@ -31,7 +33,7 @@ export interface ISharedContext extends EventEmitter {
     ownerId: string,
     scope?: ContextScope,
     ttl?: number,
-  ): void;
+  ): Promise<void>;
 
   /**
    * Get a context value.
@@ -41,7 +43,7 @@ export interface ISharedContext extends EventEmitter {
    * @returns The value, or undefined if not found/expired/access denied
    * @throws Error if access is denied
    */
-  get(key: string, requesterId: string): unknown | undefined;
+  get(key: string, requesterId: string): Promise<unknown | undefined>;
 
   /**
    * Delete a context entry.
@@ -52,7 +54,7 @@ export interface ISharedContext extends EventEmitter {
    * @returns true if deleted, false if not found
    * @throws Error if the requester is not the owner
    */
-  delete(key: string, requesterId: string): boolean;
+  delete(key: string, requesterId: string): Promise<boolean>;
 
   /**
    * Share a context entry with specific agents.
@@ -63,7 +65,7 @@ export interface ISharedContext extends EventEmitter {
    * @param agentIds - The agent IDs to share with
    * @throws Error if the key doesn't exist or requester is not the owner
    */
-  share(key: string, ownerId: string, agentIds: string[]): void;
+  share(key: string, ownerId: string, agentIds: string[]): Promise<void>;
 
   /**
    * Query context entries with filters.
@@ -72,21 +74,21 @@ export interface ISharedContext extends EventEmitter {
    * @param requesterId - The ID of the agent making the query
    * @returns Matching context entries (only those accessible to the requester)
    */
-  query(options: ContextQueryOptions, requesterId: string): ContextEntry[];
+  query(options: ContextQueryOptions, requesterId: string): Promise<ContextEntry[]>;
 
   /**
    * Get the total number of context entries.
    */
-  getEntryCount(): number;
+  getEntryCount(): Promise<number>;
 
   /**
    * Get all context keys, optionally filtered by scope.
    */
-  getKeys(scope?: ContextScope): string[];
+  getKeys(scope?: ContextScope): Promise<string[]>;
 
   /**
    * Shutdown the context manager.
    * Cleans up resources and clears all entries.
    */
-  shutdown(): void;
+  shutdown(): Promise<void>;
 }

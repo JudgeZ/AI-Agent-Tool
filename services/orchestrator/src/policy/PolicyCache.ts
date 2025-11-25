@@ -112,11 +112,25 @@ type RedisCacheOptions = {
    * Default: true
    */
   enableInvalidation?: boolean;
+  /**
+   * Unique instance ID. If not provided, a random ID will be generated.
+   * Used to prevent self-invalidation on Pub/Sub events.
+   */
+  instanceId?: string;
 };
 
 type RedisClient = ReturnType<typeof createClient>;
 
 const DEFAULT_INVALIDATION_CHANNEL = "policy:cache:invalidate";
+
+/**
+ * Invalidation message format for Pub/Sub.
+ * Includes the source instance ID to prevent self-invalidation.
+ */
+interface InvalidationMessage {
+  key: string;
+  sourceInstanceId: string;
+}
 
 /**
  * Redis-backed policy decision cache with L1 (memory) and L2 (Redis) caching.
@@ -140,6 +154,7 @@ class RedisPolicyDecisionCache implements PolicyDecisionCache {
   private readonly ttlSeconds: number;
   private readonly enableInvalidation: boolean;
   private readonly invalidationChannel: string;
+  private readonly instanceId: string;
   private readonly memory: MemoryPolicyDecisionCache;
   private client: RedisClient | null = null;
   private subscriber: RedisClient | null = null;
@@ -154,6 +169,7 @@ class RedisPolicyDecisionCache implements PolicyDecisionCache {
     this.ttlSeconds = Math.max(MIN_TTL_SECONDS, Math.floor(options.ttlSeconds));
     this.enableInvalidation = options.enableInvalidation ?? true;
     this.invalidationChannel = `${this.keyPrefix || DEFAULT_INVALIDATION_CHANNEL}:invalidate`;
+    this.instanceId = options.instanceId ?? `policy-cache-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     this.memory = new MemoryPolicyDecisionCache({
       ttlSeconds: this.ttlSeconds,
       maxEntries: options.maxEntries,
@@ -240,13 +256,27 @@ class RedisPolicyDecisionCache implements PolicyDecisionCache {
         this.subscriber = subscriber;
 
         // Subscribe to invalidation channel
-        await subscriber.subscribe(this.invalidationChannel, (key: string) => {
-          // Invalidate the L1 cache entry
-          this.memory.invalidate(key);
-          logger.debug(
-            { key, event: "policy.cache.invalidated" },
-            "L1 policy cache invalidated via Pub/Sub",
-          );
+        await subscriber.subscribe(this.invalidationChannel, (rawMessage: string) => {
+          try {
+            const message = JSON.parse(rawMessage) as InvalidationMessage;
+
+            // Skip self-invalidation to avoid wasting work
+            if (message.sourceInstanceId === this.instanceId) {
+              return;
+            }
+
+            // Invalidate the L1 cache entry
+            this.memory.invalidate(message.key);
+            logger.debug(
+              { key: message.key, sourceInstanceId: message.sourceInstanceId, event: "policy.cache.invalidated" },
+              "L1 policy cache invalidated via Pub/Sub",
+            );
+          } catch (error) {
+            logger.warn(
+              { err: normalizeError(error), event: "policy.cache.invalidation.parse_failed" },
+              "Failed to parse policy cache invalidation message",
+            );
+          }
         });
 
         this.subscribed = true;
@@ -270,6 +300,7 @@ class RedisPolicyDecisionCache implements PolicyDecisionCache {
 
   /**
    * Publish an invalidation event to notify other replicas.
+   * The message includes the source instance ID to prevent self-invalidation.
    */
   private async publishInvalidation(key: string): Promise<void> {
     if (!this.enableInvalidation || this.closed) {
@@ -280,7 +311,11 @@ class RedisPolicyDecisionCache implements PolicyDecisionCache {
       return;
     }
     try {
-      await client.publish(this.invalidationChannel, key);
+      const message: InvalidationMessage = {
+        key,
+        sourceInstanceId: this.instanceId,
+      };
+      await client.publish(this.invalidationChannel, JSON.stringify(message));
     } catch (error) {
       logger.warn(
         { err: normalizeError(error), key, event: "policy.cache.redis.publish_failed" },

@@ -3,7 +3,7 @@ import { createClient } from "redis";
 
 import { appLogger, normalizeError } from "../observability/logger.js";
 import type { ISessionStore } from "./ISessionStore.js";
-import { MemorySessionStore, type CreateSessionInput, type SessionRecord } from "./SessionStore.js";
+import type { CreateSessionInput, SessionRecord } from "./SessionStore.js";
 
 const logger = appLogger.child({ subsystem: "session-store" });
 
@@ -21,11 +21,16 @@ export type RedisSessionStoreConfig = {
    */
   enableL1Cache?: boolean;
   /**
-   * L1 cache TTL in seconds. Only applies if enableL1Cache is true.
-   * Default: 30 seconds
+   * L1 cache TTL in milliseconds. Only applies if enableL1Cache is true.
+   * Default: 30000 (30 seconds)
    */
-  l1CacheTtlSeconds?: number;
+  l1CacheTtlMs?: number;
 };
+
+interface L1CacheEntry {
+  session: SessionRecord;
+  cachedAt: number;
+}
 
 function normalizeRoles(roles: string[]): string[] {
   return Array.from(
@@ -43,7 +48,6 @@ function normalizeRoles(roles: string[]): string[] {
  * - Distributed session storage across orchestrator instances
  * - Automatic TTL enforcement via Redis expiration
  * - Optional L1 memory cache for reduced latency
- * - Graceful fallback to memory if Redis unavailable
  *
  * Redis Key Structure:
  * - Session data: `{prefix}:{sessionId}` → JSON SessionRecord
@@ -52,8 +56,8 @@ export class RedisSessionStore implements ISessionStore {
   private readonly redisUrl: string;
   private readonly keyPrefix: string;
   private readonly enableL1Cache: boolean;
-  private readonly l1CacheTtlSeconds: number;
-  private readonly memory: MemorySessionStore | null;
+  private readonly l1CacheTtlMs: number;
+  private readonly l1Cache: Map<string, L1CacheEntry>;
   private client: RedisClient | null = null;
   private connecting: Promise<RedisClient> | null = null;
   private closed = false;
@@ -62,8 +66,8 @@ export class RedisSessionStore implements ISessionStore {
     this.redisUrl = config.redisUrl;
     this.keyPrefix = config.keyPrefix ?? DEFAULT_KEY_PREFIX;
     this.enableL1Cache = config.enableL1Cache ?? false;
-    this.l1CacheTtlSeconds = Math.max(1, config.l1CacheTtlSeconds ?? 30);
-    this.memory = this.enableL1Cache ? new MemorySessionStore() : null;
+    this.l1CacheTtlMs = Math.max(1000, config.l1CacheTtlMs ?? 30000);
+    this.l1Cache = new Map();
   }
 
   private formatKey(sessionId: string): string {
@@ -111,6 +115,54 @@ export class RedisSessionStore implements ISessionStore {
     }
   }
 
+  /**
+   * Check if an L1 cache entry is still valid (not expired).
+   */
+  private isL1CacheValid(entry: L1CacheEntry): boolean {
+    const now = Date.now();
+    // Check if L1 cache entry has expired
+    if (now - entry.cachedAt >= this.l1CacheTtlMs) {
+      return false;
+    }
+    // Also check if the session itself has expired
+    if (now >= Date.parse(entry.session.expiresAt)) {
+      return false;
+    }
+    return true;
+  }
+
+  /**
+   * Store a session in the L1 cache.
+   */
+  private setL1Cache(session: SessionRecord): void {
+    if (!this.enableL1Cache) return;
+    this.l1Cache.set(session.id, {
+      session,
+      cachedAt: Date.now(),
+    });
+  }
+
+  /**
+   * Get a session from the L1 cache if valid.
+   */
+  private getL1Cache(id: string): SessionRecord | undefined {
+    if (!this.enableL1Cache) return undefined;
+    const entry = this.l1Cache.get(id);
+    if (!entry) return undefined;
+    if (!this.isL1CacheValid(entry)) {
+      this.l1Cache.delete(id);
+      return undefined;
+    }
+    return entry.session;
+  }
+
+  /**
+   * Remove a session from the L1 cache.
+   */
+  private deleteL1Cache(id: string): void {
+    this.l1Cache.delete(id);
+  }
+
   async createSession(
     input: CreateSessionInput,
     ttlSeconds: number,
@@ -155,30 +207,28 @@ export class RedisSessionStore implements ISessionStore {
       } catch (error) {
         logger.error(
           { err: normalizeError(error), sessionId: id, event: "session.store.redis.create_failed" },
-          "Failed to create session in Redis",
+          "Failed to create session in Redis; session will only exist in L1 cache",
         );
-        // Fall through to L1 cache if Redis fails
+        // Fall through to L1 cache
       }
+    } else {
+      logger.warn(
+        { sessionId: id, event: "session.store.redis.unavailable" },
+        "Redis unavailable during session creation; session will only exist in L1 cache",
+      );
     }
 
-    // Store in L1 cache with shorter TTL
-    if (this.memory) {
-      await this.memory.createSession(input, this.l1CacheTtlSeconds, expiresAtMsOverride);
-      // The L1 cache creates its own ID, so we need to manually set the correct session
-      // Actually, we should store the actual session in L1
-      // Let's use a different approach - just cache the result
-    }
+    // Store the exact session in L1 cache (with correct ID)
+    this.setL1Cache(session);
 
     return session;
   }
 
   async getSession(id: string): Promise<SessionRecord | undefined> {
     // Check L1 cache first
-    if (this.memory) {
-      const cached = await this.memory.getSession(id);
-      if (cached) {
-        return cached;
-      }
+    const cached = this.getL1Cache(id);
+    if (cached) {
+      return cached;
     }
 
     const client = await this.getClient();
@@ -201,7 +251,7 @@ export class RedisSessionStore implements ISessionStore {
       }
 
       // Populate L1 cache on read (cache-aside pattern)
-      // We don't populate L1 on read to avoid complexity with TTL sync
+      this.setL1Cache(session);
 
       return session;
     } catch (error) {
@@ -215,9 +265,7 @@ export class RedisSessionStore implements ISessionStore {
 
   async revokeSession(id: string): Promise<boolean> {
     // Remove from L1 cache
-    if (this.memory) {
-      await this.memory.revokeSession(id);
-    }
+    this.deleteL1Cache(id);
 
     const client = await this.getClient();
     if (!client) {
@@ -245,9 +293,7 @@ export class RedisSessionStore implements ISessionStore {
 
   async clear(): Promise<void> {
     // Clear L1 cache
-    if (this.memory) {
-      await this.memory.clear();
-    }
+    this.l1Cache.clear();
 
     const client = await this.getClient();
     if (!client) {
@@ -278,20 +324,20 @@ export class RedisSessionStore implements ISessionStore {
 
   async cleanupExpired(): Promise<void> {
     // Redis handles TTL-based expiration automatically
-    // This method is primarily for the memory store
-    if (this.memory) {
-      await this.memory.cleanupExpired();
+    // Clean up expired entries in L1 cache
+    const now = Date.now();
+    for (const [id, entry] of this.l1Cache) {
+      if (!this.isL1CacheValid(entry)) {
+        this.l1Cache.delete(id);
+      }
     }
-    // No-op for Redis - TTL handles expiration
   }
 
   async close(): Promise<void> {
     this.closed = true;
 
     // Clear L1 cache
-    if (this.memory) {
-      await this.memory.close();
-    }
+    this.l1Cache.clear();
 
     const pending = this.connecting;
     this.connecting = null;

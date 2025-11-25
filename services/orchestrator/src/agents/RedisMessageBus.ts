@@ -71,11 +71,8 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
   private readonly localAgents = new Set<string>();
   private readonly handlers = new Map<string, Map<MessageType, MessageHandler>>();
   private readonly pendingRequests = new Map<string, PendingRequest>();
-  private readonly localQueues = new Map<string, MessageEnvelope[]>();
-  private readonly deliveryLocks = new Map<string, Promise<void>>();
 
   private metrics: MessageBusMetrics;
-  private cleanupTimer?: NodeJS.Timeout;
 
   constructor(config: RedisMessageBusConfig) {
     super();
@@ -99,10 +96,6 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
       averageLatency: 0,
       queueSizes: new Map(),
     };
-
-    if (this.config.cleanupInterval > 0) {
-      this.startCleanup();
-    }
   }
 
   private formatAgentChannel(agentId: string): string {
@@ -312,60 +305,59 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
   // IMessageBus Implementation
   // ============================================================================
 
-  registerAgent(agentId: string): void {
+  async registerAgent(agentId: string): Promise<void> {
     if (this.localAgents.has(agentId)) {
       return;
     }
 
     this.localAgents.add(agentId);
     this.handlers.set(agentId, new Map());
-    this.localQueues.set(agentId, []);
 
     // Subscribe to agent's channel
-    this.ensureConnected()
-      .then(async () => {
-        if (this.subscriber && !this.closed) {
-          await this.subscriber.subscribe(this.formatAgentChannel(agentId), (message) => {
-            this.handleIncomingMessage(message);
-          });
-          logger.debug({ agentId, event: "msgbus.agent.subscribed" }, "Subscribed to agent channel");
-        }
-      })
-      .catch((error) => {
-        logger.warn(
-          { err: normalizeError(error), agentId, event: "msgbus.agent.subscribe_failed" },
-          "Failed to subscribe to agent channel",
-        );
-      });
+    try {
+      await this.ensureConnected();
+      if (this.subscriber && !this.closed) {
+        await this.subscriber.subscribe(this.formatAgentChannel(agentId), (message) => {
+          this.handleIncomingMessage(message);
+        });
+        logger.debug({ agentId, event: "msgbus.agent.subscribed" }, "Subscribed to agent channel");
+      }
+    } catch (error) {
+      logger.warn(
+        { err: normalizeError(error), agentId, event: "msgbus.agent.subscribe_failed" },
+        "Failed to subscribe to agent channel",
+      );
+    }
 
     this.emit("agent:registered", { agentId, timestamp: new Date() });
   }
 
-  unregisterAgent(agentId: string): void {
+  async unregisterAgent(agentId: string): Promise<void> {
     if (!this.localAgents.has(agentId)) {
       return;
     }
 
     this.localAgents.delete(agentId);
     this.handlers.delete(agentId);
-    this.localQueues.delete(agentId);
 
     // Unsubscribe from agent's channel
     if (this.subscriber && !this.closed) {
-      this.subscriber.unsubscribe(this.formatAgentChannel(agentId)).catch((error) => {
+      try {
+        await this.subscriber.unsubscribe(this.formatAgentChannel(agentId));
+      } catch (error) {
         logger.warn(
           { err: normalizeError(error), agentId, event: "msgbus.agent.unsubscribe_failed" },
           "Failed to unsubscribe from agent channel",
         );
-      });
+      }
     }
 
     this.emit("agent:unregistered", { agentId, timestamp: new Date() });
   }
 
-  registerHandler(agentId: string, type: MessageType, handler: MessageHandler): void {
+  async registerHandler(agentId: string, type: MessageType, handler: MessageHandler): Promise<void> {
     if (!this.handlers.has(agentId)) {
-      this.registerAgent(agentId);
+      await this.registerAgent(agentId);
     }
     this.handlers.get(agentId)!.set(type, handler);
     this.emit("handler:registered", { agentId, type });
@@ -482,64 +474,59 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
     return promise;
   }
 
-  getMetrics(): MessageBusMetrics {
+  async getMetrics(): Promise<MessageBusMetrics> {
     return { ...this.metrics };
   }
 
-  getQueueSize(agentId: string): number {
-    return this.localQueues.get(agentId)?.length ?? 0;
+  async getQueueSize(_agentId: string): Promise<number> {
+    // Redis pub/sub doesn't maintain queues; messages are delivered immediately
+    // or lost if no subscriber is listening
+    return 0;
   }
 
-  getRegisteredAgents(): string[] {
+  async getRegisteredAgents(): Promise<string[]> {
     return Array.from(this.localAgents);
   }
 
-  shutdown(): void {
+  async shutdown(): Promise<void> {
     this.closed = true;
 
-    if (this.cleanupTimer) {
-      clearInterval(this.cleanupTimer);
-      this.cleanupTimer = undefined;
-    }
-
     // Reject all pending requests
-    for (const [correlationId, pending] of this.pendingRequests) {
+    for (const [_correlationId, pending] of this.pendingRequests) {
       clearTimeout(pending.timeout);
       pending.reject(new Error("Message bus shutting down"));
     }
     this.pendingRequests.clear();
 
     // Close Redis connections
-    const closePromises: Promise<void>[] = [];
+    const subscriber = this.subscriber;
+    const publisher = this.publisher;
+    this.subscriber = null;
+    this.publisher = null;
 
-    if (this.subscriber) {
-      closePromises.push(
-        this.subscriber.quit().catch((error) => {
-          logger.warn(
-            { err: normalizeError(error), event: "msgbus.redis.subscriber.close_failed" },
-            "Failed to close Redis subscriber",
-          );
-        }),
-      );
-      this.subscriber = null;
+    if (subscriber) {
+      try {
+        await subscriber.quit();
+      } catch (error) {
+        logger.warn(
+          { err: normalizeError(error), event: "msgbus.redis.subscriber.close_failed" },
+          "Failed to close Redis subscriber",
+        );
+      }
     }
 
-    if (this.publisher) {
-      closePromises.push(
-        this.publisher.quit().catch((error) => {
-          logger.warn(
-            { err: normalizeError(error), event: "msgbus.redis.publisher.close_failed" },
-            "Failed to close Redis publisher",
-          );
-        }),
-      );
-      this.publisher = null;
+    if (publisher) {
+      try {
+        await publisher.quit();
+      } catch (error) {
+        logger.warn(
+          { err: normalizeError(error), event: "msgbus.redis.publisher.close_failed" },
+          "Failed to close Redis publisher",
+        );
+      }
     }
 
-    Promise.all(closePromises).then(() => {
-      logger.info({ event: "msgbus.redis.closed" }, "Redis message bus closed");
-    });
-
+    logger.info({ event: "msgbus.redis.closed" }, "Redis message bus closed");
     this.emit("shutdown");
   }
 
@@ -549,18 +536,6 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
 
   private generateMessageId(): string {
     return `msg_${Date.now()}_${Math.random().toString(36).substring(7)}`;
-  }
-
-  private startCleanup(): void {
-    this.cleanupTimer = setInterval(() => {
-      this.cleanupExpiredRequests();
-    }, this.config.cleanupInterval);
-    this.cleanupTimer.unref();
-  }
-
-  private cleanupExpiredRequests(): void {
-    // Pending requests have their own timeouts, so nothing to clean up here
-    // This is kept for potential future use (e.g., local queue cleanup)
   }
 }
 

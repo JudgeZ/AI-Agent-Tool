@@ -139,27 +139,11 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
   // ISharedContext Implementation
   // ============================================================================
 
-  set(
+  async set(
     key: string,
     value: unknown,
     ownerId: string,
     scope: ContextScope = ContextScope.PRIVATE,
-    ttl?: number,
-  ): void {
-    // Fire and forget - async operation
-    this.setAsync(key, value, ownerId, scope, ttl).catch((error) => {
-      logger.warn(
-        { err: normalizeError(error), key, ownerId, event: "context.set.failed" },
-        "Failed to set context entry",
-      );
-    });
-  }
-
-  private async setAsync(
-    key: string,
-    value: unknown,
-    ownerId: string,
-    scope: ContextScope,
     ttl?: number,
   ): Promise<void> {
     const client = await this.getClient();
@@ -199,20 +183,7 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
     this.emit("context:set", { key, ownerId, scope, version: entry.version });
   }
 
-  get(key: string, requesterId: string): unknown | undefined {
-    // This needs to be sync per interface, but Redis is async
-    // We'll throw if the value isn't immediately available
-    // For proper async usage, use getAsync directly
-    throw new Error(
-      "RedisSharedContext.get() is not supported synchronously. " +
-        "Use getAsync() or consider using MemorySharedContext for synchronous access.",
-    );
-  }
-
-  /**
-   * Async version of get() for Redis-backed context.
-   */
-  async getAsync(key: string, requesterId: string): Promise<unknown | undefined> {
+  async get(key: string, requesterId: string): Promise<unknown | undefined> {
     const client = await this.getClient();
     if (!client) {
       return undefined;
@@ -264,18 +235,7 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
     }
   }
 
-  delete(key: string, requesterId: string): boolean {
-    // Fire and forget
-    this.deleteAsync(key, requesterId).catch((error) => {
-      logger.warn(
-        { err: normalizeError(error), key, requesterId, event: "context.delete.failed" },
-        "Failed to delete context entry",
-      );
-    });
-    return true; // Optimistic return
-  }
-
-  private async deleteAsync(key: string, requesterId: string): Promise<boolean> {
+  async delete(key: string, requesterId: string): Promise<boolean> {
     const client = await this.getClient();
     if (!client) {
       return false;
@@ -304,17 +264,7 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
     return true;
   }
 
-  share(key: string, ownerId: string, agentIds: string[]): void {
-    // Fire and forget
-    this.shareAsync(key, ownerId, agentIds).catch((error) => {
-      logger.warn(
-        { err: normalizeError(error), key, ownerId, event: "context.share.failed" },
-        "Failed to share context entry",
-      );
-    });
-  }
-
-  private async shareAsync(key: string, ownerId: string, agentIds: string[]): Promise<void> {
+  async share(key: string, ownerId: string, agentIds: string[]): Promise<void> {
     const client = await this.getClient();
     if (!client) {
       throw new Error("Redis client unavailable");
@@ -358,18 +308,7 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
     this.emit("context:shared", { key, ownerId, agentIds });
   }
 
-  query(options: ContextQueryOptions, requesterId: string): ContextEntry[] {
-    // Sync query not supported with Redis
-    throw new Error(
-      "RedisSharedContext.query() is not supported synchronously. " +
-        "Use queryAsync() or consider using MemorySharedContext for synchronous access.",
-    );
-  }
-
-  /**
-   * Async version of query() for Redis-backed context.
-   */
-  async queryAsync(options: ContextQueryOptions, requesterId: string): Promise<ContextEntry[]> {
+  async query(options: ContextQueryOptions, requesterId: string): Promise<ContextEntry[]> {
     const client = await this.getClient();
     if (!client) {
       return [];
@@ -406,15 +345,7 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
     return results;
   }
 
-  getEntryCount(): number {
-    // Sync not supported
-    return 0;
-  }
-
-  /**
-   * Async version of getEntryCount() for Redis-backed context.
-   */
-  async getEntryCountAsync(): Promise<number> {
+  async getEntryCount(): Promise<number> {
     const client = await this.getClient();
     if (!client) {
       return 0;
@@ -433,15 +364,7 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
     return count;
   }
 
-  getKeys(scope?: ContextScope): string[] {
-    // Sync not supported
-    return [];
-  }
-
-  /**
-   * Async version of getKeys() for Redis-backed context.
-   */
-  async getKeysAsync(scope?: ContextScope): Promise<string[]> {
+  async getKeys(scope?: ContextScope): Promise<string[]> {
     const client = await this.getClient();
     if (!client) {
       return [];
@@ -477,27 +400,31 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
     return keys;
   }
 
-  shutdown(): void {
+  async shutdown(): Promise<void> {
     this.closed = true;
 
     const pending = this.connecting;
     this.connecting = null;
 
-    Promise.resolve(pending)
-      .catch(() => undefined)
-      .then(async () => {
-        const client = this.client;
-        this.client = null;
-        if (client) {
-          await client.quit().catch((error) => {
-            logger.warn(
-              { err: normalizeError(error), event: "context.redis.close_failed" },
-              "Failed to close Redis shared context client",
-            );
-          });
-        }
-        logger.info({ event: "context.redis.closed" }, "Redis shared context closed");
-      });
+    try {
+      await pending;
+    } catch {
+      // Ignore connection errors during shutdown
+    }
+
+    const client = this.client;
+    this.client = null;
+    if (client) {
+      try {
+        await client.quit();
+      } catch (error) {
+        logger.warn(
+          { err: normalizeError(error), event: "context.redis.close_failed" },
+          "Failed to close Redis shared context client",
+        );
+      }
+    }
+    logger.info({ event: "context.redis.closed" }, "Redis shared context closed");
 
     this.emit("shutdown");
   }
