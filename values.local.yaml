@@ -12,15 +12,17 @@ postgres:
   # Provide the Postgres password via a secure override or secret; empty by default to avoid shipping credentials.
   password: ""
   podSecurityContext:
-    runAsNonRoot: false
-    fsGroup: 0
-    runAsUser: 0
+    runAsNonRoot: true
+    runAsUser: 999
+    runAsGroup: 999
+    fsGroup: 999
   containerSecurityContext:
-    runAsUser: 0
+    runAsUser: 999
     readOnlyRootFilesystem: false
-    allowPrivilegeEscalation: true
+    allowPrivilegeEscalation: false
     capabilities:
-      drop: []
+      drop:
+        - ALL
 
 rabbitmq:
   enabled: true

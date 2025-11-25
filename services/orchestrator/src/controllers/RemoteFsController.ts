@@ -248,6 +248,7 @@ export class RemoteFsController {
       }
 
       await fs.mkdir(parentDir, { recursive: true });
+      // Defense-in-depth: revalidate after mkdir in case the path was replaced via symlink between checks.
       if (!(await this.ensurePathWithinRoot(resolvedPath))) {
         this.respondOutsideRoot(res, normalizedPath);
         return;

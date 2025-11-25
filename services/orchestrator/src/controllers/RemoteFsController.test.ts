@@ -81,7 +81,7 @@ describe("RemoteFsController", () => {
 
     const res = await request(app)
       .get("/remote-fs/list")
-      .query({ path: path.join(tempDir, "../outside") });
+      .query({ path: "/../outside" });
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe("invalid_request");
@@ -96,15 +96,16 @@ describe("RemoteFsController", () => {
 
     const res = await request(app)
       .get("/remote-fs/list")
-      .query({ path: tempDir });
+      .query({ path: "/workspace" });
 
     expect(res.status).toBe(200);
     expect(res.body.entries).toEqual(
       expect.arrayContaining([
-        expect.objectContaining({ name: "file.txt", path: expect.stringContaining("file.txt") }),
+        expect.objectContaining({ name: "file.txt", path: expect.stringMatching(/^\/.*file\.txt$/) }),
         expect.objectContaining({ name: "nested", isDirectory: true }),
       ]),
     );
+    expect(res.body.entries.every((entry: { path: string }) => !entry.path.includes(tempDir))).toBe(true);
   });
 
   it("limits listings and exposes a cursor for pagination", async () => {
@@ -119,7 +120,7 @@ describe("RemoteFsController", () => {
 
     const firstPage = await request(app)
       .get("/remote-fs/list")
-      .query({ path: tempDir });
+      .query({ path: "/workspace" });
 
     expect(firstPage.status).toBe(200);
     expect(firstPage.body.entries).toHaveLength(2);
@@ -128,7 +129,7 @@ describe("RemoteFsController", () => {
 
     const secondPage = await request(app)
       .get("/remote-fs/list")
-      .query({ path: tempDir, cursor: firstPage.body.nextCursor });
+      .query({ path: "/workspace", cursor: firstPage.body.nextCursor });
 
     expect(secondPage.status).toBe(200);
     expect(secondPage.body.entries).toHaveLength(1);
@@ -150,7 +151,7 @@ describe("RemoteFsController", () => {
 
     const res = await request(app)
       .get("/remote-fs/list")
-      .query({ path: path.join(tempDir, "link") });
+      .query({ path: "/workspace/link" });
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe("invalid_request");
@@ -167,7 +168,7 @@ describe("RemoteFsController", () => {
 
     const res = await request(app)
       .post("/remote-fs/write")
-      .send({ path: `${tempDir}/link/escape.txt`, content: "data" });
+      .send({ path: "/workspace/link/escape.txt", content: "data" });
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe("invalid_request");
@@ -187,7 +188,7 @@ describe("RemoteFsController", () => {
 
     const res = await request(app)
       .post("/remote-fs/write")
-      .send({ path: `${tempDir}/new/subdir/file.txt`, content: "data" });
+      .send({ path: "/workspace/new/subdir/file.txt", content: "data" });
 
     expect(res.status).toBe(204);
     const content = await fs.readFile(path.join(tempDir, "new", "subdir", "file.txt"), "utf8");
@@ -220,7 +221,7 @@ describe("RemoteFsController", () => {
 
     const res = await request(app)
       .get("/remote-fs/read")
-      .query({ path: path.join(tempDir, "link.txt") });
+      .query({ path: "/workspace/link.txt" });
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe("invalid_request");
@@ -237,7 +238,7 @@ describe("RemoteFsController", () => {
 
     const res = await request(app)
       .post("/remote-fs/write")
-      .send({ path: `${tempDir}/tiny.txt`, content: "too-long" });
+      .send({ path: "/workspace/tiny.txt", content: "too-long" });
 
     expect(res.status).toBe(413);
     expect(res.body.code).toBe("payload_too_large");
@@ -249,7 +250,7 @@ describe("RemoteFsController", () => {
 
     const res = await request(app)
       .get("/remote-fs/list")
-      .query({ path: tempDir });
+      .query({ path: "/workspace" });
 
     expect(res.status).toBe(401);
     expect(res.body.code).toBe("unauthorized");
@@ -262,7 +263,7 @@ describe("RemoteFsController", () => {
 
     const res = await request(app)
       .get("/remote-fs/read")
-      .query({ path: path.join(tempDir, "missing.txt") });
+      .query({ path: "/workspace/missing.txt" });
 
     expect(res.status).toBe(429);
     expect(res.body.code).toBe("too_many_requests");
