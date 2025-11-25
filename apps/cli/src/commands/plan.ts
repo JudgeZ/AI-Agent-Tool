@@ -1,6 +1,7 @@
 import fs from "node:fs/promises";
 import path from "node:path";
 
+import { GatewayConfig, postJson, resolveGatewayConfig } from "../gateway";
 import { printLine } from "../output";
 
 export interface PlanStep {
@@ -21,195 +22,14 @@ export interface Plan {
   successCriteria?: string[];
 }
 
-interface GatewayConfig {
-  baseUrl: string;
-  token?: string;
-  timeoutMs: number;
-}
-
-const DEFAULT_GATEWAY_URL = "http://localhost:8080";
-const DEFAULT_TIMEOUT_MS = 30_000;
-
-function resolveGatewayConfig(): GatewayConfig {
-  const rawBaseUrl =
-    process.env.AIDT_GATEWAY_URL ??
-    process.env.GATEWAY_URL ??
-    DEFAULT_GATEWAY_URL;
-  let baseUrl: string;
-  try {
-    const parsed = new URL(rawBaseUrl);
-    if (!parsed.hostname) {
-      throw new Error(
-        "Invalid gateway URL. Gateway URL must include a hostname.",
-      );
-    }
-    if (parsed.username || parsed.password) {
-      throw new Error(
-        "Invalid gateway URL. Credentials in URLs are not supported.",
-      );
-    }
-    if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      throw new Error(
-        "Invalid gateway URL. Gateway URL must use http or https.",
-      );
-    }
-    baseUrl = parsed.toString().replace(/\/$/, "");
-  } catch (error) {
-    throw new Error(
-      error instanceof Error && error.message.includes("Invalid gateway URL")
-        ? error.message
-        : "Invalid gateway URL. Set AIDT_GATEWAY_URL or GATEWAY_URL to a valid HTTP(S) URL.",
-    );
-  }
-
-  const token = process.env.AIDT_AUTH_TOKEN ?? process.env.AUTH_TOKEN;
-  const rawTimeout =
-    process.env.AIDT_GATEWAY_TIMEOUT_MS ?? process.env.GATEWAY_TIMEOUT_MS;
-
-  let timeoutMs = DEFAULT_TIMEOUT_MS;
-  if (rawTimeout) {
-    const parsed = Number.parseInt(rawTimeout, 10);
-    if (!Number.isFinite(parsed) || parsed <= 0) {
-      throw new Error(
-        `Invalid gateway timeout: ${rawTimeout}. Provide a positive integer number of milliseconds.`,
-      );
-    }
-    timeoutMs = parsed;
-  }
-
-  return { baseUrl, token, timeoutMs };
-}
-
-function joinUrl(baseUrl: string, pathname: string): string {
-  const normalizedBase = baseUrl.endsWith("/") ? baseUrl : `${baseUrl}/`;
-  const normalizedPath = pathname.startsWith("/")
-    ? pathname.slice(1)
-    : pathname;
-  return new URL(normalizedPath, normalizedBase).toString();
-}
-
-async function readErrorMessage(
-  response: Response,
-): Promise<string | undefined> {
-  const contentType = response.headers.get("content-type") ?? "";
-  const bodyText = await response.text();
-  if (!bodyText) {
-    return undefined;
-  }
-
-  if (contentType.includes("application/json")) {
-    try {
-      const parsed = JSON.parse(bodyText);
-      if (typeof parsed === "string") return parsed;
-      if (parsed && typeof parsed === "object") {
-        const candidateMessages: string[] = [];
-
-        const topLevel = parsed as Record<string, unknown>;
-        if (typeof topLevel.message === "string" && topLevel.message.trim()) {
-          candidateMessages.push(topLevel.message.trim());
-        }
-
-        const topLevelError = topLevel.error;
-        if (typeof topLevelError === "string" && topLevelError.trim()) {
-          candidateMessages.push(topLevelError.trim());
-        } else if (topLevelError && typeof topLevelError === "object") {
-          const nested = topLevelError as Record<string, unknown>;
-          if (typeof nested.message === "string" && nested.message.trim()) {
-            candidateMessages.push(nested.message.trim());
-          }
-        }
-
-        if (candidateMessages.length > 0) {
-          return candidateMessages[0];
-        }
-
-        if (Array.isArray(topLevel.errors) && topLevel.errors.length > 0) {
-          return topLevel.errors.map((err) => String(err)).join(", ");
-        }
-      }
-    } catch {
-      // fall through to return plain text
-    }
-  }
-
-  return bodyText.trim() || undefined;
-}
-
 async function requestPlan(goal: string, config: GatewayConfig): Promise<Plan> {
-  const url = joinUrl(config.baseUrl, "plan");
-  const controller = new AbortController();
-  const timeout = setTimeout(() => controller.abort(), config.timeoutMs);
-
   try {
-    const headers: Record<string, string> = {
-      "content-type": "application/json",
-    };
-    if (config.token) {
-      headers.authorization = `Bearer ${config.token}`;
-    }
-
-    const response = await fetch(url, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ goal }),
-      signal: controller.signal,
-    });
-
-    if (!response.ok) {
-      const requestId = response.headers.get("x-request-id");
-      const message = await readErrorMessage(response);
-      const suffix = requestId ? ` (request id ${requestId})` : "";
-
-      switch (response.status) {
-        case 400:
-        case 422:
-          throw new Error(
-            message
-              ? `Gateway rejected plan input: ${message}`
-              : "Gateway rejected plan input with validation error.",
-          );
-        case 401:
-        case 403:
-          throw new Error(
-            message
-              ? `Authentication failed: ${message}`
-              : "Authentication failed. Provide a valid token via AIDT_AUTH_TOKEN or AUTH_TOKEN.",
-          );
-        case 404:
-          throw new Error(
-            message
-              ? `Gateway endpoint not found: ${message}`
-              : "Gateway endpoint not found. Verify your gateway URL.",
-          );
-        case 429:
-          throw new Error(
-            message
-              ? `Gateway rate limited the request: ${message}`
-              : "Gateway rate limited the request. Please retry shortly.",
-          );
-        default: {
-          const statusText = response.statusText || `HTTP ${response.status}`;
-          const detail = message ? `: ${message}` : ".";
-          throw new Error(
-            `Gateway request failed${suffix} - ${statusText}${detail}`,
-          );
-        }
-      }
-    }
-
-    return (await response.json()) as Plan;
+    return await postJson<Plan>("plan", { goal }, config);
   } catch (error) {
-    if (error instanceof Error && error.name === "AbortError") {
-      throw new Error(
-        `Gateway request timed out after ${config.timeoutMs}ms. Adjust AIDT_GATEWAY_TIMEOUT_MS if needed.`,
-      );
-    }
     if (error instanceof Error) {
       throw new Error(`Failed to create plan: ${error.message}`);
     }
     throw new Error("Failed to create plan due to an unknown error");
-  } finally {
-    clearTimeout(timeout);
   }
 }
 

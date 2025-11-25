@@ -2,7 +2,11 @@
 import fs from "fs";
 import path from "path";
 
+import { runChat } from "./commands/chat";
+import { runCode } from "./commands/code";
+import { runCommit } from "./commands/commit";
 import { runPlan } from "./commands/plan";
+import { runOps } from "./commands/ops";
 import { logger } from "./logger";
 import { printErrorLine, printLine } from "./output";
 
@@ -12,7 +16,11 @@ function usage() {
 Usage:
   aidt new-agent <name>           Create agents/<name>/agent.md from template
   aidt plan <goal...>             Create a plan under .plans/
-`
+  aidt chat <message>             Send a chat request via the Gateway
+  aidt code <goal...>             Kick off a code workflow via Gateway plans
+  aidt commit [goal]              Generate a commit message and commit staged changes
+  aidt ops [cases|workflows]      List cases or workflows via the Gateway
+`,
   );
 }
 
@@ -21,7 +29,7 @@ function normalizeAgentName(name: string): string {
   if (!trimmed) {
     throw new Error("Agent name is required");
   }
-  if (/[\\/]/.test(trimmed)) {
+  if (/[/\\]/.test(trimmed)) {
     throw new Error("Agent name must not contain path separators");
   }
   if (trimmed.includes("..")) {
@@ -93,6 +101,27 @@ async function main() {
   if (cmd === "plan") {
     const goal = rest.join(" ").trim() || "General improvement";
     await runPlan(goal);
+    return;
+  }
+  if (cmd === "chat") {
+    const message = rest.join(" ").trim();
+    await runChat(message);
+    return;
+  }
+  if (cmd === "code") {
+    const goal = rest.join(" ").trim();
+    await runCode(goal);
+    return;
+  }
+  if (cmd === "commit") {
+    const goal = rest.join(" ").trim();
+    await runCommit(goal || undefined);
+    return;
+  }
+  if (cmd === "ops") {
+    const modeRaw = rest[0]?.trim();
+    const mode = modeRaw === "cases" || modeRaw === "workflows" ? modeRaw : "all";
+    await runOps(mode);
     return;
   }
   usage();
