@@ -128,7 +128,7 @@ export function setupTerminalServer(httpServer: http.Server | https.Server, conf
       return;
     }
 
-    const authResult = authenticateSessionFromUpgrade(request, sessionCookieName);
+    const authResult = await authenticateSessionFromUpgrade(request, sessionCookieName);
     if (authResult.status === "error") {
       logger.warn({ reason: authResult.reason }, "rejecting terminal connection due to invalid session");
       logAuditEvent({

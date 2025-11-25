@@ -58,7 +58,7 @@ describe("terminalServer", () => {
       });
 
     vi.spyOn(audit, "logAuditEvent").mockImplementation(() => {});
-    vi.spyOn(wsUtils, "authenticateSessionFromUpgrade").mockReturnValue({
+    vi.spyOn(wsUtils, "authenticateSessionFromUpgrade").mockResolvedValue({
       status: "ok",
       session: {
         id: "11111111-1111-1111-1111-111111111111",

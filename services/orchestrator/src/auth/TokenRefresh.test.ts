@@ -292,7 +292,9 @@ describe("Token Refresh Handling", () => {
     });
 
     it("stores rotated refresh token for subsequent refreshes", async () => {
-      const session = await sessionStore.createSession(
+      // Create a session context (not directly used in token refresh flow,
+      // but establishes the session store state)
+      await sessionStore.createSession(
         {
           subject: "user-123",
           email: "user@example.com",

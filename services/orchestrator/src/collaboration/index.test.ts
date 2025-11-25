@@ -193,7 +193,7 @@ async function createSessionHeaders({
     "x-project-id": projectId,
     "x-session-id": sessionHeaderId ?? session.id,
     ...(includeOrigin ? { Origin: ALLOWED_ORIGIN } : {}),
-  } as Record<string, string>;
+  };
 }
 
 describe("collaboration server", () => {

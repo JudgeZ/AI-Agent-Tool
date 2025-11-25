@@ -160,6 +160,28 @@ describe("RedisDedupeService", () => {
       expect(claimed).toBe(true);
     });
 
+    it("should clamp zero or negative TTL to minimum of 1ms", async () => {
+      service = new RedisDedupeService(defaultConfig);
+
+      // Zero TTL should be clamped to 1
+      await service.claim("zero-ttl", 0);
+      expect(redisState.set).toHaveBeenCalledWith(
+        "test-dedupe:zero-ttl",
+        "1",
+        expect.objectContaining({ NX: true, PX: 1 }),
+      );
+
+      redisState.set.mockClear();
+
+      // Negative TTL should also be clamped to 1
+      await service.claim("negative-ttl", -100);
+      expect(redisState.set).toHaveBeenCalledWith(
+        "test-dedupe:negative-ttl",
+        "1",
+        expect.objectContaining({ NX: true, PX: 1 }),
+      );
+    });
+
     it("should handle concurrent claims atomically", async () => {
       service = new RedisDedupeService(defaultConfig);
 
