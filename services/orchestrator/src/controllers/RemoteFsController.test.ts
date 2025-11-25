@@ -6,6 +6,7 @@ import request from "supertest";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import { loadConfig, type AppConfig } from "../config.js";
+import * as audit from "../observability/audit.js";
 import { RemoteFsController } from "./RemoteFsController.js";
 import type { ExtendedRequest } from "../http/types.js";
 import type { RateLimitStore } from "../rateLimit/store.js";
@@ -76,6 +77,7 @@ describe("RemoteFsController", () => {
   });
 
   it("rejects paths that escape the configured root", async () => {
+    const auditSpy = vi.spyOn(audit, "logAuditEvent");
     const config = buildConfig(tempDir, { auth: { oidc: { enabled: false } } });
     const app = buildApp(config, rateLimiter);
 
@@ -85,6 +87,14 @@ describe("RemoteFsController", () => {
 
     expect(res.status).toBe(400);
     expect(res.body.code).toBe("invalid_request");
+    expect(auditSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        action: "remote_fs.list",
+        outcome: "denied",
+        details: expect.objectContaining({ path: "/outside", reason: "outside_root" }),
+      }),
+    );
+    auditSpy.mockRestore();
   });
 
   it("lists directory entries within the root", async () => {

@@ -55,7 +55,7 @@ export class RemoteFsController {
 
     const normalizedPath = this.normalizeRemotePath(parsed.data.path);
     if (!this.isWithinDeclaredRoot(normalizedPath)) {
-      this.respondOutsideRoot(res, normalizedPath);
+      this.respondOutsideRoot(res, normalizedPath, session, "remote_fs.list");
       return;
     }
     const requestedLimit = parsed.data.limit;
@@ -63,13 +63,13 @@ export class RemoteFsController {
     const resolvedPath = await this.resolvePath(normalizedPath);
 
     if (!resolvedPath) {
-      this.respondOutsideRoot(res, normalizedPath);
+      this.respondOutsideRoot(res, normalizedPath, session, "remote_fs.list");
       return;
     }
 
     try {
       if (!(await this.ensurePathWithinRoot(resolvedPath))) {
-        this.respondOutsideRoot(res, normalizedPath);
+        this.respondOutsideRoot(res, normalizedPath, session, "remote_fs.list");
         return;
       }
 
@@ -160,18 +160,18 @@ export class RemoteFsController {
 
     const normalizedPath = this.normalizeRemotePath(parsed.data.path);
     if (!this.isWithinDeclaredRoot(normalizedPath)) {
-      this.respondOutsideRoot(res, normalizedPath);
+      this.respondOutsideRoot(res, normalizedPath, session, "remote_fs.read");
       return;
     }
     const resolvedPath = await this.resolvePath(normalizedPath);
     if (!resolvedPath) {
-      this.respondOutsideRoot(res, normalizedPath);
+      this.respondOutsideRoot(res, normalizedPath, session, "remote_fs.read");
       return;
     }
 
     try {
       if (!(await this.ensurePathWithinRoot(resolvedPath))) {
-        this.respondOutsideRoot(res, normalizedPath);
+        this.respondOutsideRoot(res, normalizedPath, session, "remote_fs.read");
         return;
       }
 
@@ -216,12 +216,12 @@ export class RemoteFsController {
 
     const normalizedPath = this.normalizeRemotePath(parsed.data.path);
     if (!this.isWithinDeclaredRoot(normalizedPath)) {
-      this.respondOutsideRoot(res, normalizedPath);
+      this.respondOutsideRoot(res, normalizedPath, session, "remote_fs.write");
       return;
     }
     const resolvedPath = await this.resolvePath(normalizedPath);
     if (!resolvedPath) {
-      this.respondOutsideRoot(res, normalizedPath);
+      this.respondOutsideRoot(res, normalizedPath, session, "remote_fs.write");
       return;
     }
 
@@ -238,19 +238,19 @@ export class RemoteFsController {
     try {
       const parentDir = path.dirname(resolvedPath);
       if (!(await this.ensurePathWithinRoot(parentDir))) {
-        this.respondOutsideRoot(res, normalizedPath);
+        this.respondOutsideRoot(res, normalizedPath, session, "remote_fs.write");
         return;
       }
 
       if (!(await this.ensurePathWithinRoot(resolvedPath))) {
-        this.respondOutsideRoot(res, normalizedPath);
+        this.respondOutsideRoot(res, normalizedPath, session, "remote_fs.write");
         return;
       }
 
       await fs.mkdir(parentDir, { recursive: true });
       // Defense-in-depth: revalidate after mkdir in case the path was replaced via symlink between checks.
       if (!(await this.ensurePathWithinRoot(resolvedPath))) {
-        this.respondOutsideRoot(res, normalizedPath);
+        this.respondOutsideRoot(res, normalizedPath, session, "remote_fs.write");
         return;
       }
 
@@ -387,7 +387,22 @@ export class RemoteFsController {
     }
   }
 
-  private respondOutsideRoot(res: Response, pathAttempt: string): void {
+  private respondOutsideRoot(
+    res: Response,
+    pathAttempt: string,
+    session?: NonNullable<ExtendedRequest["auth"]>["session"],
+    action: string = "remote_fs.denied",
+  ): void {
+    const { requestId, traceId } = getRequestIds(res);
+    logAuditEvent({
+      action,
+      outcome: "denied",
+      requestId,
+      traceId,
+      subject: toAuditSubject(session),
+      details: { path: pathAttempt, reason: "outside_root" },
+    });
+
     appLogger.warn({ path: pathAttempt, root: this.root }, "remote fs path outside root");
     respondWithError(res, 400, {
       code: "invalid_request",
