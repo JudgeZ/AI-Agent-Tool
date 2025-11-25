@@ -861,22 +861,23 @@ export class PipelineExecutor {
     const startTime = Date.now();
     const executionId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
 
+    // Create pipeline graph
+    const graphDefinition = PipelineFactory.create(config, this.context);
+
+    // Create execution graph
+    const graph = new ExecutionGraph(graphDefinition, config.concurrency || 10);
+
+    // Log pipeline start with accurate node count from graph definition
     appLogger.info(
       {
         pipelineId: this.context.pipelineId,
         executionId,
         pipelineType: config.type,
         pipelineName: config.name,
-        nodeCount: config.parameters ? Object.keys(config.parameters).length : 0,
+        nodeCount: graphDefinition.nodes.length,
       },
       "Pipeline execution started",
     );
-
-    // Create pipeline graph
-    const graphDefinition = PipelineFactory.create(config, this.context);
-
-    // Create execution graph
-    const graph = new ExecutionGraph(graphDefinition, config.concurrency || 10);
 
     // Register node handlers
     this.registerHandlers(graph);
