@@ -17,6 +17,15 @@ const SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
 /// Timeout for OTLP exporter operations to prevent indefinite blocking.
 const OTLP_EXPORT_TIMEOUT: Duration = Duration::from_secs(10);
 
+/// Tracks whether OTLP tracing was successfully initialized.
+///
+/// This global flag is necessary because `tracing::dispatcher::has_been_set()` only
+/// tells us if *any* subscriber was installed, not whether OTLP specifically was
+/// configured. We need this to know whether `shutdown_tracing()` should call
+/// `shutdown_tracer_provider()`.
+///
+/// Note: This global state means tests touching tracing must be serialized.
+/// Use `#[serial]` from `serial_test` crate for tests that call `init_tracing()`.
 static OTLP_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
 #[derive(Debug, Error)]
@@ -122,14 +131,22 @@ pub fn shutdown_tracing() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serial_test::serial;
+
+    // Tests are serialized because:
+    // 1. `tracing::dispatcher` is a global singleton - once set, it persists
+    // 2. `OTLP_INITIALIZED` is a global flag that tracks OTLP state
+    // Running tests in parallel could cause state leakage and flaky failures.
 
     #[test]
+    #[serial]
     fn init_tracing_is_idempotent() {
         assert!(init_tracing().is_ok(), "first init should succeed");
         assert!(init_tracing().is_ok(), "second init should be a no-op");
     }
 
     #[test]
+    #[serial]
     fn shutdown_tracing_is_safe_when_not_initialized() {
         // Shutdown should be a no-op when OTLP was never initialized.
         // This test verifies no panic occurs.
