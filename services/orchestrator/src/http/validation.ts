@@ -14,6 +14,11 @@ const MAX_SECRET_KEY_LENGTH = 128;
 const MAX_SECRET_LABEL_KEY_LENGTH = 64;
 const MAX_SECRET_LABEL_VALUE_LENGTH = 256;
 const MAX_SESSION_ID_LENGTH = 64;
+const MAX_CASE_TITLE_LENGTH = 160;
+const MAX_CASE_DESCRIPTION_LENGTH = 4000;
+const MAX_TASK_TITLE_LENGTH = 200;
+const MAX_TASK_DESCRIPTION_LENGTH = 4000;
+const MAX_ARTIFACT_REF_LENGTH = 512;
 const MAX_SECRET_LABEL_ENTRIES = 20;
 const MAX_SECRET_VALUE_LENGTH = 8192;
 const MAX_TENANT_ID_LENGTH = 128;
@@ -152,6 +157,90 @@ export const ChatRequestSchema = z
 export type PlanRequestPayload = z.infer<typeof PlanRequestSchema>;
 export type PlanApprovalPayload = z.infer<typeof PlanApprovalSchema>;
 export type ChatRequestPayload = z.infer<typeof ChatRequestSchema>;
+
+const CaseStatusValues = ["open", "active", "closed"] as const;
+const TaskStatusValues = ["pending", "running", "completed", "failed"] as const;
+
+export const CaseCreateSchema = z.object({
+  title: z
+    .string({ required_error: "title is required" })
+    .trim()
+    .min(1, { message: "title is required" })
+    .max(MAX_CASE_TITLE_LENGTH, {
+      message: `title must not exceed ${MAX_CASE_TITLE_LENGTH} characters`,
+    }),
+  description: z
+    .string()
+    .trim()
+    .max(MAX_CASE_DESCRIPTION_LENGTH, {
+      message: `description must not exceed ${MAX_CASE_DESCRIPTION_LENGTH} characters`,
+    })
+    .optional(),
+  projectId: z
+    .string()
+    .trim()
+    .max(200, { message: "project id must not exceed 200 characters" })
+    .optional(),
+  status: z.enum(CaseStatusValues).optional(),
+  metadata: z.record(z.any()).optional(),
+});
+
+export const CaseListQuerySchema = z.object({
+  status: z
+    .string()
+    .trim()
+    .transform(value =>
+      value.length === 0
+        ? undefined
+        : value.split(",").map(entry => entry.trim()).filter(entry => CaseStatusValues.includes(entry as any))
+    )
+    .optional(),
+  projectId: z
+    .string()
+    .trim()
+    .max(200, { message: "project id must not exceed 200 characters" })
+    .optional(),
+});
+
+export const TaskCreateSchema = z.object({
+  title: z
+    .string({ required_error: "title is required" })
+    .trim()
+    .min(1, { message: "title is required" })
+    .max(MAX_TASK_TITLE_LENGTH, {
+      message: `title must not exceed ${MAX_TASK_TITLE_LENGTH} characters`,
+    }),
+  description: z
+    .string()
+    .trim()
+    .max(MAX_TASK_DESCRIPTION_LENGTH, {
+      message: `description must not exceed ${MAX_TASK_DESCRIPTION_LENGTH} characters`,
+    })
+    .optional(),
+  status: z.enum(TaskStatusValues).optional(),
+  metadata: z.record(z.any()).optional(),
+});
+
+export const ArtifactCreateSchema = z.object({
+  type: z
+    .string({ required_error: "type is required" })
+    .trim()
+    .min(1, { message: "type is required" })
+    .max(64, { message: "type must not exceed 64 characters" }),
+  ref: z
+    .string({ required_error: "ref is required" })
+    .trim()
+    .min(1, { message: "ref is required" })
+    .max(MAX_ARTIFACT_REF_LENGTH, {
+      message: `ref must not exceed ${MAX_ARTIFACT_REF_LENGTH} characters`,
+    }),
+  metadata: z.record(z.any()).optional(),
+});
+
+export type CaseCreatePayload = z.infer<typeof CaseCreateSchema>;
+export type CaseListQuery = z.infer<typeof CaseListQuerySchema>;
+export type TaskCreatePayload = z.infer<typeof TaskCreateSchema>;
+export type ArtifactCreatePayload = z.infer<typeof ArtifactCreateSchema>;
 
 const CodeVerifierSchema = z
   .string({ required_error: "code_verifier is required" })

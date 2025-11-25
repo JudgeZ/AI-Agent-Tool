@@ -26,6 +26,8 @@ import { PlanController } from "../controllers/PlanController.js";
 import { ChatController } from "../controllers/ChatController.js";
 import { SecretController } from "../controllers/SecretController.js";
 import { AuthController } from "../controllers/AuthController.js";
+import { CaseController } from "../controllers/CaseController.js";
+import { WorkflowController } from "../controllers/WorkflowController.js";
 
 function resolveConfig(config?: AppConfig): AppConfig {
   return config ?? loadConfig();
@@ -43,6 +45,8 @@ export function createServer(config?: AppConfig): Express {
   const chatController = new ChatController(appConfig, rateLimiter, policy);
   const secretController = new SecretController(appConfig, policy, rateLimiter);
   const authController = new AuthController(appConfig, rateLimiter);
+  const caseController = new CaseController(appConfig);
+  const workflowController = new WorkflowController(appConfig);
 
   if (appConfig.server.trustedProxyCidrs.length > 0) {
     app.set("trust proxy", (ip: string) =>
@@ -184,6 +188,14 @@ export function createServer(config?: AppConfig): Express {
   app.get("/plan/:id/events", (req, res) => planController.getPlanEvents(req as ExtendedRequest, res));
   app.post("/plan/:id/steps/:stepId/approve", (req, res) => planController.approveStep(req as ExtendedRequest, res));
   app.post("/plan/:id/steps/:stepId/reject", (req, res) => planController.rejectStep(req as ExtendedRequest, res));
+
+  app.get("/cases", (req, res) => caseController.listCases(req as ExtendedRequest, res));
+  app.post("/cases", (req, res) => caseController.createCase(req as ExtendedRequest, res));
+  app.get("/cases/:id/tasks", (req, res) => caseController.listTasks(req as ExtendedRequest, res));
+  app.post("/cases/:id/tasks", (req, res) => caseController.createTask(req as ExtendedRequest, res));
+  app.post("/cases/:id/artifacts", (req, res) => caseController.attachArtifact(req as ExtendedRequest, res));
+
+  app.get("/workflows", (req, res) => workflowController.listWorkflows(req as ExtendedRequest, res));
 
   app.post("/chat", (req, res) => chatController.chat(req as ExtendedRequest, res));
 

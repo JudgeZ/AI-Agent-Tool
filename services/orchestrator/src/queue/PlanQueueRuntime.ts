@@ -1,43 +1,66 @@
 import { planQueueManager } from "./PlanQueueManager.js";
+import { getWorkflowEngine } from "../workflow/WorkflowEngine.js";
+import {
+  initializeWorkflowRuntime,
+  submitWorkflow,
+  resolveWorkflowApproval,
+  getWorkflowSubject as getWorkflowSubjectForWorkflow,
+  getWorkflowNode,
+  stopWorkflowRuntime,
+  resetWorkflowRuntime,
+  hasPendingWorkflowNode,
+  type WorkflowApprovalDecision,
+} from "../workflow/runtime.js";
 
 // Re-export types
-export type ApprovalDecision = "approved" | "rejected";
+export type ApprovalDecision = WorkflowApprovalDecision;
 
 // Proxy functions
-export const initializePlanQueueRuntime = () => planQueueManager.initialize();
+export const initializePlanQueueRuntime = initializeWorkflowRuntime;
 
 export const submitPlanSteps = (
-  plan: any, 
-  traceId: string, 
-  requestId?: string, 
-  subject?: any
-) => planQueueManager.submitPlanSteps(plan, traceId, requestId, subject);
+  plan: any,
+  traceId: string,
+  requestId?: string,
+  subject?: any,
+) => {
+  const workflow = getWorkflowEngine().createWorkflowFromPlan(plan, {
+    tenantId: subject?.tenantId,
+    projectId: subject?.projectId,
+    subject,
+  });
+  return submitWorkflow(workflow, traceId, requestId, subject);
+};
 
 export const resolvePlanStepApproval = (options: {
   planId: string;
   stepId: string;
   decision: ApprovalDecision;
   summary?: string;
-}) => planQueueManager.resolvePlanStepApproval(options);
+}) => resolveWorkflowApproval({
+  workflowId: options.planId,
+  nodeId: options.stepId,
+  decision: options.decision,
+  summary: options.summary,
+});
 
-export const getPlanSubject = (planId: string) => planQueueManager.getPlanSubject(planId);
+export const getPlanSubject = (planId: string) => getWorkflowSubjectForWorkflow(planId);
 
-export const getPersistedPlanStep = (planId: string, stepId: string) => 
-    planQueueManager.getPersistedPlanStep(planId, stepId);
+export const getPersistedPlanStep = (planId: string, stepId: string) =>
+  getWorkflowNode(planId, stepId);
 
-export const stopPlanQueueRuntime = () => planQueueManager.stop();
+export const stopPlanQueueRuntime = () => stopWorkflowRuntime();
 
-export const resetPlanQueueRuntime = () => planQueueManager.reset();
+export const resetPlanQueueRuntime = () => resetWorkflowRuntime();
 
-export const hasPendingPlanStep = (planId: string, stepId: string) => 
-    planQueueManager.hasPendingPlanStep(planId, stepId);
+export const hasPendingPlanStep = (planId: string, stepId: string) =>
+  hasPendingWorkflowNode(planId, stepId);
 
-export const hasApprovalCacheEntry = (planId: string, stepId: string) => 
-    planQueueManager.hasApprovalCacheEntry(planId, stepId);
+export const hasApprovalCacheEntry = (planId: string, stepId: string) =>
+  planQueueManager.hasApprovalCacheEntry(planId, stepId);
 
-export const hasActivePlanSubject = (planId: string) => 
-    planQueueManager.hasActivePlanSubject(planId);
-
+export const hasActivePlanSubject = (planId: string) =>
+  planQueueManager.hasActivePlanSubject(planId);
 
 // Export legacy stuff if needed?
 export { PLAN_STEPS_QUEUE } from "./StepConsumer.js";

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { page } from '$app/stores';
   import '../app.css';
   import FileTree from '$lib/components/ide/FileTree.svelte';
   import Editor from '$lib/components/ide/Editor.svelte';
@@ -20,6 +21,13 @@
     setTerminalHeight,
     toggleTerminal
   } from '$lib/stores/layout';
+
+  const navLinks = [
+    { href: '/', label: 'IDE' },
+    { href: '/ops/cases', label: 'Ops' }
+  ];
+
+  $: isOpsMode = $page.url.pathname.startsWith('/ops');
 </script>
 
 <svelte:head>
@@ -27,57 +35,82 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 </svelte:head>
 
-<div class="ide-shell">
-  <div
-    class="ide-main"
-    style={`--sidebar-left: ${$layoutState.leftWidth}px; --sidebar-right: ${$layoutState.rightWidth}px;`}
-  >
-    <ResizableSidebar
-      side="left"
-      width={$layoutState.leftWidth}
-      minWidth={LEFT_MIN}
-      maxWidth={LEFT_MAX}
-      ariaLabel="File explorer"
-      onResize={setLeftWidth}
-    >
-      <FileTree />
-    </ResizableSidebar>
+<div class="app-shell">
+  <header class="topbar">
+    <div class="brand">AI Agent Tool</div>
+    <nav aria-label="Mode switch" class="nav-links">
+      {#each navLinks as link}
+        <a
+          class={`nav-link ${$page.url.pathname.startsWith(link.href) ? 'active' : ''}`}
+          href={link.href}
+          aria-current={$page.url.pathname.startsWith(link.href) ? 'page' : undefined}
+        >
+          {link.label}
+        </a>
+      {/each}
+    </nav>
+  </header>
 
-    <main class="editor-area">
-      <Editor />
-    </main>
-
-    <ResizableSidebar
-      side="right"
-      width={$layoutState.rightWidth}
-      minWidth={RIGHT_MIN}
-      maxWidth={RIGHT_MAX}
-      ariaLabel="Agent panel"
-      onResize={setRightWidth}
-    >
-      <div class="agent-pane">
+  {#if isOpsMode}
+    <div class="ops-shell">
+      <main class="ops-main">
         <slot />
-        <Chat />
-      </div>
-    </ResizableSidebar>
-  </div>
+      </main>
+    </div>
+  {:else}
+    <div class="ide-shell">
+      <div
+        class="ide-main"
+        style={`--sidebar-left: ${$layoutState.leftWidth}px; --sidebar-right: ${$layoutState.rightWidth}px;`}
+      >
+        <ResizableSidebar
+          side="left"
+          width={$layoutState.leftWidth}
+          minWidth={LEFT_MIN}
+          maxWidth={LEFT_MAX}
+          ariaLabel="File explorer"
+          onResize={setLeftWidth}
+        >
+          <FileTree />
+        </ResizableSidebar>
 
-  <TerminalPanel
-    open={$layoutState.terminalOpen}
-    height={$layoutState.terminalHeight}
-    minHeight={TERMINAL_MIN}
-    maxHeight={TERMINAL_MAX}
-    onResize={setTerminalHeight}
-    onToggle={toggleTerminal}
-  >
-    <Terminal />
-  </TerminalPanel>
+        <main class="editor-area">
+          <Editor />
+        </main>
+
+        <ResizableSidebar
+          side="right"
+          width={$layoutState.rightWidth}
+          minWidth={RIGHT_MIN}
+          maxWidth={RIGHT_MAX}
+          ariaLabel="Agent panel"
+          onResize={setRightWidth}
+        >
+          <div class="agent-pane">
+            <slot />
+            <Chat />
+          </div>
+        </ResizableSidebar>
+      </div>
+
+      <TerminalPanel
+        open={$layoutState.terminalOpen}
+        height={$layoutState.terminalHeight}
+        minHeight={TERMINAL_MIN}
+        maxHeight={TERMINAL_MAX}
+        onResize={setTerminalHeight}
+        onToggle={toggleTerminal}
+      >
+        <Terminal />
+      </TerminalPanel>
+    </div>
+  {/if}
 
   <Notifications />
 </div>
 
 <style>
-  .ide-shell {
+  .app-shell {
     display: flex;
     flex-direction: column;
     height: 100vh;
@@ -90,6 +123,72 @@
       #0b1020;
     color: #e2e8f0;
     box-sizing: border-box;
+  }
+
+  .topbar {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 14px;
+    border-radius: 12px;
+    background: rgba(15, 23, 42, 0.6);
+    border: 1px solid rgba(148, 163, 184, 0.18);
+    box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+  }
+
+  .brand {
+    font-weight: 700;
+    letter-spacing: 0.05em;
+    color: #cbd5f5;
+  }
+
+  .nav-links {
+    display: flex;
+    gap: 8px;
+  }
+
+  .nav-link {
+    padding: 8px 12px;
+    border-radius: 10px;
+    text-decoration: none;
+    color: #cbd5f5;
+    border: 1px solid transparent;
+  }
+
+  .nav-link:hover,
+  .nav-link:focus-visible {
+    border-color: rgba(148, 163, 184, 0.4);
+    outline: none;
+  }
+
+  .nav-link.active {
+    background: linear-gradient(135deg, #0ea5e9, #22d3ee);
+    color: #0f172a;
+    border-color: transparent;
+  }
+
+  .ide-shell {
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+    flex: 1;
+    overflow: hidden;
+  }
+
+  .ops-shell {
+    flex: 1;
+    display: flex;
+    flex-direction: column;
+    background: rgba(15, 23, 42, 0.55);
+    border: 1px solid rgba(148, 163, 184, 0.12);
+    border-radius: 16px;
+    box-shadow: 0 16px 60px rgba(0, 0, 0, 0.35);
+    padding: 16px;
+  }
+
+  .ops-main {
+    flex: 1;
+    overflow: auto;
   }
 
   .ide-main {

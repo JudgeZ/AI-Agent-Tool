@@ -14,6 +14,7 @@ import { setupCollaborationServer } from "./collaboration/index.js";
 import { setupTerminalServer } from "./sandbox/terminalServer.js";
 import { isUpgradeHandled } from "./server/upgradeMarkers.js";
 import { headerValue, requestIdentifiers, sanitizeHeaderForLog } from "./http/wsUtils.js";
+import { getCaseService } from "./cases/CaseService.js";
 
 // Global singleton for monitoring
 export const sloMonitor = new SLOMonitor();
@@ -69,6 +70,15 @@ export async function bootstrapOrchestrator(
     appLogger.error(
       { err: normalizeError(error) },
       "Failed to initialize queue runtime",
+    );
+    throw error;
+  }
+  try {
+    await getCaseService().initialize();
+  } catch (error) {
+    appLogger.error(
+      { err: normalizeError(error) },
+      "Failed to initialize case service",
     );
     throw error;
   }
