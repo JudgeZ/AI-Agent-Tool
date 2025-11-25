@@ -101,6 +101,9 @@ pub async fn run() -> Result<(), IndexerError> {
         warn!("gRPC server task failed: {}", e);
     }
 
+    // Flush any pending traces before exit
+    telemetry::shutdown_tracing();
+
     Ok(())
 }
 
