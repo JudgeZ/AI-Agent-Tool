@@ -2,7 +2,7 @@ import type { IncomingMessage } from "node:http";
 
 import ipaddr from "ipaddr.js";
 
-import { sessionStore, type SessionRecord } from "../auth/SessionStore.js";
+import { getSessionStore, type SessionRecord } from "../auth/SessionStore.js";
 import { validateSessionId, type SessionExtractionResult, type SessionSource } from "../auth/sessionValidation.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
 
@@ -158,13 +158,15 @@ export function extractSessionIdFromUpgrade(req: IncomingMessage, cookieName: st
   return { status: "missing" };
 }
 
-export function authenticateSessionFromUpgrade(
+export async function authenticateSessionFromUpgrade(
   req: IncomingMessage,
   cookieName: string,
-):
+): Promise<
   | { status: "ok"; session: SessionRecord; sessionId: string; source?: SessionSource }
-  | { status: "error"; reason: string; source?: SessionSource } {
-  sessionStore.cleanupExpired();
+  | { status: "error"; reason: string; source?: SessionSource }
+> {
+  const sessionStore = await getSessionStore();
+  await sessionStore.cleanupExpired();
   const sessionResult = extractSessionIdFromUpgrade(req, cookieName);
   if (sessionResult.status === "invalid") {
     return { status: "error", reason: "invalid session", source: sessionResult.source };
@@ -172,7 +174,7 @@ export function authenticateSessionFromUpgrade(
   if (sessionResult.status === "missing") {
     return { status: "error", reason: "missing session" };
   }
-  const session = sessionStore.getSession(sessionResult.sessionId);
+  const session = await sessionStore.getSession(sessionResult.sessionId);
   if (!session) {
     return { status: "error", reason: "unknown session", source: sessionResult.source };
   }

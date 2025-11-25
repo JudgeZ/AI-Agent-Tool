@@ -14,7 +14,7 @@ import * as Y from "yjs";
 import { Awareness } from "y-protocols/awareness.js";
 import { createMutex } from "lib0/mutex.js";
 import type { AppConfig } from "../config.js";
-import { SessionRecord, sessionStore } from "../auth/SessionStore.js";
+import { type SessionRecord, getSessionStore } from "../auth/SessionStore.js";
 import { type SessionSource } from "../auth/sessionValidation.js";
 import { hashIdentifier, logAuditEvent } from "../observability/audit.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
@@ -85,13 +85,13 @@ const rooms = new Map<string, RoomState>();
 const ipConnectionCounts = new Map<string, number>();
 const incrementConnection = (ip: string, limit: number) => incrementConnectionCount(ip, limit, ipConnectionCounts);
 const decrementConnection = (ip: string) => decrementConnectionCount(ip, ipConnectionCounts);
-const authenticateCollaborationRequest = (
+const authenticateCollaborationRequest = async (
   req: IncomingMessage,
   cookieName: string,
-):
+): Promise<
   | { status: "ok"; session: SessionRecord; sessionId: string; source?: SessionSource }
-  | { status: "error"; reason: string; source?: SessionSource } =>
-  authenticateSessionFromUpgrade(req, cookieName);
+  | { status: "error"; reason: string; source?: SessionSource }
+> => authenticateSessionFromUpgrade(req, cookieName);
 
 function resolvePersistenceDir(): string {
   const rawDir = process.env.COLLAB_PERSISTENCE_DIR ?? DEFAULT_PERSISTENCE_DIR;
@@ -402,7 +402,7 @@ export async function setupCollaborationServer(
   const connectionLimitPerIp = resolveConnectionLimitFromEnv();
   const allowedOrigins = new Set(config.server.cors.allowedOrigins ?? []);
 
-  httpServer.on("upgrade", (request, socket, head) => {
+  httpServer.on("upgrade", async (request, socket, head) => {
     const { pathname } = new URL(request.url ?? "", "http://localhost");
     if (pathname !== "/collaboration/ws") {
       return;
@@ -453,7 +453,7 @@ export async function setupCollaborationServer(
       return;
     }
 
-    const authResult = authenticateCollaborationRequest(request, sessionCookieName);
+    const authResult = await authenticateCollaborationRequest(request, sessionCookieName);
     if (authResult.status === "error") {
       logger.warn({ reason: authResult.reason, source: authResult.source }, "rejecting collaboration connection due to invalid session");
       logAuditEvent({

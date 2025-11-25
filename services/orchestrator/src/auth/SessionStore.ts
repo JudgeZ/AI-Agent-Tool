@@ -1,12 +1,13 @@
 import { loadConfig, type SessionStoreConfig } from "../config/loadConfig.js";
 import { appLogger } from "../observability/logger.js";
-import type { CreateSessionInput, ISessionStore, SessionRecord } from "./ISessionStore.js";
+import type { ISessionStore } from "./ISessionStore.js";
 import { MemorySessionStore } from "./MemorySessionStore.js";
 import { RedisSessionStore } from "./RedisSessionStore.js";
-import { buildSessionRecord, isSessionExpired } from "./sessionUtils.js";
 
-// Re-export types for backwards compatibility
+// Re-export types
 export type { CreateSessionInput, ISessionStore, SessionRecord } from "./ISessionStore.js";
+export { MemorySessionStore } from "./MemorySessionStore.js";
+export { RedisSessionStore } from "./RedisSessionStore.js";
 
 let sessionStorePromise: Promise<ISessionStore> | null = null;
 
@@ -65,54 +66,3 @@ export async function resetSessionStore(): Promise<void> {
     sessionStorePromise = null;
   }
 }
-
-/**
- * Legacy synchronous SessionStore class for backwards compatibility.
- * New code should use getSessionStore() for async access.
- * @deprecated Use getSessionStore() for new code
- */
-export class SessionStore {
-  private readonly sessions = new Map<string, SessionRecord>();
-
-  createSession(input: CreateSessionInput, ttlSeconds: number, expiresAtMsOverride?: number): SessionRecord {
-    const session = buildSessionRecord(input, ttlSeconds, expiresAtMsOverride);
-    this.sessions.set(session.id, session);
-    return session;
-  }
-
-  getSession(id: string): SessionRecord | undefined {
-    const session = this.sessions.get(id);
-    if (!session) {
-      return undefined;
-    }
-    if (isSessionExpired(session)) {
-      this.sessions.delete(id);
-      return undefined;
-    }
-    return session;
-  }
-
-  revokeSession(id: string): boolean {
-    return this.sessions.delete(id);
-  }
-
-  clear(): void {
-    this.sessions.clear();
-  }
-
-  cleanupExpired(): void {
-    const now = Date.now();
-    for (const [id, session] of this.sessions.entries()) {
-      if (now >= Date.parse(session.expiresAt)) {
-        this.sessions.delete(id);
-      }
-    }
-  }
-}
-
-/**
- * Legacy singleton for backwards compatibility during migration.
- * New code should use getSessionStore() instead.
- * @deprecated Use getSessionStore() for new code
- */
-export const sessionStore = new SessionStore();

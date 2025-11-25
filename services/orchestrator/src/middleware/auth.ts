@@ -1,20 +1,21 @@
 import type { AppConfig } from "../config.js";
-import { sessionStore, type SessionRecord } from "../auth/SessionStore.js";
+import { getSessionStore, type SessionRecord } from "../auth/SessionStore.js";
 import { extractSessionId } from "../auth/sessionValidation.js";
 import { logAuditEvent } from "../observability/audit.js";
 import type { ExtendedRequest } from "../http/types.js";
 import type { Response, NextFunction } from "express";
 
-export function attachSession(
+export async function attachSession(
   req: ExtendedRequest,
   config: AppConfig,
-): SessionRecord | undefined {
+): Promise<SessionRecord | undefined> {
   const oidcConfig = config.auth.oidc;
   if (!oidcConfig.enabled) {
     req.auth = undefined;
     return undefined;
   }
-  sessionStore.cleanupExpired();
+  const sessionStore = await getSessionStore();
+  await sessionStore.cleanupExpired();
   const sessionResult = extractSessionId(req, oidcConfig.session.cookieName);
   if (sessionResult.status === "invalid") {
     req.auth = {
@@ -45,7 +46,7 @@ export function attachSession(
     req.auth = undefined;
     return undefined;
   }
-  const session = sessionStore.getSession(sessionResult.sessionId);
+  const session = await sessionStore.getSession(sessionResult.sessionId);
   if (session) {
     req.auth = { session };
     return session;
@@ -55,9 +56,12 @@ export function attachSession(
 }
 
 export function attachSessionMiddleware(config: AppConfig) {
-    return (req: ExtendedRequest, _res: Response, next: NextFunction) => {
-        attachSession(req, config);
-        next();
-    };
+  return async (req: ExtendedRequest, _res: Response, next: NextFunction) => {
+    try {
+      await attachSession(req, config);
+      next();
+    } catch (error) {
+      next(error);
+    }
+  };
 }
-

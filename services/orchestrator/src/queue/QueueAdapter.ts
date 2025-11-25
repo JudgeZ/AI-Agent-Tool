@@ -1,5 +1,5 @@
 import { loadConfig } from "../config.js";
-import { createDedupeService, MemoryDedupeService, type IDedupeService } from "../services/DedupeService.js";
+import { createDedupeService, type IDedupeService } from "../services/DedupeService.js";
 import { RabbitMQAdapter } from "./RabbitMQAdapter.js";
 import { KafkaAdapter } from "./KafkaAdapter.js";
 
@@ -72,16 +72,6 @@ export function createQueueAdapterWithDedupe(dedupeService: IDedupeService): Que
     default:
       throw new Error(`Unsupported messaging type: ${config.messaging.type}`);
   }
-}
-
-/**
- * Creates a queue adapter from config using memory-backed dedupe.
- * For backwards compatibility - new code should use getQueueAdapter() which
- * respects the dedupe configuration.
- * @deprecated Use getQueueAdapter() for new code
- */
-export function createQueueAdapterFromConfig(): QueueAdapter {
-  return createQueueAdapterWithDedupe(new MemoryDedupeService());
 }
 
 export async function getQueueAdapter(): Promise<QueueAdapter> {
