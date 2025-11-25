@@ -26,6 +26,7 @@ import {
   queuePartitionLagGauge,
   queueRetryCounter
 } from "../observability/metrics.js";
+import { type IDedupeService, MemoryDedupeService } from "../services/DedupeService.js";
 import type {
   DeadLetterOptions,
   EnqueueOptions,
@@ -70,6 +71,7 @@ type KafkaAdapterOptions = {
   tls?: KafkaTlsConfig;
   sasl?: KafkaSaslConfig;
   deadLetterSuffix?: string;
+  dedupeService?: IDedupeService;
 };
 
 type KafkaFactory = Pick<Kafka, "producer" | "consumer" | "admin">;
@@ -141,7 +143,7 @@ export class KafkaAdapter implements QueueAdapter {
   private connected = false;
 
   private readonly consumers = new Map<string, QueueHandler<any>>();
-  private readonly inflightKeys = new Set<string>();
+  private readonly dedupeService: IDedupeService;
   private readonly knownTopics = new Set<string>();
   private readonly topicInitPromises = new Map<string, Promise<void>>();
   private consumePromise: Promise<void> = Promise.resolve();
@@ -193,6 +195,7 @@ export class KafkaAdapter implements QueueAdapter {
       }
       this.kafkaFactory = new Kafka(kafkaOptions);
     }
+    this.dedupeService = options.dedupeService ?? new MemoryDedupeService();
   }
 
   async connect(): Promise<void> {
@@ -240,7 +243,7 @@ export class KafkaAdapter implements QueueAdapter {
     this.admin = null;
     this.consumerRunning = false;
     this.consumers.clear();
-    this.inflightKeys.clear();
+    await this.dedupeService.clear();
     this.knownTopics.clear();
     this.topicInitPromises.clear();
 
@@ -448,7 +451,7 @@ export class KafkaAdapter implements QueueAdapter {
       this.logger.error?.(`Failed to parse Kafka message from ${topic}: ${(error as Error).message}`);
       await this.commitOffset(topic, partition, message.offset);
       if (idempotencyKey) {
-        this.releaseKey(idempotencyKey);
+        await this.releaseKey(idempotencyKey);
       }
       await this.refreshDepth(topic);
       return;
@@ -462,7 +465,7 @@ export class KafkaAdapter implements QueueAdapter {
       acknowledged = true;
       await this.commitOffset(topic, partition, message.offset);
       if (idempotencyKey) {
-        this.releaseKey(idempotencyKey);
+        await this.releaseKey(idempotencyKey);
       }
       await this.refreshDepth(topic);
     };
@@ -539,11 +542,17 @@ export class KafkaAdapter implements QueueAdapter {
     let addedKey = false;
     if (idempotencyKey) {
       headers["x-idempotency-key"] = idempotencyKey;
-      if (!skipDedupe && this.inflightKeys.has(idempotencyKey)) {
-        return;
+      if (!skipDedupe) {
+        // tryAdd returns true if key was newly added, false if it already exists
+        addedKey = await this.dedupeService.tryAdd(idempotencyKey);
+        if (!addedKey) {
+          // Key already exists - this is a duplicate
+          return;
+        }
+      } else {
+        // When skipDedupe is true (for retries), still track the key
+        addedKey = await this.dedupeService.tryAdd(idempotencyKey);
       }
-      addedKey = !this.inflightKeys.has(idempotencyKey);
-      this.inflightKeys.add(idempotencyKey);
     }
 
     const messagePayload = this.preparePayloadForAttempt(payload, resolvedAttempt);
@@ -555,7 +564,7 @@ export class KafkaAdapter implements QueueAdapter {
       });
     } catch (error: unknown) {
       if (idempotencyKey && addedKey) {
-        this.releaseKey(idempotencyKey);
+        await this.releaseKey(idempotencyKey);
       }
       throw error;
     }
@@ -574,8 +583,8 @@ export class KafkaAdapter implements QueueAdapter {
     }
   }
 
-  private releaseKey(key: string): void {
-    this.inflightKeys.delete(key);
+  private async releaseKey(key: string): Promise<void> {
+    await this.dedupeService.release(key);
   }
 
   private async commitOffset(topic: string, partition: number, offset: string): Promise<void> {

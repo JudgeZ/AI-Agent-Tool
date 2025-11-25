@@ -1,4 +1,5 @@
 import { loadConfig } from "../config.js";
+import { createDedupeService, MemoryDedupeService, type IDedupeService } from "../services/DedupeService.js";
 import { RabbitMQAdapter } from "./RabbitMQAdapter.js";
 import { KafkaAdapter } from "./KafkaAdapter.js";
 
@@ -40,11 +41,15 @@ export interface QueueAdapter {
 
 let adapterPromise: Promise<QueueAdapter> | null = null;
 
-export function createQueueAdapterFromConfig(): QueueAdapter {
+/**
+ * Creates a queue adapter from config with the provided dedupe service.
+ * @param dedupeService - The dedupe service to use for idempotency
+ */
+export function createQueueAdapterWithDedupe(dedupeService: IDedupeService): QueueAdapter {
   const config = loadConfig();
   switch (config.messaging.type) {
     case "rabbitmq":
-      return new RabbitMQAdapter();
+      return new RabbitMQAdapter({ dedupeService });
     case "kafka": {
       const kafkaCfg = config.messaging.kafka;
       return new KafkaAdapter({
@@ -60,7 +65,8 @@ export function createQueueAdapterFromConfig(): QueueAdapter {
         numPartitions: kafkaCfg.topicPartitions,
         replicationFactor: kafkaCfg.replicationFactor,
         topicConfig: kafkaCfg.topicConfig,
-        compactTopicPatterns: kafkaCfg.compactTopics
+        compactTopicPatterns: kafkaCfg.compactTopics,
+        dedupeService,
       });
     }
     default:
@@ -68,16 +74,28 @@ export function createQueueAdapterFromConfig(): QueueAdapter {
   }
 }
 
+/**
+ * Creates a queue adapter from config using memory-backed dedupe.
+ * For backwards compatibility - new code should use getQueueAdapter() which
+ * respects the dedupe configuration.
+ * @deprecated Use getQueueAdapter() for new code
+ */
+export function createQueueAdapterFromConfig(): QueueAdapter {
+  return createQueueAdapterWithDedupe(new MemoryDedupeService());
+}
+
 export async function getQueueAdapter(): Promise<QueueAdapter> {
   if (!adapterPromise) {
-    const adapter = createQueueAdapterFromConfig();
-    adapterPromise = adapter
-      .connect()
-      .then(() => adapter)
-      .catch(error => {
-        adapterPromise = null;
-        throw error;
-      });
+    const config = loadConfig();
+    adapterPromise = (async () => {
+      const dedupeService = await createDedupeService(config.messaging.dedupe);
+      const adapter = createQueueAdapterWithDedupe(dedupeService);
+      await adapter.connect();
+      return adapter;
+    })().catch(error => {
+      adapterPromise = null;
+      throw error;
+    });
   }
   return adapterPromise;
 }

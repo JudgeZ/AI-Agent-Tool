@@ -14,6 +14,21 @@ export type RateLimitBackendConfig = {
   redisUrl?: string;
 };
 
+export type SessionStoreProvider = "memory" | "redis";
+
+export type SessionStoreConfig = {
+  provider: SessionStoreProvider;
+  redisUrl?: string;
+};
+
+export type DedupeProvider = "memory" | "redis";
+
+export type DedupeConfig = {
+  provider: DedupeProvider;
+  redisUrl?: string;
+  defaultTtlMs?: number;
+};
+
 export type RateLimitConfig = {
   windowMs: number;
   maxRequests: number;
@@ -243,7 +258,7 @@ export type OidcAuthConfig = {
 
 export type AppConfig = {
   runMode: "consumer" | "enterprise";
-  messaging: { type: "rabbitmq" | "kafka"; kafka: KafkaMessagingConfig };
+  messaging: { type: "rabbitmq" | "kafka"; kafka: KafkaMessagingConfig; dedupe: DedupeConfig };
   providers: {
     defaultRoute: "balanced" | "high_quality" | "low_cost";
     enabled: string[];
@@ -256,6 +271,7 @@ export type AppConfig = {
     oauth: { redirectBaseUrl: string };
     oidc: OidcAuthConfig;
   };
+  session: SessionStoreConfig;
   planState: PlanStateConfig;
   retention: RetentionConfig;
   secrets: { backend: "localfile" | "vault" };
@@ -708,6 +724,10 @@ export const DEFAULT_CONFIG: AppConfig = {
       replicationFactor: 1,
       topicConfig: {},
       compactTopics: []
+    },
+    dedupe: {
+      provider: "memory",
+      defaultTtlMs: 300_000
     }
   },
   providers: {
@@ -748,6 +768,9 @@ export const DEFAULT_CONFIG: AppConfig = {
         ttlSeconds: 60 * 60 * 8
       }
     }
+  },
+  session: {
+    provider: "memory"
   },
   planState: {
     backend: "file"
@@ -1490,6 +1513,28 @@ function asPolicyCacheProvider(value: unknown): PolicyCacheProvider | undefined 
 }
 
 function asRateLimitBackendProvider(value: unknown): RateLimitBackendConfig["provider"] | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "memory" || normalized === "redis") {
+    return normalized;
+  }
+  return undefined;
+}
+
+function asSessionStoreProvider(value: unknown): SessionStoreProvider | undefined {
+  if (typeof value !== "string") {
+    return undefined;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "memory" || normalized === "redis") {
+    return normalized;
+  }
+  return undefined;
+}
+
+function asDedupeProvider(value: unknown): DedupeProvider | undefined {
   if (typeof value !== "string") {
     return undefined;
   }
@@ -2639,6 +2684,19 @@ export function loadConfig(): AppConfig {
       process.env.PROVIDER_RATE_LIMIT_REDIS_URL ??
       process.env.RATE_LIMIT_REDIS_URL,
   );
+  const envSessionStoreProvider = asSessionStoreProvider(
+    process.env.SESSION_STORE_PROVIDER ?? process.env.SESSION_BACKEND,
+  );
+  const envSessionRedisUrl = asString(
+    process.env.SESSION_REDIS_URL ?? process.env.REDIS_URL,
+  );
+  const envDedupeProvider = asDedupeProvider(
+    process.env.DEDUPE_PROVIDER ?? process.env.DEDUPE_BACKEND,
+  );
+  const envDedupeRedisUrl = asString(
+    process.env.DEDUPE_REDIS_URL ?? process.env.REDIS_URL,
+  );
+  const envDedupeTtlMs = asNumber(process.env.DEDUPE_TTL_MS);
   const envServerRateLimitPlanWindowMs = asNumber(
     process.env.SERVER_RATE_LIMIT_PLAN_WINDOW_MS ?? process.env.ORCHESTRATOR_RATE_LIMIT_PLAN_WINDOW_MS,
   );
@@ -3466,7 +3524,12 @@ export function loadConfig(): AppConfig {
     runMode,
     messaging: {
       type: messagingType,
-      kafka: kafkaConfig
+      kafka: kafkaConfig,
+      dedupe: {
+        provider: envDedupeProvider ?? DEFAULT_CONFIG.messaging.dedupe.provider,
+        redisUrl: envDedupeRedisUrl,
+        defaultTtlMs: envDedupeTtlMs ?? DEFAULT_CONFIG.messaging.dedupe.defaultTtlMs,
+      },
     },
     providers: {
       defaultRoute: fileCfg.providers?.defaultRoute ?? DEFAULT_CONFIG.providers.defaultRoute,
@@ -3509,6 +3572,10 @@ export function loadConfig(): AppConfig {
           ttlSeconds: resolvedOidcSessionTtlSeconds
         }
       }
+    },
+    session: {
+      provider: envSessionStoreProvider ?? DEFAULT_CONFIG.session.provider,
+      redisUrl: envSessionRedisUrl,
     },
     planState: {
       backend: planStateBackend

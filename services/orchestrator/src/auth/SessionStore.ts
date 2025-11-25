@@ -1,58 +1,82 @@
-import { randomUUID } from "node:crypto";
+import { loadConfig, type SessionStoreConfig } from "../config/loadConfig.js";
+import { appLogger } from "../observability/logger.js";
+import type { CreateSessionInput, ISessionStore, SessionRecord } from "./ISessionStore.js";
+import { MemorySessionStore } from "./MemorySessionStore.js";
+import { RedisSessionStore } from "./RedisSessionStore.js";
+import { buildSessionRecord, isSessionExpired } from "./sessionUtils.js";
 
-function normalizeRoles(roles: string[]): string[] {
-  return Array.from(
-    new Set(roles.map(role => role.trim()).filter(role => role.length > 0))
-  ).sort((a, b) => a.localeCompare(b));
+// Re-export types for backwards compatibility
+export type { CreateSessionInput, ISessionStore, SessionRecord } from "./ISessionStore.js";
+
+let sessionStorePromise: Promise<ISessionStore> | null = null;
+
+/**
+ * Creates a session store based on configuration.
+ * @param config - Session store configuration
+ * @returns A promise that resolves to the configured session store
+ */
+export async function createSessionStore(config: SessionStoreConfig): Promise<ISessionStore> {
+  if (config.provider === "redis") {
+    const redisUrl = config.redisUrl ?? process.env.SESSION_REDIS_URL ?? process.env.REDIS_URL;
+    if (!redisUrl) {
+      throw new Error("Redis session store requires a Redis URL to be configured");
+    }
+    const store = new RedisSessionStore(redisUrl);
+    await store.connect();
+    appLogger.info({ provider: "redis", subsystem: "session-store" }, "session store initialized");
+    return store;
+  }
+
+  appLogger.info({ provider: "memory", subsystem: "session-store" }, "session store initialized");
+  return new MemorySessionStore();
 }
 
-export type SessionRecord = {
-  id: string;
-  subject: string;
-  email?: string;
-  name?: string;
-  tenantId?: string;
-  roles: string[];
-  scopes: string[];
-  issuedAt: string;
-  expiresAt: string;
-  claims: Record<string, unknown>;
-};
+/**
+ * Gets the singleton session store instance.
+ * Creates and connects to the store on first call based on application configuration.
+ * @returns A promise that resolves to the session store
+ */
+export async function getSessionStore(): Promise<ISessionStore> {
+  if (!sessionStorePromise) {
+    const config = loadConfig();
+    sessionStorePromise = createSessionStore(config.session).catch((error) => {
+      // Reset promise so next call retries
+      sessionStorePromise = null;
+      throw error;
+    });
+  }
+  return sessionStorePromise;
+}
 
-export type CreateSessionInput = {
-  subject: string;
-  email?: string;
-  name?: string;
-  tenantId?: string;
-  roles: string[];
-  scopes: string[];
-  claims: Record<string, unknown>;
-};
+/**
+ * Resets the session store singleton.
+ * Useful for testing and graceful shutdown.
+ */
+export async function resetSessionStore(): Promise<void> {
+  if (sessionStorePromise) {
+    try {
+      const store = await sessionStorePromise;
+      if (store.disconnect) {
+        await store.disconnect();
+      }
+    } catch {
+      // Ignore errors during reset
+    }
+    sessionStorePromise = null;
+  }
+}
 
+/**
+ * Legacy synchronous SessionStore class for backwards compatibility.
+ * New code should use getSessionStore() for async access.
+ * @deprecated Use getSessionStore() for new code
+ */
 export class SessionStore {
   private readonly sessions = new Map<string, SessionRecord>();
 
   createSession(input: CreateSessionInput, ttlSeconds: number, expiresAtMsOverride?: number): SessionRecord {
-    const id = randomUUID();
-    const issuedAtMs = Date.now();
-    const ttlMs = Math.max(1, ttlSeconds) * 1000;
-    const expiryCandidate = expiresAtMsOverride ?? issuedAtMs + ttlMs;
-    const expiresAtMs = Math.min(expiryCandidate, issuedAtMs + ttlMs);
-
-    const session: SessionRecord = {
-      id,
-      subject: input.subject,
-      email: input.email,
-      name: input.name,
-      tenantId: input.tenantId,
-      roles: normalizeRoles(input.roles),
-      scopes: Array.from(new Set(input.scopes)).sort(),
-      issuedAt: new Date(issuedAtMs).toISOString(),
-      expiresAt: new Date(expiresAtMs).toISOString(),
-      claims: { ...input.claims },
-    };
-
-    this.sessions.set(id, session);
+    const session = buildSessionRecord(input, ttlSeconds, expiresAtMsOverride);
+    this.sessions.set(session.id, session);
     return session;
   }
 
@@ -61,7 +85,7 @@ export class SessionStore {
     if (!session) {
       return undefined;
     }
-    if (Date.now() >= Date.parse(session.expiresAt)) {
+    if (isSessionExpired(session)) {
       this.sessions.delete(id);
       return undefined;
     }
@@ -86,4 +110,9 @@ export class SessionStore {
   }
 }
 
+/**
+ * Legacy singleton for backwards compatibility during migration.
+ * New code should use getSessionStore() instead.
+ * @deprecated Use getSessionStore() for new code
+ */
 export const sessionStore = new SessionStore();
