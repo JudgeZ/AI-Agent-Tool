@@ -11,6 +11,7 @@ import {
   SessionIdSchema,
   StepIdSchema,
   formatValidationIssues,
+  RemoteFsListQuerySchema,
   RemoteFsWriteSchema,
 } from "./validation.js";
 
@@ -337,6 +338,23 @@ describe("RemoteFsWriteSchema", () => {
     expect(result.success).toBe(false);
     if (!result.success) {
       expect(result.error.issues[0]?.message).toBe("content must not exceed 1048576 bytes");
+    }
+  });
+});
+
+describe("RemoteFsListQuerySchema", () => {
+  it("coerces numeric query parameters", () => {
+    const result = RemoteFsListQuerySchema.parse({ path: "/workspace", limit: "10" });
+
+    expect(result.limit).toBe(10);
+  });
+
+  it("rejects cursors containing path separators", () => {
+    const result = RemoteFsListQuerySchema.safeParse({ path: "/workspace", cursor: "nested/dir" });
+
+    expect(result.success).toBe(false);
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toBe("cursor must be a file or directory name");
     }
   });
 });

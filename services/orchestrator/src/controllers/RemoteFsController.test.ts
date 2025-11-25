@@ -107,6 +107,40 @@ describe("RemoteFsController", () => {
     );
   });
 
+  it("limits listings and exposes a cursor for pagination", async () => {
+    const entries = ["a.txt", "b.txt", "c.txt"];
+    await Promise.all(entries.map((name) => fs.writeFile(path.join(tempDir, name), name)));
+
+    const config = buildConfig(tempDir, {
+      auth: { oidc: { enabled: false } },
+      server: { remoteFs: { maxListEntries: 2 } },
+    });
+    const app = buildApp(config, rateLimiter);
+
+    const firstPage = await request(app)
+      .get("/remote-fs/list")
+      .query({ path: tempDir });
+
+    expect(firstPage.status).toBe(200);
+    expect(firstPage.body.entries).toHaveLength(2);
+    expect(firstPage.body.truncated).toBe(true);
+    expect(typeof firstPage.body.nextCursor).toBe("string");
+
+    const secondPage = await request(app)
+      .get("/remote-fs/list")
+      .query({ path: tempDir, cursor: firstPage.body.nextCursor });
+
+    expect(secondPage.status).toBe(200);
+    expect(secondPage.body.entries).toHaveLength(1);
+    expect(secondPage.body.truncated).toBe(false);
+
+    const returned = new Set([
+      ...firstPage.body.entries.map((entry: { name: string }) => entry.name),
+      ...secondPage.body.entries.map((entry: { name: string }) => entry.name),
+    ]);
+    expect(returned).toEqual(new Set(entries));
+  });
+
   it("rejects listing a symlink that points outside the root", async () => {
     const outsideDir = await fs.mkdtemp(path.join(os.tmpdir(), "remote-fs-outside-"));
     await fs.symlink(outsideDir, path.join(tempDir, "link"));

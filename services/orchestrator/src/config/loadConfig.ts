@@ -41,6 +41,7 @@ export type RequestSizeLimitsConfig = {
 export type RemoteFsConfig = {
   root: string;
   maxWriteBytes: number;
+  maxListEntries: number;
 };
 
 export type CircuitBreakerConfig = {
@@ -777,6 +778,7 @@ export const DEFAULT_CONFIG: AppConfig = {
     remoteFs: {
       root: "/workspace",
       maxWriteBytes: 1_048_576,
+      maxListEntries: 500,
     },
     rateLimits: {
       backend: {
@@ -961,6 +963,7 @@ type PartialRequestSizeLimitsConfig = {
 type PartialRemoteFsConfig = {
   root?: string;
   maxWriteBytes?: number;
+  maxListEntries?: number;
 };
 
 type PartialServerConfig = {
@@ -2621,6 +2624,9 @@ export function loadConfig(): AppConfig {
   const envRemoteFsMaxWriteBytes = asNumber(
     process.env.REMOTE_FS_MAX_WRITE_BYTES ?? process.env.SERVER_REMOTE_FS_MAX_WRITE_BYTES,
   );
+  const envRemoteFsMaxListEntries = asNumber(
+    process.env.REMOTE_FS_MAX_LIST_ENTRIES ?? process.env.SERVER_REMOTE_FS_MAX_LIST_ENTRIES,
+  );
   const envRateLimitBackendProvider = asRateLimitBackendProvider(
     process.env.ORCHESTRATOR_RATE_LIMIT_BACKEND ??
       process.env.SERVER_RATE_LIMIT_BACKEND ??
@@ -3083,6 +3089,10 @@ export function loadConfig(): AppConfig {
     maxWriteBytes: sanitizePositiveInteger(
       envRemoteFsMaxWriteBytes ?? fileCfg.server?.remoteFs?.maxWriteBytes,
       DEFAULT_CONFIG.server.remoteFs.maxWriteBytes,
+    ),
+    maxListEntries: sanitizePositiveInteger(
+      envRemoteFsMaxListEntries ?? fileCfg.server?.remoteFs?.maxListEntries,
+      DEFAULT_CONFIG.server.remoteFs.maxListEntries,
     ),
   };
 

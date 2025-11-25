@@ -22,5 +22,3 @@
 
 | id | status | description | source | file_location | line_numbers | impl_plan | test_impact | notes |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- |
-| T1 | todo | Add pagination or entry cap to remote-fs directory listings | Reviewer: “Consider pagination/max entries for large directories” | services/orchestrator/src/controllers/RemoteFsController.ts | list handler (40-110) | Introduce configurable max entries or pagination parameters; reject or truncate responses exceeding limits | requires new tests | Avoids large payloads blocking the event loop; align with performance guidance. |
-| T2 | todo | Add end-to-end test for browser RemoteFsService against orchestrator | Reviewer: “Missing E2E covering browser → remote-fs → filesystem” | apps/gui + services/orchestrator | remote fs flow | Stand up orchestrator in test mode and exercise list/read/write via browser adapter | requires new tests | Covers auth, rate limits, and path containment across client/server boundary. |

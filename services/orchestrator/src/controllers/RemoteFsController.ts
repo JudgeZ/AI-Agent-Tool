@@ -12,6 +12,7 @@ import {
   respondWithValidationError,
 } from "../http/errors.js";
 import {
+  RemoteFsListQuerySchema,
   RemoteFsPathQuerySchema,
   RemoteFsWriteSchema,
   formatValidationIssues,
@@ -46,13 +47,19 @@ export class RemoteFsController {
       return;
     }
 
-    const parsed = RemoteFsPathQuerySchema.safeParse(req.query ?? {});
+    const parsed = RemoteFsListQuerySchema.safeParse(req.query ?? {});
     if (!parsed.success) {
       respondWithValidationError(res, formatValidationIssues(parsed.error.issues));
       return;
     }
 
     const normalizedPath = this.normalizeRemotePath(parsed.data.path);
+    if (!this.isWithinDeclaredRoot(normalizedPath)) {
+      this.respondOutsideRoot(res, normalizedPath);
+      return;
+    }
+    const requestedLimit = parsed.data.limit;
+    const cursor = parsed.data.cursor ?? null;
     const resolvedPath = await this.resolvePath(normalizedPath);
 
     if (!resolvedPath) {
@@ -75,12 +82,9 @@ export class RemoteFsController {
         return;
       }
 
-      const entries = await fs.readdir(resolvedPath, { withFileTypes: true });
-      const payload = entries.map((entry) => ({
-        name: entry.name,
-        path: this.normalizeRemotePath(path.posix.join(normalizedPath, entry.name)),
-        isDirectory: entry.isDirectory(),
-      }));
+      const maxEntries = Math.max(1, this.config.server.remoteFs.maxListEntries);
+      const limit = Math.min(requestedLimit ?? maxEntries, maxEntries);
+      const listing = await this.listDirectoryEntries(resolvedPath, normalizedPath, limit, cursor);
 
       const { requestId, traceId } = getRequestIds(res);
       logAuditEvent({
@@ -92,10 +96,52 @@ export class RemoteFsController {
         details: { path: normalizedPath },
       });
 
-      res.json({ entries: payload });
+      res.json(listing);
     } catch (error) {
       this.handleFsError(res, error, "remote_fs.list", normalizedPath, session);
     }
+  }
+
+  private async listDirectoryEntries(
+    resolvedPath: string,
+    normalizedPath: string,
+    limit: number,
+    cursor: string | null,
+  ) {
+    const entries: { name: string; path: string; isDirectory: boolean }[] = [];
+    let truncated = false;
+    let nextCursor: string | undefined;
+    const dir = await fs.opendir(resolvedPath, { bufferSize: 64 });
+
+    try {
+      while (true) {
+        const entry = await dir.read();
+        if (!entry) break;
+        if (cursor && entry.name <= cursor) {
+          continue;
+        }
+
+        entries.push({
+          name: entry.name,
+          path: this.normalizeRemotePath(path.posix.join(normalizedPath, entry.name)),
+          isDirectory: entry.isDirectory(),
+        });
+
+        if (entries.length > limit) {
+          truncated = true;
+          entries.pop();
+          break;
+        }
+      }
+    } finally {
+      await dir.close();
+    }
+
+    if (truncated && entries.length > 0) {
+      nextCursor = entries.at(-1)?.name;
+    }
+
+    return { entries, truncated, nextCursor };
   }
 
   async read(req: ExtendedRequest, res: Response): Promise<void> {
@@ -113,6 +159,10 @@ export class RemoteFsController {
     }
 
     const normalizedPath = this.normalizeRemotePath(parsed.data.path);
+    if (!this.isWithinDeclaredRoot(normalizedPath)) {
+      this.respondOutsideRoot(res, normalizedPath);
+      return;
+    }
     const resolvedPath = await this.resolvePath(normalizedPath);
     if (!resolvedPath) {
       this.respondOutsideRoot(res, normalizedPath);
@@ -165,6 +215,10 @@ export class RemoteFsController {
     }
 
     const normalizedPath = this.normalizeRemotePath(parsed.data.path);
+    if (!this.isWithinDeclaredRoot(normalizedPath)) {
+      this.respondOutsideRoot(res, normalizedPath);
+      return;
+    }
     const resolvedPath = await this.resolvePath(normalizedPath);
     if (!resolvedPath) {
       this.respondOutsideRoot(res, normalizedPath);
@@ -238,6 +292,24 @@ export class RemoteFsController {
     }
 
     return remoteSegments.join(path.sep);
+  }
+
+  private isWithinDeclaredRoot(normalizedPath: string): boolean {
+    const normalizedRoot = this.normalizeRemotePath(this.config.server.remoteFs.root);
+    const virtualRootSegment = normalizedRoot.split("/").filter(Boolean).at(-1);
+    const allowedRoots = new Set<string>([normalizedRoot, "/workspace"]);
+
+    if (virtualRootSegment) {
+      allowedRoots.add(`/${virtualRootSegment}`);
+    }
+
+    for (const rootCandidate of allowedRoots) {
+      if (normalizedPath === rootCandidate || normalizedPath.startsWith(`${rootCandidate}/`)) {
+        return true;
+      }
+    }
+
+    return false;
   }
 
   private toPosixPath(input: string): string {

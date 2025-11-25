@@ -372,6 +372,7 @@ observability:
     expect(config.server.remoteFs).toEqual({
       root: path.resolve("/var/workspace"),
       maxWriteBytes: 2048,
+      maxListEntries: 500,
     });
     expect(config.server.rateLimits.backend).toEqual({ provider: "memory" });
     expect(config.server.rateLimits.plan).toEqual({
@@ -547,6 +548,7 @@ runMode: enterprise
     expect(config.server.remoteFs).toEqual({
       root: path.resolve("/workspace"),
       maxWriteBytes: 1_048_576,
+      maxListEntries: 500,
     });
     expect(config.server.rateLimits.backend).toEqual({ provider: "memory" });
     expect(config.server.rateLimits.plan).toEqual({
@@ -862,6 +864,7 @@ secrets:
     expect(config.server.remoteFs).toEqual({
       root: path.resolve("/workspace"),
       maxWriteBytes: 1_048_576,
+      maxListEntries: 500,
     });
     expect(config.server.rateLimits.backend).toEqual({ provider: "memory" });
     expect(config.server.rateLimits.plan).toEqual({

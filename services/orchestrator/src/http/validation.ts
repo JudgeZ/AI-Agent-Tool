@@ -19,6 +19,7 @@ const MAX_SECRET_VALUE_LENGTH = 8192;
 const MAX_TENANT_ID_LENGTH = 128;
 const MAX_REMOTE_FS_PATH_LENGTH = 4096;
 const MAX_REMOTE_FS_CONTENT_LENGTH = 1_048_576;
+const MAX_REMOTE_FS_LIST_LIMIT = 1_000;
 
 const LEGACY_PLAN_ID_REGEX = /^plan-[0-9a-f]{8}$/i;
 const UUID_PLAN_ID_REGEX =
@@ -162,11 +163,33 @@ export const RemoteFsPathSchema = z
     message: "path must be absolute",
   });
 
+const coerceQueryString = (value: unknown): string | undefined => {
+  if (typeof value === "string") return value;
+  if (Array.isArray(value)) return typeof value[0] === "string" ? value[0] : undefined;
+  return undefined;
+};
+
+const coerceQueryNumber = (value: unknown): number | undefined => {
+  const candidate = coerceQueryString(value);
+  if (candidate === undefined) return undefined;
+  const parsed = Number(candidate);
+  return Number.isFinite(parsed) ? parsed : undefined;
+};
+
 export const RemoteFsPathQuerySchema = z.object({
-  path: z.preprocess(
-    (value) => (typeof value === "string" ? value : Array.isArray(value) ? value[0] : undefined),
-    RemoteFsPathSchema,
-  ),
+  path: z.preprocess(coerceQueryString, RemoteFsPathSchema),
+});
+
+export const RemoteFsListQuerySchema = RemoteFsPathQuerySchema.extend({
+  limit: z
+    .preprocess(coerceQueryNumber, z.number().int().min(1).max(MAX_REMOTE_FS_LIST_LIMIT))
+    .optional(),
+  cursor: z
+    .preprocess(coerceQueryString, z.string().trim().min(1).max(255))
+    .optional()
+    .refine((value) => !value?.includes("/") && !value?.includes("\\"), {
+      message: "cursor must be a file or directory name",
+    }),
 });
 
 export const RemoteFsWriteSchema = z.object({
