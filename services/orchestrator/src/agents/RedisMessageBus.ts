@@ -1,0 +1,571 @@
+import { EventEmitter } from "events";
+import { createClient } from "redis";
+
+import { appLogger, normalizeError } from "../observability/logger.js";
+import type { IMessageBus } from "./IMessageBus.js";
+import {
+  type Message,
+  type MessageBusConfig,
+  type MessageBusMetrics,
+  type MessageEnvelope,
+  type MessageHandler,
+  type MessagePayload,
+  MessagePriority,
+  MessageType,
+} from "./AgentCommunication.js";
+
+const logger = appLogger.child({ subsystem: "message-bus" });
+
+type RedisClient = ReturnType<typeof createClient>;
+
+const DEFAULT_CHANNEL_PREFIX = "msgbus";
+const DEFAULT_REQUEST_TIMEOUT = 30000;
+
+export type RedisMessageBusConfig = Partial<MessageBusConfig> & {
+  redisUrl: string;
+  channelPrefix?: string;
+  /**
+   * Unique instance ID for this orchestrator replica.
+   * Used to route responses back to the correct instance.
+   * If not provided, a random ID will be generated.
+   */
+  instanceId?: string;
+};
+
+type SerializedMessage = {
+  message: Omit<Message, "timestamp"> & { timestamp: string };
+  sourceInstance: string;
+};
+
+/**
+ * Redis-backed message bus implementation using Pub/Sub.
+ *
+ * Enables inter-agent communication across multiple orchestrator instances.
+ * Messages are published to Redis channels and received by the instance
+ * hosting the target agent.
+ *
+ * Architecture:
+ * - Each agent has a dedicated channel: `{prefix}:agent:{agentId}`
+ * - Broadcasts use channel: `{prefix}:broadcast`
+ * - Responses use channel: `{prefix}:response:{instanceId}`
+ * - Handlers remain local; only message routing is distributed
+ *
+ * LIMITATIONS:
+ * - Message handlers must be registered on the instance hosting the agent
+ * - Messages are not persisted; lost if no subscriber is listening
+ * - Large message payloads may impact Redis performance
+ */
+export class RedisMessageBus extends EventEmitter implements IMessageBus {
+  private readonly config: MessageBusConfig;
+  private readonly redisUrl: string;
+  private readonly channelPrefix: string;
+  private readonly instanceId: string;
+
+  private publisher: RedisClient | null = null;
+  private subscriber: RedisClient | null = null;
+  private connecting: Promise<void> | null = null;
+  private connected = false;
+  private closed = false;
+
+  // Local state (per-instance)
+  private readonly localAgents = new Set<string>();
+  private readonly handlers = new Map<string, Map<MessageType, MessageHandler>>();
+  private readonly pendingRequests = new Map<string, PendingRequest>();
+  private readonly localQueues = new Map<string, MessageEnvelope[]>();
+  private readonly deliveryLocks = new Map<string, Promise<void>>();
+
+  private metrics: MessageBusMetrics;
+  private cleanupTimer?: NodeJS.Timeout;
+
+  constructor(config: RedisMessageBusConfig) {
+    super();
+    this.redisUrl = config.redisUrl;
+    this.channelPrefix = config.channelPrefix ?? DEFAULT_CHANNEL_PREFIX;
+    this.instanceId = config.instanceId ?? `instance-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+
+    this.config = {
+      maxQueueSize: config.maxQueueSize ?? 10000,
+      defaultTtl: config.defaultTtl ?? 5 * 60 * 1000,
+      cleanupInterval: config.cleanupInterval ?? 60 * 1000,
+      maxRetries: config.maxRetries ?? 3,
+      enableMetrics: config.enableMetrics ?? true,
+    };
+
+    this.metrics = {
+      messagesSent: 0,
+      messagesDelivered: 0,
+      messagesFailed: 0,
+      messagesExpired: 0,
+      averageLatency: 0,
+      queueSizes: new Map(),
+    };
+
+    if (this.config.cleanupInterval > 0) {
+      this.startCleanup();
+    }
+  }
+
+  private formatAgentChannel(agentId: string): string {
+    return `${this.channelPrefix}:agent:${agentId}`;
+  }
+
+  private formatBroadcastChannel(): string {
+    return `${this.channelPrefix}:broadcast`;
+  }
+
+  private formatResponseChannel(): string {
+    return `${this.channelPrefix}:response:${this.instanceId}`;
+  }
+
+  private async ensureConnected(): Promise<void> {
+    if (this.closed) {
+      throw new Error("Message bus is closed");
+    }
+    if (this.connected) {
+      return;
+    }
+    if (this.connecting) {
+      return this.connecting;
+    }
+
+    this.connecting = this.connect();
+    try {
+      await this.connecting;
+    } finally {
+      this.connecting = null;
+    }
+  }
+
+  private async connect(): Promise<void> {
+    // Create publisher client
+    const publisher = createClient({ url: this.redisUrl });
+    publisher.on("error", (error) => {
+      logger.warn({ err: normalizeError(error), event: "msgbus.redis.publisher.error" }, "Redis publisher error");
+    });
+
+    // Create subscriber client (Redis requires separate client for subscriptions)
+    const subscriber = createClient({ url: this.redisUrl });
+    subscriber.on("error", (error) => {
+      logger.warn({ err: normalizeError(error), event: "msgbus.redis.subscriber.error" }, "Redis subscriber error");
+    });
+
+    await Promise.all([publisher.connect(), subscriber.connect()]);
+
+    this.publisher = publisher;
+    this.subscriber = subscriber;
+
+    // Subscribe to response channel for this instance
+    await subscriber.subscribe(this.formatResponseChannel(), (message) => {
+      this.handleIncomingMessage(message);
+    });
+
+    // Subscribe to broadcast channel
+    await subscriber.subscribe(this.formatBroadcastChannel(), (message) => {
+      this.handleIncomingMessage(message);
+    });
+
+    this.connected = true;
+    logger.info(
+      { instanceId: this.instanceId, event: "msgbus.redis.connected" },
+      "Redis message bus connected",
+    );
+  }
+
+  private handleIncomingMessage(rawMessage: string): void {
+    try {
+      const { message: serialized, sourceInstance } = JSON.parse(rawMessage) as SerializedMessage;
+
+      // Reconstruct message with Date object
+      const message: Message = {
+        ...serialized,
+        timestamp: new Date(serialized.timestamp),
+      };
+
+      // Handle response messages (for request-response pattern)
+      if (message.type === MessageType.RESPONSE || message.type === MessageType.ERROR) {
+        if (message.correlationId) {
+          const pending = this.pendingRequests.get(message.correlationId);
+          if (pending) {
+            clearTimeout(pending.timeout);
+            if (message.type === MessageType.ERROR) {
+              const payload = message.payload as { message?: string };
+              pending.reject(new Error(payload.message ?? "Request failed"));
+            } else {
+              const payload = message.payload as { result?: unknown };
+              pending.resolve(payload.result);
+            }
+            this.pendingRequests.delete(message.correlationId);
+          }
+        }
+        return;
+      }
+
+      // Handle messages for local agents
+      const targetAgentId = typeof message.to === "string" ? message.to : undefined;
+      if (targetAgentId && this.localAgents.has(targetAgentId)) {
+        this.deliverToLocalAgent(targetAgentId, message, sourceInstance);
+      } else if (message.type === MessageType.BROADCAST) {
+        // Deliver broadcast to all local agents except sender
+        for (const agentId of this.localAgents) {
+          if (agentId !== message.from) {
+            this.deliverToLocalAgent(agentId, message, sourceInstance);
+          }
+        }
+      }
+    } catch (error) {
+      logger.warn(
+        { err: normalizeError(error), event: "msgbus.redis.message.parse_failed" },
+        "Failed to parse incoming message",
+      );
+    }
+  }
+
+  private async deliverToLocalAgent(agentId: string, message: Message, sourceInstance: string): Promise<void> {
+    const handlers = this.handlers.get(agentId);
+    const handler = handlers?.get(message.type);
+
+    if (!handler) {
+      logger.debug(
+        { agentId, messageType: message.type, event: "msgbus.no_handler" },
+        "No handler registered for message type",
+      );
+      return;
+    }
+
+    try {
+      const result = await handler.handle(message);
+      this.metrics.messagesDelivered++;
+
+      this.emit("message:delivered", {
+        messageId: message.id,
+        agentId,
+        latency: Date.now() - message.timestamp.getTime(),
+      });
+
+      // Send response if this was a request
+      if (message.type === MessageType.REQUEST && message.correlationId && result !== undefined) {
+        await this.sendResponse(message, result, sourceInstance);
+      }
+    } catch (error) {
+      this.metrics.messagesFailed++;
+      logger.warn(
+        { err: normalizeError(error), agentId, messageId: message.id, event: "msgbus.handler.failed" },
+        "Message handler failed",
+      );
+
+      // Send error response if this was a request
+      if (message.type === MessageType.REQUEST && message.correlationId) {
+        const err = error instanceof Error ? error : new Error(String(error));
+        await this.sendErrorResponse(message, err, sourceInstance);
+      }
+    }
+  }
+
+  private async sendResponse(request: Message, result: unknown, targetInstance: string): Promise<void> {
+    if (!this.publisher) return;
+
+    const response: Message = {
+      id: this.generateMessageId(),
+      type: MessageType.RESPONSE,
+      from: request.to as string,
+      to: request.from,
+      payload: { type: "result", result, success: true },
+      correlationId: request.correlationId,
+      priority: request.priority,
+      timestamp: new Date(),
+    };
+
+    const serialized: SerializedMessage = {
+      message: { ...response, timestamp: response.timestamp.toISOString() },
+      sourceInstance: this.instanceId,
+    };
+
+    // Send to the specific instance that made the request
+    const responseChannel = `${this.channelPrefix}:response:${targetInstance}`;
+    await this.publisher.publish(responseChannel, JSON.stringify(serialized));
+  }
+
+  private async sendErrorResponse(request: Message, error: Error, targetInstance: string): Promise<void> {
+    if (!this.publisher) return;
+
+    const response: Message = {
+      id: this.generateMessageId(),
+      type: MessageType.ERROR,
+      from: request.to as string,
+      to: request.from,
+      payload: { type: "error", error: error.message },
+      correlationId: request.correlationId,
+      priority: MessagePriority.HIGH,
+      timestamp: new Date(),
+    };
+
+    const serialized: SerializedMessage = {
+      message: { ...response, timestamp: response.timestamp.toISOString() },
+      sourceInstance: this.instanceId,
+    };
+
+    const responseChannel = `${this.channelPrefix}:response:${targetInstance}`;
+    await this.publisher.publish(responseChannel, JSON.stringify(serialized));
+  }
+
+  // ============================================================================
+  // IMessageBus Implementation
+  // ============================================================================
+
+  registerAgent(agentId: string): void {
+    if (this.localAgents.has(agentId)) {
+      return;
+    }
+
+    this.localAgents.add(agentId);
+    this.handlers.set(agentId, new Map());
+    this.localQueues.set(agentId, []);
+
+    // Subscribe to agent's channel
+    this.ensureConnected()
+      .then(async () => {
+        if (this.subscriber && !this.closed) {
+          await this.subscriber.subscribe(this.formatAgentChannel(agentId), (message) => {
+            this.handleIncomingMessage(message);
+          });
+          logger.debug({ agentId, event: "msgbus.agent.subscribed" }, "Subscribed to agent channel");
+        }
+      })
+      .catch((error) => {
+        logger.warn(
+          { err: normalizeError(error), agentId, event: "msgbus.agent.subscribe_failed" },
+          "Failed to subscribe to agent channel",
+        );
+      });
+
+    this.emit("agent:registered", { agentId, timestamp: new Date() });
+  }
+
+  unregisterAgent(agentId: string): void {
+    if (!this.localAgents.has(agentId)) {
+      return;
+    }
+
+    this.localAgents.delete(agentId);
+    this.handlers.delete(agentId);
+    this.localQueues.delete(agentId);
+
+    // Unsubscribe from agent's channel
+    if (this.subscriber && !this.closed) {
+      this.subscriber.unsubscribe(this.formatAgentChannel(agentId)).catch((error) => {
+        logger.warn(
+          { err: normalizeError(error), agentId, event: "msgbus.agent.unsubscribe_failed" },
+          "Failed to unsubscribe from agent channel",
+        );
+      });
+    }
+
+    this.emit("agent:unregistered", { agentId, timestamp: new Date() });
+  }
+
+  registerHandler(agentId: string, type: MessageType, handler: MessageHandler): void {
+    if (!this.handlers.has(agentId)) {
+      this.registerAgent(agentId);
+    }
+    this.handlers.get(agentId)!.set(type, handler);
+    this.emit("handler:registered", { agentId, type });
+  }
+
+  async send(message: Omit<Message, "id" | "timestamp">): Promise<string> {
+    await this.ensureConnected();
+
+    const fullMessage: Message = {
+      ...message,
+      id: this.generateMessageId(),
+      timestamp: new Date(),
+    };
+
+    this.metrics.messagesSent++;
+
+    if (fullMessage.type === MessageType.BROADCAST) {
+      return this.broadcast(fullMessage);
+    } else if (Array.isArray(fullMessage.to)) {
+      return this.sendToMultiple(fullMessage, fullMessage.to);
+    } else if (fullMessage.to) {
+      return this.sendToOne(fullMessage, fullMessage.to);
+    } else {
+      throw new Error("Message must have a recipient or be a broadcast");
+    }
+  }
+
+  private async sendToOne(message: Message, recipient: string): Promise<string> {
+    if (!this.publisher) {
+      throw new Error("Publisher not connected");
+    }
+
+    const serialized: SerializedMessage = {
+      message: { ...message, timestamp: message.timestamp.toISOString() },
+      sourceInstance: this.instanceId,
+    };
+
+    // If recipient is local, deliver directly
+    if (this.localAgents.has(recipient)) {
+      this.deliverToLocalAgent(recipient, message, this.instanceId);
+    } else {
+      // Publish to recipient's channel
+      await this.publisher.publish(
+        this.formatAgentChannel(recipient),
+        JSON.stringify(serialized),
+      );
+    }
+
+    this.emit("message:sent", {
+      messageId: message.id,
+      from: message.from,
+      to: recipient,
+      type: message.type,
+    });
+
+    return message.id;
+  }
+
+  private async sendToMultiple(message: Message, recipients: string[]): Promise<string> {
+    await Promise.all(
+      recipients.map((recipient) => this.sendToOne({ ...message, to: recipient }, recipient)),
+    );
+    return message.id;
+  }
+
+  private async broadcast(message: Message): Promise<string> {
+    if (!this.publisher) {
+      throw new Error("Publisher not connected");
+    }
+
+    const serialized: SerializedMessage = {
+      message: { ...message, timestamp: message.timestamp.toISOString() },
+      sourceInstance: this.instanceId,
+    };
+
+    await this.publisher.publish(this.formatBroadcastChannel(), JSON.stringify(serialized));
+
+    this.emit("message:broadcast", {
+      messageId: message.id,
+      from: message.from,
+    });
+
+    return message.id;
+  }
+
+  async request(
+    from: string,
+    to: string,
+    payload: MessagePayload,
+    timeout: number = DEFAULT_REQUEST_TIMEOUT,
+  ): Promise<unknown> {
+    const correlationId = this.generateMessageId();
+
+    const promise = new Promise<unknown>((resolve, reject) => {
+      this.pendingRequests.set(correlationId, {
+        resolve,
+        reject,
+        timeout: setTimeout(() => {
+          this.pendingRequests.delete(correlationId);
+          reject(new Error(`Request timeout: ${to}`));
+        }, timeout),
+      });
+    });
+
+    await this.send({
+      type: MessageType.REQUEST,
+      from,
+      to,
+      payload,
+      correlationId,
+      priority: MessagePriority.NORMAL,
+    });
+
+    return promise;
+  }
+
+  getMetrics(): MessageBusMetrics {
+    return { ...this.metrics };
+  }
+
+  getQueueSize(agentId: string): number {
+    return this.localQueues.get(agentId)?.length ?? 0;
+  }
+
+  getRegisteredAgents(): string[] {
+    return Array.from(this.localAgents);
+  }
+
+  shutdown(): void {
+    this.closed = true;
+
+    if (this.cleanupTimer) {
+      clearInterval(this.cleanupTimer);
+      this.cleanupTimer = undefined;
+    }
+
+    // Reject all pending requests
+    for (const [correlationId, pending] of this.pendingRequests) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error("Message bus shutting down"));
+    }
+    this.pendingRequests.clear();
+
+    // Close Redis connections
+    const closePromises: Promise<void>[] = [];
+
+    if (this.subscriber) {
+      closePromises.push(
+        this.subscriber.quit().catch((error) => {
+          logger.warn(
+            { err: normalizeError(error), event: "msgbus.redis.subscriber.close_failed" },
+            "Failed to close Redis subscriber",
+          );
+        }),
+      );
+      this.subscriber = null;
+    }
+
+    if (this.publisher) {
+      closePromises.push(
+        this.publisher.quit().catch((error) => {
+          logger.warn(
+            { err: normalizeError(error), event: "msgbus.redis.publisher.close_failed" },
+            "Failed to close Redis publisher",
+          );
+        }),
+      );
+      this.publisher = null;
+    }
+
+    Promise.all(closePromises).then(() => {
+      logger.info({ event: "msgbus.redis.closed" }, "Redis message bus closed");
+    });
+
+    this.emit("shutdown");
+  }
+
+  // ============================================================================
+  // Utilities
+  // ============================================================================
+
+  private generateMessageId(): string {
+    return `msg_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+  }
+
+  private startCleanup(): void {
+    this.cleanupTimer = setInterval(() => {
+      this.cleanupExpiredRequests();
+    }, this.config.cleanupInterval);
+    this.cleanupTimer.unref();
+  }
+
+  private cleanupExpiredRequests(): void {
+    // Pending requests have their own timeouts, so nothing to clean up here
+    // This is kept for potential future use (e.g., local queue cleanup)
+  }
+}
+
+interface PendingRequest {
+  resolve: (value: unknown) => void;
+  reject: (error: Error) => void;
+  timeout: NodeJS.Timeout;
+}
