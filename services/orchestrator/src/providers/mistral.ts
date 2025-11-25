@@ -2,14 +2,13 @@ import type { SecretsStore } from "../auth/SecretsStore.js";
 import type {
   ChatRequest,
   ChatResponse,
-  ModelProvider,
   ProviderContext,
 } from "./interfaces.js";
+import { BaseModelProvider } from "./BaseModelProvider.js";
 import {
   callWithRetry,
   ProviderError,
   requireSecret,
-  disposeClient,
   ensureProviderEgress,
   withProviderTimeout,
 } from "./utils.js";
@@ -28,15 +27,18 @@ interface MistralApiClient {
   }) => Promise<MistralChatResponse>;
 }
 
+/** Credentials required for Mistral API authentication */
+export type MistralCredentials = { apiKey: string };
+
 export type MistralProviderOptions = {
   defaultModel?: string;
   retryAttempts?: number;
-  clientFactory?: (config: { apiKey: string }) => Promise<MistralApiClient> | MistralApiClient;
+  clientFactory?: (config: MistralCredentials) => Promise<MistralApiClient> | MistralApiClient;
   defaultTemperature?: number;
   timeoutMs?: number;
 };
 
-async function defaultClientFactory({ apiKey }: { apiKey: string }): Promise<MistralApiClient> {
+async function defaultClientFactory({ apiKey }: MistralCredentials): Promise<MistralApiClient> {
   const mistralModule = await import("@mistralai/mistralai");
   const moduleExports = mistralModule as Record<string, unknown>;
   const ctorCandidate = moduleExports.MistralClient ?? moduleExports.default;
@@ -48,54 +50,22 @@ async function defaultClientFactory({ apiKey }: { apiKey: string }): Promise<Mis
   return new MistralConstructor({ apiKey }) as unknown as MistralApiClient;
 }
 
-export class MistralProvider implements ModelProvider {
-  name = "mistral";
-  private clientPromise?: Promise<MistralApiClient>;
-  private clientCredentials?: { apiKey: string };
+export class MistralProvider extends BaseModelProvider<MistralApiClient, MistralCredentials> {
+  readonly name = "mistral";
 
-  constructor(private readonly secrets: SecretsStore, private readonly options: MistralProviderOptions = {}) {}
+  constructor(
+    secrets: SecretsStore,
+    private readonly options: MistralProviderOptions = {}
+  ) {
+    super(secrets);
+  }
 
-  private async getClient(): Promise<MistralApiClient> {
-    const currentPromise = this.clientPromise;
-    let credentials!: { apiKey: string };
-    try {
-      credentials = await this.resolveCredentials();
-    } catch (error) {
-      if (currentPromise && this.clientCredentials) {
-        return currentPromise;
-      }
-      throw error;
-    }
-
-    if (currentPromise && this.areCredentialsEqual(this.clientCredentials, credentials)) {
-      return currentPromise;
-    }
-
+  protected async createClient(credentials: MistralCredentials): Promise<MistralApiClient> {
     const factory = this.options.clientFactory ?? defaultClientFactory;
-    const nextPromise = Promise.resolve(factory(credentials));
-    const wrappedPromise = nextPromise.then(
-      client => client,
-      error => {
-        if (this.clientPromise === wrappedPromise) {
-          this.clientPromise = undefined;
-          this.clientCredentials = undefined;
-        }
-        throw error;
-      }
-    );
-
-    this.clientPromise = wrappedPromise;
-    this.clientCredentials = credentials;
-    void this.disposeExistingClient(currentPromise);
-    return wrappedPromise;
+    return factory(credentials);
   }
 
-  /** @internal */
-  async resetClientForTests(): Promise<void> {
-    await this.disposeExistingClient(this.clientPromise);
-  }
-
-  private async resolveCredentials(): Promise<{ apiKey: string }> {
+  protected async resolveCredentials(): Promise<MistralCredentials> {
     const apiKey = await requireSecret(this.secrets, this.name, {
       key: "provider:mistral:apiKey",
       env: "MISTRAL_API_KEY",
@@ -104,28 +74,11 @@ export class MistralProvider implements ModelProvider {
     return { apiKey };
   }
 
-  private areCredentialsEqual(
-    previous?: { apiKey: string },
-    next?: { apiKey: string }
-  ): previous is { apiKey: string } {
+  protected areCredentialsEqual(
+    previous: MistralCredentials | undefined,
+    next: MistralCredentials | undefined
+  ): previous is MistralCredentials {
     return Boolean(previous && next && previous.apiKey === next.apiKey);
-  }
-
-  private async disposeExistingClient(promise?: Promise<MistralApiClient>): Promise<void> {
-    if (!promise) return;
-    try {
-      const client = await promise.catch(() => undefined);
-      if (client) {
-        await disposeClient(client);
-      }
-    } catch {
-      // ignore disposal errors
-    } finally {
-      if (this.clientPromise === promise) {
-        this.clientPromise = undefined;
-        this.clientCredentials = undefined;
-      }
-    }
   }
 
   async chat(req: ChatRequest, _context?: ProviderContext): Promise<ChatResponse> {
@@ -178,29 +131,5 @@ export class MistralProvider implements ModelProvider {
           }
         : undefined
     };
-  }
-
-  private normalizeError(error: unknown): ProviderError {
-    if (error instanceof ProviderError) {
-      return error;
-    }
-    type MistralErrorLike = {
-      status?: unknown;
-      code?: unknown;
-      message?: unknown;
-    };
-    const details: MistralErrorLike | undefined =
-      typeof error === "object" && error !== null ? (error as MistralErrorLike) : undefined;
-    const status = typeof details?.status === "number" ? details.status : undefined;
-    const code = typeof details?.code === "string" ? details.code : undefined;
-    const message = typeof details?.message === "string" ? details.message : "Mistral request failed";
-    const retryable = status === 429 || status === 408 || (typeof status === "number" ? status >= 500 : true);
-    return new ProviderError(message, {
-      status: status ?? 502,
-      code,
-      provider: this.name,
-      retryable,
-      cause: error
-    });
   }
 }

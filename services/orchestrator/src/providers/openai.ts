@@ -2,14 +2,13 @@ import type { SecretsStore } from "../auth/SecretsStore.js";
 import type {
   ChatRequest,
   ChatResponse,
-  ModelProvider,
   ProviderContext,
 } from "./interfaces.js";
+import { BaseModelProvider } from "./BaseModelProvider.js";
 import {
   callWithRetry,
   ProviderError,
   requireSecret,
-  disposeClient,
   ensureProviderEgress,
   withProviderTimeout,
 } from "./utils.js";
@@ -36,25 +35,31 @@ interface OpenAIClient {
   };
 }
 
+/** Credentials required for OpenAI API authentication */
+export type OpenAICredentials = { apiKey: string };
+
 export type OpenAIProviderOptions = {
   defaultModel?: string;
   retryAttempts?: number;
-  clientFactory?: (config: { apiKey: string }) => Promise<OpenAIClient> | OpenAIClient;
+  clientFactory?: (config: OpenAICredentials) => Promise<OpenAIClient> | OpenAIClient;
   defaultTemperature?: number;
   timeoutMs?: number;
 };
 
-async function defaultClientFactory({ apiKey }: { apiKey: string }): Promise<OpenAIClient> {
+async function defaultClientFactory({ apiKey }: OpenAICredentials): Promise<OpenAIClient> {
   const { default: OpenAI } = await import("openai");
   return new OpenAI({ apiKey }) as unknown as OpenAIClient;
 }
 
-export class OpenAIProvider implements ModelProvider {
-  name = "openai";
-  private clientPromise?: Promise<OpenAIClient>;
-  private clientCredentials?: { apiKey: string };
+export class OpenAIProvider extends BaseModelProvider<OpenAIClient, OpenAICredentials> {
+  readonly name = "openai";
 
-  constructor(private readonly secrets: SecretsStore, private readonly options: OpenAIProviderOptions = {}) {}
+  constructor(
+    secrets: SecretsStore,
+    private readonly options: OpenAIProviderOptions = {}
+  ) {
+    super(secrets);
+  }
 
   toJSON() {
     return {
@@ -68,47 +73,12 @@ export class OpenAIProvider implements ModelProvider {
     };
   }
 
-  private async getClient(): Promise<OpenAIClient> {
-    const currentPromise = this.clientPromise;
-    let credentials!: { apiKey: string };
-    try {
-      credentials = await this.resolveCredentials();
-    } catch (error) {
-      if (currentPromise && this.clientCredentials) {
-        return currentPromise;
-      }
-      throw error;
-    }
-
-    if (currentPromise && this.areCredentialsEqual(this.clientCredentials, credentials)) {
-      return currentPromise;
-    }
-
+  protected async createClient(credentials: OpenAICredentials): Promise<OpenAIClient> {
     const factory = this.options.clientFactory ?? defaultClientFactory;
-    const nextPromise = Promise.resolve(factory(credentials));
-    const wrappedPromise = nextPromise.then(
-      client => client,
-      error => {
-        if (this.clientPromise === wrappedPromise) {
-          this.clientPromise = undefined;
-          this.clientCredentials = undefined;
-        }
-        throw error;
-      }
-    );
-
-    this.clientPromise = wrappedPromise;
-    this.clientCredentials = credentials;
-    void this.disposeExistingClient(currentPromise);
-    return wrappedPromise;
+    return factory(credentials);
   }
 
-  /** @internal */
-  async resetClientForTests(): Promise<void> {
-    await this.disposeExistingClient(this.clientPromise);
-  }
-
-  private async resolveCredentials(): Promise<{ apiKey: string }> {
+  protected async resolveCredentials(): Promise<OpenAICredentials> {
     const apiKey = await requireSecret(this.secrets, this.name, {
       key: "provider:openai:apiKey",
       env: "OPENAI_API_KEY",
@@ -117,28 +87,11 @@ export class OpenAIProvider implements ModelProvider {
     return { apiKey };
   }
 
-  private areCredentialsEqual(
-    previous?: { apiKey: string },
-    next?: { apiKey: string }
-  ): previous is { apiKey: string } {
+  protected areCredentialsEqual(
+    previous: OpenAICredentials | undefined,
+    next: OpenAICredentials | undefined
+  ): previous is OpenAICredentials {
     return Boolean(previous && next && previous.apiKey === next.apiKey);
-  }
-
-  private async disposeExistingClient(promise?: Promise<OpenAIClient>): Promise<void> {
-    if (!promise) return;
-    try {
-      const client = await promise.catch(() => undefined);
-      if (client) {
-        await disposeClient(client);
-      }
-    } catch {
-      // ignore disposal errors
-    } finally {
-      if (this.clientPromise === promise) {
-        this.clientPromise = undefined;
-        this.clientCredentials = undefined;
-      }
-    }
   }
 
   async chat(req: ChatRequest, _context?: ProviderContext): Promise<ChatResponse> {
@@ -191,51 +144,5 @@ export class OpenAIProvider implements ModelProvider {
           }
         : undefined
     };
-  }
-
-  private sanitize(text: string): string {
-    if (!text || !this.clientCredentials?.apiKey) return text;
-    return text.replace(this.clientCredentials.apiKey, "[REDACTED]");
-  }
-
-  private normalizeError(error: unknown): ProviderError {
-    if (error instanceof ProviderError) {
-      return error;
-    }
-    type OpenAIErrorLike = {
-      status?: unknown;
-      code?: unknown;
-      message?: unknown;
-    };
-    const details: OpenAIErrorLike | undefined =
-      typeof error === "object" && error !== null ? (error as OpenAIErrorLike) : undefined;
-    const status = typeof details?.status === "number" ? details.status : undefined;
-    const code = typeof details?.code === "string" ? details.code : undefined;
-    const rawMessage = typeof details?.message === "string" ? details.message : "OpenAI request failed";
-    
-    const message = this.sanitize(rawMessage);
-    
-    const retryable = status === 429 || status === 408 || (typeof status === "number" ? status >= 500 : true);
-    
-    // Sanitize cause if needed
-    let cause = error;
-    if (error && typeof error === "object") {
-        try {
-            const json = JSON.stringify(error);
-            if (this.clientCredentials?.apiKey && json.includes(this.clientCredentials.apiKey)) {
-                cause = new Error(this.sanitize(json));
-            }
-        } catch {
-            // Ignore serialization errors
-        }
-    }
-
-    return new ProviderError(message, {
-      status: status ?? 502,
-      code,
-      provider: this.name,
-      retryable,
-      cause
-    });
   }
 }
