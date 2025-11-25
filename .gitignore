@@ -17,6 +17,7 @@ apps/cli/coverage/
 apps/gui/src-tauri/gen/
 services/*/coverage/
 services/orchestrator/.env.cache
+services/orchestrator/.collaboration/
 services/orchestrator/full_test_results.txt
 services/orchestrator/test-output.txt
 services/orchestrator/test_results.txt
