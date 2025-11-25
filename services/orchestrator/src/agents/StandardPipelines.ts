@@ -1,6 +1,7 @@
 import {
   ExecutionGraph,
   ExecutionContext,
+  ExecutionResult,
   GraphDefinition,
   NodeType,
   NodeDefinition,
@@ -827,7 +828,7 @@ export class PipelineExecutor {
     this.context = context;
   }
 
-  public async execute(config: PipelineConfig): Promise<any> {
+  public async execute(config: PipelineConfig): Promise<ExecutionResult> {
     // Create pipeline graph
     const graphDefinition = PipelineFactory.create(config, this.context);
 
