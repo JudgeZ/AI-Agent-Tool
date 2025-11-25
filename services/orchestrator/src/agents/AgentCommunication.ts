@@ -784,7 +784,17 @@ export class SharedContextManager extends EventEmitter implements ISharedContext
   ): Promise<ContextEntry[]> {
     const results: ContextEntry[] = [];
 
+    // Pagination parameters
+    const offset = options.offset ?? 0;
+    const limit = options.limit;
+    let skipped = 0;
+
     for (const entry of this.entries.values()) {
+      // Early exit if we've collected enough results
+      if (limit !== undefined && results.length >= limit) {
+        break;
+      }
+
       // Check access
       if (!this.hasAccess(entry, requesterId)) continue;
 
@@ -796,6 +806,12 @@ export class SharedContextManager extends EventEmitter implements ISharedContext
       if (options.ownerId && entry.ownerId !== options.ownerId) continue;
       if (options.prefix && !entry.key.startsWith(options.prefix)) continue;
       if (options.pattern && !options.pattern.test(entry.key)) continue;
+
+      // Handle offset (skip entries until we've passed the offset)
+      if (skipped < offset) {
+        skipped++;
+        continue;
+      }
 
       results.push(entry);
     }
