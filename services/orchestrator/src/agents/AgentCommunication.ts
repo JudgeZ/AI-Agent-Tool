@@ -1,6 +1,9 @@
 import { EventEmitter } from "events";
 import { z } from "zod";
 
+import type { IMessageBus } from "./IMessageBus.js";
+import type { ISharedContext } from "./ISharedContext.js";
+
 // ============================================================================
 // Message Types and Schemas
 // ============================================================================
@@ -135,7 +138,18 @@ const DEFAULT_MESSAGE_BUS_CONFIG: MessageBusConfig = {
   enableMetrics: true,
 };
 
-export class MessageBus extends EventEmitter {
+/**
+ * In-memory message bus implementation.
+ *
+ * Suitable for development and single-instance deployments.
+ * For horizontal scaling, use RedisMessageBus instead.
+ *
+ * LIMITATIONS:
+ * - Messages are lost on process restart
+ * - Not shared across multiple instances
+ * - Memory usage grows with pending messages
+ */
+export class MessageBus extends EventEmitter implements IMessageBus {
   private config: MessageBusConfig;
   private queues: Map<string, MessageEnvelope[]> = new Map(); // agentId -> messages
   private handlers: Map<string, Map<MessageType, MessageHandler>> = new Map(); // agentId -> type -> handler
@@ -618,7 +632,18 @@ const DEFAULT_CONTEXT_CONFIG: SharedContextConfig = {
   enableVersioning: true,
 };
 
-export class SharedContextManager extends EventEmitter {
+/**
+ * In-memory shared context manager implementation.
+ *
+ * Suitable for development and single-instance deployments.
+ * For horizontal scaling, use RedisSharedContext instead.
+ *
+ * LIMITATIONS:
+ * - Context is lost on process restart
+ * - Not shared across multiple instances
+ * - Memory usage grows with stored entries
+ */
+export class SharedContextManager extends EventEmitter implements ISharedContext {
   private config: SharedContextConfig;
   private entries: Map<string, ContextEntry> = new Map();
   private accessControl: Map<string, Set<string>> = new Map(); // key -> allowed agent IDs

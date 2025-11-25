@@ -15,6 +15,8 @@ import {
   queueRetryCounter,
 } from "../observability/metrics.js";
 import { resolveEnv } from "../utils/env.js";
+import type { IDedupeService } from "./IDedupeService.js";
+import { MemoryDedupeService } from "./MemoryDedupeService.js";
 import type {
   DeadLetterOptions,
   EnqueueOptions,
@@ -50,6 +52,16 @@ type RabbitMQAdapterOptions = {
   reconnectBaseDelayMs?: number;
   amqplib?: typeof amqplib;
   logger?: Logger;
+  /**
+   * Optional dedupe service for distributed idempotency.
+   * If not provided, falls back to in-memory deduplication.
+   */
+  dedupeService?: IDedupeService;
+  /**
+   * Default TTL for idempotency claims (ms).
+   * Default: 300000 (5 minutes)
+   */
+  dedupeTtlMs?: number;
 };
 
 function normaliseHeaders(
@@ -70,12 +82,16 @@ function normaliseHeaders(
   );
 }
 
+const DEFAULT_DEDUPE_TTL_MS = 300000; // 5 minutes
+
 export class RabbitMQAdapter implements QueueAdapter {
   private connection: ChannelModel | null = null;
   private channel: Channel | null = null;
   private connecting: Promise<void> | null = null;
   private readonly consumers = new Map<string, QueueHandler<any>>();
-  private readonly inflightKeys = new Set<string>();
+  private readonly dedupe: IDedupeService;
+  private readonly dedupeTtlMs: number;
+  private readonly ownsDedupe: boolean;
   private reconnectTimer: NodeJS.Timeout | null = null;
   private shouldReconnect = true;
 
@@ -106,6 +122,9 @@ export class RabbitMQAdapter implements QueueAdapter {
     this.amqp = options.amqplib ?? amqplib;
     this.logger = options.logger ?? console;
     this.tenantLabel = getDefaultTenantLabel();
+    this.ownsDedupe = !options.dedupeService;
+    this.dedupe = options.dedupeService ?? new MemoryDedupeService();
+    this.dedupeTtlMs = options.dedupeTtlMs ?? DEFAULT_DEDUPE_TTL_MS;
   }
 
   async connect(): Promise<void> {
@@ -149,6 +168,16 @@ export class RabbitMQAdapter implements QueueAdapter {
       } catch (error) {
         this.logger.warn?.(
           `RabbitMQ connection close failed: ${(error as Error).message}`,
+        );
+      }
+    }
+    // Close dedupe service if we own it (i.e., it wasn't injected)
+    if (this.ownsDedupe && this.dedupe.close) {
+      try {
+        await this.dedupe.close();
+      } catch (error) {
+        this.logger.warn?.(
+          `Dedupe service close failed: ${(error as Error).message}`,
         );
       }
     }
@@ -293,7 +322,7 @@ export class RabbitMQAdapter implements QueueAdapter {
       );
       channel.ack(msg);
       if (idempotencyKey) {
-        this.releaseKey(idempotencyKey);
+        await this.releaseKey(idempotencyKey);
       }
       await this.refreshDepth(queue);
       return;
@@ -310,7 +339,7 @@ export class RabbitMQAdapter implements QueueAdapter {
         channel.ack(msg);
         queueAckCounter.labels(queue).inc();
         if (idempotencyKey) {
-          this.releaseKey(idempotencyKey);
+          await this.releaseKey(idempotencyKey);
         }
         await this.refreshDepth(queue);
       },
@@ -352,7 +381,7 @@ export class RabbitMQAdapter implements QueueAdapter {
           queueAckCounter.labels(queue).inc();
           queueDeadLetterCounter.labels(queue).inc();
           if (idempotencyKey) {
-            this.releaseKey(idempotencyKey);
+            await this.releaseKey(idempotencyKey);
           }
           await this.refreshDepth(queue);
         } catch (error) {
@@ -409,11 +438,14 @@ export class RabbitMQAdapter implements QueueAdapter {
     let keyAdded = false;
     if (idempotencyKey) {
       headers["x-idempotency-key"] = idempotencyKey;
-      if (!skipDedupe && this.inflightKeys.has(idempotencyKey)) {
-        return;
+      if (!skipDedupe) {
+        const claimed = await this.dedupe.claim(idempotencyKey, this.dedupeTtlMs);
+        if (!claimed) {
+          // Key already claimed by another consumer
+          return;
+        }
+        keyAdded = true;
       }
-      keyAdded = !this.inflightKeys.has(idempotencyKey);
-      this.inflightKeys.add(idempotencyKey);
     }
 
     const messageId = idempotencyKey ?? randomUUID();
@@ -431,7 +463,7 @@ export class RabbitMQAdapter implements QueueAdapter {
       });
     } catch (error) {
       if (idempotencyKey && keyAdded) {
-        this.releaseKey(idempotencyKey);
+        await this.releaseKey(idempotencyKey);
       }
       throw error;
     }
@@ -439,8 +471,8 @@ export class RabbitMQAdapter implements QueueAdapter {
     await this.refreshDepth(queue);
   }
 
-  private releaseKey(key: string): void {
-    this.inflightKeys.delete(key);
+  private async releaseKey(key: string): Promise<void> {
+    await this.dedupe.release(key);
   }
 
   private preparePayloadForAttempt<T>(payload: T, attempt: number): T {
