@@ -179,9 +179,9 @@ const originalFetch = globalThis.fetch;
 const originalCookieSecure = process.env.COOKIE_SECURE;
 const fetchMock = vi.fn<typeof fetch>();
 
-beforeEach(() => {
+beforeEach(async () => {
   testConfig = buildConfig();
-  sessionStore.clear();
+  await sessionStore.clear();
   fetchMock.mockImplementation(
     async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
@@ -229,9 +229,9 @@ beforeEach(() => {
   } as any);
 });
 
-afterEach(() => {
+afterEach(async () => {
   fetchMock.mockReset();
-  sessionStore.clear();
+  await sessionStore.clear();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   if (originalCookieSecure === undefined) {

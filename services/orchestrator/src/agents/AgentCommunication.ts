@@ -775,7 +775,7 @@ export class SharedContextManager extends EventEmitter implements ISharedContext
       allowed.add(agentId);
     }
 
-    this.emit("context:shared", { key, ownerId, agentIds });
+    this.emit("context:shared", { key, ownerId, sharedWith: agentIds });
   }
 
   public async query(

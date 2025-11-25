@@ -431,7 +431,7 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
       }
     }
 
-    this.emit("context:shared", { key, ownerId, agentIds });
+    this.emit("context:shared", { key, ownerId, sharedWith: agentIds });
   }
 
   async query(options: ContextQueryOptions, requesterId: string): Promise<ContextEntry[]> {
