@@ -46,7 +46,7 @@ export function createServer(config?: AppConfig): Express {
   const secretController = new SecretController(appConfig, policy, rateLimiter);
   const authController = new AuthController(appConfig, rateLimiter);
   const remoteFsController = new RemoteFsController(appConfig, rateLimiter);
-  const casesController = new CasesController(appConfig, rateLimiter);
+  const casesController = new CasesController(appConfig, policy, rateLimiter);
 
   if (appConfig.server.trustedProxyCidrs.length > 0) {
     app.set("trust proxy", (ip: string) =>

@@ -36,10 +36,11 @@ describe("CaseService", () => {
     });
     caseService.attachWorkflow(target.id, "wf-1");
 
-    const updated = caseService.getCase(target.id) as CaseRecord;
-    expect(updated.tasks).toContainEqual(task);
-    expect(updated.artifacts).toContainEqual(artifact);
-    expect(updated.workflows).toContain("wf-1");
+    const updated = caseService.getCase(target.id);
+    expect(updated).toBeDefined();
+    expect(updated!.tasks).toContainEqual(task);
+    expect(updated!.artifacts).toContainEqual(artifact);
+    expect(updated!.workflows).toContain("wf-1");
   });
 
   it("maps sessions to cases on demand", () => {

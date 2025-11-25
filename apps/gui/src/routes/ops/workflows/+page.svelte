@@ -1,30 +1,12 @@
 <script lang="ts">
-  const workflows = [
-    {
-      id: 'wf-1',
-      name: 'Apply security fixes',
-      status: 'running',
-      caseId: 'case-1',
-      steps: 4,
-      approvals: 1,
-    },
-    {
-      id: 'wf-2',
-      name: 'Repo indexing',
-      status: 'completed',
-      caseId: 'case-2',
-      steps: 2,
-      approvals: 0,
-    },
-    {
-      id: 'wf-3',
-      name: 'Release promotion',
-      status: 'waiting',
-      caseId: 'case-3',
-      steps: 3,
-      approvals: 1,
-    },
-  ];
+  import { invalidateAll } from '$app/navigation';
+  import type { PageData } from './$types';
+
+  export let data: PageData;
+
+  const refresh = async () => {
+    await invalidateAll();
+  };
 </script>
 
 <section class="ops-panel" aria-labelledby="workflows-heading">
@@ -36,6 +18,13 @@
     </div>
   </div>
 
+  {#if data.error}
+    <div class="error-banner" role="status">
+      <span>{data.error}</span>
+      <button type="button" on:click={refresh}>Retry</button>
+    </div>
+  {/if}
+
   <div class="workflow-list" role="table" aria-label="Workflow list">
     <div class="workflow-row header" role="row">
       <div role="columnheader">Workflow</div>
@@ -46,18 +35,18 @@
       <div role="columnheader" class="actions">Actions</div>
     </div>
 
-    {#each workflows as wf}
+    {#each data.workflows ?? [] as wf (wf.id ?? wf.name)}
       <div class="workflow-row" role="row">
         <div role="cell">
           <p class="eyebrow">{wf.id}</p>
-          <div class="name">{wf.name}</div>
+          <div class="name">{wf.name ?? wf.workflow ?? 'Workflow'}</div>
         </div>
         <div role="cell">
-          <span class={`pill status-${wf.status}`}>{wf.status}</span>
+          <span class={`pill status-${wf.status}`}>{wf.status ?? 'unknown'}</span>
         </div>
-        <div role="cell">{wf.caseId}</div>
-        <div role="cell">{wf.steps}</div>
-        <div role="cell">{wf.approvals}</div>
+        <div role="cell">{wf.caseId ?? '—'}</div>
+        <div role="cell">{wf.steps ?? wf.nodes?.length ?? '—'}</div>
+        <div role="cell">{wf.approvals ?? (Array.isArray(wf.nodes) ? wf.nodes.filter((n) => n.type === 'approval').length : '—')}</div>
         <div role="cell" class="actions">
           <button aria-label={`Inspect ${wf.name}`}>Inspect</button>
         </div>
@@ -134,6 +123,24 @@
     font-size: 12px;
     text-transform: capitalize;
     border: 1px solid rgba(148, 163, 184, 0.2);
+  }
+
+  .error-banner {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    background: rgba(239, 68, 68, 0.08);
+    color: #fecdd3;
+    border-radius: 12px;
+    margin-bottom: 12px;
+  }
+
+  .error-banner button {
+    background: transparent;
+    border-color: rgba(239, 68, 68, 0.4);
+    color: #fecdd3;
   }
 
   .status-running {

@@ -1,5 +1,6 @@
 <script lang="ts">
   import { page } from '$app/stores';
+  import { goto } from '$app/navigation';
   import '../app.css';
   import FileTree from '$lib/components/ide/FileTree.svelte';
   import Editor from '$lib/components/ide/Editor.svelte';
@@ -26,8 +27,7 @@
 
   function navigateTo(path: string) {
     if (path === $page.url.pathname) return;
-    if (typeof window === 'undefined') return;
-    window.location.href = path;
+    goto(path);
   }
 </script>
 
@@ -40,8 +40,22 @@
   <header class="mode-switcher" aria-label="Mode selector">
     <div class="brand">Orchestrator</div>
     <nav aria-label="Modes">
-      <button class:is-active={!isOpsMode} on:click={() => navigateTo('/')}>IDE</button>
-      <button class:is-active={isOpsMode} on:click={() => navigateTo('/ops/cases')}>Ops</button>
+      <button
+        type="button"
+        class:is-active={!isOpsMode}
+        aria-current={!isOpsMode ? 'page' : undefined}
+        on:click={() => navigateTo('/')}
+      >
+        IDE
+      </button>
+      <button
+        type="button"
+        class:is-active={isOpsMode}
+        aria-current={isOpsMode ? 'page' : undefined}
+        on:click={() => navigateTo('/ops/cases')}
+      >
+        Ops
+      </button>
     </nav>
   </header>
 

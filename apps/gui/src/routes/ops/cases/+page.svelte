@@ -1,30 +1,12 @@
 <script lang="ts">
-  const cases = [
-    {
-      id: 'case-1',
-      title: 'Stabilize nightly pipelines',
-      status: 'open',
-      projectId: 'platform',
-      tasks: 4,
-      artifacts: 2,
-    },
-    {
-      id: 'case-2',
-      title: 'Investigate token refresh issues',
-      status: 'in_progress',
-      projectId: 'auth',
-      tasks: 3,
-      artifacts: 1,
-    },
-    {
-      id: 'case-3',
-      title: 'Sandbox resource usage audit',
-      status: 'closed',
-      projectId: 'sandbox',
-      tasks: 5,
-      artifacts: 3,
-    },
-  ];
+  import { invalidateAll } from '$app/navigation';
+  import type { PageData } from './$types';
+
+  export let data: PageData;
+
+  const refresh = async () => {
+    await invalidateAll();
+  };
 </script>
 
 <section class="ops-panel" aria-labelledby="cases-heading">
@@ -37,8 +19,14 @@
     <button class="primary" aria-label="Create case">New Case</button>
   </div>
 
+  {#if data.error}
+    <div class="error-banner" role="status">
+      <span>{data.error}</span>
+      <button type="button" on:click={refresh}>Retry</button>
+    </div>
+  {/if}
   <div class="case-grid" role="list">
-    {#each cases as item}
+    {#each data.cases ?? [] as item (item.id ?? item.title)}
       <article class="case-card" role="listitem" aria-labelledby={`case-${item.id}`}>
         <header class="case-card__header">
           <div>
@@ -155,6 +143,24 @@
     font-size: 12px;
     text-transform: capitalize;
     border: 1px solid rgba(148, 163, 184, 0.2);
+  }
+
+  .error-banner {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 16px;
+    border: 1px solid rgba(239, 68, 68, 0.3);
+    background: rgba(239, 68, 68, 0.08);
+    color: #fecdd3;
+    border-radius: 12px;
+    margin-bottom: 12px;
+  }
+
+  .error-banner button {
+    background: transparent;
+    border-color: rgba(239, 68, 68, 0.4);
+    color: #fecdd3;
   }
 
   .status-open {

@@ -11,7 +11,7 @@ import {
 } from "../http/validation.js";
 import { respondWithError, respondWithValidationError, respondWithUnexpectedError } from "../http/errors.js";
 import { logAuditEvent } from "../observability/audit.js";
-import { getRequestIds } from "../http/helpers.js";
+import { getRequestIds, buildPolicyErrorMessage, toPolicySubject, toAuditSubject } from "../http/helpers.js";
 import type { ExtendedRequest } from "../http/types.js";
 import { normalizeTenantIdInput } from "../tenants/tenantIds.js";
 import { createRequestIdentity, buildRateLimitBuckets, extractAgent } from "../http/requestIdentity.js";
@@ -19,9 +19,15 @@ import type { RateLimitStore } from "../rateLimit/store.js";
 import { enforceRateLimit } from "../http/rateLimit.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
 import { listWorkflows } from "../queue/PlanQueueRuntime.js";
+import type { PolicyEnforcer } from "../policy/PolicyEnforcer.js";
+import { getRequestContext } from "../observability/requestContext.js";
 
 export class CasesController {
-  constructor(private readonly config: AppConfig, private readonly rateLimiter: RateLimitStore) {}
+  constructor(
+    private readonly config: AppConfig,
+    private readonly policy: PolicyEnforcer,
+    private readonly rateLimiter: RateLimitStore
+  ) {}
 
   async createCase(req: ExtendedRequest, res: Response): Promise<void> {
     const session = req.auth?.session;
@@ -70,6 +76,34 @@ export class CasesController {
       return;
     }
 
+    const policyDecision = await this.policy.enforceHttpAction({
+      action: "http.post.cases",
+      requiredCapabilities: ["cases.manage"],
+      agent,
+      traceId: getRequestContext()?.traceId,
+      subject: toPolicySubject(session),
+      runMode: this.config.runMode,
+    });
+
+    if (!policyDecision.allow) {
+      respondWithError(res, 403, {
+        code: "forbidden",
+        message: buildPolicyErrorMessage(policyDecision.deny),
+        details: policyDecision.deny,
+      });
+      const { requestId, traceId } = getRequestIds(res);
+      logAuditEvent({
+        action: "case.create",
+        outcome: "denied",
+        agent,
+        requestId,
+        traceId,
+        subject: toAuditSubject(session),
+        details: { deny: policyDecision.deny },
+      });
+      return;
+    }
+
     try {
       const record = caseService.createCase({
         ...parsed.data,
@@ -113,6 +147,24 @@ export class CasesController {
       return;
     }
 
+    const policyDecision = await this.policy.enforceHttpAction({
+      action: "http.get.cases",
+      requiredCapabilities: ["cases.read"],
+      agent: extractAgent(req),
+      traceId: getRequestContext()?.traceId,
+      subject: toPolicySubject(session),
+      runMode: this.config.runMode,
+    });
+
+    if (!policyDecision.allow) {
+      respondWithError(res, 403, {
+        code: "forbidden",
+        message: buildPolicyErrorMessage(policyDecision.deny),
+        details: policyDecision.deny,
+      });
+      return;
+    }
+
     const cases = caseService.listCases({
       tenantId: tenantNormalization.tenantId,
       projectId: parsedQuery.data.projectId,
@@ -141,6 +193,23 @@ export class CasesController {
       return;
     }
 
+    const policyDecision = await this.policy.enforceHttpAction({
+      action: "http.post.cases.tasks",
+      requiredCapabilities: ["cases.manage"],
+      agent: extractAgent(req),
+      traceId: getRequestContext()?.traceId,
+      subject: toPolicySubject(session),
+      runMode: this.config.runMode,
+    });
+    if (!policyDecision.allow) {
+      respondWithError(res, 403, {
+        code: "forbidden",
+        message: buildPolicyErrorMessage(policyDecision.deny),
+        details: policyDecision.deny,
+      });
+      return;
+    }
+
     const caseId = req.params["id"];
     const target = caseService.getCase(caseId);
     if (!target || target.tenantId !== tenantNormalization.tenantId) {
@@ -154,8 +223,19 @@ export class CasesController {
         title: parsed.data.title,
         assignee: parsed.data.assignee,
         metadata: parsed.data.metadata,
+        tenantId: tenantNormalization.tenantId,
       });
       res.status(201).json({ task });
+      const { requestId, traceId } = getRequestIds(res);
+      logAuditEvent({
+        action: "case.task.create",
+        outcome: "success",
+        agent: extractAgent(req),
+        requestId,
+        traceId,
+        subject: toAuditSubject(session),
+        details: { caseId, taskId: task.id },
+      });
     } catch (error) {
       appLogger.error({ err: normalizeError(error) }, "failed to create case task");
       respondWithUnexpectedError(res, error);
@@ -183,6 +263,23 @@ export class CasesController {
       return;
     }
 
+    const policyDecision = await this.policy.enforceHttpAction({
+      action: "http.post.cases.artifacts",
+      requiredCapabilities: ["cases.manage"],
+      agent: extractAgent(req),
+      traceId: getRequestContext()?.traceId,
+      subject: toPolicySubject(session),
+      runMode: this.config.runMode,
+    });
+    if (!policyDecision.allow) {
+      respondWithError(res, 403, {
+        code: "forbidden",
+        message: buildPolicyErrorMessage(policyDecision.deny),
+        details: policyDecision.deny,
+      });
+      return;
+    }
+
     const caseId = req.params["id"];
     const target = caseService.getCase(caseId);
     if (!target || target.tenantId !== tenantNormalization.tenantId) {
@@ -191,8 +288,22 @@ export class CasesController {
     }
 
     try {
-      const artifact = caseService.attachArtifact({ caseId, ...parsed.data });
+      const artifact = caseService.attachArtifact({
+        caseId,
+        ...parsed.data,
+        tenantId: tenantNormalization.tenantId,
+      });
       res.status(201).json({ artifact });
+      const { requestId, traceId } = getRequestIds(res);
+      logAuditEvent({
+        action: "case.artifact.attach",
+        outcome: "success",
+        agent: extractAgent(req),
+        requestId,
+        traceId,
+        subject: toAuditSubject(session),
+        details: { caseId, artifactId: artifact.id },
+      });
     } catch (error) {
       appLogger.error({ err: normalizeError(error) }, "failed to attach artifact");
       respondWithUnexpectedError(res, error);
@@ -217,6 +328,23 @@ export class CasesController {
     const parsed = CaseListQuerySchema.safeParse(req.query ?? {});
     if (!parsed.success) {
       respondWithValidationError(res, formatValidationIssues(parsed.error.issues));
+      return;
+    }
+
+    const policyDecision = await this.policy.enforceHttpAction({
+      action: "http.get.workflows",
+      requiredCapabilities: ["workflows.read"],
+      agent: extractAgent(req),
+      traceId: getRequestContext()?.traceId,
+      subject: toPolicySubject(session),
+      runMode: this.config.runMode,
+    });
+    if (!policyDecision.allow) {
+      respondWithError(res, 403, {
+        code: "forbidden",
+        message: buildPolicyErrorMessage(policyDecision.deny),
+        details: policyDecision.deny,
+      });
       return;
     }
 

@@ -106,10 +106,13 @@ export class CaseService {
     return this.cases.get(caseId);
   }
 
-  attachWorkflow(caseId: string, workflowId: string): void {
+  attachWorkflow(caseId: string, workflowId: string, tenantId?: string): void {
     const target = this.cases.get(caseId);
     if (!target) {
       throw new Error(`Case ${caseId} not found`);
+    }
+    if (tenantId && target.tenantId !== tenantId) {
+      throw new Error(`Access denied for case ${caseId}`);
     }
     if (!target.workflows.includes(workflowId)) {
       target.workflows.push(workflowId);
@@ -117,10 +120,13 @@ export class CaseService {
     }
   }
 
-  createTask(input: CreateTaskInput): TaskRecord {
+  createTask(input: CreateTaskInput & { tenantId?: string }): TaskRecord {
     const target = this.cases.get(input.caseId);
     if (!target) {
       throw new Error(`Case ${input.caseId} not found`);
+    }
+    if (input.tenantId && target.tenantId !== input.tenantId) {
+      throw new Error(`Access denied for case ${input.caseId}`);
     }
     const now = new Date().toISOString();
     const task: TaskRecord = {
@@ -138,21 +144,25 @@ export class CaseService {
     return task;
   }
 
-  attachArtifact(input: AttachArtifactInput): ArtifactRecord {
+  attachArtifact(input: AttachArtifactInput & { tenantId?: string }): ArtifactRecord {
     const target = this.cases.get(input.caseId);
     if (!target) {
       throw new Error(`Case ${input.caseId} not found`);
     }
+    if (input.tenantId && target.tenantId !== input.tenantId) {
+      throw new Error(`Access denied for case ${input.caseId}`);
+    }
+    const now = new Date().toISOString();
     const artifact: ArtifactRecord = {
       id: `artifact-${randomUUID()}`,
       caseId: input.caseId,
       type: input.type,
       ref: input.ref,
       metadata: input.metadata,
-      createdAt: new Date().toISOString(),
+      createdAt: now,
     };
     target.artifacts.push(artifact);
-    target.updatedAt = artifact.createdAt;
+    target.updatedAt = now;
     return artifact;
   }
 

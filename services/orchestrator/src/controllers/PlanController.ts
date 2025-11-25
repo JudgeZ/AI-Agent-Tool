@@ -213,6 +213,16 @@ export class PlanController {
         const existingCase = caseService.getCase(resolvedCaseId);
         if (!existingCase || existingCase.tenantId !== planSubject?.tenantId) {
           respondWithError(res, 404, { code: "not_found", message: "case not found" });
+          const { requestId, traceId } = getRequestIds(res);
+          logAuditEvent({
+            action: "plan.create",
+            outcome: "denied",
+            agent: requestAgent,
+            requestId,
+            traceId,
+            subject: auditSubject,
+            details: { reason: "case_not_found", caseId: resolvedCaseId },
+          });
           return;
         }
         caseProjectId = existingCase.projectId;
@@ -220,7 +230,7 @@ export class PlanController {
         const sessionCase = caseService.getOrCreateCaseForSession(planSubject.sessionId, {
           title: `Session ${planSubject.sessionId}`,
           tenantId: planSubject.tenantId,
-          projectId: planSubject.tenantId,
+          projectId: undefined,
           status: "open",
         });
         resolvedCaseId = sessionCase.id;
@@ -241,7 +251,14 @@ export class PlanController {
         subject: planSubject,
       });
       if (resolvedCaseId) {
-        caseService.attachWorkflow(resolvedCaseId, workflow.id);
+        try {
+          caseService.attachWorkflow(resolvedCaseId, workflow.id, planSubject?.tenantId);
+        } catch (error) {
+          appLogger.warn(
+            { err: normalizeError(error), caseId: resolvedCaseId, workflowId: workflow.id },
+            "failed to attach workflow to case",
+          );
+        }
       }
       if (planSubject) {
         await submitPlanSteps(plan, traceId, requestId, planSubject);
