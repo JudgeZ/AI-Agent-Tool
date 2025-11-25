@@ -119,7 +119,7 @@ export class AzureOpenAIProvider extends BaseModelProviderWithCredentials<AzureO
   }
 
   async chat(req: ChatRequest, _context?: ProviderContext): Promise<ChatResponse> {
-    const { client, credentials } = await this.getClient();
+    const { client, credentials } = await this.getClientWithCredentials();
     const deployment =
       req.model ??
       this.options.defaultDeployment ??

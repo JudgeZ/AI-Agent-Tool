@@ -290,17 +290,10 @@ export abstract class BaseModelProviderWithCredentials<TClient, TCredentials>
       throw error;
     }
 
+    // areCredentialsEqual confirms clientCredentials matches credentials, so use credentials directly
     if (currentPromise && this.areCredentialsEqual(this.clientCredentials, credentials)) {
-      const snapshot = this.clientCredentials;
-      if (!snapshot) {
-        throw new ProviderError(`${this.displayName} credentials are not available`, {
-          status: 500,
-          provider: this.name,
-          retryable: false,
-        });
-      }
       const client = await currentPromise;
-      return { client, credentials: snapshot };
+      return { client, credentials };
     }
 
     const nextPromise = Promise.resolve(this.createClient(credentials));
@@ -322,11 +315,4 @@ export abstract class BaseModelProviderWithCredentials<TClient, TCredentials>
     return { client, credentials };
   }
 
-  /**
-   * Override getClient to use getClientWithCredentials internally.
-   * This maintains compatibility with the base class while returning credentials.
-   */
-  protected override async getClient(): Promise<{ client: TClient; credentials: TCredentials }> {
-    return this.getClientWithCredentials();
-  }
 }

@@ -170,7 +170,7 @@ export class BedrockProvider extends BaseModelProviderWithCredentials<BedrockCli
   }
 
   async chat(req: ChatRequest, _context?: ProviderContext): Promise<ChatResponse> {
-    const { client, credentials } = await this.getClient();
+    const { client, credentials } = await this.getClientWithCredentials();
     const systemMessage = req.messages.find(msg => msg.role === "system")?.content;
     const modelId = req.model ?? this.options.defaultModel ?? "anthropic.claude-3-sonnet-20240229-v1:0";
     const region = credentials.region;
