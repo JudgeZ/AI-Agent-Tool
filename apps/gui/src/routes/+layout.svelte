@@ -41,9 +41,10 @@
     <nav aria-label="Mode switch" class="nav-links">
       {#each navLinks as link}
         <a
-          class={`nav-link ${$page.url.pathname.startsWith(link.href) ? 'active' : ''}`}
+          class="nav-link"
+          class:active={link.href === '/' ? !isOpsMode : isOpsMode}
           href={link.href}
-          aria-current={$page.url.pathname.startsWith(link.href) ? 'page' : undefined}
+          aria-current={(link.href === '/' ? !isOpsMode : isOpsMode) ? 'page' : undefined}
         >
           {link.label}
         </a>

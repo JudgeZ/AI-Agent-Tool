@@ -52,22 +52,26 @@
   {:else if cases.length === 0}
     <div class="placeholder">No cases yet. New plans will register cases automatically.</div>
   {:else}
-    <div class="table">
-      <div class="row header" role="row">
-        <div>Name</div>
-        <div>Project</div>
-        <div>Status</div>
-        <div>Updated</div>
-      </div>
-      {#each cases as c}
-        <div class="row" role="row">
-          <div>{c.title}</div>
-          <div>{c.projectId ?? '—'}</div>
-          <div class={`status ${c.status}`}>{c.status}</div>
-          <div>{c.updatedAt ? new Date(c.updatedAt).toLocaleString() : '—'}</div>
-        </div>
-      {/each}
-    </div>
+    <table class="table">
+      <thead class="header">
+        <tr>
+          <th scope="col">Name</th>
+          <th scope="col">Project</th>
+          <th scope="col">Status</th>
+          <th scope="col">Updated</th>
+        </tr>
+      </thead>
+      <tbody>
+        {#each cases as c}
+          <tr class="row">
+            <td>{c.title}</td>
+            <td>{c.projectId ?? '—'}</td>
+            <td class={`status ${c.status}`}>{c.status}</td>
+            <td>{c.updatedAt ? new Date(c.updatedAt).toLocaleString() : '—'}</td>
+          </tr>
+        {/each}
+      </tbody>
+    </table>
   {/if}
 </section>
 
@@ -119,25 +123,27 @@
   }
 
   .table {
-    display: grid;
-    grid-template-columns: 1fr;
-    gap: 6px;
-  }
-
-  .row {
-    display: grid;
-    grid-template-columns: 2fr 1fr 1fr 1fr;
-    gap: 12px;
-    padding: 12px;
-    border-radius: 12px;
-    border: 1px solid rgba(148, 163, 184, 0.2);
-    background: rgba(15, 23, 42, 0.6);
+    width: 100%;
+    border-collapse: collapse;
   }
 
   .header {
-    font-weight: 700;
-    color: #cbd5f5;
+    text-align: left;
     background: rgba(15, 23, 42, 0.8);
+  }
+
+  th,
+  td {
+    padding: 12px;
+    border-bottom: 1px solid rgba(148, 163, 184, 0.2);
+  }
+
+  .row:last-child td {
+    border-bottom: none;
+  }
+
+  .row {
+    background: rgba(15, 23, 42, 0.6);
   }
 
   .status {

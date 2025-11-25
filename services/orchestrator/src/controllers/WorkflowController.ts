@@ -39,6 +39,10 @@ export class WorkflowController {
       });
       return undefined;
     }
+    if (!this.config.auth.oidc.enabled && !session) {
+      respondWithError(res, 401, { code: "unauthorized", message: "session is required" });
+      return undefined;
+    }
     return session;
   }
 

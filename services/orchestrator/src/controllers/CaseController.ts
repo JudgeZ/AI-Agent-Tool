@@ -46,6 +46,10 @@ export class CaseController {
       });
       return undefined;
     }
+    if (!this.config.auth.oidc.enabled && !session) {
+      respondWithError(res, 401, { code: "unauthorized", message: "session is required" });
+      return undefined;
+    }
     return session;
   }
 
@@ -177,7 +181,12 @@ export class CaseController {
         respondWithError(res, 404, { code: "not_found", message: "case not found" });
         return;
       }
-      if (existing.tenantId !== session.tenantId) {
+      const tenantNormalization = normalizeTenantIdInput(session.tenantId);
+      if (tenantNormalization.error) {
+        respondWithInvalidTenant(res, "cases.tasks.list", session.subject, tenantNormalization.error);
+        return;
+      }
+      if (existing.tenantId !== tenantNormalization.tenantId) {
         respondWithError(res, 403, { code: "forbidden", message: "cross-tenant access denied" });
         return;
       }
@@ -211,7 +220,12 @@ export class CaseController {
         respondWithError(res, 404, { code: "not_found", message: "case not found" });
         return;
       }
-      if (existing.tenantId !== session.tenantId) {
+      const tenantNormalization = normalizeTenantIdInput(session.tenantId);
+      if (tenantNormalization.error) {
+        respondWithInvalidTenant(res, "cases.artifacts.attach", session.subject, tenantNormalization.error);
+        return;
+      }
+      if (existing.tenantId !== tenantNormalization.tenantId) {
         respondWithError(res, 403, { code: "forbidden", message: "cross-tenant access denied" });
         return;
       }

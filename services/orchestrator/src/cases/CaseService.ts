@@ -13,6 +13,7 @@ export type CaseRecord = {
   id: string;
   tenantId: string;
   projectId?: string;
+  sessionId?: string;
   title: string;
   description?: string;
   status: CaseStatus;
@@ -44,6 +45,7 @@ export type ArtifactRecord = {
 export type CreateCaseInput = {
   tenantId: string;
   projectId?: string;
+  sessionId?: string;
   title: string;
   description?: string;
   status?: CaseStatus;
@@ -91,50 +93,18 @@ export class CaseService {
 
     const client = await this.pool.connect();
     try {
-      await client.query("BEGIN");
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS cases (
-          id TEXT PRIMARY KEY,
-          tenant_id TEXT NOT NULL,
-          project_id TEXT,
-          title TEXT NOT NULL,
-          description TEXT,
-          status TEXT NOT NULL DEFAULT 'open',
-          metadata JSONB,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )`);
-
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS tasks (
-          id TEXT PRIMARY KEY,
-          case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-          title TEXT NOT NULL,
-          description TEXT,
-          status TEXT NOT NULL DEFAULT 'pending',
-          metadata JSONB,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-          updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )`);
-
-      await client.query(`
-        CREATE TABLE IF NOT EXISTS artifacts (
-          id TEXT PRIMARY KEY,
-          case_id TEXT NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
-          type TEXT NOT NULL,
-          ref TEXT NOT NULL,
-          metadata JSONB,
-          created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-        )`);
-
-      await client.query(`
-        CREATE INDEX IF NOT EXISTS idx_cases_tenant_project ON cases(tenant_id, project_id);
-      `);
-      await client.query("COMMIT");
-    } catch (error) {
-      await client.query("ROLLBACK");
-      this.logger.error({ err: normalizeError(error) }, "failed to initialize CaseService tables");
-      throw error;
+      const expectedTables = ["cases", "tasks", "artifacts"];
+      for (const table of expectedTables) {
+        const result = await client.query<{ exists: boolean }>(
+          "SELECT EXISTS (SELECT 1 FROM information_schema.tables WHERE table_schema = 'public' AND table_name = $1) as exists",
+          [table],
+        );
+        if (!result.rows[0]?.exists) {
+          throw new Error(
+            `missing required table: ${table}. Run database migrations before starting CaseService.`,
+          );
+        }
+      }
     } finally {
       client.release();
     }
@@ -151,19 +121,21 @@ export class CaseService {
     }
 
     await this.pool.query(
-      `INSERT INTO cases (id, tenant_id, project_id, title, description, status, metadata, created_at, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $8)
+      `INSERT INTO cases (id, tenant_id, project_id, session_id, title, description, status, metadata, created_at, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9)
        ON CONFLICT (id)
        DO UPDATE SET title = EXCLUDED.title,
                      description = EXCLUDED.description,
                      status = EXCLUDED.status,
                      metadata = EXCLUDED.metadata,
                      project_id = EXCLUDED.project_id,
+                     session_id = COALESCE(EXCLUDED.session_id, cases.session_id),
                      updated_at = NOW()`,
       [
         record.id,
         record.tenantId,
         record.projectId ?? null,
+        record.sessionId ?? null,
         record.title,
         record.description ?? null,
         record.status,
@@ -221,6 +193,7 @@ export class CaseService {
       id: `case-${randomUUID()}`,
       tenantId: input.tenantId,
       projectId: input.projectId,
+      sessionId: input.sessionId,
       title: input.title,
       description: input.description,
       status: input.status ?? "open",
@@ -248,7 +221,7 @@ export class CaseService {
 
     const result = await this.pool.query(
       `SELECT id, tenant_id as "tenantId", project_id as "projectId", title, description, status, metadata,
-              created_at as "createdAt", updated_at as "updatedAt"
+              created_at as "createdAt", updated_at as "updatedAt", session_id as "sessionId"
          FROM cases WHERE id = $1`,
       [caseId],
     );
@@ -279,7 +252,7 @@ export class CaseService {
 
     const result = await this.pool.query(
       `SELECT id, tenant_id as "tenantId", project_id as "projectId", title, description, status, metadata,
-              created_at as "createdAt", updated_at as "updatedAt"
+              created_at as "createdAt", updated_at as "updatedAt", session_id as "sessionId"
          FROM cases
         WHERE ${conditions.join(" AND ")}
         ORDER BY updated_at DESC`,
@@ -367,21 +340,38 @@ export class CaseService {
     tenantId: string,
     projectId?: string,
   ): Promise<CaseRecord> {
-    const existingCaseId = this.sessionCaseMap.get(sessionId);
-    if (existingCaseId) {
-      const existing = await this.getCase(existingCaseId);
-      if (existing) {
-        return existing;
+    if (this.pool) {
+      const existingBySession = await this.pool.query<CaseRecord>(
+        `SELECT id, tenant_id as "tenantId", project_id as "projectId", title, description, status, metadata,
+                created_at as "createdAt", updated_at as "updatedAt", session_id as "sessionId"
+           FROM cases
+          WHERE session_id = $1`,
+        [sessionId],
+      );
+      const firstMatch = existingBySession.rows[0];
+      if (firstMatch) {
+        return firstMatch;
+      }
+    } else {
+      const existingCaseId = this.sessionCaseMap.get(sessionId);
+      if (existingCaseId) {
+        const existing = await this.getCase(existingCaseId);
+        if (existing) {
+          return existing;
+        }
       }
     }
 
     const created = await this.createCase({
       tenantId,
       projectId,
+      sessionId,
       title: `Session ${sessionId.slice(0, 8)}`,
       status: "active",
     });
-    this.sessionCaseMap.set(sessionId, created.id);
+    if (!this.pool) {
+      this.sessionCaseMap.set(sessionId, created.id);
+    }
     return created;
   }
 }
