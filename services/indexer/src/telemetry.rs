@@ -64,11 +64,20 @@ pub fn init_tracing() -> Result<(), TelemetryError> {
 
     let has_otlp = otel_layer.is_some();
 
-    tracing_subscriber::registry()
+    let init_result = tracing_subscriber::registry()
         .with(env_filter)
         .with(fmt_layer)
         .with(otel_layer)
-        .try_init()?;
+        .try_init();
+
+    // If subscriber init fails but OTLP tracer was created, clean up the global
+    // tracer provider to prevent resource leak
+    if let Err(e) = init_result {
+        if has_otlp {
+            opentelemetry::global::shutdown_tracer_provider();
+        }
+        return Err(TelemetryError::Subscriber(e));
+    }
 
     // Only set the flag after successful initialization to avoid race condition
     // where shutdown_tracing() might be called on a failed/partial init
@@ -146,6 +155,8 @@ mod tests {
     fn init_tracing_is_idempotent() {
         assert!(init_tracing().is_ok(), "first init should succeed");
         assert!(init_tracing().is_ok(), "second init should be a no-op");
+        // Clean up OTLP state (note: tracing dispatcher remains set globally)
+        shutdown_tracing();
     }
 
     #[test]
