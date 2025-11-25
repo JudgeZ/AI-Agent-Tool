@@ -81,7 +81,7 @@ test("aidt plan requests plan from gateway", async () => {
     ...process.env,
     TS_NODE_PROJECT: path.join(cliRoot, "tsconfig.json"),
     AIDT_GATEWAY_URL: `http://127.0.0.1:${getPort(server)}`,
-    AIDT_AUTH_TOKEN: "test-token",
+    API_KEY: "test-token",
     AIDT_GATEWAY_TIMEOUT_MS: "1500"
   };
 
@@ -132,7 +132,7 @@ test("aidt plan surfaces gateway authentication failures", async () => {
     ...process.env,
     TS_NODE_PROJECT: path.join(cliRoot, "tsconfig.json"),
     AIDT_GATEWAY_URL: `http://127.0.0.1:${getPort(server)}`,
-    AIDT_AUTH_TOKEN: "bad-token"
+    API_KEY: "bad-token"
   };
 
   try {
@@ -143,7 +143,10 @@ test("aidt plan surfaces gateway authentication failures", async () => {
       }),
       error => {
         assert.match(String(error), /Command failed/);
-        assert.match(error.stderr, /Authentication failed: token invalid/);
+        assert.match(
+          error.stderr,
+          /Failed to create plan: Authentication failed: token invalid/,
+        );
         assert.match(error.stderr, /Error:/);
         return true;
       }
@@ -265,7 +268,7 @@ test("aidt plan reports gateway rate limiting detail", async () => {
     ...process.env,
     TS_NODE_PROJECT: path.join(cliRoot, "tsconfig.json"),
     AIDT_GATEWAY_URL: `http://127.0.0.1:${getPort(server)}`,
-    AIDT_AUTH_TOKEN: "rate-limit-token"
+    API_KEY: "rate-limit-token"
   };
 
   try {
@@ -275,7 +278,10 @@ test("aidt plan reports gateway rate limiting detail", async () => {
         env
       }),
       error => {
-        assert.match(error.stderr, /Gateway rate limited the request: Too many requests/);
+        assert.match(
+          error.stderr,
+          /Failed to create plan: Gateway rate limited the request: Too many requests/,
+        );
         return true;
       }
     );
@@ -305,7 +311,8 @@ test("aidt plan surfaces server errors with request id context", async () => {
   const env = {
     ...process.env,
     TS_NODE_PROJECT: path.join(cliRoot, "tsconfig.json"),
-    AIDT_GATEWAY_URL: `http://127.0.0.1:${getPort(server)}`
+    AIDT_GATEWAY_URL: `http://127.0.0.1:${getPort(server)}`,
+    API_KEY: "server-error"
   };
 
   try {
@@ -317,7 +324,7 @@ test("aidt plan surfaces server errors with request id context", async () => {
       error => {
         assert.match(
           error.stderr,
-          /Gateway request failed \(request id req-789\) - Service Unavailable: backend offline/
+          /Failed to create plan: Gateway request failed - Service Unavailable: backend offline \(request id req-789\)/
         );
         return true;
       }

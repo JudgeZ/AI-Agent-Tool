@@ -1,0 +1,21 @@
+{
+  "manifest_version": 3,
+  "name": "AI Agent Tool Companion",
+  "description": "Connects the AI Agent Tool Gateway for telemetry and automation.",
+  "version": "0.1.0",
+  "permissions": ["tabs", "activeTab", "scripting"],
+  "host_permissions": ["https://gateway.example.com/*", "http://localhost:8080/*"],
+  "background": {
+    "service_worker": "src/background.js"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://*/*", "http://*/*"],
+      "js": ["src/content.js"],
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_title": "AI Agent Tool"
+  }
+}

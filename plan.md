@@ -425,7 +425,7 @@ Goal: Extend platform to CLI and browser.
 
 ### 4.1 CLI – Gateway-connected, Aider-style
 
-- [ ] **Task:** Improve CLI to talk to Gateway and orchestrator.
+- [x] **Task:** Improve CLI to talk to Gateway and orchestrator.
 - **Files:**
   - `apps/cli/src/index.ts`
   - Config/docs
@@ -447,7 +447,7 @@ Goal: Extend platform to CLI and browser.
 
 ### 4.2 Browser extension – telemetry & automation
 
-- [ ] **Task:** Add Chrome extension for browser telemetry.
+- [x] **Task:** Add Chrome extension for browser telemetry.
 - **Files:**
   - `apps/browser-extension/manifest.json`
   - `apps/browser-extension/src/background.ts`
