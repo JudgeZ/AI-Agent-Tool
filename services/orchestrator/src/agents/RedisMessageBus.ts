@@ -97,7 +97,7 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
     super();
     this.redisUrl = config.redisUrl;
     this.channelPrefix = config.channelPrefix ?? DEFAULT_CHANNEL_PREFIX;
-    this.instanceId = config.instanceId ?? `instance-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    this.instanceId = config.instanceId ?? `instance-${randomUUID()}`;
 
     this.config = {
       maxQueueSize: config.maxQueueSize ?? 10000,
@@ -127,6 +127,10 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
 
   private formatResponseChannel(): string {
     return `${this.channelPrefix}:response:${this.instanceId}`;
+  }
+
+  private formatGlobalRegistryKey(): string {
+    return `${this.channelPrefix}:agents:global`;
   }
 
   private async ensureConnected(): Promise<void> {
@@ -370,7 +374,7 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
     this.localAgents.add(agentId);
     this.handlers.set(agentId, new Map());
 
-    // Subscribe to agent's channel
+    // Subscribe to agent's channel and register in global registry
     try {
       await this.ensureConnected();
       if (this.subscriber && !this.closed) {
@@ -379,10 +383,15 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
         });
         logger.debug({ agentId, event: "msgbus.agent.subscribed" }, "Subscribed to agent channel");
       }
+      // Add to global agent registry
+      if (this.publisher && !this.closed) {
+        await this.publisher.sAdd(this.formatGlobalRegistryKey(), agentId);
+        logger.debug({ agentId, event: "msgbus.agent.global_registered" }, "Added agent to global registry");
+      }
     } catch (error) {
       logger.warn(
         { err: normalizeError(error), agentId, event: "msgbus.agent.subscribe_failed" },
-        "Failed to subscribe to agent channel",
+        "Failed to subscribe to agent channel or register globally",
       );
     }
 
@@ -397,7 +406,7 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
     this.localAgents.delete(agentId);
     this.handlers.delete(agentId);
 
-    // Unsubscribe from agent's channel
+    // Unsubscribe from agent's channel and remove from global registry
     if (this.subscriber && !this.closed) {
       try {
         await this.subscriber.unsubscribe(this.formatAgentChannel(agentId));
@@ -405,6 +414,19 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
         logger.warn(
           { err: normalizeError(error), agentId, event: "msgbus.agent.unsubscribe_failed" },
           "Failed to unsubscribe from agent channel",
+        );
+      }
+    }
+
+    // Remove from global agent registry
+    if (this.publisher && !this.closed) {
+      try {
+        await this.publisher.sRem(this.formatGlobalRegistryKey(), agentId);
+        logger.debug({ agentId, event: "msgbus.agent.global_unregistered" }, "Removed agent from global registry");
+      } catch (error) {
+        logger.warn(
+          { err: normalizeError(error), agentId, event: "msgbus.agent.global_unregister_failed" },
+          "Failed to remove agent from global registry",
         );
       }
     }
@@ -454,7 +476,13 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
 
     // If recipient is local, deliver directly
     if (this.localAgents.has(recipient)) {
-      this.deliverToLocalAgent(recipient, message, this.instanceId);
+      this.deliverToLocalAgent(recipient, message, this.instanceId).catch((error) => {
+        logger.warn(
+          { err: normalizeError(error), agentId: recipient, messageId: message.id, event: "msgbus.sendtoone.delivery.failed" },
+          "Failed to deliver message to local agent in sendToOne",
+        );
+        this.emit("error", { error, agentId: recipient, messageId: message.id, event: "sendtoone.delivery.failed" });
+      });
     } else {
       // Publish to recipient's channel
       await this.publisher.publish(
@@ -542,6 +570,19 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
   }
 
   async getRegisteredAgents(): Promise<string[]> {
+    // Return all agents from the global registry (across all instances)
+    if (this.publisher && !this.closed) {
+      try {
+        const globalAgents = await this.publisher.sMembers(this.formatGlobalRegistryKey());
+        return globalAgents;
+      } catch (error) {
+        logger.warn(
+          { err: normalizeError(error), event: "msgbus.agent.global_list_failed" },
+          "Failed to get global agent list, falling back to local agents",
+        );
+      }
+    }
+    // Fallback to local agents if Redis is unavailable
     return Array.from(this.localAgents);
   }
 
@@ -555,9 +596,27 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
     }
     this.pendingRequests.clear();
 
-    // Close Redis connections
+    // Remove local agents from global registry before closing
+    const localAgentsCopy = Array.from(this.localAgents);
     const subscriber = this.subscriber;
     const publisher = this.publisher;
+
+    if (publisher && localAgentsCopy.length > 0) {
+      try {
+        await publisher.sRem(this.formatGlobalRegistryKey(), localAgentsCopy);
+        logger.debug(
+          { agentCount: localAgentsCopy.length, event: "msgbus.shutdown.global_cleanup" },
+          "Removed local agents from global registry during shutdown",
+        );
+      } catch (error) {
+        logger.warn(
+          { err: normalizeError(error), event: "msgbus.shutdown.global_cleanup_failed" },
+          "Failed to remove local agents from global registry during shutdown",
+        );
+      }
+    }
+
+    // Close Redis connections
     this.subscriber = null;
     this.publisher = null;
 
