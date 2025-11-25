@@ -401,6 +401,107 @@ describe("StandardPipelines", () => {
       await expect(handler.execute(node, context)).rejects.toThrow("Condition failed");
     });
 
+    it("should handle boolean variable reference in condition (true)", async () => {
+      const handler = (executor as any).createConditionHandler();
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map([["prev", { passed: true }]]),
+        metadata: {},
+      };
+
+      const node: NodeDefinition = {
+        id: "bool-condition",
+        type: NodeType.CONDITION,
+        name: "Boolean Condition",
+        dependencies: ["prev"],
+        config: {
+          condition: "${prev.passed}",
+        },
+      };
+
+      const result = await handler.execute(node, context);
+
+      expect(result).toMatchObject({
+        status: "passed",
+        result: true,
+        passed: true,
+      });
+    });
+
+    it("should handle boolean variable reference in condition (false)", async () => {
+      const handler = (executor as any).createConditionHandler();
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map([["prev", { passed: false }]]),
+        metadata: {},
+      };
+
+      const node: NodeDefinition = {
+        id: "bool-condition",
+        type: NodeType.CONDITION,
+        name: "Boolean Condition",
+        dependencies: ["prev"],
+        config: {
+          condition: "${prev.passed}",
+        },
+      };
+
+      await expect(handler.execute(node, context)).rejects.toThrow("Condition failed");
+    });
+
+    it("should handle numeric variable reference in condition", async () => {
+      const handler = (executor as any).createConditionHandler();
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map([["prev", { count: 5 }]]),
+        metadata: {},
+      };
+
+      const node: NodeDefinition = {
+        id: "num-condition",
+        type: NodeType.CONDITION,
+        name: "Numeric Condition",
+        dependencies: ["prev"],
+        config: {
+          condition: "${prev.count}",
+        },
+      };
+
+      // 5 is truthy
+      const result = await handler.execute(node, context);
+      expect(result).toMatchObject({ status: "passed", result: true });
+    });
+
+    it("should handle zero numeric reference as falsy", async () => {
+      const handler = (executor as any).createConditionHandler();
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map([["prev", { count: 0 }]]),
+        metadata: {},
+      };
+
+      const node: NodeDefinition = {
+        id: "zero-condition",
+        type: NodeType.CONDITION,
+        name: "Zero Condition",
+        dependencies: ["prev"],
+        config: {
+          condition: "${prev.count}",
+        },
+      };
+
+      // 0 is falsy
+      await expect(handler.execute(node, context)).rejects.toThrow("Condition failed");
+    });
+
     it("should create merge handler that collects outputs", async () => {
       const handler = (executor as any).createMergeHandler();
       const context: ExecutionContext = {
@@ -459,6 +560,184 @@ describe("StandardPipelines", () => {
         status: "completed",
         iterations: 0,
       });
+    });
+
+    it("should iterate over items array with _item context", async () => {
+      const handler = (executor as any).createLoopHandler();
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map([["source", { data: ["a", "b", "c"] }]]),
+        metadata: {},
+      };
+
+      // Mock executeGenericTool to capture _item values
+      const capturedItems: unknown[] = [];
+      (executor as any).executeGenericTool = vi.fn().mockImplementation((node: NodeDefinition) => {
+        capturedItems.push(node.config._item);
+        return Promise.resolve({ processed: node.config._item });
+      });
+
+      const node: NodeDefinition = {
+        id: "loop-items",
+        type: NodeType.LOOP,
+        name: "Item Loop",
+        dependencies: ["source"],
+        config: {
+          items: "${source.data}",
+          operation: "process",
+        },
+      };
+
+      const result = await handler.execute(node, context);
+
+      expect(result).toMatchObject({
+        status: "completed",
+        iterations: 3,
+      });
+      expect(capturedItems).toEqual(["a", "b", "c"]);
+      expect((result as any).results).toHaveLength(3);
+    });
+
+    it("should enforce maxIterations limit", async () => {
+      const handler = (executor as any).createLoopHandler();
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map(),
+        metadata: {},
+      };
+
+      let iterationCount = 0;
+      (executor as any).executeGenericTool = vi.fn().mockImplementation(() => {
+        iterationCount++;
+        return Promise.resolve({ count: iterationCount });
+      });
+
+      const node: NodeDefinition = {
+        id: "loop-max",
+        type: NodeType.LOOP,
+        name: "Max Iterations Loop",
+        dependencies: [],
+        config: {
+          maxIterations: 5,
+          condition: "true", // Always true - only maxIterations should stop it
+          operation: "increment",
+        },
+      };
+
+      const result = await handler.execute(node, context);
+
+      expect(result).toMatchObject({
+        status: "completed",
+        iterations: 5,
+      });
+      expect(iterationCount).toBe(5);
+    });
+
+    it("should clean up temporary iteration keys after completion", async () => {
+      const handler = (executor as any).createLoopHandler();
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map([["source", { items: [1, 2] }]]),
+        metadata: {},
+      };
+
+      (executor as any).executeGenericTool = vi.fn().mockResolvedValue({ done: true });
+
+      const node: NodeDefinition = {
+        id: "cleanup-loop",
+        type: NodeType.LOOP,
+        name: "Cleanup Test",
+        dependencies: ["source"],
+        config: {
+          items: "${source.items}",
+          operation: "work",
+        },
+      };
+
+      await handler.execute(node, context);
+
+      // Verify namespaced iteration keys are cleaned up
+      expect(context.outputs.has("__loop:cleanup-loop:iteration:0")).toBe(false);
+      expect(context.outputs.has("__loop:cleanup-loop:iteration:1")).toBe(false);
+    });
+
+    it("should use namespaced keys to avoid collision with user node IDs", async () => {
+      const handler = (executor as any).createLoopHandler();
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map([
+          ["source", { items: [1] }],
+          // Simulate a user node with a potentially colliding ID
+          ["myloop_iteration_0", { userValue: "should not be affected" }],
+        ]),
+        metadata: {},
+      };
+
+      (executor as any).executeGenericTool = vi.fn().mockResolvedValue({ done: true });
+
+      const node: NodeDefinition = {
+        id: "myloop",
+        type: NodeType.LOOP,
+        name: "Collision Test",
+        dependencies: ["source"],
+        config: {
+          items: "${source.items}",
+          operation: "work",
+        },
+      };
+
+      await handler.execute(node, context);
+
+      // User's node should still be intact (old format would have collided)
+      expect(context.outputs.get("myloop_iteration_0")).toEqual({ userValue: "should not be affected" });
+    });
+
+    it("should store iteration outputs with namespaced keys during execution", async () => {
+      const handler = (executor as any).createLoopHandler();
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map([["source", { items: ["x", "y"] }]]),
+        metadata: {},
+      };
+
+      // Track what keys are set during execution
+      const keysSetDuringExecution: string[] = [];
+      const originalSet = context.outputs.set.bind(context.outputs);
+      context.outputs.set = (key: string, value: unknown) => {
+        keysSetDuringExecution.push(key);
+        return originalSet(key, value);
+      };
+
+      (executor as any).executeGenericTool = vi.fn().mockResolvedValue({ done: true });
+
+      const node: NodeDefinition = {
+        id: "track-loop",
+        type: NodeType.LOOP,
+        name: "Key Tracking Loop",
+        dependencies: ["source"],
+        config: {
+          items: "${source.items}",
+          operation: "work",
+        },
+      };
+
+      await handler.execute(node, context);
+
+      // Verify namespaced keys were used during execution
+      expect(keysSetDuringExecution).toContain("__loop:track-loop:iteration:0");
+      expect(keysSetDuringExecution).toContain("__loop:track-loop:iteration:1");
+      // But they should be cleaned up after
+      expect(context.outputs.has("__loop:track-loop:iteration:0")).toBe(false);
     });
 
     it("should create parallel handler that returns node info", async () => {

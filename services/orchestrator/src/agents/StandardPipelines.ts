@@ -1055,30 +1055,49 @@ export class PipelineExecutor {
         // Resolve variable references in node config (consistent with other handlers)
         const resolvedNode = this.resolveNodeConfig(node, context);
         const condition = node.config.condition as string; // Original for error messages
-        const evaluatedCondition = resolvedNode.config.condition as string;
+        const resolvedCondition = resolvedNode.config.condition;
 
-        if (!condition) {
+        if (condition === undefined || condition === null) {
           throw new Error(`Condition node ${node.id} missing 'condition' config`);
         }
 
-        // Safely evaluate the condition expression
-        const result = this.evaluateCondition(evaluatedCondition);
+        // Handle non-string resolved values directly (e.g., pure variable reference to boolean)
+        let result: boolean;
+        let evaluatedConditionStr: string;
+
+        if (typeof resolvedCondition === "boolean") {
+          // Pure variable reference resolved to boolean - use directly
+          result = resolvedCondition;
+          evaluatedConditionStr = String(resolvedCondition);
+        } else if (typeof resolvedCondition === "number") {
+          // Pure variable reference resolved to number - coerce to boolean
+          result = Boolean(resolvedCondition);
+          evaluatedConditionStr = String(resolvedCondition);
+        } else if (typeof resolvedCondition === "string") {
+          // String condition - evaluate expression
+          evaluatedConditionStr = resolvedCondition;
+          result = this.evaluateCondition(resolvedCondition);
+        } else {
+          // Unsupported type - coerce to boolean
+          result = Boolean(resolvedCondition);
+          evaluatedConditionStr = String(resolvedCondition);
+        }
 
         appLogger.debug(
-          { nodeId: node.id, condition, evaluatedCondition, result },
+          { nodeId: node.id, condition, evaluatedCondition: evaluatedConditionStr, result },
           "Condition evaluated",
         );
 
         // When condition is false, throw to block dependent nodes
         // Use continueOnError: true on the node to allow dependents to execute regardless
         if (!result) {
-          throw new ConditionFailedError(condition, evaluatedCondition);
+          throw new ConditionFailedError(condition, evaluatedConditionStr);
         }
 
         return {
           status: "passed",
           condition,
-          evaluatedCondition,
+          evaluatedCondition: evaluatedConditionStr,
           result: true,
           passed: true,
         };
@@ -1190,7 +1209,8 @@ export class PipelineExecutor {
               results.push(iterationResult);
 
               // Store iteration result in context for dynamic condition evaluation
-              const iterationKey = `${node.id}_iteration_${iteration}`;
+              // Use namespaced key to prevent collision with user-defined node IDs
+              const iterationKey = `__loop:${node.id}:iteration:${iteration}`;
               context.outputs.set(iterationKey, iterationResult);
               iterationOutputKeys.push(iterationKey);
             }
@@ -1399,7 +1419,6 @@ export class PipelineExecutor {
       if (/[\d]/.test(expr[i]) || (expr[i] === "-" && /[\d]/.test(expr[i + 1]))) {
         const startPos = i;
         let num = "";
-        let hasDecimal = false;
 
         // Handle negative sign
         if (expr[i] === "-") {
@@ -1424,7 +1443,6 @@ export class PipelineExecutor {
           if (i + 1 < expr.length && /[\d]/.test(expr[i + 1])) {
             num += expr[i];
             i++;
-            hasDecimal = true;
 
             while (i < expr.length && /[\d]/.test(expr[i])) {
               num += expr[i];
