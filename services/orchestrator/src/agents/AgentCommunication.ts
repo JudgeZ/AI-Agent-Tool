@@ -116,6 +116,16 @@ export interface ContextQueryOptions {
   ownerId?: string;
   prefix?: string;
   pattern?: RegExp;
+  /**
+   * Maximum number of results to return (for pagination).
+   * Default: no limit (returns all matching entries up to iteration cap)
+   */
+  limit?: number;
+  /**
+   * Number of results to skip (for pagination).
+   * Default: 0
+   */
+  offset?: number;
 }
 
 // ============================================================================

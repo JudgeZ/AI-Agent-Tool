@@ -97,6 +97,29 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
     return `${this.keyPrefix}:owner:${ownerId}`;
   }
 
+  /**
+   * Format key for lightweight ACL metadata.
+   * Stores `ownerId:scope` for quick access checks before fetching full entry.
+   */
+  private formatMetaKey(key: string): string {
+    return `${this.keyPrefix}:meta:${key}`;
+  }
+
+  /**
+   * Parse lightweight metadata string `ownerId:scope`.
+   */
+  private parseMetadata(meta: string): { ownerId: string; scope: ContextScope } | null {
+    const colonIndex = meta.lastIndexOf(":");
+    if (colonIndex === -1) return null;
+    const ownerId = meta.slice(0, colonIndex);
+    const scopeStr = meta.slice(colonIndex + 1);
+    // Validate scope is a valid ContextScope value
+    if (!Object.values(ContextScope).includes(scopeStr as ContextScope)) {
+      return null;
+    }
+    return { ownerId, scope: scopeStr as ContextScope };
+  }
+
   private async getClient(): Promise<RedisClient | null> {
     if (this.closed) {
       return null;
@@ -218,6 +241,12 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
       EX: redisTtl,
     });
 
+    // Store lightweight metadata for quick ACL pre-check
+    // Format: `ownerId:scope` - allows checking access before fetching full entry
+    await client.set(this.formatMetaKey(key), `${ownerId}:${scope}`, {
+      EX: redisTtl,
+    });
+
     // Track owner's keys
     await client.sAdd(this.formatOwnerKey(ownerId), key);
     // Set TTL on owner index to clean up eventually
@@ -232,6 +261,28 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
       return undefined;
     }
 
+    // ACL Pre-check: Fetch lightweight metadata first to check access before loading full entry.
+    // This optimization avoids fetching potentially large values when access would be denied.
+    const meta = await client.get(this.formatMetaKey(key));
+    if (meta) {
+      const parsed = this.parseMetadata(meta);
+      if (parsed) {
+        // Quick denial for PRIVATE entries where requester is not owner
+        if (parsed.scope === ContextScope.PRIVATE && parsed.ownerId !== requesterId) {
+          throw new Error(`Access denied to context key: ${key}`);
+        }
+        // Quick denial for SHARED entries where requester is not owner and not in ACL
+        if (parsed.scope === ContextScope.SHARED && parsed.ownerId !== requesterId) {
+          const isMember = await client.sIsMember(this.formatAclKey(key), requesterId);
+          if (!isMember) {
+            throw new Error(`Access denied to context key: ${key}`);
+          }
+        }
+        // GLOBAL and owner access passes through to fetch full entry
+      }
+    }
+
+    // Fetch full entry
     const raw = await client.get(this.formatEntryKey(key));
     if (!raw) {
       return undefined;
@@ -243,7 +294,7 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
       return undefined;
     }
 
-    // Check access
+    // Final access check (handles cases where metadata is missing or PIPELINE scope)
     const hasAccess = await this.hasAccessAsync(entry, requesterId, client);
     if (!hasAccess) {
       throw new Error(`Access denied to context key: ${key}`);
@@ -304,9 +355,10 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
       throw new Error(`Only owner can delete context key: ${key}`);
     }
 
-    // Delete entry, ACL, and remove from owner index
+    // Delete entry, metadata, ACL, and remove from owner index
     await Promise.all([
       client.del(this.formatEntryKey(key)),
+      client.del(this.formatMetaKey(key)),
       client.del(this.formatAclKey(key)),
       client.sRem(this.formatOwnerKey(requesterId), key),
     ]);
@@ -371,6 +423,11 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
     const results: ContextEntry[] = [];
     const pattern = `${this.keyPrefix}:entry:${options.prefix ?? ""}*`;
 
+    // Pagination parameters
+    const offset = options.offset ?? 0;
+    const limit = options.limit;
+    let skipped = 0;
+
     // Scan for matching keys with iteration cap to prevent unbounded operations
     let cursor = 0;
     let iterations = 0;
@@ -380,6 +437,11 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
       iterations++;
 
       for (const key of result.keys) {
+        // Early exit if we've collected enough results
+        if (limit !== undefined && results.length >= limit) {
+          break;
+        }
+
         const raw = await client.get(key);
         if (!raw) continue;
 
@@ -395,7 +457,18 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
         if (options.ownerId && entry.ownerId !== options.ownerId) continue;
         if (options.pattern && !options.pattern.test(entry.key)) continue;
 
+        // Handle offset (skip entries until we've passed the offset)
+        if (skipped < offset) {
+          skipped++;
+          continue;
+        }
+
         results.push(entry);
+      }
+
+      // Early exit if we've collected enough results
+      if (limit !== undefined && results.length >= limit) {
+        break;
       }
 
       // Prevent unbounded iteration
