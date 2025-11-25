@@ -436,34 +436,39 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
       cursor = result.cursor;
       iterations++;
 
-      for (const key of result.keys) {
-        // Early exit if we've collected enough results
-        if (limit !== undefined && results.length >= limit) {
-          break;
+      // Batch fetch entries using mGet to avoid N+1 queries
+      if (result.keys.length > 0) {
+        const rawValues = await client.mGet(result.keys);
+
+        for (let i = 0; i < result.keys.length; i++) {
+          // Early exit if we've collected enough results
+          if (limit !== undefined && results.length >= limit) {
+            break;
+          }
+
+          const raw = rawValues[i];
+          if (!raw) continue;
+
+          const entry = this.deserializeEntry(raw);
+          if (!entry) continue; // Skip invalid entries
+
+          // Check access
+          const hasAccess = await this.hasAccessAsync(entry, requesterId, client);
+          if (!hasAccess) continue;
+
+          // Apply filters
+          if (options.scope && !options.scope.includes(entry.scope)) continue;
+          if (options.ownerId && entry.ownerId !== options.ownerId) continue;
+          if (options.pattern && !options.pattern.test(entry.key)) continue;
+
+          // Handle offset (skip entries until we've passed the offset)
+          if (skipped < offset) {
+            skipped++;
+            continue;
+          }
+
+          results.push(entry);
         }
-
-        const raw = await client.get(key);
-        if (!raw) continue;
-
-        const entry = this.deserializeEntry(raw);
-        if (!entry) continue; // Skip invalid entries
-
-        // Check access
-        const hasAccess = await this.hasAccessAsync(entry, requesterId, client);
-        if (!hasAccess) continue;
-
-        // Apply filters
-        if (options.scope && !options.scope.includes(entry.scope)) continue;
-        if (options.ownerId && entry.ownerId !== options.ownerId) continue;
-        if (options.pattern && !options.pattern.test(entry.key)) continue;
-
-        // Handle offset (skip entries until we've passed the offset)
-        if (skipped < offset) {
-          skipped++;
-          continue;
-        }
-
-        results.push(entry);
       }
 
       // Early exit if we've collected enough results
@@ -530,20 +535,28 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
       cursor = result.cursor;
       iterations++;
 
-      for (const redisKey of result.keys) {
-        // Extract the context key from Redis key
-        const contextKey = redisKey.replace(`${this.keyPrefix}:entry:`, "");
+      if (scope && result.keys.length > 0) {
+        // Batch fetch entries using mGet to avoid N+1 queries when filtering by scope
+        const rawValues = await client.mGet(result.keys);
 
-        if (scope) {
-          // Need to check scope
-          const raw = await client.get(redisKey);
+        for (let i = 0; i < result.keys.length; i++) {
+          const redisKey = result.keys[i];
+          const raw = rawValues[i];
+
+          // Extract the context key from Redis key
+          const contextKey = redisKey.replace(`${this.keyPrefix}:entry:`, "");
+
           if (raw) {
             const entry = this.deserializeEntry(raw);
             if (entry && entry.scope === scope) {
               keys.push(contextKey);
             }
           }
-        } else {
+        }
+      } else if (!scope) {
+        // No scope filter - just extract keys without fetching entries
+        for (const redisKey of result.keys) {
+          const contextKey = redisKey.replace(`${this.keyPrefix}:entry:`, "");
           keys.push(contextKey);
         }
       }

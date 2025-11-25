@@ -76,6 +76,18 @@ const redisState = vi.hoisted(() => {
       const nextCursor = start + count >= matched.length ? 0 : start + count;
       return { cursor: nextCursor, keys: slice };
     }),
+    mGet: vi.fn(async (keys: string[]) => {
+      return keys.map((key) => {
+        const entry = store.get(key);
+        if (!entry) return null;
+        if (entry.expiresAt !== null && entry.expiresAt <= Date.now()) {
+          store.delete(key);
+          return null;
+        }
+        return entry.value;
+      });
+    }),
+    expire: vi.fn(async () => true),
     createClient: vi.fn(() => ({
       connect: state.connect,
       quit: state.quit,
@@ -89,6 +101,8 @@ const redisState = vi.hoisted(() => {
       sMembers: state.sMembers,
       sIsMember: state.sIsMember,
       scan: state.scan,
+      mGet: state.mGet,
+      expire: state.expire,
     })),
     reset() {
       store.clear();
@@ -106,6 +120,8 @@ const redisState = vi.hoisted(() => {
       state.sMembers.mockClear();
       state.sIsMember.mockClear();
       state.scan.mockClear();
+      state.mGet.mockClear();
+      state.expire.mockClear();
       state.createClient.mockClear();
     },
   };
