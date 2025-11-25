@@ -136,13 +136,6 @@ export class AzureOpenAIProvider extends BaseModelProviderWithCredentials<AzureO
     }
 
     const endpoint = credentials.endpoint;
-    if (!endpoint) {
-      throw new ProviderError("Azure OpenAI endpoint is not resolved", {
-        status: 500,
-        provider: this.name,
-        retryable: false
-      });
-    }
     const baseUrl = endpoint.endsWith("/") ? endpoint.slice(0, -1) : endpoint;
     const targetUrl = `${baseUrl}/openai/deployments/${encodeURIComponent(deployment)}/chat/completions`;
     const temperature = req.temperature ?? this.options.defaultTemperature;

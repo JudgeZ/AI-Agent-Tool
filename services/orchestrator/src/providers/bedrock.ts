@@ -152,7 +152,7 @@ export class BedrockProvider extends BaseModelProviderWithCredentials<BedrockCli
     });
     const sessionToken =
       (await this.secrets.get("provider:bedrock:sessionToken")) ?? process.env.AWS_SESSION_TOKEN;
-    return { region, accessKeyId, secretAccessKey, sessionToken: sessionToken ?? undefined };
+    return { region, accessKeyId, secretAccessKey, sessionToken };
   }
 
   protected areCredentialsEqual(

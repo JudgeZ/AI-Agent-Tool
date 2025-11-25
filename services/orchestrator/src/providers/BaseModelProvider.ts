@@ -67,9 +67,23 @@ export abstract class BaseModelProvider<TClient, TCredentials> implements ModelP
     next: TCredentials | undefined
   ): previous is TCredentials {
     if (!previous || !next) return false;
-    // Use sorted keys to ensure deterministic comparison
-    const sortedStringify = (obj: unknown): string => {
-      return JSON.stringify(obj, Object.keys(obj as object).sort());
+    // Handle primitives directly without Object.keys
+    if (typeof previous !== "object" || typeof next !== "object") {
+      return previous === next;
+    }
+    // Recursively sort object keys for deterministic comparison
+    const sortedStringify = (value: unknown): string => {
+      if (value === null || typeof value !== "object") {
+        return JSON.stringify(value);
+      }
+      if (Array.isArray(value)) {
+        return "[" + value.map(sortedStringify).join(",") + "]";
+      }
+      const sortedKeys = Object.keys(value).sort();
+      const pairs = sortedKeys.map(
+        k => JSON.stringify(k) + ":" + sortedStringify((value as Record<string, unknown>)[k])
+      );
+      return "{" + pairs.join(",") + "}";
     };
     return sortedStringify(previous) === sortedStringify(next);
   }
