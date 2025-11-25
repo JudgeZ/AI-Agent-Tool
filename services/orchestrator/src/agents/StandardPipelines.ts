@@ -1,14 +1,47 @@
 import {
   ExecutionGraph,
+  ExecutionContext,
+  ExecutionResult,
   GraphDefinition,
   NodeType,
   NodeDefinition,
+  NodeHandler,
+  NodeConfig,
 } from "./ExecutionGraph";
 import { MessageBus, SharedContextManager } from "./AgentCommunication";
 import { McpTool, ToolContext } from "../tools/McpTool";
 import { ToolRegistry } from "../tools/ToolRegistry";
 import { appLogger } from "../observability/logger";
 import { z } from "zod";
+import { randomUUID } from "crypto";
+
+// ============================================================================
+// Custom Error Types
+// ============================================================================
+
+/**
+ * Error thrown when a condition node evaluates to false.
+ * Provides typed access to condition result details.
+ */
+export class ConditionFailedError extends Error {
+  public readonly conditionResult: {
+    condition: string;
+    evaluatedCondition: string;
+    result: false;
+    passed: false;
+  };
+
+  constructor(condition: string, evaluatedCondition: string) {
+    super(`Condition failed: ${condition} (evaluated: ${evaluatedCondition})`);
+    this.name = "ConditionFailedError";
+    this.conditionResult = {
+      condition,
+      evaluatedCondition,
+      result: false,
+      passed: false,
+    };
+  }
+}
 
 // ============================================================================
 // Pipeline Types and Validation
@@ -38,7 +71,7 @@ export enum PipelineType {
   REFACTORING = "refactoring",
   CODE_REVIEW = "code_review",
   TESTING = "testing",
-  DEPLOYMENT = "deployment",
+  // NOTE: DEPLOYMENT removed - not yet implemented. Add back when DeploymentPipeline is ready.
 }
 
 export const PipelineConfigSchema = z.object({
@@ -825,59 +858,1130 @@ export class PipelineExecutor {
     this.context = context;
   }
 
-  public async execute(config: PipelineConfig): Promise<any> {
+  public async execute(config: PipelineConfig): Promise<ExecutionResult> {
+    const startTime = Date.now();
+    // Use crypto.randomUUID() for collision-resistant IDs in high-throughput environments
+    const executionId = `exec-${randomUUID()}`;
+
     // Create pipeline graph
     const graphDefinition = PipelineFactory.create(config, this.context);
 
     // Create execution graph
     const graph = new ExecutionGraph(graphDefinition, config.concurrency || 10);
 
+    // Log pipeline start with accurate node count from graph definition
+    appLogger.info(
+      {
+        pipelineId: this.context.pipelineId,
+        executionId,
+        pipelineType: config.type,
+        pipelineName: config.name,
+        nodeCount: graphDefinition.nodes.length,
+      },
+      "Pipeline execution started",
+    );
+
     // Register node handlers
     this.registerHandlers(graph);
 
-    // Execute
-    return await graph.execute();
+    // Execute the graph
+    // NOTE: The pipeline's executionId (used in logs) differs from ExecutionGraph's internal
+    // executionId (in ExecutionResult). Use pipeline executionId for correlating pipeline-level
+    // logs; use result.executionId for correlating individual node executions within the graph.
+    let result: ExecutionResult;
+    try {
+      result = await graph.execute();
+
+      const durationMs = Date.now() - startTime;
+      appLogger.info(
+        {
+          pipelineId: this.context.pipelineId,
+          executionId,
+          graphExecutionId: result.executionId, // ExecutionGraph's internal ID for node-level correlation
+          pipelineType: config.type,
+          success: result.success,
+          durationMs,
+          totalNodes: result.totalNodes,
+          completedNodes: result.completed,
+          failedNodes: result.failed,
+        },
+        "Pipeline execution completed",
+      );
+
+      return result;
+    } catch (error) {
+      const durationMs = Date.now() - startTime;
+      appLogger.error(
+        {
+          pipelineId: this.context.pipelineId,
+          executionId,
+          pipelineType: config.type,
+          durationMs,
+          err: error instanceof Error ? error : new Error(String(error)),
+        },
+        "Pipeline execution failed",
+      );
+      throw error;
+    }
   }
 
   private registerHandlers(graph: ExecutionGraph): void {
-    // Register handlers for each node type
-    graph.on("node:execute", async (nodeId: string, node: NodeDefinition) => {
-      const { operation } = node.config;
+    // Register handler for TASK nodes - dispatches to tools based on operation
+    graph.registerHandler(NodeType.TASK, this.createTaskHandler());
 
-      // Map operations to tools
-      switch (operation) {
-        case "test":
-          return await this.executeTestTool(node);
-        case "git-diff":
-        case "git-log":
-        case "git-commit":
-          return await this.executeRepositoryTool(node);
-        case "analyze":
-        case "analyze-error":
-        case "analyze-quality":
-          return await this.executeAnalysisTool(node);
-        case "semantic-search":
-          return await this.executeSearchTool(node);
-        case "lint":
-        case "security-scan":
-        case "performance-analysis":
-        case "doc-check":
-          return await this.executeReviewTool(node);
-        default:
-          // Use generic tool execution
-          return await this.executeGenericTool(node);
+    // Register handler for PARALLEL nodes - executes child operations concurrently
+    graph.registerHandler(NodeType.PARALLEL, this.createParallelHandler());
+
+    // Register handler for CONDITION nodes - evaluates conditions for branching
+    graph.registerHandler(NodeType.CONDITION, this.createConditionHandler());
+
+    // Register handler for MERGE nodes - combines results from parallel branches
+    graph.registerHandler(NodeType.MERGE, this.createMergeHandler());
+
+    // Register handler for LOOP nodes - executes iterative workflows
+    graph.registerHandler(NodeType.LOOP, this.createLoopHandler());
+
+    // Verify all NodeType enum values have handlers registered (fail-fast defense)
+    this.verifyAllHandlersRegistered(graph);
+  }
+
+  /**
+   * Verify that all NodeType enum values have handlers registered.
+   * This prevents runtime failures when a new NodeType is added but no handler is implemented.
+   * Fails fast during pipeline initialization rather than at execution time.
+   */
+  private verifyAllHandlersRegistered(graph: ExecutionGraph): void {
+    const allNodeTypes = Object.values(NodeType);
+    const missingHandlers: string[] = [];
+
+    for (const nodeType of allNodeTypes) {
+      if (!graph.hasHandler(nodeType)) {
+        missingHandlers.push(nodeType);
       }
+    }
+
+    if (missingHandlers.length > 0) {
+      throw new Error(
+        `Missing handlers for NodeType(s): ${missingHandlers.join(", ")}. ` +
+          `Every NodeType enum value must have a registered handler.`,
+      );
+    }
+  }
+
+  /**
+   * Create handler for TASK nodes.
+   * Dispatches to appropriate tool based on the 'operation' config field.
+   *
+   * Supported operations:
+   * - code-search, semantic-search: Search tools
+   * - code-analysis, security-scan, performance-analysis, doc-check: Review tools
+   * - Other operations: Generic tool execution via ToolRegistry
+   *
+   * @returns NodeHandler that executes tool operations
+   */
+  private createTaskHandler(): NodeHandler {
+    return {
+      execute: async (
+        node: NodeDefinition,
+        context: ExecutionContext,
+      ): Promise<unknown> => {
+        // Substitute variables in node config before execution
+        const resolvedNode = this.resolveNodeConfig(node, context);
+        const operation = resolvedNode.config.operation as string;
+
+        // Map operations to tools
+        switch (operation) {
+          case "test":
+            return await this.executeTestTool(resolvedNode);
+          case "git-diff":
+          case "git-log":
+          case "git-commit":
+            return await this.executeRepositoryTool(resolvedNode);
+          case "analyze":
+          case "analyze-error":
+          case "analyze-quality":
+            return await this.executeAnalysisTool(resolvedNode);
+          case "semantic-search":
+            return await this.executeSearchTool(resolvedNode);
+          case "lint":
+          case "security-scan":
+          case "performance-analysis":
+          case "doc-check":
+            return await this.executeReviewTool(resolvedNode);
+          default:
+            // Use generic tool execution
+            return await this.executeGenericTool(resolvedNode);
+        }
+      },
+    };
+  }
+
+  /**
+   * Resolve variable references in node config.
+   * Creates a new node with substituted config values.
+   * Recursively handles nested objects and arrays.
+   */
+  private resolveNodeConfig(node: NodeDefinition, context: ExecutionContext): NodeDefinition {
+    return {
+      ...node,
+      config: this.resolveConfigValue(node.config, context) as NodeConfig,
+    };
+  }
+
+  /**
+   * Recursively resolve variable references in a config value.
+   * This method traverses nested objects and arrays, resolving variable
+   * references at any depth level.
+   *
+   * Behavior:
+   * - Nested objects: Each property is recursively resolved
+   * - Arrays: Each element is recursively resolved
+   * - Pure variable references (e.g., "${node.items}"): Type is preserved
+   * - Template strings (e.g., "Found ${count} items"): Values serialized to string
+   * - Primitives (numbers, booleans): Passed through unchanged
+   */
+  private resolveConfigValue(value: unknown, context: ExecutionContext): unknown {
+    if (typeof value === "string") {
+      // Check if this is a pure variable reference (entire string is one ${...} reference)
+      const pureRefMatch = value.match(/^\$\{([^}]+)\}$/);
+      if (pureRefMatch) {
+        // Return the actual value, preserving its type (array, object, etc.)
+        const resolved = this.resolveVariableReference(pureRefMatch[1], context);
+        return resolved !== undefined ? resolved : value;
+      }
+      // For template strings with embedded references, serialize to string
+      return this.substituteVariables(value, context);
+    }
+
+    if (Array.isArray(value)) {
+      return value.map((item) => this.resolveConfigValue(item, context));
+    }
+
+    if (typeof value === "object" && value !== null) {
+      const resolved: Record<string, unknown> = {};
+      for (const [key, val] of Object.entries(value)) {
+        resolved[key] = this.resolveConfigValue(val, context);
+      }
+      return resolved;
+    }
+
+    return value;
+  }
+
+  /**
+   * Resolve a variable reference path (e.g., "node.field.subfield") to its actual value.
+   * Returns undefined if the reference cannot be resolved.
+   */
+  private resolveVariableReference(path: string, context: ExecutionContext): unknown {
+    const parts = path.split(".");
+    const nodeId = parts[0];
+    const fieldPath = parts.slice(1);
+
+    const nodeOutput = context.outputs.get(nodeId);
+    if (nodeOutput === undefined) {
+      return undefined;
+    }
+
+    // If no field path, return the entire output
+    if (fieldPath.length === 0) {
+      return nodeOutput;
+    }
+
+    // Navigate to the nested field
+    let value: unknown = nodeOutput;
+    for (const field of fieldPath) {
+      // Prototype pollution protection
+      if (this.isDangerousProperty(field)) {
+        appLogger.warn(
+          { field, path },
+          "Blocked access to dangerous property in variable reference",
+        );
+        return undefined;
+      }
+
+      if (typeof value === "object" && value !== null && field in value) {
+        value = (value as Record<string, unknown>)[field];
+      } else {
+        return undefined;
+      }
+    }
+
+    return value;
+  }
+
+  /**
+   * Create handler for PARALLEL nodes.
+   * Executes child operations concurrently and aggregates results.
+   *
+   * Input: Node with dependencies pointing to parallel branches
+   * Output: { status, nodeId, description, parallelBranches }
+   *
+   * @returns NodeHandler for parallel branch coordination
+   */
+  private createParallelHandler(): NodeHandler {
+    return {
+      execute: async (
+        node: NodeDefinition,
+        context: ExecutionContext,
+      ): Promise<unknown> => {
+        // Resolve variable references in node config
+        const resolvedNode = this.resolveNodeConfig(node, context);
+
+        // Parallel nodes coordinate concurrent execution of their configured tasks
+        // The actual parallelism is handled by the ExecutionGraph scheduler
+        // This handler processes the node's own config if needed
+        const operation = resolvedNode.config.operation as string | undefined;
+
+        if (operation) {
+          // If the parallel node has an operation, execute it
+          return await this.executeGenericTool(resolvedNode);
+        }
+
+        // Return aggregated info about what this parallel node represents
+        return {
+          status: "completed",
+          nodeId: resolvedNode.id,
+          description: resolvedNode.description,
+          // Results from parallel branches are available in context.outputs
+          parallelBranches: resolvedNode.dependencies,
+        };
+      },
+    };
+  }
+
+  /**
+   * Create handler for CONDITION nodes.
+   * Evaluates boolean expressions to control pipeline flow.
+   *
+   * Config: { condition: "expression" }
+   * - Expression can be literal (e.g., "5 > 3") or use variable substitution
+   * - Supports boolean/number variable references (e.g., "${prev.passed}")
+   *
+   * Behavior:
+   * - True: Returns { status: "passed", result: true }
+   * - False: Throws ConditionFailedError (blocks dependent nodes)
+   *
+   * Audit: Logs policy decisions for security monitoring
+   *
+   * @returns NodeHandler that evaluates conditions and controls flow
+   */
+  private createConditionHandler(): NodeHandler {
+    return {
+      execute: async (
+        node: NodeDefinition,
+        context: ExecutionContext,
+      ): Promise<unknown> => {
+        // Resolve variable references in node config (consistent with other handlers)
+        const resolvedNode = this.resolveNodeConfig(node, context);
+        // Store original condition for error messages (avoid misleading 'as string' cast since we handle all types)
+        const originalCondition = node.config.condition;
+        const resolvedCondition = resolvedNode.config.condition;
+
+        if (originalCondition === undefined || originalCondition === null) {
+          throw new Error(`Condition node ${node.id} missing 'condition' config`);
+        }
+        // Safe string representation for logging
+        const conditionForLog = typeof originalCondition === "string"
+          ? originalCondition
+          : JSON.stringify(originalCondition);
+
+        // Handle non-string resolved values directly (e.g., pure variable reference to boolean)
+        let result: boolean;
+        let evaluatedConditionStr: string;
+
+        if (typeof resolvedCondition === "boolean") {
+          // Pure variable reference resolved to boolean - use directly
+          result = resolvedCondition;
+          evaluatedConditionStr = String(resolvedCondition);
+        } else if (typeof resolvedCondition === "number") {
+          // Pure variable reference resolved to number - coerce to boolean
+          result = Boolean(resolvedCondition);
+          evaluatedConditionStr = String(resolvedCondition);
+        } else if (typeof resolvedCondition === "string") {
+          // String condition - evaluate expression
+          evaluatedConditionStr = resolvedCondition;
+          result = this.evaluateCondition(resolvedCondition);
+        } else if (Array.isArray(resolvedCondition)) {
+          // Arrays: check length explicitly (Boolean([]) is true, but empty array should be false)
+          result = resolvedCondition.length > 0;
+          evaluatedConditionStr = `[array length=${resolvedCondition.length}]`;
+        } else if (typeof resolvedCondition === "object" && resolvedCondition !== null) {
+          // Objects: check key count explicitly (Boolean({}) is true, but empty object should be false)
+          result = Object.keys(resolvedCondition).length > 0;
+          evaluatedConditionStr = `[object keys=${Object.keys(resolvedCondition).length}]`;
+        } else {
+          // Unsupported type (undefined, null, symbol, etc.) - treat as false for safety
+          result = false;
+          evaluatedConditionStr = String(resolvedCondition);
+        }
+
+        appLogger.debug(
+          { nodeId: node.id, condition: conditionForLog, evaluatedCondition: evaluatedConditionStr, result },
+          "Condition evaluated",
+        );
+
+        // Audit log: Policy decision (per CLAUDE.md 4.3 - audit logging for policy decisions)
+        appLogger.info(
+          {
+            audit: true,
+            event: "policy_decision",
+            pipelineId: this.context.pipelineId,
+            tenantId: this.context.tenantId,
+            userId: this.context.userId,
+            nodeId: node.id,
+            condition: conditionForLog,
+            evaluatedCondition: evaluatedConditionStr,
+            decision: result ? "allow" : "deny",
+          },
+          `Condition evaluated: ${result ? "passed" : "blocked"}`,
+        );
+
+        // When condition is false, throw to block dependent nodes
+        // Use continueOnError: true on the node to allow dependents to execute regardless
+        if (!result) {
+          throw new ConditionFailedError(conditionForLog, evaluatedConditionStr);
+        }
+
+        return {
+          status: "passed",
+          condition: conditionForLog,
+          evaluatedCondition: evaluatedConditionStr,
+          result: true,
+          passed: true,
+        };
+      },
+    };
+  }
+
+  /**
+   * Create handler for MERGE nodes.
+   * Collects and aggregates outputs from multiple dependency nodes.
+   *
+   * Input: Node with dependencies pointing to nodes to merge
+   * Output: { status, mergedCount, mergedResults, findings }
+   * - mergedResults: Map of nodeId -> output for each dependency
+   * - findings: Aggregated array of all 'findings' arrays from dependencies
+   *
+   * @returns NodeHandler that merges outputs from parallel branches
+   */
+  private createMergeHandler(): NodeHandler {
+    return {
+      execute: async (
+        node: NodeDefinition,
+        context: ExecutionContext,
+      ): Promise<unknown> => {
+        // Merge handler collects outputs from all dependency nodes
+        const mergedResults: Record<string, unknown> = {};
+        const findings: unknown[] = [];
+
+        for (const depId of node.dependencies) {
+          const depOutput = context.outputs.get(depId);
+          if (depOutput !== undefined) {
+            mergedResults[depId] = depOutput;
+
+            // Collect findings if present (for review pipelines)
+            if (
+              typeof depOutput === "object" &&
+              depOutput !== null &&
+              "findings" in depOutput
+            ) {
+              const depFindings = (depOutput as { findings?: unknown[] }).findings;
+              if (Array.isArray(depFindings)) {
+                findings.push(...depFindings);
+              }
+            }
+          }
+        }
+
+        return {
+          status: "completed",
+          mergedResults,
+          findings,
+          mergedCount: Object.keys(mergedResults).length,
+        };
+      },
+    };
+  }
+
+  /**
+   * Create handler for LOOP nodes.
+   * Executes iterative workflows with configurable conditions and rate limiting.
+   *
+   * Config options:
+   * - items: Array to iterate over (injects _item, _iteration, _totalItems)
+   * - condition: Expression re-evaluated each iteration (supports variable substitution)
+   * - maxIterations: Safety limit (default: 100)
+   * - operation: Tool operation to execute each iteration
+   * - iterationDelayMs: Rate limiting delay between iterations (default: 0)
+   * - burstLimit: Iterations before applying delay (default: 10)
+   *
+   * Output: { status, iterations, results }
+   *
+   * Security: Rate limiting prevents resource exhaustion
+   * Audit: Tool invocations are logged for each iteration
+   *
+   * @returns NodeHandler that executes iterative workflows
+   */
+  private createLoopHandler(): NodeHandler {
+    return {
+      execute: async (
+        node: NodeDefinition,
+        context: ExecutionContext,
+      ): Promise<unknown> => {
+        // Resolve static config values (but keep condition unresolved for per-iteration evaluation)
+        const resolvedNode = this.resolveNodeConfig(node, context);
+
+        // Default maxIterations of 100 provides a safety limit to prevent infinite loops
+        // while allowing sufficient iterations for most use cases. This can be overridden
+        // per-node via config.maxIterations for loops that need more iterations.
+        const maxIterationsRaw = resolvedNode.config.maxIterations;
+        const maxIterations = this.coerceToPositiveInt(maxIterationsRaw, 100, 1, 10000);
+        // Use ORIGINAL condition for dynamic per-iteration substitution
+        // Validate that condition is a string to prevent TypeError on .replace() in substituteVariables
+        const conditionRaw = node.config.condition;
+        let conditionExpr: string | undefined;
+        if (conditionRaw !== undefined && conditionRaw !== null) {
+          if (typeof conditionRaw !== "string") {
+            // Audit log: Input validation failure (per CLAUDE.md 4.3)
+            appLogger.warn(
+              {
+                audit: true,
+                event: "input_validation_failed",
+                pipelineId: this.context.pipelineId,
+                tenantId: this.context.tenantId,
+                userId: this.context.userId,
+                nodeId: node.id,
+                field: "condition",
+                expectedType: "string",
+                actualType: typeof conditionRaw,
+              },
+              "Loop node validation failed: condition must be a string",
+            );
+            throw new Error(
+              `Loop node '${node.id}' requires 'condition' to be a string, got ${typeof conditionRaw}`,
+            );
+          }
+          conditionExpr = conditionRaw;
+        }
+        const operation = resolvedNode.config.operation as string | undefined;
+
+        // Validate items is an array if provided (could be non-array after variable resolution)
+        const itemsRaw = resolvedNode.config.items;
+        if (itemsRaw !== undefined && !Array.isArray(itemsRaw)) {
+          // Audit log: Input validation failure (per CLAUDE.md 4.3)
+          appLogger.warn(
+            {
+              audit: true,
+              event: "input_validation_failed",
+              pipelineId: this.context.pipelineId,
+              tenantId: this.context.tenantId,
+              userId: this.context.userId,
+              nodeId: node.id,
+              field: "items",
+              expectedType: "array",
+              actualType: typeof itemsRaw,
+            },
+            "Loop node validation failed: items must be an array",
+          );
+          throw new Error(
+            `Loop node '${node.id}' requires 'items' to be an array, got ${typeof itemsRaw}`,
+          );
+        }
+        const items = itemsRaw as unknown[] | undefined;
+
+        const results: unknown[] = [];
+        let iteration = 0;
+        const iterationOutputKeys: string[] = []; // Track keys for cleanup
+
+        // Check items bounds before first execution
+        if (items && items.length === 0) {
+          appLogger.debug(
+            { nodeId: resolvedNode.id, iterations: 0, maxIterations },
+            "Loop completed (empty items)",
+          );
+          return {
+            status: "completed",
+            iterations: 0,
+            results: [],
+          };
+        }
+
+        // Rate limiting configuration to prevent resource exhaustion (per CLAUDE.md 4.4)
+        // iterationDelayMs: minimum delay between iterations (default 0 for no delay)
+        // burstLimit: max iterations before enforcing delay (default 10)
+        const iterationDelayMsRaw = resolvedNode.config.iterationDelayMs;
+        const iterationDelayMs = this.coerceToNonNegativeInt(iterationDelayMsRaw, 0, 0, 60000);
+        const burstLimitRaw = resolvedNode.config.burstLimit;
+        const burstLimit = this.coerceToPositiveInt(burstLimitRaw, 10, 1, 1000);
+
+        try {
+          while (iteration < maxIterations) {
+            // Apply rate limiting after burst limit to prevent resource exhaustion
+            if (iterationDelayMs > 0 && iteration > 0 && iteration % burstLimit === 0) {
+              await new Promise((resolve) => setTimeout(resolve, iterationDelayMs));
+            }
+
+            // Check loop condition if specified (re-evaluate each iteration with fresh substitution)
+            if (conditionExpr) {
+              const evaluatedCondition = this.substituteVariables(conditionExpr, context);
+              const shouldContinue = this.evaluateCondition(evaluatedCondition);
+              if (!shouldContinue) {
+                break;
+              }
+            }
+
+            // Check items bounds before execution
+            if (items && iteration >= items.length) {
+              break;
+            }
+
+            // Execute the loop body if operation specified
+            if (operation) {
+              // Create iteration-specific node with current item injected
+              // Safely coerce item to NodeConfig-compatible type
+              const currentItem = items ? this.toNodeConfigValue(items[iteration]) : null;
+              const iterationNode: NodeDefinition = {
+                ...resolvedNode,
+                config: {
+                  ...resolvedNode.config,
+                  _iteration: iteration,
+                  _item: currentItem,
+                  _totalItems: items ? items.length : null,
+                },
+              };
+
+              const iterationResult = await this.executeGenericTool(iterationNode);
+              results.push(iterationResult);
+
+              // Store iteration result in context for dynamic condition evaluation
+              // Use namespaced key to prevent collision with user-defined node IDs
+              const iterationKey = `__loop:${node.id}:iteration:${iteration}`;
+              context.outputs.set(iterationKey, iterationResult);
+              iterationOutputKeys.push(iterationKey);
+            }
+
+            iteration++;
+
+            // If no condition and no items, execute once and exit
+            if (!conditionExpr && !items) {
+              break;
+            }
+          }
+        } finally {
+          // Clean up intermediate iteration outputs to prevent context pollution.
+          // Performance: O(n) where n = iteration count. Each Map.delete() is O(1),
+          // and we track keys in iterationOutputKeys array for direct access.
+          // NOTE: Iteration outputs (e.g., __loop:nodeId:iteration:0) are NOT available
+          // after the loop completes. Reference the loop node's output.results array instead.
+          for (const key of iterationOutputKeys) {
+            context.outputs.delete(key);
+          }
+        }
+
+        appLogger.debug(
+          { nodeId: resolvedNode.id, iterations: iteration, maxIterations },
+          "Loop completed",
+        );
+
+        return {
+          status: "completed",
+          iterations: iteration,
+          results,
+        };
+      },
+    };
+  }
+
+  /**
+   * Substitute variable references in a template string.
+   *
+   * Syntax: ${nodeId.field.subfield}
+   * - nodeId: ID of a previously executed node whose output is in context.outputs
+   * - field.subfield: Optional dot-separated path to nested properties
+   *
+   * Security:
+   * - Blocks prototype pollution attacks (__proto__, constructor, prototype)
+   * - Values are serialized to strings (objects become JSON)
+   *
+   * @param template - String containing ${...} variable references
+   * @param context - Execution context with outputs from previous nodes
+   * @returns String with variables substituted; unresolved references kept as-is
+   *
+   * @example
+   * // With context.outputs.set("search", { query: "test", count: 5 })
+   * substituteVariables("Query: ${search.query}", context) // "Query: test"
+   * substituteVariables("Found ${search.count} items", context) // "Found 5 items"
+   */
+  private substituteVariables(template: string, context: ExecutionContext): string {
+    // Replace ${nodeId.field} patterns with actual values from context outputs
+    return template.replace(/\$\{([^}]+)\}/g, (match, path) => {
+      const parts = path.split(".");
+      const nodeId = parts[0];
+      const fieldPath = parts.slice(1);
+
+      const nodeOutput = context.outputs.get(nodeId);
+      if (nodeOutput === undefined) {
+        return match; // Keep original if not found
+      }
+
+      // If no field path, return the entire output
+      if (fieldPath.length === 0) {
+        return this.serializeValue(nodeOutput);
+      }
+
+      // Navigate to the nested field
+      let value: unknown = nodeOutput;
+      for (const field of fieldPath) {
+        // Prototype pollution protection - reject dangerous property names
+        if (this.isDangerousProperty(field)) {
+          appLogger.warn(
+            { field, path },
+            "Blocked access to dangerous property in variable substitution",
+          );
+          return match; // Keep original if dangerous property access
+        }
+
+        if (typeof value === "object" && value !== null && field in value) {
+          value = (value as Record<string, unknown>)[field];
+        } else {
+          return match; // Keep original if path not found
+        }
+      }
+
+      return this.serializeValue(value);
     });
   }
 
-  private async executeTestTool(node: NodeDefinition): Promise<any> {
+  /**
+   * Safely serialize a value to string for template substitution.
+   * Handles nullish values, primitives, arrays, and objects.
+   */
+  private serializeValue(value: unknown): string {
+    if (value === null) {
+      return "null";
+    }
+    if (value === undefined) {
+      return "undefined";
+    }
+    if (typeof value === "string") {
+      return value;
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+      return String(value);
+    }
+    if (Array.isArray(value) || typeof value === "object") {
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return "[object Object]";
+      }
+    }
+    return String(value);
+  }
+
+  /**
+   * Safely coerce an unknown value to a NodeConfig-compatible type.
+   * Validates and converts the value rather than using unsafe type assertions.
+   */
+  private toNodeConfigValue(value: unknown): NodeConfig[string] {
+    if (value === null) {
+      return null;
+    }
+    if (typeof value === "string") {
+      return value;
+    }
+    if (typeof value === "number") {
+      return value;
+    }
+    if (typeof value === "boolean") {
+      return value;
+    }
+    if (Array.isArray(value)) {
+      // Arrays are allowed in NodeConfig
+      return value;
+    }
+    if (typeof value === "object" && value !== null) {
+      // Only accept plain objects, not Date, RegExp, Map, Set, or other built-ins
+      const proto = Object.getPrototypeOf(value);
+      if (proto === Object.prototype || proto === null) {
+        return value as Record<string, unknown>;
+      }
+      // For non-plain objects, serialize to string representation
+      return String(value);
+    }
+    // For undefined or other types, convert to null (safe default)
+    return null;
+  }
+
+  /**
+   * Check if a property name could be used for prototype pollution attacks.
+   */
+  private isDangerousProperty(name: string): boolean {
+    const dangerousProperties = [
+      "__proto__",
+      "constructor",
+      "prototype",
+      "__defineGetter__",
+      "__defineSetter__",
+      "__lookupGetter__",
+      "__lookupSetter__",
+    ];
+    return dangerousProperties.includes(name);
+  }
+
+  /**
+   * Safely coerce a value to a positive integer with bounds checking.
+   * Returns defaultValue if the value is not a valid positive number within bounds.
+   */
+  private coerceToPositiveInt(
+    value: unknown,
+    defaultValue: number,
+    min: number,
+    max: number,
+  ): number {
+    if (value === undefined || value === null) {
+      return defaultValue;
+    }
+    const num = Number(value);
+    if (!Number.isFinite(num) || num < min || num > max) {
+      appLogger.warn(
+        { value, min, max, defaultValue },
+        "Invalid numeric config value, using default",
+      );
+      return defaultValue;
+    }
+    return Math.floor(num);
+  }
+
+  /**
+   * Safely coerce a value to a non-negative integer with bounds checking.
+   * Returns defaultValue if the value is not a valid non-negative number within bounds.
+   */
+  private coerceToNonNegativeInt(
+    value: unknown,
+    defaultValue: number,
+    min: number,
+    max: number,
+  ): number {
+    if (value === undefined || value === null) {
+      return defaultValue;
+    }
+    const num = Number(value);
+    if (!Number.isFinite(num) || num < min || num > max) {
+      appLogger.warn(
+        { value, min, max, defaultValue },
+        "Invalid numeric config value, using default",
+      );
+      return defaultValue;
+    }
+    return Math.floor(num);
+  }
+
+  /**
+   * Safely evaluate a condition expression using recursive descent parsing.
+   *
+   * Supported operators (by precedence, lowest to highest):
+   * - Logical: || (OR), && (AND)
+   * - Equality: === (strict equal), !== (strict not equal)
+   * - Relational: <, >, <=, >= (with Number coercion)
+   * - Grouping: ( )
+   *
+   * Supported values:
+   * - Numbers: integers and decimals (e.g., 42, -3.14)
+   * - Booleans: true, false
+   *
+   * Security guarantees:
+   * - No code injection: does not use eval() or new Function()
+   * - No access to JavaScript runtime objects or prototypes
+   * - Invalid expressions return false (fail-safe)
+   *
+   * @param condition - Expression string to evaluate (e.g., "5 > 3 && true")
+   * @returns Boolean result of the expression; false on parse errors
+   *
+   * @example
+   * evaluateCondition("5 > 3") // true
+   * evaluateCondition("10 === 10 && true") // true
+   * evaluateCondition("(5 > 10) || (3 < 5)") // true
+   */
+  private evaluateCondition(condition: string): boolean {
+    try {
+      const result = this.parseExpression(condition.trim());
+      return Boolean(result);
+    } catch (error) {
+      appLogger.error(
+        { condition, err: error instanceof Error ? error : new Error(String(error)) },
+        "Failed to evaluate condition",
+      );
+      return false;
+    }
+  }
+
+  // ============================================================================
+  // Safe Expression Parser
+  // ============================================================================
+  //
+  // A recursive descent parser for evaluating condition expressions safely,
+  // avoiding the security risks of eval() or new Function().
+  //
+  // BNF Grammar:
+  // ------------
+  //   expression     → logicalOr
+  //   logicalOr      → logicalAnd ( "||" logicalAnd )*
+  //   logicalAnd     → equality ( "&&" equality )*
+  //   equality       → relational ( ( "===" | "!==" ) relational )*
+  //   relational     → primary ( ( "<" | ">" | "<=" | ">=" ) primary )*
+  //   primary        → NUMBER | BOOLEAN | "(" expression ")"
+  //
+  // Operator Precedence (lowest to highest):
+  // ----------------------------------------
+  //   1. ||  (logical OR)
+  //   2. &&  (logical AND)
+  //   3. === !== (equality)
+  //   4. < > <= >= (relational)
+  //   5. () (grouping)
+  //
+  // Type Coercion:
+  // --------------
+  //   - Equality operators (===, !==) use strict comparison, no coercion
+  //   - Relational operators (<, >, <=, >=) coerce operands to Number
+  //     e.g., "true > 0" evaluates to true (1 > 0)
+  //   - Logical operators (&&, ||) use JavaScript truthy/falsy semantics
+  //
+  // Supported Tokens:
+  // -----------------
+  //   - Numbers: integers and decimals (e.g., 42, -3.14)
+  //   - Booleans: true, false
+  //   - Operators: ===, !==, <, >, <=, >=, &&, ||
+  //   - Grouping: ( )
+  //
+  // ============================================================================
+
+  /**
+   * Tokenize an expression string into an array of tokens.
+   * Handles multi-character operators, numbers, booleans, and parentheses.
+   */
+  private tokenize(expr: string): string[] {
+    const tokens: string[] = [];
+    let i = 0;
+
+    while (i < expr.length) {
+      // Skip whitespace
+      if (/\s/.test(expr[i])) {
+        i++;
+        continue;
+      }
+
+      // Multi-character operators
+      if (expr.slice(i, i + 3) === "===") {
+        tokens.push("===");
+        i += 3;
+        continue;
+      }
+      if (expr.slice(i, i + 3) === "!==") {
+        tokens.push("!==");
+        i += 3;
+        continue;
+      }
+      if (expr.slice(i, i + 2) === ">=") {
+        tokens.push(">=");
+        i += 2;
+        continue;
+      }
+      if (expr.slice(i, i + 2) === "<=") {
+        tokens.push("<=");
+        i += 2;
+        continue;
+      }
+      if (expr.slice(i, i + 2) === "&&") {
+        tokens.push("&&");
+        i += 2;
+        continue;
+      }
+      if (expr.slice(i, i + 2) === "||") {
+        tokens.push("||");
+        i += 2;
+        continue;
+      }
+
+      // Single-character operators and parentheses
+      if ("><()".includes(expr[i])) {
+        tokens.push(expr[i]);
+        i++;
+        continue;
+      }
+
+      // Boolean literals (with word boundary check)
+      if (expr.slice(i, i + 4) === "true") {
+        const nextChar = expr[i + 4];
+        // Ensure "true" is not part of a longer word (e.g., "trueish")
+        if (nextChar === undefined || !/[a-zA-Z0-9_]/.test(nextChar)) {
+          tokens.push("true");
+          i += 4;
+          continue;
+        }
+      }
+      if (expr.slice(i, i + 5) === "false") {
+        const nextChar = expr[i + 5];
+        // Ensure "false" is not part of a longer word (e.g., "falsehood")
+        if (nextChar === undefined || !/[a-zA-Z0-9_]/.test(nextChar)) {
+          tokens.push("false");
+          i += 5;
+          continue;
+        }
+      }
+
+      // Numbers (including negative)
+      // Explicit bounds check: ensure i + 1 is within bounds before accessing expr[i + 1]
+      if (/[\d]/.test(expr[i]) || (expr[i] === "-" && i + 1 < expr.length && /[\d]/.test(expr[i + 1]))) {
+        const startPos = i;
+        let num = "";
+
+        // Handle negative sign
+        if (expr[i] === "-") {
+          num += expr[i];
+          i++;
+        }
+
+        // Must have at least one digit after optional negative sign
+        if (i >= expr.length || !/[\d]/.test(expr[i])) {
+          throw new Error(`Invalid number at position ${startPos}: expected digit after '-'`);
+        }
+
+        // Collect integer part
+        while (i < expr.length && /[\d]/.test(expr[i])) {
+          num += expr[i];
+          i++;
+        }
+
+        // Optional decimal part
+        if (i < expr.length && expr[i] === ".") {
+          // Check that there's at least one digit after the decimal
+          if (i + 1 < expr.length && /[\d]/.test(expr[i + 1])) {
+            num += expr[i];
+            i++;
+
+            while (i < expr.length && /[\d]/.test(expr[i])) {
+              num += expr[i];
+              i++;
+            }
+
+            // Reject multiple decimal points (e.g., "1.2.3")
+            if (i < expr.length && expr[i] === ".") {
+              throw new Error(`Invalid number at position ${startPos}: multiple decimal points`);
+            }
+          }
+        }
+
+        tokens.push(num);
+        continue;
+      }
+
+      throw new Error(`Unexpected character at position ${i}: '${expr[i]}'`);
+    }
+
+    return tokens;
+  }
+
+  // Recursive descent parser - entry point
+  private parseExpression(expr: string): boolean | number {
+    const tokens = this.tokenize(expr);
+    let pos = 0;
+
+    const peek = (): string | undefined => tokens[pos];
+    const consume = (): string => tokens[pos++];
+
+    // Parse OR expressions (lowest precedence)
+    const parseOr = (): boolean | number => {
+      let left = parseAnd();
+      while (peek() === "||") {
+        consume();
+        const right = parseAnd();
+        left = Boolean(left) || Boolean(right);
+      }
+      return left;
+    };
+
+    // Parse AND expressions
+    const parseAnd = (): boolean | number => {
+      let left = parseComparison();
+      while (peek() === "&&") {
+        consume();
+        const right = parseComparison();
+        left = Boolean(left) && Boolean(right);
+      }
+      return left;
+    };
+
+    // Parse comparison expressions
+    const parseComparison = (): boolean | number => {
+      let left = parsePrimary();
+      const op = peek();
+      if (op === "===" || op === "!==" || op === ">" || op === "<" || op === ">=" || op === "<=") {
+        consume();
+        const right = parsePrimary();
+        switch (op) {
+          case "===": return left === right;
+          case "!==": return left !== right;
+          case ">": return Number(left) > Number(right);
+          case "<": return Number(left) < Number(right);
+          case ">=": return Number(left) >= Number(right);
+          case "<=": return Number(left) <= Number(right);
+        }
+      }
+      return left;
+    };
+
+    // Parse primary expressions (numbers, booleans, parentheses)
+    const parsePrimary = (): boolean | number => {
+      const token = peek();
+
+      if (token === "(") {
+        consume();
+        const result = parseOr();
+        if (peek() !== ")") {
+          throw new Error("Expected closing parenthesis");
+        }
+        consume();
+        return result;
+      }
+
+      if (token === "true") {
+        consume();
+        return true;
+      }
+
+      if (token === "false") {
+        consume();
+        return false;
+      }
+
+      // Must be a number (strict format: optional minus, digits, optional decimal with digits)
+      if (token !== undefined && /^-?\d+(\.\d+)?$/.test(token)) {
+        consume();
+        return parseFloat(token);
+      }
+
+      throw new Error(`Unexpected token: '${token}'`);
+    };
+
+    const result = parseOr();
+
+    if (pos < tokens.length) {
+      throw new Error(`Unexpected token after expression: '${tokens[pos]}'`);
+    }
+
+    return typeof result === "boolean" ? result : Boolean(result);
+  }
+
+  private async executeTestTool(node: NodeDefinition): Promise<unknown> {
     const tool = this.context.toolRegistry.get("test-runner");
     if (!tool) {
       throw new Error("Test runner tool not found");
     }
 
+    // Use unique requestId per tool invocation for precise trace correlation
     const toolContext: ToolContext = {
-      requestId: this.context.pipelineId,
+      requestId: randomUUID(),
       tenantId: this.context.tenantId,
       userId: this.context.userId,
       logger: appLogger,
@@ -891,14 +1995,15 @@ export class PipelineExecutor {
     }, toolContext);
   }
 
-  private async executeRepositoryTool(node: NodeDefinition): Promise<any> {
+  private async executeRepositoryTool(node: NodeDefinition): Promise<unknown> {
     const tool = this.context.toolRegistry.get("repository");
     if (!tool) {
       throw new Error("Repository tool not found");
     }
 
+    // Use unique requestId per tool invocation for precise trace correlation
     const toolContext: ToolContext = {
-      requestId: this.context.pipelineId,
+      requestId: randomUUID(),
       tenantId: this.context.tenantId,
       userId: this.context.userId,
       logger: appLogger,
@@ -912,7 +2017,7 @@ export class PipelineExecutor {
     }, toolContext);
   }
 
-  private async executeAnalysisTool(node: NodeDefinition): Promise<any> {
+  private async executeAnalysisTool(node: NodeDefinition): Promise<unknown> {
     // Use AI provider for analysis tasks
     const tool = this.context.toolRegistry.get("ai-analyzer");
     if (!tool) {
@@ -920,8 +2025,9 @@ export class PipelineExecutor {
       return await this.executeGenericTool(node);
     }
 
+    // Use unique requestId per tool invocation for precise trace correlation
     const toolContext: ToolContext = {
-      requestId: this.context.pipelineId,
+      requestId: randomUUID(),
       tenantId: this.context.tenantId,
       userId: this.context.userId,
       logger: appLogger,
@@ -931,15 +2037,16 @@ export class PipelineExecutor {
     return await tool.execute(node.config, toolContext);
   }
 
-  private async executeSearchTool(node: NodeDefinition): Promise<any> {
+  private async executeSearchTool(node: NodeDefinition): Promise<unknown> {
     // Use indexer for semantic search
     const tool = this.context.toolRegistry.get("semantic-search");
     if (!tool) {
       throw new Error("Semantic search tool not found");
     }
 
+    // Use unique requestId per tool invocation for precise trace correlation
     const toolContext: ToolContext = {
-      requestId: this.context.pipelineId,
+      requestId: randomUUID(),
       tenantId: this.context.tenantId,
       userId: this.context.userId,
       logger: appLogger,
@@ -952,7 +2059,7 @@ export class PipelineExecutor {
     }, toolContext);
   }
 
-  private async executeReviewTool(node: NodeDefinition): Promise<any> {
+  private async executeReviewTool(node: NodeDefinition): Promise<unknown> {
     const toolMap: Record<string, string> = {
       lint: "linter",
       "security-scan": "security-scanner",
@@ -968,8 +2075,9 @@ export class PipelineExecutor {
       return await this.executeGenericTool(node);
     }
 
+    // Use unique requestId per tool invocation for precise trace correlation
     const toolContext: ToolContext = {
-      requestId: this.context.pipelineId,
+      requestId: randomUUID(),
       tenantId: this.context.tenantId,
       userId: this.context.userId,
       logger: appLogger,
@@ -982,30 +2090,88 @@ export class PipelineExecutor {
     }, toolContext);
   }
 
-  private async executeGenericTool(node: NodeDefinition): Promise<any> {
-    // Try to find a tool matching the operation name
-    const tool = this.context.toolRegistry.get(
-      node.config.operation as string,
-    );
+  private async executeGenericTool(node: NodeDefinition): Promise<unknown> {
+    const operation = node.config.operation as string;
 
-    if (tool) {
-      const toolContext: ToolContext = {
-        requestId: this.context.pipelineId,
-        tenantId: this.context.tenantId,
-        userId: this.context.userId,
-        logger: appLogger,
-        workdir: process.cwd(),
-      };
-      return await tool.execute(node.config, toolContext);
+    if (!operation) {
+      throw new Error(`Node ${node.id} missing required 'operation' config`);
     }
 
-    // Log that no tool was found for this operation
-    console.warn(`No tool found for operation: ${node.config.operation}`);
+    // Try to find a tool matching the operation name
+    const tool = this.context.toolRegistry.get(operation);
 
-    // Return mock result for now
-    return {
-      status: "completed",
-      output: `Simulated execution of ${node.config.operation}`,
+    if (!tool) {
+      // Fail fast per AGENTS.md guidelines - don't mask configuration errors
+      throw new Error(
+        `No tool registered for operation '${operation}' in node '${node.id}'. ` +
+          `Ensure the tool is registered in ToolRegistry before pipeline execution.`,
+      );
+    }
+
+    // Use unique requestId per tool invocation for precise trace correlation
+    const requestId = randomUUID();
+
+    // Audit log: Tool invocation (per CLAUDE.md 4.3 - audit logging for tool invocations)
+    appLogger.info(
+      {
+        audit: true,
+        event: "tool_invocation",
+        pipelineId: this.context.pipelineId,
+        requestId,
+        tenantId: this.context.tenantId,
+        userId: this.context.userId,
+        nodeId: node.id,
+        operation,
+      },
+      "Tool invocation started",
+    );
+
+    const toolContext: ToolContext = {
+      requestId,
+      tenantId: this.context.tenantId,
+      userId: this.context.userId,
+      logger: appLogger,
+      workdir: process.cwd(),
     };
+
+    try {
+      const result = await tool.execute(node.config, toolContext);
+
+      // Audit log: Tool invocation success
+      appLogger.info(
+        {
+          audit: true,
+          event: "tool_invocation_completed",
+          pipelineId: this.context.pipelineId,
+          requestId,
+          tenantId: this.context.tenantId,
+          userId: this.context.userId,
+          nodeId: node.id,
+          operation,
+          success: true,
+        },
+        "Tool invocation completed",
+      );
+
+      return result;
+    } catch (error) {
+      // Audit log: Tool invocation failure
+      appLogger.warn(
+        {
+          audit: true,
+          event: "tool_invocation_failed",
+          pipelineId: this.context.pipelineId,
+          requestId,
+          tenantId: this.context.tenantId,
+          userId: this.context.userId,
+          nodeId: node.id,
+          operation,
+          success: false,
+          err: error instanceof Error ? error : new Error(String(error)),
+        },
+        "Tool invocation failed",
+      );
+      throw error;
+    }
   }
 }

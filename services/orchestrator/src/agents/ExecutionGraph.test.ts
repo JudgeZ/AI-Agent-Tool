@@ -766,4 +766,52 @@ describe("ExecutionGraph", () => {
       expect(maxConcurrent).toBeLessThanOrEqual(2);
     });
   });
+
+  describe("handler registration", () => {
+    it("should return true for registered handlers", () => {
+      const definition: GraphDefinition = {
+        id: "test-graph",
+        name: "Test",
+        nodes: [
+          {
+            id: "node1",
+            type: NodeType.TASK,
+            name: "Node 1",
+            dependencies: [],
+            config: {},
+          },
+        ],
+        entryNodes: ["node1"],
+      };
+
+      const graph = new ExecutionGraph(definition);
+      graph.registerHandler(NodeType.TASK, simpleTaskHandler);
+
+      expect(graph.hasHandler(NodeType.TASK)).toBe(true);
+    });
+
+    it("should return false for unregistered handlers", () => {
+      const definition: GraphDefinition = {
+        id: "test-graph",
+        name: "Test",
+        nodes: [
+          {
+            id: "node1",
+            type: NodeType.TASK,
+            name: "Node 1",
+            dependencies: [],
+            config: {},
+          },
+        ],
+        entryNodes: ["node1"],
+      };
+
+      const graph = new ExecutionGraph(definition);
+      // Don't register any handlers
+
+      expect(graph.hasHandler(NodeType.TASK)).toBe(false);
+      expect(graph.hasHandler(NodeType.CONDITION)).toBe(false);
+      expect(graph.hasHandler(NodeType.LOOP)).toBe(false);
+    });
+  });
 });
