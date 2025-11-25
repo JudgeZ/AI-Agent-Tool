@@ -4,12 +4,18 @@ use opentelemetry_sdk::trace::Tracer;
 use opentelemetry_sdk::Resource;
 use std::env;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 use thiserror::Error;
 use tracing_opentelemetry::OpenTelemetryLayer;
-use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::EnvFilter;
 
 const SERVICE_NAME: &str = "ossaat-indexer";
 const SERVICE_VERSION: &str = env!("CARGO_PKG_VERSION");
+
+/// Timeout for OTLP exporter operations to prevent indefinite blocking.
+const OTLP_EXPORT_TIMEOUT: Duration = Duration::from_secs(10);
 
 static OTLP_INITIALIZED: AtomicBool = AtomicBool::new(false);
 
@@ -40,32 +46,48 @@ pub fn init_tracing() -> Result<(), TelemetryError> {
         .ok()
         .filter(|s| !s.trim().is_empty());
 
-    match otlp_endpoint {
-        Some(endpoint) => {
-            let tracer = init_otlp_tracer(&endpoint)?;
-            let otel_layer = OpenTelemetryLayer::new(tracer);
+    let has_otlp = otlp_endpoint.is_some();
 
-            OTLP_INITIALIZED.store(true, Ordering::SeqCst);
+    // Build optional OTLP layer if endpoint is configured
+    let otel_layer = otlp_endpoint
+        .map(|endpoint| init_otlp_tracer(&endpoint))
+        .transpose()?
+        .map(OpenTelemetryLayer::new);
 
-            tracing_subscriber::registry()
-                .with(env_filter)
-                .with(fmt_layer)
-                .with(otel_layer)
-                .try_init()
-                .map_err(TelemetryError::from)
-        }
-        None => tracing_subscriber::registry()
-            .with(env_filter)
-            .with(fmt_layer)
-            .try_init()
-            .map_err(TelemetryError::from),
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(fmt_layer)
+        .with(otel_layer)
+        .try_init()?;
+
+    // Only set the flag after successful initialization to avoid race condition
+    // where shutdown_tracing() might be called on a failed/partial init
+    if has_otlp {
+        OTLP_INITIALIZED.store(true, Ordering::SeqCst);
     }
+
+    Ok(())
 }
 
+/// Creates an OTLP tracer configured for the given endpoint.
+///
+/// The tracer is configured with:
+/// - Service name and version as resource attributes for trace identification
+/// - Export timeout to prevent indefinite blocking on unresponsive endpoints
+/// - Batch processing using the Tokio runtime
+///
+/// # Arguments
+///
+/// * `endpoint` - The OTLP collector endpoint URL (e.g., `http://jaeger:4317`)
+///
+/// # Errors
+///
+/// Returns `TelemetryError::Tracer` if the tracer pipeline fails to initialize.
 fn init_otlp_tracer(endpoint: &str) -> Result<Tracer, TelemetryError> {
     let exporter = opentelemetry_otlp::new_exporter()
         .tonic()
-        .with_endpoint(endpoint);
+        .with_endpoint(endpoint)
+        .with_timeout(OTLP_EXPORT_TIMEOUT);
 
     let resource = Resource::new(vec![
         KeyValue::new(
