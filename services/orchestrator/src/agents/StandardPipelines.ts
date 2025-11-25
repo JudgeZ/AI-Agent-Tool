@@ -858,6 +858,20 @@ export class PipelineExecutor {
   }
 
   public async execute(config: PipelineConfig): Promise<ExecutionResult> {
+    const startTime = Date.now();
+    const executionId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+
+    appLogger.info(
+      {
+        pipelineId: this.context.pipelineId,
+        executionId,
+        pipelineType: config.type,
+        pipelineName: config.name,
+        nodeCount: config.parameters ? Object.keys(config.parameters).length : 0,
+      },
+      "Pipeline execution started",
+    );
+
     // Create pipeline graph
     const graphDefinition = PipelineFactory.create(config, this.context);
 
@@ -868,7 +882,40 @@ export class PipelineExecutor {
     this.registerHandlers(graph);
 
     // Execute
-    return await graph.execute();
+    let result: ExecutionResult;
+    try {
+      result = await graph.execute();
+
+      const durationMs = Date.now() - startTime;
+      appLogger.info(
+        {
+          pipelineId: this.context.pipelineId,
+          executionId,
+          pipelineType: config.type,
+          success: result.success,
+          durationMs,
+          totalNodes: result.totalNodes,
+          completedNodes: result.completed,
+          failedNodes: result.failed,
+        },
+        "Pipeline execution completed",
+      );
+
+      return result;
+    } catch (error) {
+      const durationMs = Date.now() - startTime;
+      appLogger.error(
+        {
+          pipelineId: this.context.pipelineId,
+          executionId,
+          pipelineType: config.type,
+          durationMs,
+          err: error instanceof Error ? error : new Error(String(error)),
+        },
+        "Pipeline execution failed",
+      );
+      throw error;
+    }
   }
 
   private registerHandlers(graph: ExecutionGraph): void {
@@ -1153,6 +1200,9 @@ export class PipelineExecutor {
         // Resolve static config values (but keep condition unresolved for per-iteration evaluation)
         const resolvedNode = this.resolveNodeConfig(node, context);
 
+        // Default maxIterations of 100 provides a safety limit to prevent infinite loops
+        // while allowing sufficient iterations for most use cases. This can be overridden
+        // per-node via config.maxIterations for loops that need more iterations.
         const maxIterations = (resolvedNode.config.maxIterations as number) ?? 100;
         // Use ORIGINAL condition for dynamic per-iteration substitution
         const conditionExpr = node.config.condition as string | undefined;
@@ -1344,7 +1394,50 @@ export class PipelineExecutor {
     }
   }
 
-  // Tokenizer for safe expression parsing
+  // ============================================================================
+  // Safe Expression Parser
+  // ============================================================================
+  //
+  // A recursive descent parser for evaluating condition expressions safely,
+  // avoiding the security risks of eval() or new Function().
+  //
+  // BNF Grammar:
+  // ------------
+  //   expression     → logicalOr
+  //   logicalOr      → logicalAnd ( "||" logicalAnd )*
+  //   logicalAnd     → equality ( "&&" equality )*
+  //   equality       → relational ( ( "===" | "!==" ) relational )*
+  //   relational     → primary ( ( "<" | ">" | "<=" | ">=" ) primary )*
+  //   primary        → NUMBER | BOOLEAN | "(" expression ")"
+  //
+  // Operator Precedence (lowest to highest):
+  // ----------------------------------------
+  //   1. ||  (logical OR)
+  //   2. &&  (logical AND)
+  //   3. === !== (equality)
+  //   4. < > <= >= (relational)
+  //   5. () (grouping)
+  //
+  // Type Coercion:
+  // --------------
+  //   - Equality operators (===, !==) use strict comparison, no coercion
+  //   - Relational operators (<, >, <=, >=) coerce operands to Number
+  //     e.g., "true > 0" evaluates to true (1 > 0)
+  //   - Logical operators (&&, ||) use JavaScript truthy/falsy semantics
+  //
+  // Supported Tokens:
+  // -----------------
+  //   - Numbers: integers and decimals (e.g., 42, -3.14)
+  //   - Booleans: true, false
+  //   - Operators: ===, !==, <, >, <=, >=, &&, ||
+  //   - Grouping: ( )
+  //
+  // ============================================================================
+
+  /**
+   * Tokenize an expression string into an array of tokens.
+   * Handles multi-character operators, numbers, booleans, and parentheses.
+   */
   private tokenize(expr: string): string[] {
     const tokens: string[] = [];
     let i = 0;
@@ -1670,32 +1763,30 @@ export class PipelineExecutor {
   }
 
   private async executeGenericTool(node: NodeDefinition): Promise<unknown> {
-    // Try to find a tool matching the operation name
-    const tool = this.context.toolRegistry.get(
-      node.config.operation as string,
-    );
+    const operation = node.config.operation as string;
 
-    if (tool) {
-      const toolContext: ToolContext = {
-        requestId: this.context.pipelineId,
-        tenantId: this.context.tenantId,
-        userId: this.context.userId,
-        logger: appLogger,
-        workdir: process.cwd(),
-      };
-      return await tool.execute(node.config, toolContext);
+    if (!operation) {
+      throw new Error(`Node ${node.id} missing required 'operation' config`);
     }
 
-    // Log that no tool was found for this operation
-    appLogger.warn(
-      { operation: node.config.operation, nodeId: node.id },
-      "No tool found for operation",
-    );
+    // Try to find a tool matching the operation name
+    const tool = this.context.toolRegistry.get(operation);
 
-    // Return mock result for now
-    return {
-      status: "completed",
-      output: `Simulated execution of ${node.config.operation}`,
+    if (!tool) {
+      // Fail fast per AGENTS.md guidelines - don't mask configuration errors
+      throw new Error(
+        `No tool registered for operation '${operation}' in node '${node.id}'. ` +
+          `Ensure the tool is registered in ToolRegistry before pipeline execution.`,
+      );
+    }
+
+    const toolContext: ToolContext = {
+      requestId: this.context.pipelineId,
+      tenantId: this.context.tenantId,
+      userId: this.context.userId,
+      logger: appLogger,
+      workdir: process.cwd(),
     };
+    return await tool.execute(node.config, toolContext);
   }
 }

@@ -5,6 +5,7 @@ import {
   PipelineType,
   PipelineConfig,
   PipelineContext,
+  ConditionFailedError,
 } from "./StandardPipelines";
 import {
   NodeType,
@@ -219,6 +220,48 @@ describe("StandardPipelines", () => {
 
         expect(substituteVariables(executor, "${node1}", context)).toBe("simple-value");
       });
+
+      it("should block prototype pollution via __proto__", () => {
+        const context: ExecutionContext = {
+          graphId: "test",
+          executionId: "exec-1",
+          variables: new Map(),
+          outputs: new Map([["node1", { value: "safe" }]]),
+          metadata: {},
+        };
+
+        // Should keep original reference unchanged when dangerous property accessed
+        expect(substituteVariables(executor, "${node1.__proto__}", context)).toBe("${node1.__proto__}");
+        // Normal properties should still work
+        expect(substituteVariables(executor, "${node1.value}", context)).toBe("safe");
+      });
+
+      it("should block prototype pollution via constructor", () => {
+        const context: ExecutionContext = {
+          graphId: "test",
+          executionId: "exec-1",
+          variables: new Map(),
+          outputs: new Map([["node1", { data: "test" }]]),
+          metadata: {},
+        };
+
+        expect(substituteVariables(executor, "${node1.constructor}", context)).toBe("${node1.constructor}");
+        expect(substituteVariables(executor, "${node1.constructor.prototype}", context)).toBe(
+          "${node1.constructor.prototype}",
+        );
+      });
+
+      it("should block prototype pollution via prototype", () => {
+        const context: ExecutionContext = {
+          graphId: "test",
+          executionId: "exec-1",
+          variables: new Map(),
+          outputs: new Map([["node1", { info: "value" }]]),
+          metadata: {},
+        };
+
+        expect(substituteVariables(executor, "${node1.prototype}", context)).toBe("${node1.prototype}");
+      });
     });
 
     describe("serializeValue", () => {
@@ -378,7 +421,7 @@ describe("StandardPipelines", () => {
       });
     });
 
-    it("should create condition handler that throws when expression is false", async () => {
+    it("should create condition handler that throws ConditionFailedError with proper structure", async () => {
       const handler = (executor as any).createConditionHandler();
       const context: ExecutionContext = {
         graphId: "test",
@@ -398,7 +441,25 @@ describe("StandardPipelines", () => {
         },
       };
 
-      await expect(handler.execute(node, context)).rejects.toThrow("Condition failed");
+      try {
+        await handler.execute(node, context);
+        expect.fail("Should have thrown ConditionFailedError");
+      } catch (error) {
+        // Verify error type
+        expect(error).toBeInstanceOf(ConditionFailedError);
+
+        // Verify error structure
+        const conditionError = error as ConditionFailedError;
+        expect(conditionError.name).toBe("ConditionFailedError");
+        expect(conditionError.message).toContain("Condition failed");
+
+        // Verify conditionResult field
+        expect(conditionError.conditionResult).toBeDefined();
+        expect(conditionError.conditionResult.condition).toBe("5 === 3");
+        expect(conditionError.conditionResult.evaluatedCondition).toBe("5 === 3");
+        expect(conditionError.conditionResult.result).toBe(false);
+        expect(conditionError.conditionResult.passed).toBe(false);
+      }
     });
 
     it("should handle boolean variable reference in condition (true)", async () => {
@@ -915,6 +976,111 @@ describe("StandardPipelines", () => {
 
       // Should keep original string if reference not found
       expect(resolved.config.items).toBe("${unknown.items}");
+    });
+
+    it("should resolve variables in deeply nested config objects", () => {
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map([
+          ["source", { apiKey: "secret-key", endpoint: "https://api.example.com" }],
+        ]),
+        metadata: {},
+      };
+
+      const node: NodeDefinition = {
+        id: "test-node",
+        type: NodeType.TASK,
+        name: "Test",
+        dependencies: ["source"],
+        config: {
+          context: {
+            level1: {
+              level2: {
+                apiKey: "${source.apiKey}",
+                url: "${source.endpoint}/v1/data",
+              },
+            },
+          },
+        },
+      };
+
+      const resolved = (executor as any).resolveNodeConfig(node, context);
+
+      // Verify deeply nested resolution
+      expect(resolved.config.context.level1.level2.apiKey).toBe("secret-key");
+      expect(resolved.config.context.level1.level2.url).toBe("https://api.example.com/v1/data");
+    });
+
+    it("should resolve variables in arrays within nested objects", () => {
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map([["source", { host1: "server1.com", host2: "server2.com" }]]),
+        metadata: {},
+      };
+
+      const node: NodeDefinition = {
+        id: "test-node",
+        type: NodeType.TASK,
+        name: "Test",
+        dependencies: ["source"],
+        config: {
+          servers: {
+            primary: ["${source.host1}", "${source.host2}"],
+            settings: {
+              hosts: ["${source.host1}"],
+            },
+          },
+        },
+      };
+
+      const resolved = (executor as any).resolveNodeConfig(node, context);
+
+      expect(resolved.config.servers.primary).toEqual(["server1.com", "server2.com"]);
+      expect(resolved.config.servers.settings.hosts).toEqual(["server1.com"]);
+    });
+
+    it("should resolve multi-level property chains from source", () => {
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map([
+          [
+            "analysis",
+            {
+              results: {
+                findings: {
+                  critical: ["issue1", "issue2"],
+                  metadata: { count: 2 },
+                },
+              },
+            },
+          ],
+        ]),
+        metadata: {},
+      };
+
+      const node: NodeDefinition = {
+        id: "test-node",
+        type: NodeType.TASK,
+        name: "Test",
+        dependencies: ["analysis"],
+        config: {
+          criticalIssues: "${analysis.results.findings.critical}",
+          issueCount: "${analysis.results.findings.metadata.count}",
+        },
+      };
+
+      const resolved = (executor as any).resolveNodeConfig(node, context);
+
+      // Pure reference preserves array type
+      expect(resolved.config.criticalIssues).toEqual(["issue1", "issue2"]);
+      // Pure reference preserves number type
+      expect(resolved.config.issueCount).toBe(2);
     });
   });
 });
