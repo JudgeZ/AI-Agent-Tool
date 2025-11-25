@@ -174,7 +174,7 @@ async function createSessionHeaders({
   sessionHeaderId?: string;
   includeOrigin?: boolean;
   claims?: Record<string, unknown>;
-} = {}) {
+} = {}): Promise<Record<string, string>> {
   const session = await sessionStore.createSession(
     {
       subject: `user-${tenantId}`,
@@ -220,8 +220,8 @@ describe("collaboration server", () => {
     });
   });
 
-  afterEach(() => {
-    sessionStore.clear();
+  afterEach(async () => {
+    await sessionStore.clear();
     vi.mocked(logAuditEvent).mockClear();
     resetIpConnectionCountsForTesting();
     process.env.COLLAB_MAX_ROOMS = originalRoomLimit;
@@ -671,9 +671,9 @@ describe("collaboration server", () => {
 describe("collaboration server proxy handling", () => {
   const originalIpLimit = process.env.COLLAB_WS_IP_LIMIT;
 
-  afterEach(() => {
+  afterEach(async () => {
     resetIpConnectionCountsForTesting();
-    sessionStore.clear();
+    await sessionStore.clear();
     if (originalIpLimit === undefined) {
       delete process.env.COLLAB_WS_IP_LIMIT;
     } else {

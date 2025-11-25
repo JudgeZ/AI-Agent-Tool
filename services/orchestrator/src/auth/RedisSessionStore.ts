@@ -192,8 +192,10 @@ export class RedisSessionStore implements ISessionStore {
     const issuedAtMs = Date.now();
     const safeTtlSeconds = Math.max(MIN_TTL_SECONDS, Math.floor(ttlSeconds));
     const ttlMs = safeTtlSeconds * 1000;
-    const expiryCandidate = expiresAtMsOverride ?? issuedAtMs + ttlMs;
-    const expiresAtMs = Math.min(expiryCandidate, issuedAtMs + ttlMs);
+    // Use override directly when provided; only fall back to TTL-based expiry
+    // when no override is given. This allows external systems (like OIDC) to
+    // set session expiry based on token lifetime.
+    const expiresAtMs = expiresAtMsOverride ?? issuedAtMs + ttlMs;
 
     const session: SessionRecord = {
       id,

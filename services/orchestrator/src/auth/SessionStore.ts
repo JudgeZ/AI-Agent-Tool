@@ -48,8 +48,10 @@ export class MemorySessionStore implements ISessionStore {
     const id = randomUUID();
     const issuedAtMs = Date.now();
     const ttlMs = Math.max(1, ttlSeconds) * 1000;
-    const expiryCandidate = expiresAtMsOverride ?? issuedAtMs + ttlMs;
-    const expiresAtMs = Math.min(expiryCandidate, issuedAtMs + ttlMs);
+    // Use override directly when provided; only fall back to TTL-based expiry
+    // when no override is given. This allows external systems (like OIDC) to
+    // set session expiry based on token lifetime.
+    const expiresAtMs = expiresAtMsOverride ?? issuedAtMs + ttlMs;
 
     const session: SessionRecord = {
       id,

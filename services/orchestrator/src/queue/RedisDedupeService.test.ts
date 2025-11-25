@@ -257,16 +257,18 @@ describe("RedisDedupeService", () => {
       expect(redisState.quit).toHaveBeenCalled();
     });
 
-    it("should prevent operations after close", async () => {
+    it("should allow operations after close (graceful degradation)", async () => {
       service = new RedisDedupeService(defaultConfig);
 
       // Trigger connection
       await service.claim("before-close", 5000);
       await service.close();
 
-      // Operations should fail gracefully
+      // Operations after close return true (graceful degradation)
+      // This prevents blocking when Redis is unavailable, at the cost of
+      // potentially processing duplicates
       const claimed = await service.claim("after-close", 5000);
-      expect(claimed).toBe(false);
+      expect(claimed).toBe(true);
     });
   });
 
