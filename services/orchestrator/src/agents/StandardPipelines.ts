@@ -6,12 +6,41 @@ import {
   NodeType,
   NodeDefinition,
   NodeHandler,
+  NodeConfig,
 } from "./ExecutionGraph";
 import { MessageBus, SharedContextManager } from "./AgentCommunication";
 import { McpTool, ToolContext } from "../tools/McpTool";
 import { ToolRegistry } from "../tools/ToolRegistry";
 import { appLogger } from "../observability/logger";
 import { z } from "zod";
+
+// ============================================================================
+// Custom Error Types
+// ============================================================================
+
+/**
+ * Error thrown when a condition node evaluates to false.
+ * Provides typed access to condition result details.
+ */
+export class ConditionFailedError extends Error {
+  public readonly conditionResult: {
+    condition: string;
+    evaluatedCondition: string;
+    result: false;
+    passed: false;
+  };
+
+  constructor(condition: string, evaluatedCondition: string) {
+    super(`Condition failed: ${condition} (evaluated: ${evaluatedCondition})`);
+    this.name = "ConditionFailedError";
+    this.conditionResult = {
+      condition,
+      evaluatedCondition,
+      result: false,
+      passed: false,
+    };
+  }
+}
 
 // ============================================================================
 // Pipeline Types and Validation
@@ -904,16 +933,29 @@ export class PipelineExecutor {
   private resolveNodeConfig(node: NodeDefinition, context: ExecutionContext): NodeDefinition {
     return {
       ...node,
-      config: this.resolveConfigValue(node.config, context) as Record<string, unknown>,
+      config: this.resolveConfigValue(node.config, context) as NodeConfig,
     };
   }
 
   /**
    * Recursively resolve variable references in a config value.
    * Handles strings, arrays, and nested objects.
+   *
+   * For pure variable references (e.g., "${node.items}"), preserves
+   * the original type (arrays, objects). For template strings with
+   * embedded references (e.g., "Found ${count} items"), serializes
+   * values to strings.
    */
   private resolveConfigValue(value: unknown, context: ExecutionContext): unknown {
     if (typeof value === "string") {
+      // Check if this is a pure variable reference (entire string is one ${...} reference)
+      const pureRefMatch = value.match(/^\$\{([^}]+)\}$/);
+      if (pureRefMatch) {
+        // Return the actual value, preserving its type (array, object, etc.)
+        const resolved = this.resolveVariableReference(pureRefMatch[1], context);
+        return resolved !== undefined ? resolved : value;
+      }
+      // For template strings with embedded references, serialize to string
       return this.substituteVariables(value, context);
     }
 
@@ -927,6 +969,47 @@ export class PipelineExecutor {
         resolved[key] = this.resolveConfigValue(val, context);
       }
       return resolved;
+    }
+
+    return value;
+  }
+
+  /**
+   * Resolve a variable reference path (e.g., "node.field.subfield") to its actual value.
+   * Returns undefined if the reference cannot be resolved.
+   */
+  private resolveVariableReference(path: string, context: ExecutionContext): unknown {
+    const parts = path.split(".");
+    const nodeId = parts[0];
+    const fieldPath = parts.slice(1);
+
+    const nodeOutput = context.outputs.get(nodeId);
+    if (nodeOutput === undefined) {
+      return undefined;
+    }
+
+    // If no field path, return the entire output
+    if (fieldPath.length === 0) {
+      return nodeOutput;
+    }
+
+    // Navigate to the nested field
+    let value: unknown = nodeOutput;
+    for (const field of fieldPath) {
+      // Prototype pollution protection
+      if (this.isDangerousProperty(field)) {
+        appLogger.warn(
+          { field, path },
+          "Blocked access to dangerous property in variable reference",
+        );
+        return undefined;
+      }
+
+      if (typeof value === "object" && value !== null && field in value) {
+        value = (value as Record<string, unknown>)[field];
+      } else {
+        return undefined;
+      }
     }
 
     return value;
@@ -969,14 +1052,14 @@ export class PipelineExecutor {
         node: NodeDefinition,
         context: ExecutionContext,
       ): Promise<unknown> => {
-        const condition = node.config.condition as string;
+        // Resolve variable references in node config (consistent with other handlers)
+        const resolvedNode = this.resolveNodeConfig(node, context);
+        const condition = node.config.condition as string; // Original for error messages
+        const evaluatedCondition = resolvedNode.config.condition as string;
 
         if (!condition) {
           throw new Error(`Condition node ${node.id} missing 'condition' config`);
         }
-
-        // Evaluate condition by substituting variable references
-        const evaluatedCondition = this.substituteVariables(condition, context);
 
         // Safely evaluate the condition expression
         const result = this.evaluateCondition(evaluatedCondition);
@@ -989,16 +1072,7 @@ export class PipelineExecutor {
         // When condition is false, throw to block dependent nodes
         // Use continueOnError: true on the node to allow dependents to execute regardless
         if (!result) {
-          const error = new Error(
-            `Condition failed: ${condition} (evaluated: ${evaluatedCondition})`,
-          );
-          (error as any).conditionResult = {
-            condition,
-            evaluatedCondition,
-            result: false,
-            passed: false,
-          };
-          throw error;
+          throw new ConditionFailedError(condition, evaluatedCondition);
         }
 
         return {
@@ -1057,16 +1131,18 @@ export class PipelineExecutor {
         node: NodeDefinition,
         context: ExecutionContext,
       ): Promise<unknown> => {
-        // Resolve variable references in node config
+        // Resolve static config values (but keep condition unresolved for per-iteration evaluation)
         const resolvedNode = this.resolveNodeConfig(node, context);
 
         const maxIterations = (resolvedNode.config.maxIterations as number) ?? 100;
-        const conditionExpr = resolvedNode.config.condition as string | undefined;
+        // Use ORIGINAL condition for dynamic per-iteration substitution
+        const conditionExpr = node.config.condition as string | undefined;
         const operation = resolvedNode.config.operation as string | undefined;
         const items = resolvedNode.config.items as unknown[] | undefined;
 
         const results: unknown[] = [];
         let iteration = 0;
+        const iterationOutputKeys: string[] = []; // Track keys for cleanup
 
         // Check items bounds before first execution
         if (items && items.length === 0) {
@@ -1081,46 +1157,55 @@ export class PipelineExecutor {
           };
         }
 
-        while (iteration < maxIterations) {
-          // Check loop condition if specified (re-evaluate each iteration)
-          if (conditionExpr) {
-            const evaluatedCondition = this.substituteVariables(conditionExpr, context);
-            const shouldContinue = this.evaluateCondition(evaluatedCondition);
-            if (!shouldContinue) {
+        try {
+          while (iteration < maxIterations) {
+            // Check loop condition if specified (re-evaluate each iteration with fresh substitution)
+            if (conditionExpr) {
+              const evaluatedCondition = this.substituteVariables(conditionExpr, context);
+              const shouldContinue = this.evaluateCondition(evaluatedCondition);
+              if (!shouldContinue) {
+                break;
+              }
+            }
+
+            // Check items bounds before execution
+            if (items && iteration >= items.length) {
+              break;
+            }
+
+            // Execute the loop body if operation specified
+            if (operation) {
+              // Create iteration-specific node with current item injected
+              const iterationNode: NodeDefinition = {
+                ...resolvedNode,
+                config: {
+                  ...resolvedNode.config,
+                  _iteration: iteration,
+                  _item: items ? (items[iteration] as NodeConfig[string]) : null,
+                  _totalItems: items ? items.length : null,
+                },
+              };
+
+              const iterationResult = await this.executeGenericTool(iterationNode);
+              results.push(iterationResult);
+
+              // Store iteration result in context for dynamic condition evaluation
+              const iterationKey = `${node.id}_iteration_${iteration}`;
+              context.outputs.set(iterationKey, iterationResult);
+              iterationOutputKeys.push(iterationKey);
+            }
+
+            iteration++;
+
+            // If no condition and no items, execute once and exit
+            if (!conditionExpr && !items) {
               break;
             }
           }
-
-          // Check items bounds before execution
-          if (items && iteration >= items.length) {
-            break;
-          }
-
-          // Execute the loop body if operation specified
-          if (operation) {
-            // Create iteration-specific node with current item injected
-            const iterationNode: NodeDefinition = {
-              ...resolvedNode,
-              config: {
-                ...resolvedNode.config,
-                _iteration: iteration,
-                _item: items ? items[iteration] : undefined,
-                _totalItems: items ? items.length : undefined,
-              },
-            };
-
-            const iterationResult = await this.executeGenericTool(iterationNode);
-            results.push(iterationResult);
-
-            // Store iteration result in context for dynamic condition evaluation
-            context.outputs.set(`${node.id}_iteration_${iteration}`, iterationResult);
-          }
-
-          iteration++;
-
-          // If no condition and no items, execute once and exit
-          if (!conditionExpr && !items) {
-            break;
+        } finally {
+          // Clean up intermediate iteration outputs to prevent context pollution
+          for (const key of iterationOutputKeys) {
+            context.outputs.delete(key);
           }
         }
 
@@ -1311,21 +1396,50 @@ export class PipelineExecutor {
       }
 
       // Numbers (including negative)
-      if (/[-\d.]/.test(expr[i])) {
+      if (/[\d]/.test(expr[i]) || (expr[i] === "-" && /[\d]/.test(expr[i + 1]))) {
+        const startPos = i;
         let num = "";
+        let hasDecimal = false;
+
         // Handle negative sign
         if (expr[i] === "-") {
           num += expr[i];
           i++;
         }
-        while (i < expr.length && /[\d.]/.test(expr[i])) {
+
+        // Must have at least one digit after optional negative sign
+        if (i >= expr.length || !/[\d]/.test(expr[i])) {
+          throw new Error(`Invalid number at position ${startPos}: expected digit after '-'`);
+        }
+
+        // Collect integer part
+        while (i < expr.length && /[\d]/.test(expr[i])) {
           num += expr[i];
           i++;
         }
-        if (num && num !== "-") {
-          tokens.push(num);
-          continue;
+
+        // Optional decimal part
+        if (i < expr.length && expr[i] === ".") {
+          // Check that there's at least one digit after the decimal
+          if (i + 1 < expr.length && /[\d]/.test(expr[i + 1])) {
+            num += expr[i];
+            i++;
+            hasDecimal = true;
+
+            while (i < expr.length && /[\d]/.test(expr[i])) {
+              num += expr[i];
+              i++;
+            }
+
+            // Reject multiple decimal points (e.g., "1.2.3")
+            if (i < expr.length && expr[i] === ".") {
+              throw new Error(`Invalid number at position ${startPos}: multiple decimal points`);
+            }
+          }
         }
+
+        tokens.push(num);
+        continue;
       }
 
       throw new Error(`Unexpected character at position ${i}: '${expr[i]}'`);
@@ -1407,8 +1521,8 @@ export class PipelineExecutor {
         return false;
       }
 
-      // Must be a number
-      if (token !== undefined && /^-?[\d.]+$/.test(token)) {
+      // Must be a number (strict format: optional minus, digits, optional decimal with digits)
+      if (token !== undefined && /^-?\d+(\.\d+)?$/.test(token)) {
         consume();
         return parseFloat(token);
       }

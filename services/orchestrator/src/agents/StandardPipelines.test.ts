@@ -534,5 +534,108 @@ describe("StandardPipelines", () => {
       expect(resolved.config.limit).toBe(10);
       expect(resolved.config.operation).toBe("search");
     });
+
+    it("should preserve array types for pure variable references", () => {
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map([["prev", { items: [1, 2, 3, 4, 5] }]]),
+        metadata: {},
+      };
+
+      const node: NodeDefinition = {
+        id: "test-node",
+        type: NodeType.LOOP,
+        name: "Test Loop",
+        dependencies: ["prev"],
+        config: {
+          items: "${prev.items}",
+        },
+      };
+
+      const resolved = (executor as any).resolveNodeConfig(node, context);
+
+      // Should preserve the array type, not convert to "[1,2,3,4,5]" string
+      expect(Array.isArray(resolved.config.items)).toBe(true);
+      expect(resolved.config.items).toEqual([1, 2, 3, 4, 5]);
+    });
+
+    it("should preserve object types for pure variable references", () => {
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map([["prev", { data: { name: "test", count: 42 } }]]),
+        metadata: {},
+      };
+
+      const node: NodeDefinition = {
+        id: "test-node",
+        type: NodeType.TASK,
+        name: "Test",
+        dependencies: ["prev"],
+        config: {
+          payload: "${prev.data}",
+        },
+      };
+
+      const resolved = (executor as any).resolveNodeConfig(node, context);
+
+      // Should preserve the object type
+      expect(typeof resolved.config.payload).toBe("object");
+      expect(resolved.config.payload).toEqual({ name: "test", count: 42 });
+    });
+
+    it("should serialize to string for template strings with embedded references", () => {
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map([["prev", { items: [1, 2, 3] }]]),
+        metadata: {},
+      };
+
+      const node: NodeDefinition = {
+        id: "test-node",
+        type: NodeType.TASK,
+        name: "Test",
+        dependencies: ["prev"],
+        config: {
+          message: "Processing items: ${prev.items}",
+        },
+      };
+
+      const resolved = (executor as any).resolveNodeConfig(node, context);
+
+      // Template string should serialize the array to JSON
+      expect(typeof resolved.config.message).toBe("string");
+      expect(resolved.config.message).toBe("Processing items: [1,2,3]");
+    });
+
+    it("should keep original string if pure reference cannot be resolved", () => {
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map(),
+        metadata: {},
+      };
+
+      const node: NodeDefinition = {
+        id: "test-node",
+        type: NodeType.TASK,
+        name: "Test",
+        dependencies: [],
+        config: {
+          items: "${unknown.items}",
+        },
+      };
+
+      const resolved = (executor as any).resolveNodeConfig(node, context);
+
+      // Should keep original string if reference not found
+      expect(resolved.config.items).toBe("${unknown.items}");
+    });
   });
 });
