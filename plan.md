@@ -355,7 +355,7 @@ Goal: Unify plans into workflows and add Case/Operations views.
 
 ### 3.1 CaseService & schema
 
-- [ ] **Task:** Introduce Cases, Tasks, and Artifacts in Orchestrator.
+- [x] **Task:** Introduce Cases, Tasks, and Artifacts in Orchestrator.
 - **Files:**
   - DB migrations
   - `services/orchestrator/src/cases/CaseService.ts`
@@ -376,7 +376,7 @@ Goal: Unify plans into workflows and add Case/Operations views.
 
 ### 3.2 WorkflowEngine (unify plans & workflows)
 
-- [ ] **Task:** Refactor plan execution to a generic WorkflowEngine.
+- [x] **Task:** Refactor plan execution to a generic WorkflowEngine.
 - **Files:**
   - `services/orchestrator/src/plan/planner.ts` (existing)
   - `services/orchestrator/src/workflow/WorkflowEngine.ts` (new)
@@ -397,7 +397,7 @@ Goal: Unify plans into workflows and add Case/Operations views.
 
 ### 3.3 Ops UI (Cases & Workflows)
 
-- [ ] **Task:** Add an Ops mode in GUI with Cases & Workflows views.
+- [x] **Task:** Add an Ops mode in GUI with Cases & Workflows views.
 - **Files:**
   - `apps/gui/src/routes/+layout.svelte` (mode switch)
   - `apps/gui/src/routes/ops/cases/+page.svelte`

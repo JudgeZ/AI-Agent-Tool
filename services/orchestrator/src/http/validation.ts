@@ -20,6 +20,9 @@ const MAX_TENANT_ID_LENGTH = 128;
 const MAX_REMOTE_FS_PATH_LENGTH = 4096;
 const MAX_REMOTE_FS_CONTENT_LENGTH = 1_048_576;
 const MAX_REMOTE_FS_LIST_LIMIT = 1_000;
+const MAX_CASE_TITLE_LENGTH = 256;
+const MAX_CASE_DESCRIPTION_LENGTH = 4000;
+const MAX_PROJECT_ID_LENGTH = 128;
 
 const LEGACY_PLAN_ID_REGEX = /^plan-[0-9a-f]{8}$/i;
 const UUID_PLAN_ID_REGEX =
@@ -49,6 +52,71 @@ export const PlanRequestSchema = z.object({
     .max(MAX_GOAL_LENGTH, {
       message: `goal must not exceed ${MAX_GOAL_LENGTH} characters`,
     }),
+  caseId: z
+    .string()
+    .trim()
+    .max(128, { message: "case id must not exceed 128 characters" })
+    .optional(),
+});
+
+export const CaseCreateSchema = z.object({
+  title: z
+    .string()
+    .trim()
+    .min(1, { message: "title is required" })
+    .max(MAX_CASE_TITLE_LENGTH, {
+      message: `title must not exceed ${MAX_CASE_TITLE_LENGTH} characters`,
+    }),
+  description: z
+    .string()
+    .trim()
+    .max(MAX_CASE_DESCRIPTION_LENGTH, {
+      message: `description must not exceed ${MAX_CASE_DESCRIPTION_LENGTH} characters`,
+    })
+    .optional(),
+  projectId: z
+    .string()
+    .trim()
+    .max(MAX_PROJECT_ID_LENGTH, {
+      message: `project id must not exceed ${MAX_PROJECT_ID_LENGTH} characters`,
+    })
+    .optional(),
+  status: z.enum(["open", "in_progress", "closed"]).optional(),
+  metadata: z.record(z.any()).optional(),
+});
+
+export const CaseListQuerySchema = z.object({
+  projectId: z
+    .string()
+    .trim()
+    .max(MAX_PROJECT_ID_LENGTH, {
+      message: `project id must not exceed ${MAX_PROJECT_ID_LENGTH} characters`,
+    })
+    .optional(),
+});
+
+export const CaseTaskCreateSchema = z.object({
+  title: z
+    .string()
+    .trim()
+    .min(1, { message: "title is required" })
+    .max(MAX_CASE_TITLE_LENGTH, { message: `title must not exceed ${MAX_CASE_TITLE_LENGTH} characters` }),
+  assignee: z.string().trim().max(256).optional(),
+  metadata: z.record(z.any()).optional(),
+});
+
+export const CaseArtifactSchema = z.object({
+  type: z
+    .string()
+    .trim()
+    .min(1, { message: "artifact type is required" })
+    .max(128, { message: "artifact type must not exceed 128 characters" }),
+  ref: z
+    .string()
+    .trim()
+    .min(1, { message: "artifact reference is required" })
+    .max(512, { message: "artifact reference must not exceed 512 characters" }),
+  metadata: z.record(z.any()).optional(),
 });
 
 export const StepIdSchema = z
@@ -213,6 +281,10 @@ export const RemoteFsWriteSchema = z.object({
 export type PlanRequestPayload = z.infer<typeof PlanRequestSchema>;
 export type PlanApprovalPayload = z.infer<typeof PlanApprovalSchema>;
 export type ChatRequestPayload = z.infer<typeof ChatRequestSchema>;
+export type CaseCreatePayload = z.infer<typeof CaseCreateSchema>;
+export type CaseListQueryPayload = z.infer<typeof CaseListQuerySchema>;
+export type CaseTaskCreatePayload = z.infer<typeof CaseTaskCreateSchema>;
+export type CaseArtifactPayload = z.infer<typeof CaseArtifactSchema>;
 
 const CodeVerifierSchema = z
   .string({ required_error: "code_verifier is required" })

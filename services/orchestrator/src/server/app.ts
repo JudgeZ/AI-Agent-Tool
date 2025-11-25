@@ -27,6 +27,7 @@ import { ChatController } from "../controllers/ChatController.js";
 import { SecretController } from "../controllers/SecretController.js";
 import { AuthController } from "../controllers/AuthController.js";
 import { RemoteFsController } from "../controllers/RemoteFsController.js";
+import { CasesController } from "../controllers/CasesController.js";
 
 function resolveConfig(config?: AppConfig): AppConfig {
   return config ?? loadConfig();
@@ -45,6 +46,7 @@ export function createServer(config?: AppConfig): Express {
   const secretController = new SecretController(appConfig, policy, rateLimiter);
   const authController = new AuthController(appConfig, rateLimiter);
   const remoteFsController = new RemoteFsController(appConfig, rateLimiter);
+  const casesController = new CasesController(appConfig, rateLimiter);
 
   if (appConfig.server.trustedProxyCidrs.length > 0) {
     app.set("trust proxy", (ip: string) =>
@@ -196,6 +198,12 @@ export function createServer(config?: AppConfig): Express {
   app.get("/remote-fs/list", (req, res) => remoteFsController.list(req as ExtendedRequest, res));
   app.get("/remote-fs/read", (req, res) => remoteFsController.read(req as ExtendedRequest, res));
   app.post("/remote-fs/write", (req, res) => remoteFsController.write(req as ExtendedRequest, res));
+
+  app.post("/cases", (req, res) => casesController.createCase(req as ExtendedRequest, res));
+  app.get("/cases", (req, res) => casesController.listCases(req as ExtendedRequest, res));
+  app.post("/cases/:id/tasks", (req, res) => casesController.createTask(req as ExtendedRequest, res));
+  app.post("/cases/:id/artifacts", (req, res) => casesController.attachArtifact(req as ExtendedRequest, res));
+  app.get("/workflows", (req, res) => casesController.listWorkflows(req as ExtendedRequest, res));
 
   app.get("/auth/oauth/:provider/authorize", (req, res) => authController.oauthAuthorize(req as ExtendedRequest, res));
   app.post("/auth/oauth/:provider/callback", (req, res) => authController.oauthCallback(req as ExtendedRequest, res));

@@ -58,6 +58,8 @@ import {
 import type { ExtendedRequest } from "../http/types.js";
 import type { PlanStepState } from "../plan/validation.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
+import { registerWorkflowForPlan } from "../queue/PlanQueueRuntime.js";
+import { caseService } from "../cases/CaseService.js";
 
 export class PlanController {
   constructor(
@@ -204,17 +206,49 @@ export class PlanController {
     }
 
     try {
+      const desiredCaseId = parsed.data.caseId;
+      let resolvedCaseId = desiredCaseId;
+      let caseProjectId: string | undefined;
+      if (resolvedCaseId) {
+        const existingCase = caseService.getCase(resolvedCaseId);
+        if (!existingCase || existingCase.tenantId !== planSubject?.tenantId) {
+          respondWithError(res, 404, { code: "not_found", message: "case not found" });
+          return;
+        }
+        caseProjectId = existingCase.projectId;
+      } else if (planSubject?.sessionId) {
+        const sessionCase = caseService.getOrCreateCaseForSession(planSubject.sessionId, {
+          title: `Session ${planSubject.sessionId}`,
+          tenantId: planSubject.tenantId,
+          projectId: planSubject.tenantId,
+          status: "open",
+        });
+        resolvedCaseId = sessionCase.id;
+        caseProjectId = sessionCase.projectId;
+      }
+
       const plan = await createPlan(parsed.data.goal, {
         retentionDays: this.config.retention.planArtifactsDays,
         subject: planSubject,
       });
       const { requestId, traceId } = getRequestIds(res);
+      const workflow = registerWorkflowForPlan(plan, {
+        tenantId: planSubject?.tenantId,
+        projectId: caseProjectId,
+        caseId: resolvedCaseId,
+        traceId,
+        requestId,
+        subject: planSubject,
+      });
+      if (resolvedCaseId) {
+        caseService.attachWorkflow(resolvedCaseId, workflow.id);
+      }
       if (planSubject) {
         await submitPlanSteps(plan, traceId, requestId, planSubject);
       } else {
         await submitPlanSteps(plan, traceId, requestId);
       }
-      res.status(201).json({ plan, requestId, traceId });
+      res.status(201).json({ plan, requestId, traceId, workflowId: workflow.id, caseId: resolvedCaseId });
       logAuditEvent({
         action: "plan.create",
         outcome: "success",
@@ -222,7 +256,7 @@ export class PlanController {
         requestId,
         traceId,
         subject: auditSubject,
-        details: { planId: plan.id },
+        details: { planId: plan.id, workflowId: workflow.id, caseId: resolvedCaseId },
       });
     } catch (error) {
       respondWithUnexpectedError(res, error);

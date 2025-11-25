@@ -25,6 +25,8 @@ vi.mock("../queue/PlanQueueRuntime.js", () => ({
   getPlanSubject: vi.fn(),
   getPersistedPlanStep: vi.fn(),
   resolvePlanStepApproval: vi.fn(),
+  registerWorkflowForPlan: vi.fn().mockReturnValue({ id: "wf-mock" }),
+  listWorkflows: vi.fn().mockReturnValue([]),
 }));
 
 vi.mock("../policy/PolicyEnforcer.js", () => ({

@@ -72,7 +72,9 @@ vi.mock("../queue/PlanQueueRuntime.js", () => {
     submitPlanSteps: vi.fn().mockResolvedValue(undefined),
     resolvePlanStepApproval: resolvePlanStepApprovalMock,
     getPlanSubject: getPlanSubjectMock,
-    getPersistedPlanStep: getPersistedPlanStepMock
+    getPersistedPlanStep: getPersistedPlanStepMock,
+    registerWorkflowForPlan: vi.fn().mockReturnValue({ id: "wf-mock" }),
+    listWorkflows: vi.fn().mockReturnValue([]),
   };
 });
 

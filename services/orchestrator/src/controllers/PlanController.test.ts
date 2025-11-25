@@ -84,11 +84,12 @@ describe("PlanController", () => {
     const mockPlan = { id: "plan-1", steps: [] };
     vi.mocked(planModule.createPlan).mockResolvedValue(mockPlan as any);
     vi.mocked(queueModule.submitPlanSteps).mockResolvedValue(undefined);
+    vi.mocked(queueModule.registerWorkflowForPlan).mockReturnValue({ id: "wf-1" } as any);
 
     await controller.createPlan(req as ExtendedRequest, res as Response);
 
     expect(res.status).toHaveBeenCalledWith(201);
-    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ plan: mockPlan }));
+    expect(res.json).toHaveBeenCalledWith(expect.objectContaining({ plan: mockPlan, workflowId: "wf-1" }));
     expect(planModule.createPlan).toHaveBeenCalledWith("test goal", expect.anything());
     expect(queueModule.submitPlanSteps).toHaveBeenCalled();
   });

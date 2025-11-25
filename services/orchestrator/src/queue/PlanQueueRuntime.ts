@@ -1,4 +1,6 @@
 import { planQueueManager } from "./PlanQueueManager.js";
+import type { Plan } from "../plan/planner.js";
+import { workflowEngine, type Workflow } from "../workflow/WorkflowEngine.js";
 
 // Re-export types
 export type ApprovalDecision = "approved" | "rejected";
@@ -7,11 +9,25 @@ export type ApprovalDecision = "approved" | "rejected";
 export const initializePlanQueueRuntime = () => planQueueManager.initialize();
 
 export const submitPlanSteps = (
-  plan: any, 
-  traceId: string, 
-  requestId?: string, 
+  plan: any,
+  traceId: string,
+  requestId?: string,
   subject?: any
 ) => planQueueManager.submitPlanSteps(plan, traceId, requestId, subject);
+
+export const registerWorkflowForPlan = (
+  plan: Plan,
+  options: { tenantId?: string; projectId?: string; caseId?: string; traceId?: string; requestId?: string; subject?: any } = {}
+): Workflow => {
+  const workflow = workflowEngine.createWorkflowFromPlan(plan, options);
+  workflowEngine.setStatus(workflow.id, "running");
+  return workflow;
+};
+
+export const listWorkflows = (query?: { tenantId?: string; projectId?: string }): Workflow[] =>
+  workflowEngine.listWorkflows(query);
+
+export const getWorkflow = (workflowId: string): Workflow | undefined => workflowEngine.getWorkflow(workflowId);
 
 export const resolvePlanStepApproval = (options: {
   planId: string;
