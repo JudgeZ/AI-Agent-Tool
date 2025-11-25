@@ -940,6 +940,32 @@ export class PipelineExecutor {
 
     // Register handler for LOOP nodes - executes iterative workflows
     graph.registerHandler(NodeType.LOOP, this.createLoopHandler());
+
+    // Verify all NodeType enum values have handlers registered (fail-fast defense)
+    this.verifyAllHandlersRegistered(graph);
+  }
+
+  /**
+   * Verify that all NodeType enum values have handlers registered.
+   * This prevents runtime failures when a new NodeType is added but no handler is implemented.
+   * Fails fast during pipeline initialization rather than at execution time.
+   */
+  private verifyAllHandlersRegistered(graph: ExecutionGraph): void {
+    const allNodeTypes = Object.values(NodeType);
+    const missingHandlers: string[] = [];
+
+    for (const nodeType of allNodeTypes) {
+      if (!graph.hasHandler(nodeType)) {
+        missingHandlers.push(nodeType);
+      }
+    }
+
+    if (missingHandlers.length > 0) {
+      throw new Error(
+        `Missing handlers for NodeType(s): ${missingHandlers.join(", ")}. ` +
+          `Every NodeType enum value must have a registered handler.`,
+      );
+    }
   }
 
   /**
@@ -1147,12 +1173,17 @@ export class PipelineExecutor {
       ): Promise<unknown> => {
         // Resolve variable references in node config (consistent with other handlers)
         const resolvedNode = this.resolveNodeConfig(node, context);
-        const condition = node.config.condition as string; // Original for error messages
+        // Store original condition for error messages (avoid misleading 'as string' cast since we handle all types)
+        const originalCondition = node.config.condition;
         const resolvedCondition = resolvedNode.config.condition;
 
-        if (condition === undefined || condition === null) {
+        if (originalCondition === undefined || originalCondition === null) {
           throw new Error(`Condition node ${node.id} missing 'condition' config`);
         }
+        // Safe string representation for logging
+        const conditionForLog = typeof originalCondition === "string"
+          ? originalCondition
+          : JSON.stringify(originalCondition);
 
         // Handle non-string resolved values directly (e.g., pure variable reference to boolean)
         let result: boolean;
@@ -1185,7 +1216,7 @@ export class PipelineExecutor {
         }
 
         appLogger.debug(
-          { nodeId: node.id, condition, evaluatedCondition: evaluatedConditionStr, result },
+          { nodeId: node.id, condition: conditionForLog, evaluatedCondition: evaluatedConditionStr, result },
           "Condition evaluated",
         );
 
@@ -1198,7 +1229,7 @@ export class PipelineExecutor {
             tenantId: this.context.tenantId,
             userId: this.context.userId,
             nodeId: node.id,
-            condition,
+            condition: conditionForLog,
             evaluatedCondition: evaluatedConditionStr,
             decision: result ? "allow" : "deny",
           },
@@ -1208,12 +1239,12 @@ export class PipelineExecutor {
         // When condition is false, throw to block dependent nodes
         // Use continueOnError: true on the node to allow dependents to execute regardless
         if (!result) {
-          throw new ConditionFailedError(condition, evaluatedConditionStr);
+          throw new ConditionFailedError(conditionForLog, evaluatedConditionStr);
         }
 
         return {
           status: "passed",
-          condition,
+          condition: conditionForLog,
           evaluatedCondition: evaluatedConditionStr,
           result: true,
           passed: true,

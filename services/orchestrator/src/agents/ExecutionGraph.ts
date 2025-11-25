@@ -265,6 +265,14 @@ export class ExecutionGraph extends EventEmitter {
     this.emit("handler:registered", { type });
   }
 
+  /**
+   * Check if a handler is registered for a given node type.
+   * Used for verification that all NodeType enum values have handlers.
+   */
+  public hasHandler(type: NodeType): boolean {
+    return this.nodeHandlers.has(type);
+  }
+
   private getHandler(type: NodeType): NodeHandler {
     const handler = this.nodeHandlers.get(type);
     if (!handler) {
