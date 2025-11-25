@@ -88,6 +88,13 @@ const redisState = vi.hoisted(() => {
       });
     }),
     expire: vi.fn(async () => true),
+    incr: vi.fn(async (key: string) => {
+      const entry = store.get(key);
+      const currentValue = entry ? parseInt(entry.value, 10) || 0 : 0;
+      const newValue = currentValue + 1;
+      store.set(key, { value: String(newValue), expiresAt: entry?.expiresAt ?? null });
+      return newValue;
+    }),
     createClient: vi.fn(() => ({
       connect: state.connect,
       quit: state.quit,
@@ -103,6 +110,7 @@ const redisState = vi.hoisted(() => {
       scan: state.scan,
       mGet: state.mGet,
       expire: state.expire,
+      incr: state.incr,
     })),
     reset() {
       store.clear();
@@ -122,6 +130,7 @@ const redisState = vi.hoisted(() => {
       state.scan.mockClear();
       state.mGet.mockClear();
       state.expire.mockClear();
+      state.incr.mockClear();
       state.createClient.mockClear();
     },
   };

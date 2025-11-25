@@ -305,7 +305,13 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
   }
 
   private async sendResponse(request: Message, result: unknown, targetInstance: string): Promise<void> {
-    if (!this.publisher) return;
+    if (!this.publisher) {
+      logger.warn(
+        { requestId: request.id, targetInstance, correlationId: request.correlationId, event: "msgbus.response.no_publisher" },
+        "Cannot send response: publisher not connected",
+      );
+      return;
+    }
 
     const response: Message = {
       id: this.generateMessageId(),
@@ -329,7 +335,13 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
   }
 
   private async sendErrorResponse(request: Message, error: Error, targetInstance: string): Promise<void> {
-    if (!this.publisher) return;
+    if (!this.publisher) {
+      logger.warn(
+        { requestId: request.id, targetInstance, correlationId: request.correlationId, event: "msgbus.error_response.no_publisher" },
+        "Cannot send error response: publisher not connected",
+      );
+      return;
+    }
 
     // Sanitize error message to prevent internal info leakage
     // Only expose known safe error messages; replace others with generic message

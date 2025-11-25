@@ -106,6 +106,14 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
   }
 
   /**
+   * Format key for atomic version counter.
+   * Uses Redis INCR for race-free version incrementing.
+   */
+  private formatVersionKey(key: string): string {
+    return `${this.keyPrefix}:version:${key}`;
+  }
+
+  /**
    * Parse lightweight metadata string `ownerId:scope`.
    */
   private parseMetadata(meta: string): { ownerId: string; scope: ContextScope } | null {
@@ -216,10 +224,16 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
       throw new Error("Redis client unavailable");
     }
 
-    // Get existing entry to preserve createdAt and update version
+    // Get existing entry to preserve createdAt
     const existingRaw = await client.get(this.formatEntryKey(key));
     const existing = existingRaw ? this.deserializeEntry(existingRaw) : null;
     // If deserialization fails, treat as if entry doesn't exist
+
+    // Use atomic INCR for version to avoid race conditions in distributed environments
+    let version = 1;
+    if (this.config.enableVersioning) {
+      version = await client.incr(this.formatVersionKey(key));
+    }
 
     const now = new Date();
     const entry: ContextEntry = {
@@ -229,7 +243,7 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
       ownerId,
       createdAt: existing?.createdAt ?? now,
       updatedAt: now,
-      version: this.config.enableVersioning ? (existing?.version ?? 0) + 1 : 1,
+      version,
       ttl,
     };
 
@@ -246,6 +260,11 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
     await client.set(this.formatMetaKey(key), `${ownerId}:${scope}`, {
       EX: redisTtl,
     });
+
+    // Set TTL on version counter to clean up when entry expires
+    if (this.config.enableVersioning) {
+      await client.expire(this.formatVersionKey(key), redisTtl);
+    }
 
     // Track owner's keys
     await client.sAdd(this.formatOwnerKey(ownerId), key);
@@ -355,10 +374,11 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
       throw new Error(`Only owner can delete context key: ${key}`);
     }
 
-    // Delete entry, metadata, ACL, and remove from owner index
+    // Delete entry, metadata, version counter, ACL, and remove from owner index
     await Promise.all([
       client.del(this.formatEntryKey(key)),
       client.del(this.formatMetaKey(key)),
+      client.del(this.formatVersionKey(key)),
       client.del(this.formatAclKey(key)),
       client.sRem(this.formatOwnerKey(requesterId), key),
     ]);
