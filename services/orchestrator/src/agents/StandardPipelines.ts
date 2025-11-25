@@ -13,6 +13,7 @@ import { McpTool, ToolContext } from "../tools/McpTool";
 import { ToolRegistry } from "../tools/ToolRegistry";
 import { appLogger } from "../observability/logger";
 import { z } from "zod";
+import { randomUUID } from "crypto";
 
 // ============================================================================
 // Custom Error Types
@@ -859,7 +860,8 @@ export class PipelineExecutor {
 
   public async execute(config: PipelineConfig): Promise<ExecutionResult> {
     const startTime = Date.now();
-    const executionId = `exec-${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
+    // Use crypto.randomUUID() for collision-resistant IDs in high-throughput environments
+    const executionId = `exec-${randomUUID()}`;
 
     // Create pipeline graph
     const graphDefinition = PipelineFactory.create(config, this.context);
@@ -882,7 +884,10 @@ export class PipelineExecutor {
     // Register node handlers
     this.registerHandlers(graph);
 
-    // Execute
+    // Execute the graph
+    // NOTE: The pipeline's executionId (used in logs) differs from ExecutionGraph's internal
+    // executionId (in ExecutionResult). Use pipeline executionId for correlating pipeline-level
+    // logs; use result.executionId for correlating individual node executions within the graph.
     let result: ExecutionResult;
     try {
       result = await graph.execute();
@@ -892,6 +897,7 @@ export class PipelineExecutor {
         {
           pipelineId: this.context.pipelineId,
           executionId,
+          graphExecutionId: result.executionId, // ExecutionGraph's internal ID for node-level correlation
           pipelineType: config.type,
           success: result.success,
           durationMs,
@@ -1246,12 +1252,14 @@ export class PipelineExecutor {
             // Execute the loop body if operation specified
             if (operation) {
               // Create iteration-specific node with current item injected
+              // Safely coerce item to NodeConfig-compatible type
+              const currentItem = items ? this.toNodeConfigValue(items[iteration]) : null;
               const iterationNode: NodeDefinition = {
                 ...resolvedNode,
                 config: {
                   ...resolvedNode.config,
                   _iteration: iteration,
-                  _item: items ? (items[iteration] as NodeConfig[string]) : null,
+                  _item: currentItem,
                   _totalItems: items ? items.length : null,
                 },
               };
@@ -1274,7 +1282,10 @@ export class PipelineExecutor {
             }
           }
         } finally {
-          // Clean up intermediate iteration outputs to prevent context pollution
+          // Clean up intermediate iteration outputs to prevent context pollution.
+          // NOTE: This means iteration outputs (e.g., __loop:nodeId:iteration:0) are NOT
+          // available after the loop completes. Nodes depending on individual iteration
+          // results should reference the loop node's output.results array instead.
           for (const key of iterationOutputKeys) {
             context.outputs.delete(key);
           }
@@ -1359,6 +1370,35 @@ export class PipelineExecutor {
       }
     }
     return String(value);
+  }
+
+  /**
+   * Safely coerce an unknown value to a NodeConfig-compatible type.
+   * Validates and converts the value rather than using unsafe type assertions.
+   */
+  private toNodeConfigValue(value: unknown): NodeConfig[string] {
+    if (value === null) {
+      return null;
+    }
+    if (typeof value === "string") {
+      return value;
+    }
+    if (typeof value === "number") {
+      return value;
+    }
+    if (typeof value === "boolean") {
+      return value;
+    }
+    if (Array.isArray(value)) {
+      // Arrays are allowed in NodeConfig
+      return value;
+    }
+    if (typeof value === "object" && value !== null) {
+      // Objects are allowed in NodeConfig as Record<string, unknown>
+      return value as Record<string, unknown>;
+    }
+    // For undefined or other types, convert to null (safe default)
+    return null;
   }
 
   /**
@@ -1510,7 +1550,8 @@ export class PipelineExecutor {
       }
 
       // Numbers (including negative)
-      if (/[\d]/.test(expr[i]) || (expr[i] === "-" && /[\d]/.test(expr[i + 1]))) {
+      // Explicit bounds check: ensure i + 1 is within bounds before accessing expr[i + 1]
+      if (/[\d]/.test(expr[i]) || (expr[i] === "-" && i + 1 < expr.length && /[\d]/.test(expr[i + 1]))) {
         const startPos = i;
         let num = "";
 
