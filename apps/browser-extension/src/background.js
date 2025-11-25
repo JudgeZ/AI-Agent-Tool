@@ -46,6 +46,10 @@ let socket;
 let reconnectTimer;
 let recordingTabs = new Set();
 
+function setSocket(newSocket) {
+  socket = newSocket;
+}
+
 function clearSocket() {
   if (socket) {
     socket.close();
@@ -111,9 +115,13 @@ chrome.runtime.onInstalled.addListener(async () => {
   await updateSettings(DEFAULT_SETTINGS);
 });
 
-chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
+async function handleMessage(message, sender, sendResponse) {
   if (message?.type === "telemetry:event" && socket?.readyState === WebSocket.OPEN) {
-    const { gatewayUrl } = await getSettings();
+    const { gatewayUrl, recording } = await getSettings();
+    if (!recording) {
+      sendResponse({ ok: false, reason: "recording-disabled" });
+      return true;
+    }
     if (message.event?.sensitive) {
       console.warn("Dropping sensitive telemetry event");
       sendResponse({ ok: false, reason: "sensitive" });
@@ -147,10 +155,22 @@ chrome.runtime.onMessage.addListener(async (message, sender, sendResponse) => {
     return true;
   }
   return false;
-});
+}
+
+chrome.runtime.onMessage.addListener(handleMessage);
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   recordingTabs.delete(tabId);
 });
 
 connectTelemetry();
+
+if (typeof module !== "undefined" && module.exports) {
+  module.exports.__test = {
+    getSettings,
+    updateSettings,
+    handleMessage,
+    setSocket,
+    DEFAULT_SETTINGS,
+  };
+}
