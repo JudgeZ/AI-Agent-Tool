@@ -402,7 +402,7 @@ export async function setupCollaborationServer(
   const connectionLimitPerIp = resolveConnectionLimitFromEnv();
   const allowedOrigins = new Set(config.server.cors.allowedOrigins ?? []);
 
-  httpServer.on("upgrade", (request, socket, head) => {
+  httpServer.on("upgrade", async (request, socket, head) => {
     const { pathname } = new URL(request.url ?? "", "http://localhost");
     if (pathname !== "/collaboration/ws") {
       return;

@@ -60,7 +60,7 @@ export function setupTerminalServer(httpServer: http.Server | https.Server, conf
     wss.close();
   });
 
-  httpServer.on("upgrade", (request, socket, head) => {
+  httpServer.on("upgrade", async (request, socket, head) => {
     const { pathname, searchParams } = new URL(request.url ?? "", "http://localhost");
     if (pathname !== TERMINAL_WS_PATH) {
       return;

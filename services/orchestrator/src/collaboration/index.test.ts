@@ -543,9 +543,10 @@ describe("collaboration server", () => {
       });
 
     await connectAndClose(await createSessionHeaders({ tenantId: "tenant-shared", projectId: "project-shared" }));
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    // Allow time for async upgrade handler and server-side close event to complete and decrement connection count
+    await new Promise((resolve) => setTimeout(resolve, 100));
     await connectAndClose(await createSessionHeaders({ tenantId: "tenant-shared", projectId: "project-shared" }));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
     const normalizedTenant = normalizeTenantIdInput("tenant-shared");
     const expectedKey = createHash("sha256")

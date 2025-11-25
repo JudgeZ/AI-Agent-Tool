@@ -36,7 +36,7 @@ describe("terminalServer", () => {
     expect(closeSpy).toHaveBeenCalled();
   });
 
-  it("rejects upgrades when the unique IP capacity is exceeded", () => {
+  it("rejects upgrades when the unique IP capacity is exceeded", async () => {
     process.env.TERMINAL_MAX_UNIQUE_IPS = "1";
 
     const server = new http.Server();
@@ -118,10 +118,14 @@ describe("terminalServer", () => {
     });
 
     server.emit("upgrade", firstRequest, firstSocket, Buffer.alloc(0));
+    // Wait for async handler to complete
+    await new Promise((resolve) => setImmediate(resolve));
     expect(handleUpgradeSpy).toHaveBeenCalledTimes(1);
     handleUpgradeSpy.mockClear();
 
     server.emit("upgrade", secondRequest, secondSocket, Buffer.alloc(0));
+    // Wait for async handler to complete
+    await new Promise((resolve) => setImmediate(resolve));
 
     expect(handleUpgradeSpy).not.toHaveBeenCalled();
     expect(secondSocket.write).toHaveBeenCalledWith(
