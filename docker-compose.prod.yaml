@@ -89,6 +89,8 @@ services:
     environment:
       RUST_LOG: info
       RUN_MODE: ${RUN_MODE:-consumer}
+      INDEXER_LISTEN_ADDR: 0.0.0.0:7071
+      INDEXER_GRPC_ADDR: 0.0.0.0:7070
       INDEXER_JWT_HS256_SECRET_FILE: /run/secrets/indexer_jwt_secret
       INDEXER_JWT_ISSUER: ${INDEXER_JWT_ISSUER:-https://orchestrator:4000}
       INDEXER_JWT_AUDIENCE: ${INDEXER_JWT_AUDIENCE:-oss-ai-indexer}

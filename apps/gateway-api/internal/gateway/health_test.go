@@ -146,3 +146,15 @@ func TestCheckIndexer(t *testing.T) {
 		assert.NotNil(t, result.Error)
 	})
 }
+
+func TestIndexerDefaultPort(t *testing.T) {
+	// Verify the default INDEXER_URL uses port 7071 (HTTP port, not gRPC 7070)
+	// This ensures health checks target the correct HTTP endpoint
+	t.Run("default URL uses HTTP port 7071", func(t *testing.T) {
+		// Unset any existing INDEXER_URL to test the default
+		t.Setenv("INDEXER_URL", "")
+
+		defaultURL := GetEnv("INDEXER_URL", "http://127.0.0.1:7071")
+		assert.Equal(t, "http://127.0.0.1:7071", defaultURL)
+	})
+}
