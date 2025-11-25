@@ -11,7 +11,10 @@ spec:
     {{- include "oss-ai-agent-tool.selectorLabels" . | nindent 4 }}
     app.kubernetes.io/component: indexer
   ports:
-    - name: http
+    - name: grpc
       port: {{ .Values.indexer.service.port | default 7070 }}
+      targetPort: grpc
+    - name: http
+      port: {{ .Values.indexer.service.httpPort | default 7071 }}
       targetPort: http
 {{- end }}
