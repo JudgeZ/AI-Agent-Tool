@@ -14,6 +14,16 @@ use crate::storage::{create_storage, StorageConfig};
 use crate::telemetry;
 use crate::temporal::{TemporalConfig, TemporalIndex};
 
+/// Guard that ensures tracing is shut down when dropped.
+/// This guarantees pending traces are flushed even on early returns.
+struct TracingGuard;
+
+impl Drop for TracingGuard {
+    fn drop(&mut self) {
+        telemetry::shutdown_tracing();
+    }
+}
+
 const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:9200";
 const LISTEN_ADDR_ENV: &str = "INDEXER_LISTEN_ADDR";
 const DEFAULT_GRPC_ADDR: &str = "0.0.0.0:9201";
@@ -39,6 +49,9 @@ pub enum IndexerError {
 
 pub async fn run() -> Result<(), IndexerError> {
     telemetry::init_tracing()?;
+
+    // Guard ensures shutdown_tracing() is called on all exit paths (including early returns)
+    let _tracing_guard = TracingGuard;
 
     let http_addr = resolve_listen_addr()?;
     let grpc_addr = resolve_grpc_addr()?;
@@ -101,6 +114,7 @@ pub async fn run() -> Result<(), IndexerError> {
         warn!("gRPC server task failed: {}", e);
     }
 
+    // TracingGuard Drop handles shutdown_tracing()
     Ok(())
 }
 
