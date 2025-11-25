@@ -1,8 +1,10 @@
 import {
   ExecutionGraph,
+  ExecutionContext,
   GraphDefinition,
   NodeType,
   NodeDefinition,
+  NodeHandler,
 } from "./ExecutionGraph";
 import { MessageBus, SharedContextManager } from "./AgentCommunication";
 import { McpTool, ToolContext } from "../tools/McpTool";
@@ -840,34 +842,206 @@ export class PipelineExecutor {
   }
 
   private registerHandlers(graph: ExecutionGraph): void {
-    // Register handlers for each node type
-    graph.on("node:execute", async (nodeId: string, node: NodeDefinition) => {
-      const { operation } = node.config;
+    // Register handler for TASK nodes - dispatches to tools based on operation
+    graph.registerHandler(NodeType.TASK, this.createTaskHandler());
 
-      // Map operations to tools
-      switch (operation) {
-        case "test":
-          return await this.executeTestTool(node);
-        case "git-diff":
-        case "git-log":
-        case "git-commit":
-          return await this.executeRepositoryTool(node);
-        case "analyze":
-        case "analyze-error":
-        case "analyze-quality":
-          return await this.executeAnalysisTool(node);
-        case "semantic-search":
-          return await this.executeSearchTool(node);
-        case "lint":
-        case "security-scan":
-        case "performance-analysis":
-        case "doc-check":
-          return await this.executeReviewTool(node);
-        default:
-          // Use generic tool execution
+    // Register handler for PARALLEL nodes - executes child operations concurrently
+    graph.registerHandler(NodeType.PARALLEL, this.createParallelHandler());
+
+    // Register handler for CONDITION nodes - evaluates conditions for branching
+    graph.registerHandler(NodeType.CONDITION, this.createConditionHandler());
+
+    // Register handler for MERGE nodes - combines results from parallel branches
+    graph.registerHandler(NodeType.MERGE, this.createMergeHandler());
+  }
+
+  private createTaskHandler(): NodeHandler {
+    return {
+      execute: async (
+        node: NodeDefinition,
+        _context: ExecutionContext,
+      ): Promise<unknown> => {
+        const operation = node.config.operation as string;
+
+        // Map operations to tools
+        switch (operation) {
+          case "test":
+            return await this.executeTestTool(node);
+          case "git-diff":
+          case "git-log":
+          case "git-commit":
+            return await this.executeRepositoryTool(node);
+          case "analyze":
+          case "analyze-error":
+          case "analyze-quality":
+            return await this.executeAnalysisTool(node);
+          case "semantic-search":
+            return await this.executeSearchTool(node);
+          case "lint":
+          case "security-scan":
+          case "performance-analysis":
+          case "doc-check":
+            return await this.executeReviewTool(node);
+          default:
+            // Use generic tool execution
+            return await this.executeGenericTool(node);
+        }
+      },
+    };
+  }
+
+  private createParallelHandler(): NodeHandler {
+    return {
+      execute: async (
+        node: NodeDefinition,
+        context: ExecutionContext,
+      ): Promise<unknown> => {
+        // Parallel nodes coordinate concurrent execution of their configured tasks
+        // The actual parallelism is handled by the ExecutionGraph scheduler
+        // This handler processes the node's own config if needed
+        const operation = node.config.operation as string | undefined;
+
+        if (operation) {
+          // If the parallel node has an operation, execute it
           return await this.executeGenericTool(node);
+        }
+
+        // Return aggregated info about what this parallel node represents
+        return {
+          status: "completed",
+          nodeId: node.id,
+          description: node.description,
+          // Results from parallel branches are available in context.outputs
+          parallelBranches: node.dependencies,
+        };
+      },
+    };
+  }
+
+  private createConditionHandler(): NodeHandler {
+    return {
+      execute: async (
+        node: NodeDefinition,
+        context: ExecutionContext,
+      ): Promise<unknown> => {
+        const condition = node.config.condition as string;
+
+        if (!condition) {
+          throw new Error(`Condition node ${node.id} missing 'condition' config`);
+        }
+
+        // Evaluate condition by substituting variable references
+        const evaluatedCondition = this.substituteVariables(condition, context);
+
+        // Safely evaluate the condition expression
+        const result = this.evaluateCondition(evaluatedCondition);
+
+        appLogger.debug(
+          { nodeId: node.id, condition, evaluatedCondition, result },
+          "Condition evaluated",
+        );
+
+        return {
+          status: "completed",
+          condition,
+          result,
+          passed: result === true,
+        };
+      },
+    };
+  }
+
+  private createMergeHandler(): NodeHandler {
+    return {
+      execute: async (
+        node: NodeDefinition,
+        context: ExecutionContext,
+      ): Promise<unknown> => {
+        // Merge handler collects outputs from all dependency nodes
+        const mergedResults: Record<string, unknown> = {};
+        const findings: unknown[] = [];
+
+        for (const depId of node.dependencies) {
+          const depOutput = context.outputs.get(depId);
+          if (depOutput !== undefined) {
+            mergedResults[depId] = depOutput;
+
+            // Collect findings if present (for review pipelines)
+            if (
+              typeof depOutput === "object" &&
+              depOutput !== null &&
+              "findings" in depOutput
+            ) {
+              const depFindings = (depOutput as { findings?: unknown[] }).findings;
+              if (Array.isArray(depFindings)) {
+                findings.push(...depFindings);
+              }
+            }
+          }
+        }
+
+        return {
+          status: "completed",
+          mergedResults,
+          findings,
+          mergedCount: Object.keys(mergedResults).length,
+        };
+      },
+    };
+  }
+
+  private substituteVariables(template: string, context: ExecutionContext): string {
+    // Replace ${nodeId.field} patterns with actual values from context outputs
+    return template.replace(/\$\{([^}]+)\}/g, (match, path) => {
+      const parts = path.split(".");
+      const nodeId = parts[0];
+      const fieldPath = parts.slice(1);
+
+      const nodeOutput = context.outputs.get(nodeId);
+      if (nodeOutput === undefined) {
+        return match; // Keep original if not found
       }
+
+      // Navigate to the nested field
+      let value: unknown = nodeOutput;
+      for (const field of fieldPath) {
+        if (typeof value === "object" && value !== null && field in value) {
+          value = (value as Record<string, unknown>)[field];
+        } else {
+          return match; // Keep original if path not found
+        }
+      }
+
+      return String(value);
     });
+  }
+
+  private evaluateCondition(condition: string): boolean {
+    // Safe condition evaluation - only allows simple comparisons
+    // Supports: ===, !==, >, <, >=, <=, &&, ||
+    try {
+      // Sanitize: only allow numbers, booleans, comparison operators, and whitespace
+      const sanitized = condition.trim();
+      const allowedPattern = /^[\d\s.]+(?:===|!==|>=|<=|>|<|&&|\|\||\(|\)|true|false|[\d\s.])+$/;
+
+      if (!allowedPattern.test(sanitized)) {
+        appLogger.warn({ condition }, "Condition contains disallowed characters");
+        return false;
+      }
+
+      // Use Function constructor for safe evaluation of simple expressions
+      // This is safer than eval() as it doesn't have access to local scope
+      const evaluator = new Function(`return (${sanitized})`);
+      const result = evaluator();
+
+      return Boolean(result);
+    } catch (error) {
+      appLogger.error(
+        { condition, err: error instanceof Error ? error : new Error(String(error)) },
+        "Failed to evaluate condition",
+      );
+      return false;
+    }
   }
 
   private async executeTestTool(node: NodeDefinition): Promise<any> {
