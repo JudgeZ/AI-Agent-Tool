@@ -942,6 +942,17 @@ export class PipelineExecutor {
     graph.registerHandler(NodeType.LOOP, this.createLoopHandler());
   }
 
+  /**
+   * Create handler for TASK nodes.
+   * Dispatches to appropriate tool based on the 'operation' config field.
+   *
+   * Supported operations:
+   * - code-search, semantic-search: Search tools
+   * - code-analysis, security-scan, performance-analysis, doc-check: Review tools
+   * - Other operations: Generic tool execution via ToolRegistry
+   *
+   * @returns NodeHandler that executes tool operations
+   */
   private createTaskHandler(): NodeHandler {
     return {
       execute: async (
@@ -1072,6 +1083,15 @@ export class PipelineExecutor {
     return value;
   }
 
+  /**
+   * Create handler for PARALLEL nodes.
+   * Executes child operations concurrently and aggregates results.
+   *
+   * Input: Node with dependencies pointing to parallel branches
+   * Output: { status, nodeId, description, parallelBranches }
+   *
+   * @returns NodeHandler for parallel branch coordination
+   */
   private createParallelHandler(): NodeHandler {
     return {
       execute: async (
@@ -1103,6 +1123,22 @@ export class PipelineExecutor {
     };
   }
 
+  /**
+   * Create handler for CONDITION nodes.
+   * Evaluates boolean expressions to control pipeline flow.
+   *
+   * Config: { condition: "expression" }
+   * - Expression can be literal (e.g., "5 > 3") or use variable substitution
+   * - Supports boolean/number variable references (e.g., "${prev.passed}")
+   *
+   * Behavior:
+   * - True: Returns { status: "passed", result: true }
+   * - False: Throws ConditionFailedError (blocks dependent nodes)
+   *
+   * Audit: Logs policy decisions for security monitoring
+   *
+   * @returns NodeHandler that evaluates conditions and controls flow
+   */
   private createConditionHandler(): NodeHandler {
     return {
       execute: async (
@@ -1145,6 +1181,22 @@ export class PipelineExecutor {
           "Condition evaluated",
         );
 
+        // Audit log: Policy decision (per CLAUDE.md 4.3 - audit logging for policy decisions)
+        appLogger.info(
+          {
+            audit: true,
+            event: "policy_decision",
+            pipelineId: this.context.pipelineId,
+            tenantId: this.context.tenantId,
+            userId: this.context.userId,
+            nodeId: node.id,
+            condition,
+            evaluatedCondition: evaluatedConditionStr,
+            decision: result ? "allow" : "deny",
+          },
+          `Condition evaluated: ${result ? "passed" : "blocked"}`,
+        );
+
         // When condition is false, throw to block dependent nodes
         // Use continueOnError: true on the node to allow dependents to execute regardless
         if (!result) {
@@ -1162,6 +1214,17 @@ export class PipelineExecutor {
     };
   }
 
+  /**
+   * Create handler for MERGE nodes.
+   * Collects and aggregates outputs from multiple dependency nodes.
+   *
+   * Input: Node with dependencies pointing to nodes to merge
+   * Output: { status, mergedCount, mergedResults, findings }
+   * - mergedResults: Map of nodeId -> output for each dependency
+   * - findings: Aggregated array of all 'findings' arrays from dependencies
+   *
+   * @returns NodeHandler that merges outputs from parallel branches
+   */
   private createMergeHandler(): NodeHandler {
     return {
       execute: async (
@@ -1201,6 +1264,25 @@ export class PipelineExecutor {
     };
   }
 
+  /**
+   * Create handler for LOOP nodes.
+   * Executes iterative workflows with configurable conditions and rate limiting.
+   *
+   * Config options:
+   * - items: Array to iterate over (injects _item, _iteration, _totalItems)
+   * - condition: Expression re-evaluated each iteration (supports variable substitution)
+   * - maxIterations: Safety limit (default: 100)
+   * - operation: Tool operation to execute each iteration
+   * - iterationDelayMs: Rate limiting delay between iterations (default: 0)
+   * - burstLimit: Iterations before applying delay (default: 10)
+   *
+   * Output: { status, iterations, results }
+   *
+   * Security: Rate limiting prevents resource exhaustion
+   * Audit: Tool invocations are logged for each iteration
+   *
+   * @returns NodeHandler that executes iterative workflows
+   */
   private createLoopHandler(): NodeHandler {
     return {
       execute: async (
@@ -1244,8 +1326,19 @@ export class PipelineExecutor {
           };
         }
 
+        // Rate limiting configuration to prevent resource exhaustion (per CLAUDE.md 4.4)
+        // iterationDelayMs: minimum delay between iterations (default 0 for no delay)
+        // burstLimit: max iterations before enforcing delay (default 10)
+        const iterationDelayMs = (resolvedNode.config.iterationDelayMs as number) ?? 0;
+        const burstLimit = (resolvedNode.config.burstLimit as number) ?? 10;
+
         try {
           while (iteration < maxIterations) {
+            // Apply rate limiting after burst limit to prevent resource exhaustion
+            if (iterationDelayMs > 0 && iteration > 0 && iteration % burstLimit === 0) {
+              await new Promise((resolve) => setTimeout(resolve, iterationDelayMs));
+            }
+
             // Check loop condition if specified (re-evaluate each iteration with fresh substitution)
             if (conditionExpr) {
               const evaluatedCondition = this.substituteVariables(conditionExpr, context);
@@ -1294,9 +1387,10 @@ export class PipelineExecutor {
           }
         } finally {
           // Clean up intermediate iteration outputs to prevent context pollution.
-          // NOTE: This means iteration outputs (e.g., __loop:nodeId:iteration:0) are NOT
-          // available after the loop completes. Nodes depending on individual iteration
-          // results should reference the loop node's output.results array instead.
+          // Performance: O(n) where n = iteration count. Each Map.delete() is O(1),
+          // and we track keys in iterationOutputKeys array for direct access.
+          // NOTE: Iteration outputs (e.g., __loop:nodeId:iteration:0) are NOT available
+          // after the loop completes. Reference the loop node's output.results array instead.
           for (const key of iterationOutputKeys) {
             context.outputs.delete(key);
           }
@@ -1316,6 +1410,26 @@ export class PipelineExecutor {
     };
   }
 
+  /**
+   * Substitute variable references in a template string.
+   *
+   * Syntax: ${nodeId.field.subfield}
+   * - nodeId: ID of a previously executed node whose output is in context.outputs
+   * - field.subfield: Optional dot-separated path to nested properties
+   *
+   * Security:
+   * - Blocks prototype pollution attacks (__proto__, constructor, prototype)
+   * - Values are serialized to strings (objects become JSON)
+   *
+   * @param template - String containing ${...} variable references
+   * @param context - Execution context with outputs from previous nodes
+   * @returns String with variables substituted; unresolved references kept as-is
+   *
+   * @example
+   * // With context.outputs.set("search", { query: "test", count: 5 })
+   * substituteVariables("Query: ${search.query}", context) // "Query: test"
+   * substituteVariables("Found ${search.count} items", context) // "Found 5 items"
+   */
   private substituteVariables(template: string, context: ExecutionContext): string {
     // Replace ${nodeId.field} patterns with actual values from context outputs
     return template.replace(/\$\{([^}]+)\}/g, (match, path) => {
@@ -1434,9 +1548,30 @@ export class PipelineExecutor {
   }
 
   /**
-   * Safe expression evaluator using recursive descent parsing.
-   * Supports: numbers, booleans, ===, !==, >, <, >=, <=, &&, ||, (, )
-   * No code injection possible - does not use eval/Function.
+   * Safely evaluate a condition expression using recursive descent parsing.
+   *
+   * Supported operators (by precedence, lowest to highest):
+   * - Logical: || (OR), && (AND)
+   * - Equality: === (strict equal), !== (strict not equal)
+   * - Relational: <, >, <=, >= (with Number coercion)
+   * - Grouping: ( )
+   *
+   * Supported values:
+   * - Numbers: integers and decimals (e.g., 42, -3.14)
+   * - Booleans: true, false
+   *
+   * Security guarantees:
+   * - No code injection: does not use eval() or new Function()
+   * - No access to JavaScript runtime objects or prototypes
+   * - Invalid expressions return false (fail-safe)
+   *
+   * @param condition - Expression string to evaluate (e.g., "5 > 3 && true")
+   * @returns Boolean result of the expression; false on parse errors
+   *
+   * @example
+   * evaluateCondition("5 > 3") // true
+   * evaluateCondition("10 === 10 && true") // true
+   * evaluateCondition("(5 > 10) || (3 < 5)") // true
    */
   private evaluateCondition(condition: string): boolean {
     try {
@@ -1838,6 +1973,20 @@ export class PipelineExecutor {
       );
     }
 
+    // Audit log: Tool invocation (per CLAUDE.md 4.3 - audit logging for tool invocations)
+    appLogger.info(
+      {
+        audit: true,
+        event: "tool_invocation",
+        pipelineId: this.context.pipelineId,
+        tenantId: this.context.tenantId,
+        userId: this.context.userId,
+        nodeId: node.id,
+        operation,
+      },
+      "Tool invocation started",
+    );
+
     const toolContext: ToolContext = {
       requestId: this.context.pipelineId,
       tenantId: this.context.tenantId,
@@ -1845,6 +1994,43 @@ export class PipelineExecutor {
       logger: appLogger,
       workdir: process.cwd(),
     };
-    return await tool.execute(node.config, toolContext);
+
+    try {
+      const result = await tool.execute(node.config, toolContext);
+
+      // Audit log: Tool invocation success
+      appLogger.info(
+        {
+          audit: true,
+          event: "tool_invocation_completed",
+          pipelineId: this.context.pipelineId,
+          tenantId: this.context.tenantId,
+          userId: this.context.userId,
+          nodeId: node.id,
+          operation,
+          success: true,
+        },
+        "Tool invocation completed",
+      );
+
+      return result;
+    } catch (error) {
+      // Audit log: Tool invocation failure
+      appLogger.warn(
+        {
+          audit: true,
+          event: "tool_invocation_failed",
+          pipelineId: this.context.pipelineId,
+          tenantId: this.context.tenantId,
+          userId: this.context.userId,
+          nodeId: node.id,
+          operation,
+          success: false,
+          err: error instanceof Error ? error : new Error(String(error)),
+        },
+        "Tool invocation failed",
+      );
+      throw error;
+    }
   }
 }
