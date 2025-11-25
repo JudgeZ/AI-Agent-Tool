@@ -993,12 +993,15 @@ export class PipelineExecutor {
 
   /**
    * Recursively resolve variable references in a config value.
-   * Handles strings, arrays, and nested objects.
+   * This method traverses nested objects and arrays, resolving variable
+   * references at any depth level.
    *
-   * For pure variable references (e.g., "${node.items}"), preserves
-   * the original type (arrays, objects). For template strings with
-   * embedded references (e.g., "Found ${count} items"), serializes
-   * values to strings.
+   * Behavior:
+   * - Nested objects: Each property is recursively resolved
+   * - Arrays: Each element is recursively resolved
+   * - Pure variable references (e.g., "${node.items}"): Type is preserved
+   * - Template strings (e.g., "Found ${count} items"): Values serialized to string
+   * - Primitives (numbers, booleans): Passed through unchanged
    */
   private resolveConfigValue(value: unknown, context: ExecutionContext): unknown {
     if (typeof value === "string") {
@@ -1214,7 +1217,15 @@ export class PipelineExecutor {
         // Use ORIGINAL condition for dynamic per-iteration substitution
         const conditionExpr = node.config.condition as string | undefined;
         const operation = resolvedNode.config.operation as string | undefined;
-        const items = resolvedNode.config.items as unknown[] | undefined;
+
+        // Validate items is an array if provided (could be non-array after variable resolution)
+        const itemsRaw = resolvedNode.config.items;
+        if (itemsRaw !== undefined && !Array.isArray(itemsRaw)) {
+          throw new Error(
+            `Loop node '${node.id}' requires 'items' to be an array, got ${typeof itemsRaw}`,
+          );
+        }
+        const items = itemsRaw as unknown[] | undefined;
 
         const results: unknown[] = [];
         let iteration = 0;
@@ -1394,8 +1405,13 @@ export class PipelineExecutor {
       return value;
     }
     if (typeof value === "object" && value !== null) {
-      // Objects are allowed in NodeConfig as Record<string, unknown>
-      return value as Record<string, unknown>;
+      // Only accept plain objects, not Date, RegExp, Map, Set, or other built-ins
+      const proto = Object.getPrototypeOf(value);
+      if (proto === Object.prototype || proto === null) {
+        return value as Record<string, unknown>;
+      }
+      // For non-plain objects, serialize to string representation
+      return String(value);
     }
     // For undefined or other types, convert to null (safe default)
     return null;
