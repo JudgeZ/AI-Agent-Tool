@@ -1,5 +1,7 @@
+import { randomUUID } from "node:crypto";
 import { EventEmitter } from "events";
 import { createClient } from "redis";
+import { z } from "zod";
 
 import { appLogger, normalizeError } from "../observability/logger.js";
 import type { IMessageBus } from "./IMessageBus.js";
@@ -7,9 +9,9 @@ import {
   type Message,
   type MessageBusConfig,
   type MessageBusMetrics,
-  type MessageEnvelope,
   type MessageHandler,
   type MessagePayload,
+  MessagePayloadSchema,
   MessagePriority,
   MessageType,
 } from "./AgentCommunication.js";
@@ -32,10 +34,27 @@ export type RedisMessageBusConfig = Partial<MessageBusConfig> & {
   instanceId?: string;
 };
 
-type SerializedMessage = {
-  message: Omit<Message, "timestamp"> & { timestamp: string };
-  sourceInstance: string;
-};
+/**
+ * Zod schema for serialized messages received via Pub/Sub.
+ * Validates messages at process boundary per coding guidelines.
+ */
+const SerializedMessageSchema = z.object({
+  message: z.object({
+    id: z.string(),
+    type: z.nativeEnum(MessageType),
+    from: z.string(),
+    to: z.union([z.string(), z.array(z.string())]).optional(),
+    payload: MessagePayloadSchema,
+    priority: z.nativeEnum(MessagePriority).optional(),
+    correlationId: z.string().optional(),
+    timestamp: z.string(),
+    ttl: z.number().optional(),
+    metadata: z.record(z.string(), z.unknown()).optional(),
+  }),
+  sourceInstance: z.string(),
+});
+
+type SerializedMessage = z.infer<typeof SerializedMessageSchema>;
 
 /**
  * Redis-backed message bus implementation using Pub/Sub.
@@ -165,51 +184,66 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
   }
 
   private handleIncomingMessage(rawMessage: string): void {
+    // Validate message at process boundary using Zod schema
+    let parsed: unknown;
     try {
-      const { message: serialized, sourceInstance } = JSON.parse(rawMessage) as SerializedMessage;
-
-      // Reconstruct message with Date object
-      const message: Message = {
-        ...serialized,
-        timestamp: new Date(serialized.timestamp),
-      };
-
-      // Handle response messages (for request-response pattern)
-      if (message.type === MessageType.RESPONSE || message.type === MessageType.ERROR) {
-        if (message.correlationId) {
-          const pending = this.pendingRequests.get(message.correlationId);
-          if (pending) {
-            clearTimeout(pending.timeout);
-            if (message.type === MessageType.ERROR) {
-              const payload = message.payload as { message?: string };
-              pending.reject(new Error(payload.message ?? "Request failed"));
-            } else {
-              const payload = message.payload as { result?: unknown };
-              pending.resolve(payload.result);
-            }
-            this.pendingRequests.delete(message.correlationId);
-          }
-        }
-        return;
-      }
-
-      // Handle messages for local agents
-      const targetAgentId = typeof message.to === "string" ? message.to : undefined;
-      if (targetAgentId && this.localAgents.has(targetAgentId)) {
-        this.deliverToLocalAgent(targetAgentId, message, sourceInstance);
-      } else if (message.type === MessageType.BROADCAST) {
-        // Deliver broadcast to all local agents except sender
-        for (const agentId of this.localAgents) {
-          if (agentId !== message.from) {
-            this.deliverToLocalAgent(agentId, message, sourceInstance);
-          }
-        }
-      }
+      parsed = JSON.parse(rawMessage);
     } catch (error) {
       logger.warn(
-        { err: normalizeError(error), event: "msgbus.redis.message.parse_failed" },
-        "Failed to parse incoming message",
+        { err: normalizeError(error), event: "msgbus.redis.message.json_parse_failed" },
+        "Failed to parse incoming message JSON",
       );
+      return;
+    }
+
+    const parseResult = SerializedMessageSchema.safeParse(parsed);
+    if (!parseResult.success) {
+      logger.warn(
+        { error: parseResult.error.message, event: "msgbus.redis.message.validation_failed" },
+        "Incoming message failed schema validation",
+      );
+      return;
+    }
+
+    const { message: serialized, sourceInstance } = parseResult.data;
+
+    // Reconstruct message with Date object
+    const message: Message = {
+      ...serialized,
+      priority: serialized.priority ?? MessagePriority.NORMAL,
+      timestamp: new Date(serialized.timestamp),
+    };
+
+    // Handle response messages (for request-response pattern)
+    if (message.type === MessageType.RESPONSE || message.type === MessageType.ERROR) {
+      if (message.correlationId) {
+        const pending = this.pendingRequests.get(message.correlationId);
+        if (pending) {
+          clearTimeout(pending.timeout);
+          if (message.type === MessageType.ERROR) {
+            const payload = message.payload as { error?: string };
+            pending.reject(new Error(payload.error ?? "Request failed"));
+          } else {
+            const payload = message.payload as { result?: unknown };
+            pending.resolve(payload.result);
+          }
+          this.pendingRequests.delete(message.correlationId);
+        }
+      }
+      return;
+    }
+
+    // Handle messages for local agents
+    const targetAgentId = typeof message.to === "string" ? message.to : undefined;
+    if (targetAgentId && this.localAgents.has(targetAgentId)) {
+      this.deliverToLocalAgent(targetAgentId, message, sourceInstance);
+    } else if (message.type === MessageType.BROADCAST) {
+      // Deliver broadcast to all local agents except sender
+      for (const agentId of this.localAgents) {
+        if (agentId !== message.from) {
+          this.deliverToLocalAgent(agentId, message, sourceInstance);
+        }
+      }
     }
   }
 
@@ -535,7 +569,8 @@ export class RedisMessageBus extends EventEmitter implements IMessageBus {
   // ============================================================================
 
   private generateMessageId(): string {
-    return `msg_${Date.now()}_${Math.random().toString(36).substring(7)}`;
+    // Use randomUUID for better collision resistance in distributed scenarios
+    return `msg_${this.instanceId}_${randomUUID()}`;
   }
 }
 

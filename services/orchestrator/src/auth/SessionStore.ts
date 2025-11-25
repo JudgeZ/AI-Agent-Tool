@@ -1,12 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { ISessionStore } from "./ISessionStore.js";
-
-function normalizeRoles(roles: string[]): string[] {
-  return Array.from(
-    new Set(roles.map(role => role.trim()).filter(role => role.length > 0))
-  ).sort((a, b) => a.localeCompare(b));
-}
+import { normalizeRoles } from "./sessionUtils.js";
 
 export type SessionRecord = {
   id: string;

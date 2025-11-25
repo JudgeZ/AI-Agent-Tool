@@ -1,4 +1,5 @@
 import { createClient } from "redis";
+import { z } from "zod";
 
 import type { AppConfig } from "../config.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
@@ -124,13 +125,15 @@ type RedisClient = ReturnType<typeof createClient>;
 const DEFAULT_INVALIDATION_CHANNEL = "policy:cache:invalidate";
 
 /**
- * Invalidation message format for Pub/Sub.
- * Includes the source instance ID to prevent self-invalidation.
+ * Zod schema for invalidation messages.
+ * Validates Pub/Sub messages at process boundary per coding guidelines.
  */
-interface InvalidationMessage {
-  key: string;
-  sourceInstanceId: string;
-}
+const InvalidationMessageSchema = z.object({
+  key: z.string(),
+  sourceInstanceId: z.string(),
+});
+
+type InvalidationMessage = z.infer<typeof InvalidationMessageSchema>;
 
 /**
  * Redis-backed policy decision cache with L1 (memory) and L2 (Redis) caching.
@@ -168,7 +171,10 @@ class RedisPolicyDecisionCache implements PolicyDecisionCache {
     this.keyPrefix = options.keyPrefix;
     this.ttlSeconds = Math.max(MIN_TTL_SECONDS, Math.floor(options.ttlSeconds));
     this.enableInvalidation = options.enableInvalidation ?? true;
-    this.invalidationChannel = `${this.keyPrefix || DEFAULT_INVALIDATION_CHANNEL}:invalidate`;
+    // Use ternary to avoid channel name collision when keyPrefix is empty string
+    this.invalidationChannel = this.keyPrefix
+      ? `${this.keyPrefix}:invalidate`
+      : DEFAULT_INVALIDATION_CHANNEL;
     this.instanceId = options.instanceId ?? `policy-cache-${Date.now()}-${Math.random().toString(36).slice(2)}`;
     this.memory = new MemoryPolicyDecisionCache({
       ttlSeconds: this.ttlSeconds,
@@ -257,26 +263,38 @@ class RedisPolicyDecisionCache implements PolicyDecisionCache {
 
         // Subscribe to invalidation channel
         await subscriber.subscribe(this.invalidationChannel, (rawMessage: string) => {
-          try {
-            const message = JSON.parse(rawMessage) as InvalidationMessage;
+          // Validate message at process boundary using Zod schema
+          const parseResult = InvalidationMessageSchema.safeParse(
+            (() => {
+              try {
+                return JSON.parse(rawMessage);
+              } catch {
+                return null;
+              }
+            })(),
+          );
 
-            // Skip self-invalidation to avoid wasting work
-            if (message.sourceInstanceId === this.instanceId) {
-              return;
-            }
-
-            // Invalidate the L1 cache entry
-            this.memory.invalidate(message.key);
-            logger.debug(
-              { key: message.key, sourceInstanceId: message.sourceInstanceId, event: "policy.cache.invalidated" },
-              "L1 policy cache invalidated via Pub/Sub",
-            );
-          } catch (error) {
+          if (!parseResult.success) {
             logger.warn(
-              { err: normalizeError(error), event: "policy.cache.invalidation.parse_failed" },
+              { error: parseResult.error.message, event: "policy.cache.invalidation.parse_failed" },
               "Failed to parse policy cache invalidation message",
             );
+            return;
           }
+
+          const message = parseResult.data;
+
+          // Skip self-invalidation to avoid wasting work
+          if (message.sourceInstanceId === this.instanceId) {
+            return;
+          }
+
+          // Invalidate the L1 cache entry
+          this.memory.invalidate(message.key);
+          logger.debug(
+            { key: message.key, sourceInstanceId: message.sourceInstanceId, event: "policy.cache.invalidated" },
+            "L1 policy cache invalidated via Pub/Sub",
+          );
         });
 
         this.subscribed = true;

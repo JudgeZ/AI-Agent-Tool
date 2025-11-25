@@ -1,5 +1,6 @@
 import { EventEmitter } from "events";
 import { createClient } from "redis";
+import { z } from "zod";
 
 import { appLogger, normalizeError } from "../observability/logger.js";
 import type { ISharedContext } from "./ISharedContext.js";
@@ -21,10 +22,23 @@ export type RedisSharedContextConfig = Partial<SharedContextConfig> & {
   keyPrefix?: string;
 };
 
-type SerializedContextEntry = Omit<ContextEntry, "createdAt" | "updatedAt"> & {
-  createdAt: string;
-  updatedAt: string;
-};
+/**
+ * Zod schema for serialized context entries.
+ * Validates data at process boundary per coding guidelines.
+ */
+const SerializedContextEntrySchema = z.object({
+  key: z.string(),
+  value: z.unknown(),
+  scope: z.nativeEnum(ContextScope),
+  ownerId: z.string(),
+  createdAt: z.string(),
+  updatedAt: z.string(),
+  version: z.number(),
+  ttl: z.number().optional(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+
+type SerializedContextEntry = z.infer<typeof SerializedContextEntrySchema>;
 
 /**
  * Redis-backed shared context manager.
@@ -56,10 +70,11 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
     this.redisUrl = config.redisUrl;
     this.keyPrefix = config.keyPrefix ?? DEFAULT_KEY_PREFIX;
 
+    // Note: cleanupInterval is not used since Redis handles TTL-based expiration natively
     this.config = {
       maxEntries: config.maxEntries ?? 10000,
       defaultTtl: config.defaultTtl ?? 60 * 60 * 1000,
-      cleanupInterval: config.cleanupInterval ?? 5 * 60 * 1000,
+      cleanupInterval: 0, // Unused - Redis handles expiration via TTL
       enableVersioning: config.enableVersioning ?? true,
     };
   }
@@ -126,8 +141,29 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
     return JSON.stringify(serialized);
   }
 
-  private deserializeEntry(raw: string): ContextEntry {
-    const serialized = JSON.parse(raw) as SerializedContextEntry;
+  private deserializeEntry(raw: string): ContextEntry | null {
+    // Validate data at process boundary using Zod schema
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      logger.warn(
+        { err: normalizeError(error), event: "context.redis.parse_failed" },
+        "Failed to parse context entry JSON from Redis",
+      );
+      return null;
+    }
+
+    const parseResult = SerializedContextEntrySchema.safeParse(parsed);
+    if (!parseResult.success) {
+      logger.warn(
+        { error: parseResult.error.message, event: "context.redis.validation_failed" },
+        "Context entry from Redis failed schema validation",
+      );
+      return null;
+    }
+
+    const serialized = parseResult.data;
     return {
       ...serialized,
       createdAt: new Date(serialized.createdAt),
@@ -154,6 +190,7 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
     // Get existing entry to preserve createdAt and update version
     const existingRaw = await client.get(this.formatEntryKey(key));
     const existing = existingRaw ? this.deserializeEntry(existingRaw) : null;
+    // If deserialization fails, treat as if entry doesn't exist
 
     const now = new Date();
     const entry: ContextEntry = {
@@ -195,6 +232,10 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
     }
 
     const entry = this.deserializeEntry(raw);
+    if (!entry) {
+      // Deserialization failed, treat as not found
+      return undefined;
+    }
 
     // Check access
     const hasAccess = await this.hasAccessAsync(entry, requesterId, client);
@@ -247,6 +288,10 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
     }
 
     const entry = this.deserializeEntry(raw);
+    if (!entry) {
+      // Deserialization failed, treat as not found
+      return false;
+    }
 
     // Only owner can delete
     if (entry.ownerId !== requesterId) {
@@ -276,6 +321,9 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
     }
 
     const entry = this.deserializeEntry(raw);
+    if (!entry) {
+      throw new Error(`Context key not found: ${key}`);
+    }
 
     if (entry.ownerId !== ownerId) {
       throw new Error(`Only owner can share context key: ${key}`);
@@ -328,6 +376,7 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
         if (!raw) continue;
 
         const entry = this.deserializeEntry(raw);
+        if (!entry) continue; // Skip invalid entries
 
         // Check access
         const hasAccess = await this.hasAccessAsync(entry, requesterId, client);
@@ -387,7 +436,7 @@ export class RedisSharedContext extends EventEmitter implements ISharedContext {
           const raw = await client.get(redisKey);
           if (raw) {
             const entry = this.deserializeEntry(raw);
-            if (entry.scope === scope) {
+            if (entry && entry.scope === scope) {
               keys.push(contextKey);
             }
           }

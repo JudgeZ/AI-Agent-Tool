@@ -56,7 +56,10 @@ export function createSessionStore(config: SessionStoreConfig): ISessionStore {
       redisUrl,
       keyPrefix: config.redis?.keyPrefix,
       enableL1Cache: config.redis?.enableL1Cache,
-      l1CacheTtlSeconds: config.redis?.l1CacheTtlSeconds,
+      // Convert seconds to milliseconds for RedisSessionStore
+      l1CacheTtlMs: config.redis?.l1CacheTtlSeconds
+        ? config.redis.l1CacheTtlSeconds * 1000
+        : undefined,
     };
 
     logger.info(

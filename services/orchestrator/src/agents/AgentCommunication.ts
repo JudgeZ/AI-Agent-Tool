@@ -271,7 +271,11 @@ export class MessageBus extends EventEmitter implements IMessageBus {
     });
 
     // Schedule delivery on next tick to allow batching of concurrent sends
-    setImmediate(() => this.deliverMessages(recipient));
+    setImmediate(() => {
+      this.deliverMessages(recipient).catch((error) => {
+        this.emit("error", { error, agentId: recipient, event: "delivery.failed" });
+      });
+    });
 
     return message.id;
   }
@@ -416,7 +420,11 @@ export class MessageBus extends EventEmitter implements IMessageBus {
           });
 
           // Schedule retry delivery
-          setImmediate(() => this.deliverMessages(agentId));
+          setImmediate(() => {
+            this.deliverMessages(agentId).catch((error) => {
+              this.emit("error", { error, agentId, event: "retry.delivery.failed" });
+            });
+          });
         }
       }
     }

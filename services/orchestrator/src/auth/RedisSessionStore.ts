@@ -4,6 +4,7 @@ import { createClient } from "redis";
 import { appLogger, normalizeError } from "../observability/logger.js";
 import type { ISessionStore } from "./ISessionStore.js";
 import type { CreateSessionInput, SessionRecord } from "./SessionStore.js";
+import { normalizeRoles, SessionRecordSchema } from "./sessionUtils.js";
 
 const logger = appLogger.child({ subsystem: "session-store" });
 
@@ -30,12 +31,6 @@ export type RedisSessionStoreConfig = {
 interface L1CacheEntry {
   session: SessionRecord;
   cachedAt: number;
-}
-
-function normalizeRoles(roles: string[]): string[] {
-  return Array.from(
-    new Set(roles.map((role) => role.trim()).filter((role) => role.length > 0)),
-  ).sort((a, b) => a.localeCompare(b));
 }
 
 /**
@@ -195,31 +190,43 @@ export class RedisSessionStore implements ISessionStore {
     );
 
     const client = await this.getClient();
+    let redisSuccess = false;
+
     if (client) {
       try {
         await client.set(this.formatKey(id), JSON.stringify(session), {
           EX: actualTtlSeconds,
         });
+        redisSuccess = true;
         logger.debug(
           { sessionId: id, subject: input.subject, ttlSeconds: actualTtlSeconds, event: "session.created" },
           "Session created in Redis",
         );
+        // Cache in L1 only after successful Redis write
+        this.setL1Cache(session);
       } catch (error) {
         logger.error(
           { err: normalizeError(error), sessionId: id, event: "session.store.redis.create_failed" },
-          "Failed to create session in Redis; session will only exist in L1 cache",
+          "Failed to create session in Redis",
         );
-        // Fall through to L1 cache
       }
-    } else {
-      logger.warn(
-        { sessionId: id, event: "session.store.redis.unavailable" },
-        "Redis unavailable during session creation; session will only exist in L1 cache",
-      );
     }
 
-    // Store the exact session in L1 cache (with correct ID)
-    this.setL1Cache(session);
+    // If Redis failed, only cache in L1 as fallback (if enabled)
+    if (!redisSuccess) {
+      if (this.enableL1Cache) {
+        this.setL1Cache(session);
+        logger.warn(
+          { sessionId: id, event: "session.store.redis.fallback" },
+          "Session stored in L1 cache only (Redis unavailable); session may not be visible to other replicas",
+        );
+      } else {
+        // No persistence available - fail the operation
+        throw new Error(
+          "Failed to create session: Redis unavailable and L1 cache disabled",
+        );
+      }
+    }
 
     return session;
   }
@@ -242,7 +249,28 @@ export class RedisSessionStore implements ISessionStore {
         return undefined;
       }
 
-      const session = JSON.parse(raw) as SessionRecord;
+      // Validate session data at process boundary using Zod schema
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        logger.warn(
+          { sessionId: id, event: "session.store.redis.parse_failed" },
+          "Failed to parse session JSON from Redis",
+        );
+        return undefined;
+      }
+
+      const parseResult = SessionRecordSchema.safeParse(parsed);
+      if (!parseResult.success) {
+        logger.warn(
+          { sessionId: id, error: parseResult.error.message, event: "session.store.redis.validation_failed" },
+          "Session data from Redis failed schema validation",
+        );
+        return undefined;
+      }
+
+      const session = parseResult.data;
 
       // Check if expired (Redis TTL should handle this, but double-check)
       if (Date.now() >= Date.parse(session.expiresAt)) {
