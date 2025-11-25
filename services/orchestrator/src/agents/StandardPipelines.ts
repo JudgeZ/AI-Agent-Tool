@@ -1342,6 +1342,21 @@ export class PipelineExecutor {
         let conditionExpr: string | undefined;
         if (conditionRaw !== undefined && conditionRaw !== null) {
           if (typeof conditionRaw !== "string") {
+            // Audit log: Input validation failure (per CLAUDE.md 4.3)
+            appLogger.warn(
+              {
+                audit: true,
+                event: "input_validation_failed",
+                pipelineId: this.context.pipelineId,
+                tenantId: this.context.tenantId,
+                userId: this.context.userId,
+                nodeId: node.id,
+                field: "condition",
+                expectedType: "string",
+                actualType: typeof conditionRaw,
+              },
+              "Loop node validation failed: condition must be a string",
+            );
             throw new Error(
               `Loop node '${node.id}' requires 'condition' to be a string, got ${typeof conditionRaw}`,
             );
@@ -1353,6 +1368,21 @@ export class PipelineExecutor {
         // Validate items is an array if provided (could be non-array after variable resolution)
         const itemsRaw = resolvedNode.config.items;
         if (itemsRaw !== undefined && !Array.isArray(itemsRaw)) {
+          // Audit log: Input validation failure (per CLAUDE.md 4.3)
+          appLogger.warn(
+            {
+              audit: true,
+              event: "input_validation_failed",
+              pipelineId: this.context.pipelineId,
+              tenantId: this.context.tenantId,
+              userId: this.context.userId,
+              nodeId: node.id,
+              field: "items",
+              expectedType: "array",
+              actualType: typeof itemsRaw,
+            },
+            "Loop node validation failed: items must be an array",
+          );
           throw new Error(
             `Loop node '${node.id}' requires 'items' to be an array, got ${typeof itemsRaw}`,
           );
