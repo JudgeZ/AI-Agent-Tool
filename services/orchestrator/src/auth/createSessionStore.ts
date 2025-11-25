@@ -93,8 +93,12 @@ export function createSessionStoreFromEnv(): ISessionStore {
   const redisUrl = process.env.SESSION_STORE_REDIS_URL;
   const keyPrefix = process.env.SESSION_STORE_REDIS_KEY_PREFIX;
   const enableL1Cache = process.env.SESSION_STORE_REDIS_L1_CACHE === "true";
-  const l1CacheTtlSeconds = process.env.SESSION_STORE_REDIS_L1_TTL
+  const l1CacheTtlSecondsRaw = process.env.SESSION_STORE_REDIS_L1_TTL
     ? parseInt(process.env.SESSION_STORE_REDIS_L1_TTL, 10)
+    : undefined;
+  // Guard against NaN from invalid env var values
+  const l1CacheTtlSeconds = l1CacheTtlSecondsRaw !== undefined && !Number.isNaN(l1CacheTtlSecondsRaw)
+    ? l1CacheTtlSecondsRaw
     : undefined;
 
   return createSessionStore({
