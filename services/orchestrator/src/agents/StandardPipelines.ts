@@ -899,22 +899,37 @@ export class PipelineExecutor {
   /**
    * Resolve variable references in node config.
    * Creates a new node with substituted config values.
+   * Recursively handles nested objects and arrays.
    */
   private resolveNodeConfig(node: NodeDefinition, context: ExecutionContext): NodeDefinition {
-    const resolvedConfig: Record<string, unknown> = {};
-
-    for (const [key, value] of Object.entries(node.config)) {
-      if (typeof value === "string") {
-        resolvedConfig[key] = this.substituteVariables(value, context);
-      } else {
-        resolvedConfig[key] = value;
-      }
-    }
-
     return {
       ...node,
-      config: resolvedConfig,
+      config: this.resolveConfigValue(node.config, context) as Record<string, unknown>,
     };
+  }
+
+  /**
+   * Recursively resolve variable references in a config value.
+   * Handles strings, arrays, and nested objects.
+   */
+  private resolveConfigValue(value: unknown, context: ExecutionContext): unknown {
+    if (typeof value === "string") {
+      return this.substituteVariables(value, context);
+    }
+
+    if (Array.isArray(value)) {
+      return value.map((item) => this.resolveConfigValue(item, context));
+    }
+
+    if (typeof value === "object" && value !== null) {
+      const resolved: Record<string, unknown> = {};
+      for (const [key, val] of Object.entries(value)) {
+        resolved[key] = this.resolveConfigValue(val, context);
+      }
+      return resolved;
+    }
+
+    return value;
   }
 
   private createParallelHandler(): NodeHandler {
@@ -923,23 +938,26 @@ export class PipelineExecutor {
         node: NodeDefinition,
         context: ExecutionContext,
       ): Promise<unknown> => {
+        // Resolve variable references in node config
+        const resolvedNode = this.resolveNodeConfig(node, context);
+
         // Parallel nodes coordinate concurrent execution of their configured tasks
         // The actual parallelism is handled by the ExecutionGraph scheduler
         // This handler processes the node's own config if needed
-        const operation = node.config.operation as string | undefined;
+        const operation = resolvedNode.config.operation as string | undefined;
 
         if (operation) {
           // If the parallel node has an operation, execute it
-          return await this.executeGenericTool(node);
+          return await this.executeGenericTool(resolvedNode);
         }
 
         // Return aggregated info about what this parallel node represents
         return {
           status: "completed",
-          nodeId: node.id,
-          description: node.description,
+          nodeId: resolvedNode.id,
+          description: resolvedNode.description,
           // Results from parallel branches are available in context.outputs
-          parallelBranches: node.dependencies,
+          parallelBranches: resolvedNode.dependencies,
         };
       },
     };
@@ -968,11 +986,27 @@ export class PipelineExecutor {
           "Condition evaluated",
         );
 
+        // When condition is false, throw to block dependent nodes
+        // Use continueOnError: true on the node to allow dependents to execute regardless
+        if (!result) {
+          const error = new Error(
+            `Condition failed: ${condition} (evaluated: ${evaluatedCondition})`,
+          );
+          (error as any).conditionResult = {
+            condition,
+            evaluatedCondition,
+            result: false,
+            passed: false,
+          };
+          throw error;
+        }
+
         return {
-          status: "completed",
+          status: "passed",
           condition,
-          result,
-          passed: result === true,
+          evaluatedCondition,
+          result: true,
+          passed: true,
         };
       },
     };
@@ -1023,15 +1057,32 @@ export class PipelineExecutor {
         node: NodeDefinition,
         context: ExecutionContext,
       ): Promise<unknown> => {
-        const maxIterations = (node.config.maxIterations as number) ?? 100;
-        const conditionExpr = node.config.condition as string | undefined;
-        const operation = node.config.operation as string | undefined;
+        // Resolve variable references in node config
+        const resolvedNode = this.resolveNodeConfig(node, context);
 
-        const iterations: unknown[] = [];
+        const maxIterations = (resolvedNode.config.maxIterations as number) ?? 100;
+        const conditionExpr = resolvedNode.config.condition as string | undefined;
+        const operation = resolvedNode.config.operation as string | undefined;
+        const items = resolvedNode.config.items as unknown[] | undefined;
+
+        const results: unknown[] = [];
         let iteration = 0;
 
+        // Check items bounds before first execution
+        if (items && items.length === 0) {
+          appLogger.debug(
+            { nodeId: resolvedNode.id, iterations: 0, maxIterations },
+            "Loop completed (empty items)",
+          );
+          return {
+            status: "completed",
+            iterations: 0,
+            results: [],
+          };
+        }
+
         while (iteration < maxIterations) {
-          // Check loop condition if specified
+          // Check loop condition if specified (re-evaluate each iteration)
           if (conditionExpr) {
             const evaluatedCondition = this.substituteVariables(conditionExpr, context);
             const shouldContinue = this.evaluateCondition(evaluatedCondition);
@@ -1040,19 +1091,32 @@ export class PipelineExecutor {
             }
           }
 
-          // Execute the loop body if operation specified
-          if (operation) {
-            const iterationResult = await this.executeGenericTool(node);
-            iterations.push(iterationResult);
-          }
-
-          iteration++;
-
-          // Safety: check if we have items to iterate over
-          const items = node.config.items as unknown[] | undefined;
+          // Check items bounds before execution
           if (items && iteration >= items.length) {
             break;
           }
+
+          // Execute the loop body if operation specified
+          if (operation) {
+            // Create iteration-specific node with current item injected
+            const iterationNode: NodeDefinition = {
+              ...resolvedNode,
+              config: {
+                ...resolvedNode.config,
+                _iteration: iteration,
+                _item: items ? items[iteration] : undefined,
+                _totalItems: items ? items.length : undefined,
+              },
+            };
+
+            const iterationResult = await this.executeGenericTool(iterationNode);
+            results.push(iterationResult);
+
+            // Store iteration result in context for dynamic condition evaluation
+            context.outputs.set(`${node.id}_iteration_${iteration}`, iterationResult);
+          }
+
+          iteration++;
 
           // If no condition and no items, execute once and exit
           if (!conditionExpr && !items) {
@@ -1061,14 +1125,14 @@ export class PipelineExecutor {
         }
 
         appLogger.debug(
-          { nodeId: node.id, iterations: iteration, maxIterations },
+          { nodeId: resolvedNode.id, iterations: iteration, maxIterations },
           "Loop completed",
         );
 
         return {
           status: "completed",
           iterations: iteration,
-          results: iterations,
+          results,
         };
       },
     };
@@ -1094,6 +1158,15 @@ export class PipelineExecutor {
       // Navigate to the nested field
       let value: unknown = nodeOutput;
       for (const field of fieldPath) {
+        // Prototype pollution protection - reject dangerous property names
+        if (this.isDangerousProperty(field)) {
+          appLogger.warn(
+            { field, path },
+            "Blocked access to dangerous property in variable substitution",
+          );
+          return match; // Keep original if dangerous property access
+        }
+
         if (typeof value === "object" && value !== null && field in value) {
           value = (value as Record<string, unknown>)[field];
         } else {
@@ -1130,6 +1203,22 @@ export class PipelineExecutor {
       }
     }
     return String(value);
+  }
+
+  /**
+   * Check if a property name could be used for prototype pollution attacks.
+   */
+  private isDangerousProperty(name: string): boolean {
+    const dangerousProperties = [
+      "__proto__",
+      "constructor",
+      "prototype",
+      "__defineGetter__",
+      "__defineSetter__",
+      "__lookupGetter__",
+      "__lookupSetter__",
+    ];
+    return dangerousProperties.includes(name);
   }
 
   /**
@@ -1201,16 +1290,24 @@ export class PipelineExecutor {
         continue;
       }
 
-      // Boolean literals
+      // Boolean literals (with word boundary check)
       if (expr.slice(i, i + 4) === "true") {
-        tokens.push("true");
-        i += 4;
-        continue;
+        const nextChar = expr[i + 4];
+        // Ensure "true" is not part of a longer word (e.g., "trueish")
+        if (nextChar === undefined || !/[a-zA-Z0-9_]/.test(nextChar)) {
+          tokens.push("true");
+          i += 4;
+          continue;
+        }
       }
       if (expr.slice(i, i + 5) === "false") {
-        tokens.push("false");
-        i += 5;
-        continue;
+        const nextChar = expr[i + 5];
+        // Ensure "false" is not part of a longer word (e.g., "falsehood")
+        if (nextChar === undefined || !/[a-zA-Z0-9_]/.test(nextChar)) {
+          tokens.push("false");
+          i += 5;
+          continue;
+        }
       }
 
       // Numbers (including negative)

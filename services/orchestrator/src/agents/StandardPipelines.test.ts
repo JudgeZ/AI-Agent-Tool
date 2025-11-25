@@ -7,7 +7,6 @@ import {
   PipelineContext,
 } from "./StandardPipelines";
 import {
-  ExecutionGraph,
   NodeType,
   NodeDefinition,
   ExecutionContext,
@@ -349,7 +348,7 @@ describe("StandardPipelines", () => {
       executor = new PipelineExecutor(mockContext);
     });
 
-    it("should create condition handler that evaluates expressions", async () => {
+    it("should create condition handler that passes when expression is true", async () => {
       const handler = (executor as any).createConditionHandler();
       const context: ExecutionContext = {
         graphId: "test",
@@ -371,12 +370,35 @@ describe("StandardPipelines", () => {
 
       const result = await handler.execute(node, context);
 
-      expect(result).toEqual({
-        status: "completed",
+      expect(result).toMatchObject({
+        status: "passed",
         condition: "5 === 5",
         result: true,
         passed: true,
       });
+    });
+
+    it("should create condition handler that throws when expression is false", async () => {
+      const handler = (executor as any).createConditionHandler();
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map(),
+        metadata: {},
+      };
+
+      const node: NodeDefinition = {
+        id: "condition-1",
+        type: NodeType.CONDITION,
+        name: "Test Condition",
+        dependencies: [],
+        config: {
+          condition: "5 === 3",
+        },
+      };
+
+      await expect(handler.execute(node, context)).rejects.toThrow("Condition failed");
     });
 
     it("should create merge handler that collects outputs", async () => {
