@@ -5,6 +5,9 @@ import { getCaseService } from "../cases/CaseService.js";
 import type { AppConfig } from "../config.js";
 import { respondWithUnexpectedError, respondWithError, respondWithValidationError } from "../http/errors.js";
 import type { ExtendedRequest } from "../http/types.js";
+import { createRequestIdentity, buildRateLimitBuckets } from "../http/requestIdentity.js";
+import { enforceRateLimit } from "../http/rateLimit.js";
+import type { RateLimitStore } from "../rateLimit/store.js";
 import {
   CaseCreateSchema,
   CaseListQuerySchema,
@@ -17,6 +20,8 @@ import {
   getRequestIds,
   resolveAuthFailure,
   respondWithInvalidTenant,
+  toAuditSubject,
+  toPlanSubject,
 } from "../http/helpers.js";
 import { logAuditEvent } from "../observability/audit.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
@@ -25,7 +30,7 @@ export class CaseController {
   private readonly logger = appLogger.child({ component: "CaseController" });
   private readonly caseService = getCaseService();
 
-  constructor(private readonly config: AppConfig) {}
+  constructor(private readonly config: AppConfig, private readonly rateLimiter: RateLimitStore) {}
 
   private requireSession(req: ExtendedRequest, res: Response): ExtendedRequest["auth"]["session"] | undefined {
     const session = req.auth?.session;
@@ -53,9 +58,51 @@ export class CaseController {
     return session;
   }
 
+  private async checkRateLimit(
+    req: ExtendedRequest,
+    res: Response,
+    endpoint: string,
+    auditAction: string,
+  ): Promise<boolean> {
+    const identity = createRequestIdentity(
+      req,
+      this.config,
+      req.auth?.session ? toPlanSubject(req.auth.session) : undefined,
+    );
+    const rateDecision = await enforceRateLimit(
+      this.rateLimiter,
+      endpoint,
+      identity,
+      buildRateLimitBuckets(endpoint, this.config.server.rateLimits.cases),
+    );
+    if (rateDecision.allowed) {
+      return true;
+    }
+    respondWithError(
+      res,
+      429,
+      { code: "too_many_requests", message: `${endpoint} rate limit exceeded` },
+      rateDecision.retryAfterMs ? { retryAfterMs: rateDecision.retryAfterMs } : undefined,
+    );
+    const { requestId, traceId } = getRequestIds(res);
+    logAuditEvent({
+      action: auditAction,
+      outcome: "denied",
+      subject: toAuditSubject(req.auth?.session),
+      requestId,
+      traceId,
+      details: { reason: "rate_limited" },
+    });
+    return false;
+  }
+
   async listCases(req: ExtendedRequest, res: Response): Promise<void> {
     const session = this.requireSession(req, res);
     if (!session) return;
+
+    if (!(await this.checkRateLimit(req, res, "cases", "cases.list"))) {
+      return;
+    }
 
     const tenantNormalization = normalizeTenantIdInput(session.tenantId);
     if (tenantNormalization.error) {
@@ -85,6 +132,10 @@ export class CaseController {
   async createCase(req: ExtendedRequest, res: Response): Promise<void> {
     const session = this.requireSession(req, res);
     if (!session) return;
+
+    if (!(await this.checkRateLimit(req, res, "cases", "cases.create"))) {
+      return;
+    }
 
     const tenantNormalization = normalizeTenantIdInput(session.tenantId);
     if (tenantNormalization.error) {
@@ -126,6 +177,10 @@ export class CaseController {
   async createTask(req: ExtendedRequest, res: Response): Promise<void> {
     const session = this.requireSession(req, res);
     if (!session) return;
+
+    if (!(await this.checkRateLimit(req, res, "cases", "cases.tasks.create"))) {
+      return;
+    }
 
     const tenantNormalization = normalizeTenantIdInput(session.tenantId);
     if (tenantNormalization.error) {
@@ -169,6 +224,10 @@ export class CaseController {
     const session = this.requireSession(req, res);
     if (!session) return;
 
+    if (!(await this.checkRateLimit(req, res, "cases", "cases.tasks.list"))) {
+      return;
+    }
+
     const caseId = req.params["id"];
     if (!caseId) {
       respondWithError(res, 400, { code: "invalid_request", message: "case id is required" });
@@ -201,6 +260,10 @@ export class CaseController {
   async attachArtifact(req: ExtendedRequest, res: Response): Promise<void> {
     const session = this.requireSession(req, res);
     if (!session) return;
+
+    if (!(await this.checkRateLimit(req, res, "cases", "cases.artifacts.attach"))) {
+      return;
+    }
 
     const caseId = req.params["id"];
     if (!caseId) {

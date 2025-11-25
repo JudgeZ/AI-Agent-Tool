@@ -238,11 +238,14 @@ export class CaseService {
       });
     }
 
-    const conditions = ["tenant_id = $1"];
-    const values: Array<string | string[]> = [filter.tenantId];
+    const conditions: string[] = [];
+    const values: Array<string | string[]> = [];
+
+    conditions.push(`tenant_id = $${values.length + 1}`);
+    values.push(filter.tenantId);
 
     if (filter.projectId) {
-      conditions.push("project_id = $2");
+      conditions.push(`project_id = $${values.length + 1}`);
       values.push(filter.projectId);
     }
     if (filter.status && filter.status.length > 0) {

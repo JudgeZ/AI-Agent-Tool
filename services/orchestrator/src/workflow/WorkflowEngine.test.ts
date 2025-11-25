@@ -38,9 +38,9 @@ describe("WorkflowEngine", () => {
     resetWorkflowEngine();
   });
 
-  it("creates workflows from plans and preserves plan link", () => {
+  it("creates workflows from plans and preserves plan link", async () => {
     const engine = getWorkflowEngine();
-    const workflow = engine.createWorkflowFromPlan(plan, { tenantId: "tenant-1", projectId: "proj" });
+    const workflow = await engine.createWorkflowFromPlan(plan, { tenantId: "tenant-1", projectId: "proj" });
 
     expect(workflow.plan?.id).toBe(plan.id);
     expect(workflow.nodes).toHaveLength(plan.steps.length);
@@ -48,9 +48,9 @@ describe("WorkflowEngine", () => {
     expect(workflow.nodes[1].type).toBe("ApprovalStep");
   });
 
-  it("rebuilds a plan from workflow nodes when missing", () => {
+  it("rebuilds a plan from workflow nodes when missing", async () => {
     const engine = getWorkflowEngine();
-    const workflow = engine.createWorkflowFromPlan(plan);
+    const workflow = await engine.createWorkflowFromPlan(plan);
     const rebuilt = engine.toPlan({ ...workflow, plan: undefined });
 
     expect(rebuilt).toBeDefined();

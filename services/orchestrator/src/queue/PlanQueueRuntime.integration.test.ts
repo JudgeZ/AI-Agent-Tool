@@ -391,7 +391,7 @@ describe("PlanQueueRuntime integration", () => {
     ).rejects.toThrow("queue unavailable");
 
     expect(enqueueSpy).toHaveBeenCalledTimes(1);
-    expect(runtime.hasPendingPlanStep(plan.id, "s-cleanup")).toBe(false);
+    expect(await runtime.hasPendingPlanStep(plan.id, "s-cleanup")).toBe(false);
     expect(runtime.hasApprovalCacheEntry(plan.id, "s-cleanup")).toBe(false);
     expect(runtime.hasActivePlanSubject(plan.id)).toBe(false);
   });

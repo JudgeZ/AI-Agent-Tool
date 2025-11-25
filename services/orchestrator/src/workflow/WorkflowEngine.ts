@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 
 import type { Plan, PlanStep, PlanSubject } from "../plan/planner.js";
+import { getWorkflowRepository, resetWorkflowRepository, type WorkflowRepository } from "./WorkflowRepository.js";
 
 export type WorkflowNodeType = "AgentStep" | "CodeStep" | "ApprovalStep" | "TriggerStep";
 
@@ -37,21 +38,23 @@ function nodeTypeFromPlanStep(step: PlanStep): WorkflowNodeType {
 }
 
 export class WorkflowEngine {
-  private readonly workflows = new Map<string, Workflow>();
+  constructor(private readonly repository: WorkflowRepository = getWorkflowRepository()) {}
 
-  registerWorkflow(workflow: Workflow): Workflow {
-    const existing = this.workflows.get(workflow.id);
+  async registerWorkflow(workflow: Workflow): Promise<Workflow> {
+    const existing = await this.repository.get(workflow.id);
     const now = new Date().toISOString();
     const merged: Workflow = {
       ...workflow,
       createdAt: existing?.createdAt ?? workflow.createdAt ?? now,
       updatedAt: now,
     };
-    this.workflows.set(merged.id, merged);
-    return merged;
+    return this.repository.save(merged);
   }
 
-  createWorkflowFromPlan(plan: Plan, context?: { tenantId?: string; projectId?: string; subject?: PlanSubject }): Workflow {
+  async createWorkflowFromPlan(
+    plan: Plan,
+    context?: { tenantId?: string; projectId?: string; subject?: PlanSubject },
+  ): Promise<Workflow> {
     const id = `wf-${randomUUID()}`;
     const nodes: WorkflowNode[] = plan.steps.map((step) => ({
       id: `wf-${step.id}`,
@@ -79,20 +82,12 @@ export class WorkflowEngine {
     return this.registerWorkflow(workflow);
   }
 
-  getWorkflow(id: string): Workflow | undefined {
-    return this.workflows.get(id);
+  async getWorkflow(id: string): Promise<Workflow | undefined> {
+    return this.repository.get(id);
   }
 
-  listWorkflows(filter?: { tenantId?: string; projectId?: string }): Workflow[] {
-    return Array.from(this.workflows.values()).filter((workflow) => {
-      if (filter?.tenantId && workflow.tenantId && workflow.tenantId !== filter.tenantId) {
-        return false;
-      }
-      if (filter?.projectId && workflow.projectId && workflow.projectId !== filter.projectId) {
-        return false;
-      }
-      return true;
-    });
+  async listWorkflows(filter?: { tenantId?: string; projectId?: string }): Promise<Workflow[]> {
+    return this.repository.list(filter);
   }
 
   toPlan(workflow: Workflow): Plan | undefined {
@@ -133,5 +128,6 @@ export function getWorkflowEngine(): WorkflowEngine {
 }
 
 export function resetWorkflowEngine(): void {
+  resetWorkflowRepository();
   workflowEngineInstance = null;
 }

@@ -185,16 +185,17 @@ export const CaseCreateSchema = z.object({
   metadata: z.record(z.any()).optional(),
 });
 
+const CaseStatusListSchema = z.preprocess((raw) => {
+  if (typeof raw !== "string") return raw;
+  const entries = raw
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry.length > 0);
+  return entries.length === 0 ? undefined : entries;
+}, z.array(z.enum(CaseStatusValues)).optional());
+
 export const CaseListQuerySchema = z.object({
-  status: z
-    .string()
-    .trim()
-    .transform(value =>
-      value.length === 0
-        ? undefined
-        : value.split(",").map(entry => entry.trim()).filter(entry => CaseStatusValues.includes(entry as any))
-    )
-    .optional(),
+  status: CaseStatusListSchema,
   projectId: z
     .string()
     .trim()

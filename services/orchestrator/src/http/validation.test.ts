@@ -10,6 +10,7 @@ import {
   PlanRequestSchema,
   SessionIdSchema,
   StepIdSchema,
+  CaseListQuerySchema,
   formatValidationIssues,
 } from "./validation.js";
 
@@ -321,6 +322,26 @@ describe("OidcCallbackSchema", () => {
       client_id: "  tenant-client  ",
     });
     expect(result.clientId).toBe("tenant-client");
+  });
+});
+
+describe("CaseListQuerySchema", () => {
+  it("parses comma separated statuses and trims entries", () => {
+    const result = CaseListQuerySchema.parse({ status: " open ,closed " });
+
+    expect(result.status).toEqual(["open", "closed"]);
+  });
+
+  it("rejects unknown status values", () => {
+    const parsed = CaseListQuerySchema.safeParse({ status: "open,invalid" });
+
+    expect(parsed.success).toBe(false);
+  });
+
+  it("treats empty status input as undefined", () => {
+    const result = CaseListQuerySchema.parse({ status: "   " });
+
+    expect(result.status).toBeUndefined();
   });
 });
 

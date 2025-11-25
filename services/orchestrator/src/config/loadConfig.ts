@@ -131,6 +131,8 @@ export type ServerRateLimitsConfig = {
   chat: IdentityAwareRateLimitConfig;
   auth: IdentityAwareRateLimitConfig;
   secrets: IdentityAwareRateLimitConfig;
+  cases: IdentityAwareRateLimitConfig;
+  workflows: IdentityAwareRateLimitConfig;
 };
 
 export type NetworkEgressMode = "enforce" | "report-only" | "allow";
@@ -794,6 +796,18 @@ export const DEFAULT_CONFIG: AppConfig = {
         maxRequests: 60,
         identityWindowMs: 60_000,
         identityMaxRequests: 10,
+      },
+      cases: {
+        windowMs: 60_000,
+        maxRequests: 120,
+        identityWindowMs: 60_000,
+        identityMaxRequests: 30,
+      },
+      workflows: {
+        windowMs: 60_000,
+        maxRequests: 60,
+        identityWindowMs: 60_000,
+        identityMaxRequests: 20,
       }
     },
     sseQuotas: {
@@ -933,6 +947,8 @@ type PartialServerRateLimitsConfig = {
   chat?: PartialIdentityAwareRateLimitConfig;
   auth?: PartialIdentityAwareRateLimitConfig;
   secrets?: PartialIdentityAwareRateLimitConfig;
+  cases?: PartialIdentityAwareRateLimitConfig;
+  workflows?: PartialIdentityAwareRateLimitConfig;
 };
 
 type PartialRequestSizeLimitsConfig = {
@@ -2961,6 +2977,48 @@ export function loadConfig(): AppConfig {
     "server.rateLimits.secrets",
   );
 
+  const fileServerCasesRateLimit = fileCfg.server?.rateLimits?.cases;
+  const serverCasesRateLimit = ensurePositiveRateLimit<IdentityAwareRateLimitConfig>(
+    {
+      windowMs:
+        fileServerCasesRateLimit?.windowMs ?? DEFAULT_CONFIG.server.rateLimits.cases.windowMs,
+      maxRequests:
+        fileServerCasesRateLimit?.maxRequests ?? DEFAULT_CONFIG.server.rateLimits.cases.maxRequests,
+      identityWindowMs: resolveIdentityLimitValue(
+        undefined,
+        fileServerCasesRateLimit?.identityWindowMs,
+        DEFAULT_CONFIG.server.rateLimits.cases.identityWindowMs,
+      ),
+      identityMaxRequests: resolveIdentityLimitValue(
+        undefined,
+        fileServerCasesRateLimit?.identityMaxRequests,
+        DEFAULT_CONFIG.server.rateLimits.cases.identityMaxRequests,
+      ),
+    },
+    "server.rateLimits.cases",
+  );
+
+  const fileServerWorkflowsRateLimit = fileCfg.server?.rateLimits?.workflows;
+  const serverWorkflowsRateLimit = ensurePositiveRateLimit<IdentityAwareRateLimitConfig>(
+    {
+      windowMs:
+        fileServerWorkflowsRateLimit?.windowMs ?? DEFAULT_CONFIG.server.rateLimits.workflows.windowMs,
+      maxRequests:
+        fileServerWorkflowsRateLimit?.maxRequests ?? DEFAULT_CONFIG.server.rateLimits.workflows.maxRequests,
+      identityWindowMs: resolveIdentityLimitValue(
+        undefined,
+        fileServerWorkflowsRateLimit?.identityWindowMs,
+        DEFAULT_CONFIG.server.rateLimits.workflows.identityWindowMs,
+      ),
+      identityMaxRequests: resolveIdentityLimitValue(
+        undefined,
+        fileServerWorkflowsRateLimit?.identityMaxRequests,
+        DEFAULT_CONFIG.server.rateLimits.workflows.identityMaxRequests,
+      ),
+    },
+    "server.rateLimits.workflows",
+  );
+
   const serverRequestLimits: RequestSizeLimitsConfig = {
     jsonBytes: sanitizeRequestLimit(
       envServerRequestLimitJson ?? fileCfg.server?.requestLimits?.jsonBytes,
@@ -3418,7 +3476,9 @@ export function loadConfig(): AppConfig {
         plan: serverPlanRateLimit,
         chat: serverChatRateLimit,
         auth: serverAuthRateLimit,
-        secrets: serverSecretsRateLimit
+        secrets: serverSecretsRateLimit,
+        cases: serverCasesRateLimit,
+        workflows: serverWorkflowsRateLimit
       },
       sseQuotas: serverSseQuotaConfig,
       tls: {

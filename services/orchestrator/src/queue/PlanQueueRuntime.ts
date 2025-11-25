@@ -24,12 +24,12 @@ export const submitPlanSteps = (
   requestId?: string,
   subject?: any,
 ) => {
-  const workflow = getWorkflowEngine().createWorkflowFromPlan(plan, {
+  const workflowPromise = getWorkflowEngine().createWorkflowFromPlan(plan, {
     tenantId: subject?.tenantId,
     projectId: subject?.projectId,
     subject,
   });
-  return submitWorkflow(workflow, traceId, requestId, subject);
+  return workflowPromise.then((workflow) => submitWorkflow(workflow, traceId, requestId, subject));
 };
 
 export const resolvePlanStepApproval = (options: {

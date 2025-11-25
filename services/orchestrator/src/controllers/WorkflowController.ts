@@ -5,12 +5,17 @@ import { getWorkflowEngine } from "../workflow/WorkflowEngine.js";
 import { normalizeTenantIdInput } from "../tenants/tenantIds.js";
 import type { ExtendedRequest } from "../http/types.js";
 import { respondWithUnexpectedError, respondWithValidationError, respondWithError } from "../http/errors.js";
+import { createRequestIdentity, buildRateLimitBuckets } from "../http/requestIdentity.js";
+import { enforceRateLimit } from "../http/rateLimit.js";
+import type { RateLimitStore } from "../rateLimit/store.js";
 import { formatValidationIssues, CaseListQuerySchema } from "../http/validation.js";
 import {
   buildAuthFailureAuditDetails,
   getRequestIds,
   resolveAuthFailure,
   respondWithInvalidTenant,
+  toAuditSubject,
+  toPlanSubject,
 } from "../http/helpers.js";
 import { logAuditEvent } from "../observability/audit.js";
 import { appLogger, normalizeError } from "../observability/logger.js";
@@ -18,7 +23,7 @@ import { appLogger, normalizeError } from "../observability/logger.js";
 export class WorkflowController {
   private readonly logger = appLogger.child({ component: "WorkflowController" });
 
-  constructor(private readonly config: AppConfig) {}
+  constructor(private readonly config: AppConfig, private readonly rateLimiter: RateLimitStore) {}
 
   private requireSession(req: ExtendedRequest, res: Response) {
     const session = req.auth?.session;
@@ -50,6 +55,36 @@ export class WorkflowController {
     const session = this.requireSession(req, res);
     if (!session) return;
 
+    const rateLimitIdentity = createRequestIdentity(
+      req,
+      this.config,
+      req.auth?.session ? toPlanSubject(req.auth.session) : undefined,
+    );
+    const rateDecision = await enforceRateLimit(
+      this.rateLimiter,
+      "workflows",
+      rateLimitIdentity,
+      buildRateLimitBuckets("workflows", this.config.server.rateLimits.workflows),
+    );
+    if (!rateDecision.allowed) {
+      respondWithError(
+        res,
+        429,
+        { code: "too_many_requests", message: "workflows rate limit exceeded" },
+        rateDecision.retryAfterMs ? { retryAfterMs: rateDecision.retryAfterMs } : undefined,
+      );
+      const { requestId, traceId } = getRequestIds(res);
+      logAuditEvent({
+        action: "workflows.list",
+        outcome: "denied",
+        subject: toAuditSubject(req.auth?.session),
+        requestId,
+        traceId,
+        details: { reason: "rate_limited" },
+      });
+      return;
+    }
+
     const tenantNormalization = normalizeTenantIdInput(session.tenantId);
     if (tenantNormalization.error) {
       respondWithInvalidTenant(res, "workflows.list", session.subject, tenantNormalization.error);
@@ -63,7 +98,7 @@ export class WorkflowController {
     }
 
     try {
-      const workflows = getWorkflowEngine().listWorkflows({
+      const workflows = await getWorkflowEngine().listWorkflows({
         tenantId: tenantNormalization.tenantId,
         projectId: parsedQuery.data.projectId,
       });
