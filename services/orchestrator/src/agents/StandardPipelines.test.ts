@@ -1082,5 +1082,265 @@ describe("StandardPipelines", () => {
       // Pure reference preserves number type
       expect(resolved.config.issueCount).toBe(2);
     });
+
+    describe("coerceToPositiveInt", () => {
+      it("should return default for undefined/null values", () => {
+        expect((executor as any).coerceToPositiveInt(undefined, 100, 1, 1000)).toBe(100);
+        expect((executor as any).coerceToPositiveInt(null, 100, 1, 1000)).toBe(100);
+      });
+
+      it("should coerce valid numbers within bounds", () => {
+        expect((executor as any).coerceToPositiveInt(50, 100, 1, 1000)).toBe(50);
+        expect((executor as any).coerceToPositiveInt("75", 100, 1, 1000)).toBe(75);
+        expect((executor as any).coerceToPositiveInt(1, 100, 1, 1000)).toBe(1);
+        expect((executor as any).coerceToPositiveInt(1000, 100, 1, 1000)).toBe(1000);
+      });
+
+      it("should return default for out-of-bounds values", () => {
+        expect((executor as any).coerceToPositiveInt(0, 100, 1, 1000)).toBe(100);
+        expect((executor as any).coerceToPositiveInt(-5, 100, 1, 1000)).toBe(100);
+        expect((executor as any).coerceToPositiveInt(2000, 100, 1, 1000)).toBe(100);
+      });
+
+      it("should return default for non-finite values", () => {
+        expect((executor as any).coerceToPositiveInt(NaN, 100, 1, 1000)).toBe(100);
+        expect((executor as any).coerceToPositiveInt(Infinity, 100, 1, 1000)).toBe(100);
+        expect((executor as any).coerceToPositiveInt("not-a-number", 100, 1, 1000)).toBe(100);
+      });
+
+      it("should floor decimal values", () => {
+        expect((executor as any).coerceToPositiveInt(50.9, 100, 1, 1000)).toBe(50);
+        expect((executor as any).coerceToPositiveInt(50.1, 100, 1, 1000)).toBe(50);
+      });
+    });
+
+    describe("coerceToNonNegativeInt", () => {
+      it("should allow zero values when min is 0", () => {
+        expect((executor as any).coerceToNonNegativeInt(0, 10, 0, 1000)).toBe(0);
+      });
+
+      it("should coerce valid numbers within bounds", () => {
+        expect((executor as any).coerceToNonNegativeInt(500, 0, 0, 60000)).toBe(500);
+      });
+
+      it("should return default for negative values", () => {
+        expect((executor as any).coerceToNonNegativeInt(-1, 0, 0, 60000)).toBe(0);
+      });
+    });
+
+    describe("condition handler with arrays and objects", () => {
+      it("should treat non-empty arrays as true", async () => {
+        const context: ExecutionContext = {
+          graphId: "test",
+          executionId: "exec-1",
+          variables: new Map(),
+          outputs: new Map([["prev", { items: [1, 2, 3] }]]),
+          metadata: {},
+        };
+
+        const node: NodeDefinition = {
+          id: "condition-node",
+          type: NodeType.CONDITION,
+          name: "Test Condition",
+          dependencies: ["prev"],
+          config: {
+            condition: "${prev.items}",
+          },
+        };
+
+        const handler = (executor as any).createConditionHandler();
+        const result = await handler.execute(node, context);
+
+        expect(result.result).toBe(true);
+        expect(result.passed).toBe(true);
+      });
+
+      it("should treat empty arrays as false", async () => {
+        const context: ExecutionContext = {
+          graphId: "test",
+          executionId: "exec-1",
+          variables: new Map(),
+          outputs: new Map([["prev", { items: [] }]]),
+          metadata: {},
+        };
+
+        const node: NodeDefinition = {
+          id: "condition-node",
+          type: NodeType.CONDITION,
+          name: "Test Condition",
+          dependencies: ["prev"],
+          config: {
+            condition: "${prev.items}",
+          },
+        };
+
+        const handler = (executor as any).createConditionHandler();
+
+        await expect(handler.execute(node, context)).rejects.toThrow(ConditionFailedError);
+      });
+
+      it("should treat non-empty objects as true", async () => {
+        const context: ExecutionContext = {
+          graphId: "test",
+          executionId: "exec-1",
+          variables: new Map(),
+          outputs: new Map([["prev", { data: { key: "value" } }]]),
+          metadata: {},
+        };
+
+        const node: NodeDefinition = {
+          id: "condition-node",
+          type: NodeType.CONDITION,
+          name: "Test Condition",
+          dependencies: ["prev"],
+          config: {
+            condition: "${prev.data}",
+          },
+        };
+
+        const handler = (executor as any).createConditionHandler();
+        const result = await handler.execute(node, context);
+
+        expect(result.result).toBe(true);
+        expect(result.passed).toBe(true);
+      });
+
+      it("should treat empty objects as false", async () => {
+        const context: ExecutionContext = {
+          graphId: "test",
+          executionId: "exec-1",
+          variables: new Map(),
+          outputs: new Map([["prev", { data: {} }]]),
+          metadata: {},
+        };
+
+        const node: NodeDefinition = {
+          id: "condition-node",
+          type: NodeType.CONDITION,
+          name: "Test Condition",
+          dependencies: ["prev"],
+          config: {
+            condition: "${prev.data}",
+          },
+        };
+
+        const handler = (executor as any).createConditionHandler();
+
+        await expect(handler.execute(node, context)).rejects.toThrow(ConditionFailedError);
+      });
+    });
+
+    describe("loop handler validation", () => {
+      it("should throw error for non-string condition", async () => {
+        const context: ExecutionContext = {
+          graphId: "test",
+          executionId: "exec-1",
+          variables: new Map(),
+          outputs: new Map(),
+          metadata: {},
+        };
+
+        const node: NodeDefinition = {
+          id: "loop-node",
+          type: NodeType.LOOP,
+          name: "Test Loop",
+          dependencies: [],
+          config: {
+            condition: 123, // Invalid: number instead of string
+            maxIterations: 10,
+          },
+        };
+
+        const handler = (executor as any).createLoopHandler();
+
+        await expect(handler.execute(node, context)).rejects.toThrow(
+          "Loop node 'loop-node' requires 'condition' to be a string, got number",
+        );
+      });
+
+      it("should throw error for object condition", async () => {
+        const context: ExecutionContext = {
+          graphId: "test",
+          executionId: "exec-1",
+          variables: new Map(),
+          outputs: new Map(),
+          metadata: {},
+        };
+
+        const node: NodeDefinition = {
+          id: "loop-node",
+          type: NodeType.LOOP,
+          name: "Test Loop",
+          dependencies: [],
+          config: {
+            condition: { invalid: true }, // Invalid: object instead of string
+            maxIterations: 10,
+          },
+        };
+
+        const handler = (executor as any).createLoopHandler();
+
+        await expect(handler.execute(node, context)).rejects.toThrow(
+          "Loop node 'loop-node' requires 'condition' to be a string, got object",
+        );
+      });
+
+      it("should accept valid string condition", async () => {
+        const context: ExecutionContext = {
+          graphId: "test",
+          executionId: "exec-1",
+          variables: new Map(),
+          outputs: new Map(),
+          metadata: {},
+        };
+
+        const node: NodeDefinition = {
+          id: "loop-node",
+          type: NodeType.LOOP,
+          name: "Test Loop",
+          dependencies: [],
+          config: {
+            condition: "false", // Valid string that evaluates to false (exit immediately)
+            maxIterations: 10,
+          },
+        };
+
+        const handler = (executor as any).createLoopHandler();
+        const result = await handler.execute(node, context);
+
+        expect(result.status).toBe("completed");
+        expect(result.iterations).toBe(0);
+      });
+
+      it("should use default values for invalid numeric config", async () => {
+        const context: ExecutionContext = {
+          graphId: "test",
+          executionId: "exec-1",
+          variables: new Map(),
+          outputs: new Map(),
+          metadata: {},
+        };
+
+        const node: NodeDefinition = {
+          id: "loop-node",
+          type: NodeType.LOOP,
+          name: "Test Loop",
+          dependencies: [],
+          config: {
+            items: [1],
+            maxIterations: "invalid", // Invalid: should default to 100
+            iterationDelayMs: -100, // Invalid: should default to 0
+            burstLimit: NaN, // Invalid: should default to 10
+          },
+        };
+
+        const handler = (executor as any).createLoopHandler();
+        const result = await handler.execute(node, context);
+
+        // Should complete successfully using default values
+        expect(result.status).toBe("completed");
+        expect(result.iterations).toBe(1);
+      });
+    });
   });
 });

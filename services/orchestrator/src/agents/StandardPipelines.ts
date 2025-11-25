@@ -71,7 +71,7 @@ export enum PipelineType {
   REFACTORING = "refactoring",
   CODE_REVIEW = "code_review",
   TESTING = "testing",
-  DEPLOYMENT = "deployment",
+  // NOTE: DEPLOYMENT removed - not yet implemented. Add back when DeploymentPipeline is ready.
 }
 
 export const PipelineConfigSchema = z.object({
@@ -1170,9 +1170,17 @@ export class PipelineExecutor {
           // String condition - evaluate expression
           evaluatedConditionStr = resolvedCondition;
           result = this.evaluateCondition(resolvedCondition);
+        } else if (Array.isArray(resolvedCondition)) {
+          // Arrays: check length explicitly (Boolean([]) is true, but empty array should be false)
+          result = resolvedCondition.length > 0;
+          evaluatedConditionStr = `[array length=${resolvedCondition.length}]`;
+        } else if (typeof resolvedCondition === "object" && resolvedCondition !== null) {
+          // Objects: check key count explicitly (Boolean({}) is true, but empty object should be false)
+          result = Object.keys(resolvedCondition).length > 0;
+          evaluatedConditionStr = `[object keys=${Object.keys(resolvedCondition).length}]`;
         } else {
-          // Unsupported type - coerce to boolean
-          result = Boolean(resolvedCondition);
+          // Unsupported type (undefined, null, symbol, etc.) - treat as false for safety
+          result = false;
           evaluatedConditionStr = String(resolvedCondition);
         }
 
@@ -1295,9 +1303,20 @@ export class PipelineExecutor {
         // Default maxIterations of 100 provides a safety limit to prevent infinite loops
         // while allowing sufficient iterations for most use cases. This can be overridden
         // per-node via config.maxIterations for loops that need more iterations.
-        const maxIterations = (resolvedNode.config.maxIterations as number) ?? 100;
+        const maxIterationsRaw = resolvedNode.config.maxIterations;
+        const maxIterations = this.coerceToPositiveInt(maxIterationsRaw, 100, 1, 10000);
         // Use ORIGINAL condition for dynamic per-iteration substitution
-        const conditionExpr = node.config.condition as string | undefined;
+        // Validate that condition is a string to prevent TypeError on .replace() in substituteVariables
+        const conditionRaw = node.config.condition;
+        let conditionExpr: string | undefined;
+        if (conditionRaw !== undefined && conditionRaw !== null) {
+          if (typeof conditionRaw !== "string") {
+            throw new Error(
+              `Loop node '${node.id}' requires 'condition' to be a string, got ${typeof conditionRaw}`,
+            );
+          }
+          conditionExpr = conditionRaw;
+        }
         const operation = resolvedNode.config.operation as string | undefined;
 
         // Validate items is an array if provided (could be non-array after variable resolution)
@@ -1329,8 +1348,10 @@ export class PipelineExecutor {
         // Rate limiting configuration to prevent resource exhaustion (per CLAUDE.md 4.4)
         // iterationDelayMs: minimum delay between iterations (default 0 for no delay)
         // burstLimit: max iterations before enforcing delay (default 10)
-        const iterationDelayMs = (resolvedNode.config.iterationDelayMs as number) ?? 0;
-        const burstLimit = (resolvedNode.config.burstLimit as number) ?? 10;
+        const iterationDelayMsRaw = resolvedNode.config.iterationDelayMs;
+        const iterationDelayMs = this.coerceToNonNegativeInt(iterationDelayMsRaw, 0, 0, 60000);
+        const burstLimitRaw = resolvedNode.config.burstLimit;
+        const burstLimit = this.coerceToPositiveInt(burstLimitRaw, 10, 1, 1000);
 
         try {
           while (iteration < maxIterations) {
@@ -1545,6 +1566,54 @@ export class PipelineExecutor {
       "__lookupSetter__",
     ];
     return dangerousProperties.includes(name);
+  }
+
+  /**
+   * Safely coerce a value to a positive integer with bounds checking.
+   * Returns defaultValue if the value is not a valid positive number within bounds.
+   */
+  private coerceToPositiveInt(
+    value: unknown,
+    defaultValue: number,
+    min: number,
+    max: number,
+  ): number {
+    if (value === undefined || value === null) {
+      return defaultValue;
+    }
+    const num = Number(value);
+    if (!Number.isFinite(num) || num < min || num > max) {
+      appLogger.warn(
+        { value, min, max, defaultValue },
+        "Invalid numeric config value, using default",
+      );
+      return defaultValue;
+    }
+    return Math.floor(num);
+  }
+
+  /**
+   * Safely coerce a value to a non-negative integer with bounds checking.
+   * Returns defaultValue if the value is not a valid non-negative number within bounds.
+   */
+  private coerceToNonNegativeInt(
+    value: unknown,
+    defaultValue: number,
+    min: number,
+    max: number,
+  ): number {
+    if (value === undefined || value === null) {
+      return defaultValue;
+    }
+    const num = Number(value);
+    if (!Number.isFinite(num) || num < min || num > max) {
+      appLogger.warn(
+        { value, min, max, defaultValue },
+        "Invalid numeric config value, using default",
+      );
+      return defaultValue;
+    }
+    return Math.floor(num);
   }
 
   /**
@@ -1849,8 +1918,9 @@ export class PipelineExecutor {
       throw new Error("Test runner tool not found");
     }
 
+    // Use unique requestId per tool invocation for precise trace correlation
     const toolContext: ToolContext = {
-      requestId: this.context.pipelineId,
+      requestId: randomUUID(),
       tenantId: this.context.tenantId,
       userId: this.context.userId,
       logger: appLogger,
@@ -1870,8 +1940,9 @@ export class PipelineExecutor {
       throw new Error("Repository tool not found");
     }
 
+    // Use unique requestId per tool invocation for precise trace correlation
     const toolContext: ToolContext = {
-      requestId: this.context.pipelineId,
+      requestId: randomUUID(),
       tenantId: this.context.tenantId,
       userId: this.context.userId,
       logger: appLogger,
@@ -1893,8 +1964,9 @@ export class PipelineExecutor {
       return await this.executeGenericTool(node);
     }
 
+    // Use unique requestId per tool invocation for precise trace correlation
     const toolContext: ToolContext = {
-      requestId: this.context.pipelineId,
+      requestId: randomUUID(),
       tenantId: this.context.tenantId,
       userId: this.context.userId,
       logger: appLogger,
@@ -1911,8 +1983,9 @@ export class PipelineExecutor {
       throw new Error("Semantic search tool not found");
     }
 
+    // Use unique requestId per tool invocation for precise trace correlation
     const toolContext: ToolContext = {
-      requestId: this.context.pipelineId,
+      requestId: randomUUID(),
       tenantId: this.context.tenantId,
       userId: this.context.userId,
       logger: appLogger,
@@ -1941,8 +2014,9 @@ export class PipelineExecutor {
       return await this.executeGenericTool(node);
     }
 
+    // Use unique requestId per tool invocation for precise trace correlation
     const toolContext: ToolContext = {
-      requestId: this.context.pipelineId,
+      requestId: randomUUID(),
       tenantId: this.context.tenantId,
       userId: this.context.userId,
       logger: appLogger,
@@ -1973,12 +2047,16 @@ export class PipelineExecutor {
       );
     }
 
+    // Use unique requestId per tool invocation for precise trace correlation
+    const requestId = randomUUID();
+
     // Audit log: Tool invocation (per CLAUDE.md 4.3 - audit logging for tool invocations)
     appLogger.info(
       {
         audit: true,
         event: "tool_invocation",
         pipelineId: this.context.pipelineId,
+        requestId,
         tenantId: this.context.tenantId,
         userId: this.context.userId,
         nodeId: node.id,
@@ -1988,7 +2066,7 @@ export class PipelineExecutor {
     );
 
     const toolContext: ToolContext = {
-      requestId: this.context.pipelineId,
+      requestId,
       tenantId: this.context.tenantId,
       userId: this.context.userId,
       logger: appLogger,
@@ -2004,6 +2082,7 @@ export class PipelineExecutor {
           audit: true,
           event: "tool_invocation_completed",
           pipelineId: this.context.pipelineId,
+          requestId,
           tenantId: this.context.tenantId,
           userId: this.context.userId,
           nodeId: node.id,
@@ -2021,6 +2100,7 @@ export class PipelineExecutor {
           audit: true,
           event: "tool_invocation_failed",
           pipelineId: this.context.pipelineId,
+          requestId,
           tenantId: this.context.tenantId,
           userId: this.context.userId,
           nodeId: node.id,
