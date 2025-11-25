@@ -1,4 +1,6 @@
 <script lang="ts">
+  import { page } from '$app/stores';
+  import { goto } from '$app/navigation';
   import '../app.css';
   import FileTree from '$lib/components/ide/FileTree.svelte';
   import Editor from '$lib/components/ide/Editor.svelte';
@@ -20,6 +22,13 @@
     setTerminalHeight,
     toggleTerminal
   } from '$lib/stores/layout';
+
+  $: isOpsMode = $page.url.pathname.startsWith('/ops');
+
+  function navigateTo(path: string) {
+    if (path === $page.url.pathname) return;
+    goto(path);
+  }
 </script>
 
 <svelte:head>
@@ -27,57 +36,87 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
 </svelte:head>
 
-<div class="ide-shell">
-  <div
-    class="ide-main"
-    style={`--sidebar-left: ${$layoutState.leftWidth}px; --sidebar-right: ${$layoutState.rightWidth}px;`}
-  >
-    <ResizableSidebar
-      side="left"
-      width={$layoutState.leftWidth}
-      minWidth={LEFT_MIN}
-      maxWidth={LEFT_MAX}
-      ariaLabel="File explorer"
-      onResize={setLeftWidth}
-    >
-      <FileTree />
-    </ResizableSidebar>
+<div class="shell">
+  <header class="mode-switcher" aria-label="Mode selector">
+    <div class="brand">Orchestrator</div>
+    <nav aria-label="Modes">
+      <button
+        type="button"
+        class:is-active={!isOpsMode}
+        aria-current={!isOpsMode ? 'page' : undefined}
+        on:click={() => navigateTo('/')}
+      >
+        IDE
+      </button>
+      <button
+        type="button"
+        class:is-active={isOpsMode}
+        aria-current={isOpsMode ? 'page' : undefined}
+        on:click={() => navigateTo('/ops/cases')}
+      >
+        Ops
+      </button>
+    </nav>
+  </header>
 
-    <main class="editor-area">
-      <Editor />
+  {#if isOpsMode}
+    <main class="ops-shell">
+      <slot />
     </main>
+  {:else}
+    <div class="ide-shell">
+      <div
+        class="ide-main"
+        style={`--sidebar-left: ${$layoutState.leftWidth}px; --sidebar-right: ${$layoutState.rightWidth}px;`}
+      >
+        <ResizableSidebar
+          side="left"
+          width={$layoutState.leftWidth}
+          minWidth={LEFT_MIN}
+          maxWidth={LEFT_MAX}
+          ariaLabel="File explorer"
+          onResize={setLeftWidth}
+        >
+          <FileTree />
+        </ResizableSidebar>
 
-    <ResizableSidebar
-      side="right"
-      width={$layoutState.rightWidth}
-      minWidth={RIGHT_MIN}
-      maxWidth={RIGHT_MAX}
-      ariaLabel="Agent panel"
-      onResize={setRightWidth}
-    >
-      <div class="agent-pane">
-        <slot />
-        <Chat />
+        <main class="editor-area">
+          <Editor />
+        </main>
+
+        <ResizableSidebar
+          side="right"
+          width={$layoutState.rightWidth}
+          minWidth={RIGHT_MIN}
+          maxWidth={RIGHT_MAX}
+          ariaLabel="Agent panel"
+          onResize={setRightWidth}
+        >
+          <div class="agent-pane">
+            <slot />
+            <Chat />
+          </div>
+        </ResizableSidebar>
       </div>
-    </ResizableSidebar>
-  </div>
 
-  <TerminalPanel
-    open={$layoutState.terminalOpen}
-    height={$layoutState.terminalHeight}
-    minHeight={TERMINAL_MIN}
-    maxHeight={TERMINAL_MAX}
-    onResize={setTerminalHeight}
-    onToggle={toggleTerminal}
-  >
-    <Terminal />
-  </TerminalPanel>
+      <TerminalPanel
+        open={$layoutState.terminalOpen}
+        height={$layoutState.terminalHeight}
+        minHeight={TERMINAL_MIN}
+        maxHeight={TERMINAL_MAX}
+        onResize={setTerminalHeight}
+        onToggle={toggleTerminal}
+      >
+        <Terminal />
+      </TerminalPanel>
 
-  <Notifications />
+      <Notifications />
+    </div>
+  {/if}
 </div>
 
 <style>
-  .ide-shell {
+  .shell {
     display: flex;
     flex-direction: column;
     height: 100vh;
@@ -90,6 +129,55 @@
       #0b1020;
     color: #e2e8f0;
     box-sizing: border-box;
+  }
+
+  .mode-switcher {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 10px 16px;
+    border-radius: 12px;
+    background: rgba(15, 23, 42, 0.7);
+    border: 1px solid rgba(148, 163, 184, 0.2);
+    box-shadow: 0 8px 28px rgba(0, 0, 0, 0.25);
+  }
+
+  .mode-switcher nav {
+    display: flex;
+    gap: 8px;
+  }
+
+  .mode-switcher button {
+    background: rgba(59, 130, 246, 0.12);
+    color: #e2e8f0;
+    border: 1px solid rgba(59, 130, 246, 0.35);
+    padding: 8px 14px;
+    border-radius: 10px;
+    cursor: pointer;
+    font-weight: 600;
+    transition: all 0.2s ease;
+  }
+
+  .mode-switcher button.is-active {
+    background: linear-gradient(120deg, #3b82f6, #06b6d4);
+    box-shadow: 0 8px 20px rgba(59, 130, 246, 0.35);
+  }
+
+  .mode-switcher button:hover {
+    transform: translateY(-1px);
+  }
+
+  .brand {
+    font-weight: 700;
+    letter-spacing: 0.4px;
+  }
+
+  .ide-shell {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+    gap: 12px;
   }
 
   .ide-main {
@@ -124,6 +212,16 @@
     gap: 12px;
     height: 100%;
     overflow: hidden;
+  }
+
+  .ops-shell {
+    flex: 1;
+    background: rgba(15, 23, 42, 0.55);
+    border: 1px solid rgba(148, 163, 184, 0.12);
+    border-radius: 18px;
+    padding: 16px;
+    box-shadow: 0 16px 60px rgba(0, 0, 0, 0.35);
+    overflow: auto;
   }
 
 </style>
