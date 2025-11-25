@@ -180,7 +180,7 @@ describe("orchestrator auth", () => {
     };
 
     const app = createServer(config);
-    const session = sessionStore.createSession(
+    const session = await sessionStore.createSession(
       {
         subject: "user-owner",
         email: "owner@example.com",
@@ -233,7 +233,7 @@ describe("orchestrator auth", () => {
 
     getPlanSubjectMock.mockResolvedValueOnce({ ...ownerSubject });
 
-    const session = sessionStore.createSession(
+    const session = await sessionStore.createSession(
       {
         subject: "user-other",
         email: "other@example.com",
@@ -438,7 +438,7 @@ describe("orchestrator auth", () => {
     };
 
     const app = createServer(config);
-    const session = sessionStore.createSession(
+    const session = await sessionStore.createSession(
       {
         subject: "user-owner",
         email: "owner@example.com",
@@ -512,7 +512,7 @@ describe("orchestrator auth", () => {
       throw new Error("failed to determine server address");
     }
 
-    const session = sessionStore.createSession(
+    const session = await sessionStore.createSession(
       {
         subject: "user-owner",
         email: "owner@example.com",

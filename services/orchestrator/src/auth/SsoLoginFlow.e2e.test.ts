@@ -531,7 +531,7 @@ describe("Enterprise SSO Login Flow - End to End", () => {
       expect(sessionCheck.body.session.tenantId).toBe("tenant-a");
 
       // Session data should be immutable - tenant cannot be changed
-      const storedSession = sessionStore.getSession(session.body.sessionId);
+      const storedSession = await sessionStore.getSession(session.body.sessionId);
       expect(storedSession?.tenantId).toBe("tenant-a");
     });
   });
@@ -561,7 +561,7 @@ describe("Enterprise SSO Login Flow - End to End", () => {
       expect(session.status).toBe(200);
 
       // Manually expire the session
-      const storedSession = sessionStore.getSession(session.body.sessionId);
+      const storedSession = await sessionStore.getSession(session.body.sessionId);
       if (storedSession) {
         storedSession.expiresAt = new Date(Date.now() - 1000).toISOString(); // Expired 1 second ago
       }

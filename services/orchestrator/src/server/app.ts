@@ -133,8 +133,8 @@ export function createServer(config?: AppConfig): Express {
     next();
   });
 
-  app.use((req: Request, _res: Response, next: NextFunction) => {
-    attachSession(req as ExtendedRequest, appConfig);
+  app.use(async (req: Request, _res: Response, next: NextFunction) => {
+    await attachSession(req as ExtendedRequest, appConfig);
     next();
   });
 

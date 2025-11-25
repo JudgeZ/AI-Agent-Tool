@@ -335,7 +335,7 @@ describe("POST /plan security", () => {
     });
 
     const app = await createServer(config);
-    const session = sessionStore.createSession(
+    const session = await sessionStore.createSession(
       {
         subject: "user-1",
         tenantId: "acme:prod",
