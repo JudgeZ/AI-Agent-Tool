@@ -10,6 +10,7 @@ class MockInput extends MockHTMLElement {
     super();
     this._type = type;
     this.value = value;
+    this.tagName = "INPUT";
   }
 
   getAttribute(name) {
@@ -57,7 +58,7 @@ test("buildTelemetryPayload captures non-sensitive value", () => {
   const payload = buildTelemetryPayload(event);
   assert.ok(payload);
   assert.equal(payload.type, "input");
-  assert.equal(payload.tag, undefined);
+  assert.equal(payload.tag, "INPUT");
   assert.equal(payload.value, "hello");
   assert.equal(payload.sensitive, false);
   assert.ok(typeof payload.timestamp === "number");

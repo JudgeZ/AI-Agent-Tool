@@ -1,5 +1,8 @@
 /* eslint-disable no-console */
 const SENSITIVE_INPUT_TYPES = new Set(["password", "email", "tel"]);
+const SENSITIVE_ATTRIBUTES = new Set(["data-sensitive", "data-private"]);
+const SENSITIVE_NAMES = ["creditcard", "cc-number", "cvv", "ssn", "social"];
+const SENSITIVE_CLASSES = ["sensitive", "private", "cc-number", "ssn"];
 
 function isHTMLElement(target) {
   return typeof HTMLElement !== "undefined" && target instanceof HTMLElement;
@@ -19,7 +22,31 @@ function isSensitiveInput(target) {
     return false;
   }
   const type = target.getAttribute?.("type")?.toLowerCase();
-  return type ? SENSITIVE_INPUT_TYPES.has(type) : false;
+  if (type && SENSITIVE_INPUT_TYPES.has(type)) {
+    return true;
+  }
+
+  const nameAttr = target.getAttribute?.("name")?.toLowerCase();
+  if (nameAttr && SENSITIVE_NAMES.some((needle) => nameAttr.includes(needle))) {
+    return true;
+  }
+
+  const autocomplete = target.getAttribute?.("autocomplete")?.toLowerCase();
+  if (autocomplete && SENSITIVE_NAMES.some((needle) => autocomplete.includes(needle))) {
+    return true;
+  }
+
+  const hasSensitiveAttr = Array.from(SENSITIVE_ATTRIBUTES).some((attr) => target.hasAttribute?.(attr));
+  if (hasSensitiveAttr) {
+    return true;
+  }
+
+  const className = target.className?.toString().toLowerCase?.() ?? "";
+  if (className && SENSITIVE_CLASSES.some((needle) => className.includes(needle))) {
+    return true;
+  }
+
+  return false;
 }
 
 function buildTelemetryPayload(event) {

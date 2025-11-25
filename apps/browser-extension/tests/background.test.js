@@ -65,13 +65,16 @@ beforeEach(async () => {
 
 test("telemetry events are blocked when recording is disabled", async () => {
   let response;
-  await messageHandler(
-    { type: "telemetry:event", event: { type: "click" } },
-    { tab: { id: 1 } },
-    (payload) => {
-      response = payload;
-    },
-  );
+  await new Promise((resolve) => {
+    messageHandler(
+      { type: "telemetry:event", event: { type: "click" } },
+      { tab: { id: 1 } },
+      (payload) => {
+        response = payload;
+        resolve();
+      },
+    );
+  });
 
   assert.deepEqual(response, { ok: false, reason: "recording-disabled" });
   assert.equal(socket.sent.length, 0);
@@ -81,13 +84,16 @@ test("telemetry events are sent when recording is enabled", async () => {
   await __test.updateSettings({ recording: true, apiKey: "abc", gatewayUrl: "https://example.com" });
 
   let response;
-  await messageHandler(
-    { type: "telemetry:event", event: { type: "input", value: "hello" } },
-    { tab: { id: 2 } },
-    (payload) => {
-      response = payload;
-    },
-  );
+  await new Promise((resolve) => {
+    messageHandler(
+      { type: "telemetry:event", event: { type: "input", value: "hello" } },
+      { tab: { id: 2 } },
+      (payload) => {
+        response = payload;
+        resolve();
+      },
+    );
+  });
 
   assert.deepEqual(response, { ok: true });
   assert.equal(socket.sent.length, 1);

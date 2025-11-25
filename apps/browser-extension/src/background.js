@@ -32,13 +32,10 @@ async function updateSettings(updates) {
  * @param {string} gatewayUrl
  * @param {string} apiKey
  */
-function buildTelemetryUrl(gatewayUrl, apiKey) {
+function buildTelemetryUrl(gatewayUrl) {
   const parsed = new URL(gatewayUrl);
   parsed.protocol = parsed.protocol === "https:" ? "wss:" : "ws:";
   parsed.pathname = "/telemetry";
-  if (apiKey) {
-    parsed.searchParams.set("apiKey", apiKey);
-  }
   return parsed.toString();
 }
 
@@ -69,15 +66,22 @@ async function connectTelemetry() {
     return;
   }
   try {
-    const target = buildTelemetryUrl(gatewayUrl, apiKey);
+    const target = buildTelemetryUrl(gatewayUrl);
     socket = new WebSocket(target);
     socket.onopen = () => {
       console.info("Telemetry connected", target);
+      socket.send(
+        JSON.stringify({
+          type: "auth",
+          gateway: gatewayUrl,
+          apiKey,
+        }),
+      );
     };
     socket.onmessage = async (event) => {
       try {
         const payload = JSON.parse(event.data);
-        if (payload.command === "Record" && event.source instanceof WebSocket) {
+        if (payload.command === "Record") {
           await updateSettings({ recording: true });
           recordingTabs.forEach((tabId) => chrome.tabs.sendMessage(tabId, { type: "recording:start" }));
         }
@@ -111,47 +115,55 @@ async function connectTelemetry() {
   }
 }
 
-chrome.runtime.onInstalled.addListener(async () => {
-  await updateSettings(DEFAULT_SETTINGS);
+chrome.runtime.onInstalled.addListener(async (details) => {
+  if (details.reason === chrome.runtime.OnInstalledReason.INSTALL) {
+    await updateSettings(DEFAULT_SETTINGS);
+  }
 });
 
-async function handleMessage(message, sender, sendResponse) {
+function handleMessage(message, sender, sendResponse) {
   if (message?.type === "telemetry:event" && socket?.readyState === WebSocket.OPEN) {
-    const { gatewayUrl, recording } = await getSettings();
-    if (!recording) {
-      sendResponse({ ok: false, reason: "recording-disabled" });
-      return true;
-    }
-    if (message.event?.sensitive) {
-      console.warn("Dropping sensitive telemetry event");
-      sendResponse({ ok: false, reason: "sensitive" });
-      return true;
-    }
-    const tabId = sender.tab?.id;
-    if (typeof tabId === "number") {
-      recordingTabs.add(tabId);
-    }
-    socket.send(
-      JSON.stringify({
-        type: "event",
-        gateway: gatewayUrl,
-        data: message.event,
-      }),
-    );
-    sendResponse({ ok: true });
+    (async () => {
+      const { gatewayUrl, recording } = await getSettings();
+      if (!recording) {
+        sendResponse({ ok: false, reason: "recording-disabled" });
+        return;
+      }
+      if (message.event?.sensitive) {
+        console.warn("Dropping sensitive telemetry event");
+        sendResponse({ ok: false, reason: "sensitive" });
+        return;
+      }
+      const tabId = sender.tab?.id;
+      if (typeof tabId === "number") {
+        recordingTabs.add(tabId);
+      }
+      socket.send(
+        JSON.stringify({
+          type: "event",
+          gateway: gatewayUrl,
+          data: message.event,
+        }),
+      );
+      sendResponse({ ok: true });
+    })();
     return true;
   }
   if (message?.type === "telemetry:settings") {
-    const settings = await getSettings();
-    sendResponse(settings);
+    (async () => {
+      const settings = await getSettings();
+      sendResponse(settings);
+    })();
     return true;
   }
   if (message?.type === "telemetry:update-settings") {
-    const next = await updateSettings(message.data ?? {});
-    if (message.data?.apiKey || message.data?.gatewayUrl) {
-      await connectTelemetry();
-    }
-    sendResponse(next);
+    (async () => {
+      const next = await updateSettings(message.data ?? {});
+      if (message.data?.apiKey || message.data?.gatewayUrl) {
+        await connectTelemetry();
+      }
+      sendResponse(next);
+    })();
     return true;
   }
   return false;

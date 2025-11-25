@@ -6,17 +6,17 @@ import { printLine } from "../output";
 
 const execFileAsync = promisify(execFile);
 
-async function requireCleanIndex(): Promise<void> {
+async function requirePendingChanges(): Promise<void> {
   const { stdout } = await execFileAsync("git", ["status", "--porcelain"], {
     cwd: process.cwd(),
   });
   if (!stdout.trim()) {
-    throw new Error("No changes to commit. Stage files before running /commit.");
+    throw new Error("Working directory is clean. Make changes before running /commit.");
   }
 }
 
 export async function runCommit(goal?: string): Promise<void> {
-  await requireCleanIndex();
+  await requirePendingChanges();
   const { stdout: diff } = await execFileAsync("git", ["diff", "--cached"], {
     cwd: process.cwd(),
     maxBuffer: 10 * 1024 * 1024,
@@ -26,9 +26,15 @@ export async function runCommit(goal?: string): Promise<void> {
   }
 
   const message = await requestCommitMessage(diff, goal);
-  const sanitizedMessage = message.trim();
+  const sanitizedMessage = message.split("\n")[0].trim();
   if (!sanitizedMessage) {
     throw new Error("Gateway did not return a usable commit message.");
+  }
+  if (sanitizedMessage.startsWith("-")) {
+    throw new Error("Commit message cannot start with '-'.");
+  }
+  if (sanitizedMessage.includes("\0")) {
+    throw new Error("Commit message contains invalid characters.");
   }
 
   await execFileAsync("git", ["commit", "-m", sanitizedMessage], {

@@ -10,7 +10,7 @@
   },
   "content_scripts": [
     {
-      "matches": ["https://*/*", "http://*/*"],
+      "matches": ["https://gateway.example.com/*", "http://localhost:8080/*"],
       "js": ["src/content.js"],
       "run_at": "document_idle"
     }

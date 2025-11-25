@@ -75,7 +75,7 @@ test("runCommit rejects clean indexes and unstaged changes", async () => {
       const { runCommit } = require(commitModulePath);
       process.chdir(repoDir);
       try {
-        await assert.rejects(() => runCommit(), /No changes to commit/);
+        await assert.rejects(() => runCommit(), /Working directory is clean/);
         fs.writeFileSync(path.join(repoDir, "file.txt"), "hello");
         await assert.rejects(() => runCommit(), /No staged changes found/);
       } finally {

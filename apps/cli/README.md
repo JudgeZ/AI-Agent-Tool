@@ -19,9 +19,9 @@ The CLI talks to the Gateway API over HTTP to create plans and interact with the
 
 2. Run tests as needed:
 
-```bash
-npm test
-```
+   ```bash
+   npm test
+   ```
    Tests spin up a stub HTTP server; no orchestrator checkout is required.
 
 ### Commands
