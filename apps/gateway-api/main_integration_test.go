@@ -312,7 +312,7 @@ func TestEnvironmentValidation(t *testing.T) {
 			setup: func() {
 				os.Setenv("NODE_ENV", "development")
 				os.Setenv("ORCHESTRATOR_URL", "http://localhost:4000")
-				os.Setenv("INDEXER_URL", "http://localhost:7070")
+				os.Setenv("INDEXER_URL", "http://localhost:7071")
 			},
 			wantErr: false,
 		},

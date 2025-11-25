@@ -25,7 +25,7 @@ Copy `.env.example` to `.env` and configure the following critical variables:
 ```bash
 # Service URLs
 ORCHESTRATOR_URL=http://localhost:4000
-INDEXER_URL=http://localhost:7070
+INDEXER_URL=http://localhost:7071
 
 # Secure Cookies (REQUIRED for production)
 GATEWAY_COOKIE_HASH_KEY=<64-byte-hex>

@@ -43,7 +43,7 @@ func main() {
 	if _, err := validateServiceURL("ORCHESTRATOR_URL", "http://127.0.0.1:4000"); err != nil {
 		log.Fatalf("invalid ORCHESTRATOR_URL: %v", err)
 	}
-	if _, err := validateServiceURL("INDEXER_URL", "http://127.0.0.1:7070"); err != nil {
+	if _, err := validateServiceURL("INDEXER_URL", "http://127.0.0.1:7071"); err != nil {
 		log.Fatalf("invalid INDEXER_URL: %v", err)
 	}
 

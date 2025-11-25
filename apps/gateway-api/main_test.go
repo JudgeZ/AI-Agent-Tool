@@ -78,7 +78,7 @@ func TestValidateServiceURLRequiresHTTPSInProduction(t *testing.T) {
 
 func TestValidateServiceURLRejectsFallbackLoopbackInProduction(t *testing.T) {
 	t.Setenv("NODE_ENV", "production")
-	if _, err := validateServiceURL("INDEXER_URL", "http://127.0.0.1:7070"); err == nil {
+	if _, err := validateServiceURL("INDEXER_URL", "http://127.0.0.1:7071"); err == nil {
 		t.Fatalf("expected fallback loopback to be rejected in production")
 	}
 }
@@ -86,7 +86,7 @@ func TestValidateServiceURLRejectsFallbackLoopbackInProduction(t *testing.T) {
 func TestValidateServiceURLRunModeEnterpriseRequiresHTTPS(t *testing.T) {
 	t.Setenv("RUN_MODE", "enterprise")
 	t.Setenv("INDEXER_URL", "http://example.com")
-	if _, err := validateServiceURL("INDEXER_URL", "http://127.0.0.1:7070"); err == nil {
+	if _, err := validateServiceURL("INDEXER_URL", "http://127.0.0.1:7071"); err == nil {
 		t.Fatalf("expected enterprise mode to require https")
 	}
 }
