@@ -853,40 +853,66 @@ export class PipelineExecutor {
 
     // Register handler for MERGE nodes - combines results from parallel branches
     graph.registerHandler(NodeType.MERGE, this.createMergeHandler());
+
+    // Register handler for LOOP nodes - executes iterative workflows
+    graph.registerHandler(NodeType.LOOP, this.createLoopHandler());
   }
 
   private createTaskHandler(): NodeHandler {
     return {
       execute: async (
         node: NodeDefinition,
-        _context: ExecutionContext,
+        context: ExecutionContext,
       ): Promise<unknown> => {
-        const operation = node.config.operation as string;
+        // Substitute variables in node config before execution
+        const resolvedNode = this.resolveNodeConfig(node, context);
+        const operation = resolvedNode.config.operation as string;
 
         // Map operations to tools
         switch (operation) {
           case "test":
-            return await this.executeTestTool(node);
+            return await this.executeTestTool(resolvedNode);
           case "git-diff":
           case "git-log":
           case "git-commit":
-            return await this.executeRepositoryTool(node);
+            return await this.executeRepositoryTool(resolvedNode);
           case "analyze":
           case "analyze-error":
           case "analyze-quality":
-            return await this.executeAnalysisTool(node);
+            return await this.executeAnalysisTool(resolvedNode);
           case "semantic-search":
-            return await this.executeSearchTool(node);
+            return await this.executeSearchTool(resolvedNode);
           case "lint":
           case "security-scan":
           case "performance-analysis":
           case "doc-check":
-            return await this.executeReviewTool(node);
+            return await this.executeReviewTool(resolvedNode);
           default:
             // Use generic tool execution
-            return await this.executeGenericTool(node);
+            return await this.executeGenericTool(resolvedNode);
         }
       },
+    };
+  }
+
+  /**
+   * Resolve variable references in node config.
+   * Creates a new node with substituted config values.
+   */
+  private resolveNodeConfig(node: NodeDefinition, context: ExecutionContext): NodeDefinition {
+    const resolvedConfig: Record<string, unknown> = {};
+
+    for (const [key, value] of Object.entries(node.config)) {
+      if (typeof value === "string") {
+        resolvedConfig[key] = this.substituteVariables(value, context);
+      } else {
+        resolvedConfig[key] = value;
+      }
+    }
+
+    return {
+      ...node,
+      config: resolvedConfig,
     };
   }
 
@@ -990,6 +1016,63 @@ export class PipelineExecutor {
     };
   }
 
+  private createLoopHandler(): NodeHandler {
+    return {
+      execute: async (
+        node: NodeDefinition,
+        context: ExecutionContext,
+      ): Promise<unknown> => {
+        const maxIterations = (node.config.maxIterations as number) ?? 100;
+        const conditionExpr = node.config.condition as string | undefined;
+        const operation = node.config.operation as string | undefined;
+
+        const iterations: unknown[] = [];
+        let iteration = 0;
+
+        while (iteration < maxIterations) {
+          // Check loop condition if specified
+          if (conditionExpr) {
+            const evaluatedCondition = this.substituteVariables(conditionExpr, context);
+            const shouldContinue = this.evaluateCondition(evaluatedCondition);
+            if (!shouldContinue) {
+              break;
+            }
+          }
+
+          // Execute the loop body if operation specified
+          if (operation) {
+            const iterationResult = await this.executeGenericTool(node);
+            iterations.push(iterationResult);
+          }
+
+          iteration++;
+
+          // Safety: check if we have items to iterate over
+          const items = node.config.items as unknown[] | undefined;
+          if (items && iteration >= items.length) {
+            break;
+          }
+
+          // If no condition and no items, execute once and exit
+          if (!conditionExpr && !items) {
+            break;
+          }
+        }
+
+        appLogger.debug(
+          { nodeId: node.id, iterations: iteration, maxIterations },
+          "Loop completed",
+        );
+
+        return {
+          status: "completed",
+          iterations: iteration,
+          results: iterations,
+        };
+      },
+    };
+  }
+
   private substituteVariables(template: string, context: ExecutionContext): string {
     // Replace ${nodeId.field} patterns with actual values from context outputs
     return template.replace(/\$\{([^}]+)\}/g, (match, path) => {
@@ -1002,6 +1085,11 @@ export class PipelineExecutor {
         return match; // Keep original if not found
       }
 
+      // If no field path, return the entire output
+      if (fieldPath.length === 0) {
+        return this.serializeValue(nodeOutput);
+      }
+
       // Navigate to the nested field
       let value: unknown = nodeOutput;
       for (const field of fieldPath) {
@@ -1012,28 +1100,45 @@ export class PipelineExecutor {
         }
       }
 
-      return String(value);
+      return this.serializeValue(value);
     });
   }
 
-  private evaluateCondition(condition: string): boolean {
-    // Safe condition evaluation - only allows simple comparisons
-    // Supports: ===, !==, >, <, >=, <=, &&, ||
-    try {
-      // Sanitize: only allow numbers, booleans, comparison operators, and whitespace
-      const sanitized = condition.trim();
-      const allowedPattern = /^[\d\s.]+(?:===|!==|>=|<=|>|<|&&|\|\||\(|\)|true|false|[\d\s.])+$/;
-
-      if (!allowedPattern.test(sanitized)) {
-        appLogger.warn({ condition }, "Condition contains disallowed characters");
-        return false;
+  /**
+   * Safely serialize a value to string for template substitution.
+   * Handles nullish values, primitives, arrays, and objects.
+   */
+  private serializeValue(value: unknown): string {
+    if (value === null) {
+      return "null";
+    }
+    if (value === undefined) {
+      return "undefined";
+    }
+    if (typeof value === "string") {
+      return value;
+    }
+    if (typeof value === "number" || typeof value === "boolean") {
+      return String(value);
+    }
+    if (Array.isArray(value) || typeof value === "object") {
+      try {
+        return JSON.stringify(value);
+      } catch {
+        return "[object Object]";
       }
+    }
+    return String(value);
+  }
 
-      // Use Function constructor for safe evaluation of simple expressions
-      // This is safer than eval() as it doesn't have access to local scope
-      const evaluator = new Function(`return (${sanitized})`);
-      const result = evaluator();
-
+  /**
+   * Safe expression evaluator using recursive descent parsing.
+   * Supports: numbers, booleans, ===, !==, >, <, >=, <=, &&, ||, (, )
+   * No code injection possible - does not use eval/Function.
+   */
+  private evaluateCondition(condition: string): boolean {
+    try {
+      const result = this.parseExpression(condition.trim());
       return Boolean(result);
     } catch (error) {
       appLogger.error(
@@ -1044,7 +1149,185 @@ export class PipelineExecutor {
     }
   }
 
-  private async executeTestTool(node: NodeDefinition): Promise<any> {
+  // Tokenizer for safe expression parsing
+  private tokenize(expr: string): string[] {
+    const tokens: string[] = [];
+    let i = 0;
+
+    while (i < expr.length) {
+      // Skip whitespace
+      if (/\s/.test(expr[i])) {
+        i++;
+        continue;
+      }
+
+      // Multi-character operators
+      if (expr.slice(i, i + 3) === "===") {
+        tokens.push("===");
+        i += 3;
+        continue;
+      }
+      if (expr.slice(i, i + 3) === "!==") {
+        tokens.push("!==");
+        i += 3;
+        continue;
+      }
+      if (expr.slice(i, i + 2) === ">=") {
+        tokens.push(">=");
+        i += 2;
+        continue;
+      }
+      if (expr.slice(i, i + 2) === "<=") {
+        tokens.push("<=");
+        i += 2;
+        continue;
+      }
+      if (expr.slice(i, i + 2) === "&&") {
+        tokens.push("&&");
+        i += 2;
+        continue;
+      }
+      if (expr.slice(i, i + 2) === "||") {
+        tokens.push("||");
+        i += 2;
+        continue;
+      }
+
+      // Single-character operators and parentheses
+      if ("><()".includes(expr[i])) {
+        tokens.push(expr[i]);
+        i++;
+        continue;
+      }
+
+      // Boolean literals
+      if (expr.slice(i, i + 4) === "true") {
+        tokens.push("true");
+        i += 4;
+        continue;
+      }
+      if (expr.slice(i, i + 5) === "false") {
+        tokens.push("false");
+        i += 5;
+        continue;
+      }
+
+      // Numbers (including negative)
+      if (/[-\d.]/.test(expr[i])) {
+        let num = "";
+        // Handle negative sign
+        if (expr[i] === "-") {
+          num += expr[i];
+          i++;
+        }
+        while (i < expr.length && /[\d.]/.test(expr[i])) {
+          num += expr[i];
+          i++;
+        }
+        if (num && num !== "-") {
+          tokens.push(num);
+          continue;
+        }
+      }
+
+      throw new Error(`Unexpected character at position ${i}: '${expr[i]}'`);
+    }
+
+    return tokens;
+  }
+
+  // Recursive descent parser - entry point
+  private parseExpression(expr: string): boolean | number {
+    const tokens = this.tokenize(expr);
+    let pos = 0;
+
+    const peek = (): string | undefined => tokens[pos];
+    const consume = (): string => tokens[pos++];
+
+    // Parse OR expressions (lowest precedence)
+    const parseOr = (): boolean | number => {
+      let left = parseAnd();
+      while (peek() === "||") {
+        consume();
+        const right = parseAnd();
+        left = Boolean(left) || Boolean(right);
+      }
+      return left;
+    };
+
+    // Parse AND expressions
+    const parseAnd = (): boolean | number => {
+      let left = parseComparison();
+      while (peek() === "&&") {
+        consume();
+        const right = parseComparison();
+        left = Boolean(left) && Boolean(right);
+      }
+      return left;
+    };
+
+    // Parse comparison expressions
+    const parseComparison = (): boolean | number => {
+      let left = parsePrimary();
+      const op = peek();
+      if (op === "===" || op === "!==" || op === ">" || op === "<" || op === ">=" || op === "<=") {
+        consume();
+        const right = parsePrimary();
+        switch (op) {
+          case "===": return left === right;
+          case "!==": return left !== right;
+          case ">": return Number(left) > Number(right);
+          case "<": return Number(left) < Number(right);
+          case ">=": return Number(left) >= Number(right);
+          case "<=": return Number(left) <= Number(right);
+        }
+      }
+      return left;
+    };
+
+    // Parse primary expressions (numbers, booleans, parentheses)
+    const parsePrimary = (): boolean | number => {
+      const token = peek();
+
+      if (token === "(") {
+        consume();
+        const result = parseOr();
+        if (peek() !== ")") {
+          throw new Error("Expected closing parenthesis");
+        }
+        consume();
+        return result;
+      }
+
+      if (token === "true") {
+        consume();
+        return true;
+      }
+
+      if (token === "false") {
+        consume();
+        return false;
+      }
+
+      // Must be a number
+      if (token !== undefined && /^-?[\d.]+$/.test(token)) {
+        consume();
+        return parseFloat(token);
+      }
+
+      throw new Error(`Unexpected token: '${token}'`);
+    };
+
+    const result = parseOr();
+
+    if (pos < tokens.length) {
+      throw new Error(`Unexpected token after expression: '${tokens[pos]}'`);
+    }
+
+    return typeof result === "boolean" ? result : Boolean(result);
+  }
+
+  private async executeTestTool(node: NodeDefinition): Promise<unknown> {
     const tool = this.context.toolRegistry.get("test-runner");
     if (!tool) {
       throw new Error("Test runner tool not found");
@@ -1065,7 +1348,7 @@ export class PipelineExecutor {
     }, toolContext);
   }
 
-  private async executeRepositoryTool(node: NodeDefinition): Promise<any> {
+  private async executeRepositoryTool(node: NodeDefinition): Promise<unknown> {
     const tool = this.context.toolRegistry.get("repository");
     if (!tool) {
       throw new Error("Repository tool not found");
@@ -1086,7 +1369,7 @@ export class PipelineExecutor {
     }, toolContext);
   }
 
-  private async executeAnalysisTool(node: NodeDefinition): Promise<any> {
+  private async executeAnalysisTool(node: NodeDefinition): Promise<unknown> {
     // Use AI provider for analysis tasks
     const tool = this.context.toolRegistry.get("ai-analyzer");
     if (!tool) {
@@ -1105,7 +1388,7 @@ export class PipelineExecutor {
     return await tool.execute(node.config, toolContext);
   }
 
-  private async executeSearchTool(node: NodeDefinition): Promise<any> {
+  private async executeSearchTool(node: NodeDefinition): Promise<unknown> {
     // Use indexer for semantic search
     const tool = this.context.toolRegistry.get("semantic-search");
     if (!tool) {
@@ -1126,7 +1409,7 @@ export class PipelineExecutor {
     }, toolContext);
   }
 
-  private async executeReviewTool(node: NodeDefinition): Promise<any> {
+  private async executeReviewTool(node: NodeDefinition): Promise<unknown> {
     const toolMap: Record<string, string> = {
       lint: "linter",
       "security-scan": "security-scanner",
@@ -1156,7 +1439,7 @@ export class PipelineExecutor {
     }, toolContext);
   }
 
-  private async executeGenericTool(node: NodeDefinition): Promise<any> {
+  private async executeGenericTool(node: NodeDefinition): Promise<unknown> {
     // Try to find a tool matching the operation name
     const tool = this.context.toolRegistry.get(
       node.config.operation as string,
@@ -1174,7 +1457,10 @@ export class PipelineExecutor {
     }
 
     // Log that no tool was found for this operation
-    console.warn(`No tool found for operation: ${node.config.operation}`);
+    appLogger.warn(
+      { operation: node.config.operation, nodeId: node.id },
+      "No tool found for operation",
+    );
 
     // Return mock result for now
     return {

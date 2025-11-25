@@ -1,0 +1,516 @@
+import { describe, it, expect, beforeEach, vi } from "vitest";
+import {
+  PipelineExecutor,
+  PipelineFactory,
+  PipelineType,
+  PipelineConfig,
+  PipelineContext,
+} from "./StandardPipelines";
+import {
+  ExecutionGraph,
+  NodeType,
+  NodeDefinition,
+  ExecutionContext,
+} from "./ExecutionGraph";
+import { MessageBus, SharedContextManager } from "./AgentCommunication";
+
+// Mock the logger to avoid side effects in tests
+vi.mock("../observability/logger", () => {
+  const mockLogger: any = {
+    debug: vi.fn(),
+    info: vi.fn(),
+    warn: vi.fn(),
+    error: vi.fn(),
+    child: vi.fn(() => mockLogger),
+  };
+  return {
+    appLogger: mockLogger,
+    logger: mockLogger,
+  };
+});
+
+// Create a mock ToolRegistry that doesn't require a real logger
+class MockToolRegistry {
+  private tools = new Map<string, unknown>();
+
+  get(name: string): unknown {
+    return this.tools.get(name);
+  }
+
+  register(name: string, tool: unknown): void {
+    this.tools.set(name, tool);
+  }
+}
+
+describe("StandardPipelines", () => {
+  describe("PipelineExecutor expression evaluation", () => {
+    let executor: PipelineExecutor;
+    let mockContext: PipelineContext;
+
+    beforeEach(() => {
+      mockContext = {
+        pipelineId: "test-pipeline",
+        tenantId: "test-tenant",
+        userId: "test-user",
+        sessionId: "test-session",
+        messageBus: {} as MessageBus,
+        contextManager: {} as SharedContextManager,
+        toolRegistry: new MockToolRegistry() as any,
+        parameters: {},
+      };
+      executor = new PipelineExecutor(mockContext);
+    });
+
+    describe("evaluateCondition", () => {
+      // Access private method for testing via any cast
+      const evaluateCondition = (executor: PipelineExecutor, condition: string): boolean => {
+        return (executor as any).evaluateCondition(condition);
+      };
+
+      it("should evaluate simple numeric comparisons", () => {
+        expect(evaluateCondition(executor, "5 > 3")).toBe(true);
+        expect(evaluateCondition(executor, "5 < 3")).toBe(false);
+        expect(evaluateCondition(executor, "5 >= 5")).toBe(true);
+        expect(evaluateCondition(executor, "5 <= 4")).toBe(false);
+      });
+
+      it("should evaluate strict equality", () => {
+        expect(evaluateCondition(executor, "5 === 5")).toBe(true);
+        expect(evaluateCondition(executor, "5 === 3")).toBe(false);
+        expect(evaluateCondition(executor, "5 !== 3")).toBe(true);
+        expect(evaluateCondition(executor, "5 !== 5")).toBe(false);
+      });
+
+      it("should evaluate boolean literals", () => {
+        expect(evaluateCondition(executor, "true")).toBe(true);
+        expect(evaluateCondition(executor, "false")).toBe(false);
+        expect(evaluateCondition(executor, "true === true")).toBe(true);
+        expect(evaluateCondition(executor, "true === false")).toBe(false);
+      });
+
+      it("should evaluate logical operators", () => {
+        expect(evaluateCondition(executor, "true && true")).toBe(true);
+        expect(evaluateCondition(executor, "true && false")).toBe(false);
+        expect(evaluateCondition(executor, "true || false")).toBe(true);
+        expect(evaluateCondition(executor, "false || false")).toBe(false);
+      });
+
+      it("should handle parentheses", () => {
+        expect(evaluateCondition(executor, "(5 > 3)")).toBe(true);
+        expect(evaluateCondition(executor, "(true && false) || true")).toBe(true);
+        expect(evaluateCondition(executor, "true && (false || true)")).toBe(true);
+      });
+
+      it("should handle negative numbers", () => {
+        expect(evaluateCondition(executor, "-5 < 0")).toBe(true);
+        expect(evaluateCondition(executor, "5 > -3")).toBe(true);
+        expect(evaluateCondition(executor, "-5 === -5")).toBe(true);
+      });
+
+      it("should handle decimal numbers", () => {
+        expect(evaluateCondition(executor, "3.14 > 3")).toBe(true);
+        expect(evaluateCondition(executor, "2.5 === 2.5")).toBe(true);
+      });
+
+      it("should reject invalid expressions gracefully", () => {
+        // Invalid characters should return false
+        expect(evaluateCondition(executor, "5 + 3")).toBe(false);
+        expect(evaluateCondition(executor, "alert(1)")).toBe(false);
+        expect(evaluateCondition(executor, "constructor")).toBe(false);
+      });
+
+      it("should prevent code injection attempts", () => {
+        // These should all return false and not execute anything
+        expect(evaluateCondition(executor, "constructor.constructor('return this')()")).toBe(false);
+        expect(evaluateCondition(executor, "process.exit(1)")).toBe(false);
+        expect(evaluateCondition(executor, "require('fs')")).toBe(false);
+        expect(evaluateCondition(executor, "__proto__")).toBe(false);
+      });
+    });
+
+    describe("substituteVariables", () => {
+      const substituteVariables = (
+        executor: PipelineExecutor,
+        template: string,
+        context: ExecutionContext,
+      ): string => {
+        return (executor as any).substituteVariables(template, context);
+      };
+
+      it("should substitute simple variable references", () => {
+        const context: ExecutionContext = {
+          graphId: "test",
+          executionId: "exec-1",
+          variables: new Map(),
+          outputs: new Map([["node1", { value: "hello" }]]),
+          metadata: {},
+        };
+
+        expect(substituteVariables(executor, "${node1.value}", context)).toBe("hello");
+      });
+
+      it("should substitute nested field references", () => {
+        const context: ExecutionContext = {
+          graphId: "test",
+          executionId: "exec-1",
+          variables: new Map(),
+          outputs: new Map([["node1", { nested: { deep: "value" } }]]),
+          metadata: {},
+        };
+
+        expect(substituteVariables(executor, "${node1.nested.deep}", context)).toBe("value");
+      });
+
+      it("should keep original reference if node not found", () => {
+        const context: ExecutionContext = {
+          graphId: "test",
+          executionId: "exec-1",
+          variables: new Map(),
+          outputs: new Map(),
+          metadata: {},
+        };
+
+        expect(substituteVariables(executor, "${unknown.value}", context)).toBe("${unknown.value}");
+      });
+
+      it("should serialize objects as JSON", () => {
+        const context: ExecutionContext = {
+          graphId: "test",
+          executionId: "exec-1",
+          variables: new Map(),
+          outputs: new Map([["node1", { data: { a: 1, b: 2 } }]]),
+          metadata: {},
+        };
+
+        expect(substituteVariables(executor, "${node1.data}", context)).toBe('{"a":1,"b":2}');
+      });
+
+      it("should serialize arrays as JSON", () => {
+        const context: ExecutionContext = {
+          graphId: "test",
+          executionId: "exec-1",
+          variables: new Map(),
+          outputs: new Map([["node1", { items: [1, 2, 3] }]]),
+          metadata: {},
+        };
+
+        expect(substituteVariables(executor, "${node1.items}", context)).toBe("[1,2,3]");
+      });
+
+      it("should handle null values", () => {
+        const context: ExecutionContext = {
+          graphId: "test",
+          executionId: "exec-1",
+          variables: new Map(),
+          outputs: new Map([["node1", { value: null }]]),
+          metadata: {},
+        };
+
+        expect(substituteVariables(executor, "${node1.value}", context)).toBe("null");
+      });
+
+      it("should handle entire node output without field path", () => {
+        const context: ExecutionContext = {
+          graphId: "test",
+          executionId: "exec-1",
+          variables: new Map(),
+          outputs: new Map([["node1", "simple-value"]]),
+          metadata: {},
+        };
+
+        expect(substituteVariables(executor, "${node1}", context)).toBe("simple-value");
+      });
+    });
+
+    describe("serializeValue", () => {
+      const serializeValue = (executor: PipelineExecutor, value: unknown): string => {
+        return (executor as any).serializeValue(value);
+      };
+
+      it("should serialize primitives correctly", () => {
+        expect(serializeValue(executor, "hello")).toBe("hello");
+        expect(serializeValue(executor, 42)).toBe("42");
+        expect(serializeValue(executor, true)).toBe("true");
+        expect(serializeValue(executor, false)).toBe("false");
+      });
+
+      it("should serialize null and undefined", () => {
+        expect(serializeValue(executor, null)).toBe("null");
+        expect(serializeValue(executor, undefined)).toBe("undefined");
+      });
+
+      it("should serialize objects as JSON", () => {
+        expect(serializeValue(executor, { a: 1 })).toBe('{"a":1}');
+        expect(serializeValue(executor, [1, 2, 3])).toBe("[1,2,3]");
+      });
+    });
+  });
+
+  describe("PipelineFactory", () => {
+    it("should create development pipeline", () => {
+      const config: PipelineConfig = {
+        type: PipelineType.DEVELOPMENT,
+        name: "Test Dev Pipeline",
+        description: "A test pipeline",
+        parameters: { requirements: "Build a feature" },
+      };
+
+      const context: PipelineContext = {
+        pipelineId: "test",
+        tenantId: "tenant",
+        userId: "user",
+        sessionId: "session",
+        messageBus: {} as MessageBus,
+        contextManager: {} as SharedContextManager,
+        toolRegistry: new MockToolRegistry() as any,
+        parameters: {},
+      };
+
+      const graph = PipelineFactory.create(config, context);
+
+      expect(graph.name).toBe("Test Dev Pipeline");
+      expect(graph.nodes.length).toBeGreaterThan(0);
+      expect(graph.entryNodes).toContain("analyze-requirements");
+    });
+
+    it("should create quick fix pipeline", () => {
+      const config: PipelineConfig = {
+        type: PipelineType.QUICK_FIX,
+        name: "Test Quick Fix",
+        description: "Fix a bug",
+        parameters: { error: "TypeError" },
+      };
+
+      const context: PipelineContext = {
+        pipelineId: "test",
+        tenantId: "tenant",
+        userId: "user",
+        sessionId: "session",
+        messageBus: {} as MessageBus,
+        contextManager: {} as SharedContextManager,
+        toolRegistry: new MockToolRegistry() as any,
+        parameters: {},
+      };
+
+      const graph = PipelineFactory.create(config, context);
+
+      expect(graph.name).toBe("Test Quick Fix");
+      expect(graph.entryNodes).toContain("analyze-issue");
+    });
+
+    it("should return all supported pipeline types", () => {
+      const types = PipelineFactory.getSupportedTypes();
+
+      expect(types).toContain(PipelineType.DEVELOPMENT);
+      expect(types).toContain(PipelineType.QUICK_FIX);
+      expect(types).toContain(PipelineType.REFACTORING);
+      expect(types).toContain(PipelineType.CODE_REVIEW);
+      expect(types).toContain(PipelineType.TESTING);
+    });
+
+    it("should throw for unsupported pipeline type", () => {
+      const config = {
+        type: "unsupported" as PipelineType,
+        name: "Test",
+        description: "Test",
+        parameters: {},
+      };
+
+      const context: PipelineContext = {
+        pipelineId: "test",
+        tenantId: "tenant",
+        userId: "user",
+        sessionId: "session",
+        messageBus: {} as MessageBus,
+        contextManager: {} as SharedContextManager,
+        toolRegistry: new MockToolRegistry() as any,
+        parameters: {},
+      };
+
+      expect(() => PipelineFactory.create(config, context)).toThrow("Unsupported pipeline type");
+    });
+  });
+
+  describe("Handler creation", () => {
+    let executor: PipelineExecutor;
+    let mockContext: PipelineContext;
+
+    beforeEach(() => {
+      mockContext = {
+        pipelineId: "test-pipeline",
+        tenantId: "test-tenant",
+        userId: "test-user",
+        sessionId: "test-session",
+        messageBus: {} as MessageBus,
+        contextManager: {} as SharedContextManager,
+        toolRegistry: new MockToolRegistry() as any,
+        parameters: {},
+      };
+      executor = new PipelineExecutor(mockContext);
+    });
+
+    it("should create condition handler that evaluates expressions", async () => {
+      const handler = (executor as any).createConditionHandler();
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map([["prev", { passed: 5, total: 5 }]]),
+        metadata: {},
+      };
+
+      const node: NodeDefinition = {
+        id: "condition-1",
+        type: NodeType.CONDITION,
+        name: "Test Condition",
+        dependencies: ["prev"],
+        config: {
+          condition: "5 === 5",
+        },
+      };
+
+      const result = await handler.execute(node, context);
+
+      expect(result).toEqual({
+        status: "completed",
+        condition: "5 === 5",
+        result: true,
+        passed: true,
+      });
+    });
+
+    it("should create merge handler that collects outputs", async () => {
+      const handler = (executor as any).createMergeHandler();
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map([
+          ["node1", { value: "result1" }],
+          ["node2", { value: "result2", findings: [{ issue: "test" }] }],
+        ]),
+        metadata: {},
+      };
+
+      const node: NodeDefinition = {
+        id: "merge-1",
+        type: NodeType.MERGE,
+        name: "Merge Results",
+        dependencies: ["node1", "node2"],
+        config: {},
+      };
+
+      const result = await handler.execute(node, context);
+
+      expect(result).toMatchObject({
+        status: "completed",
+        mergedCount: 2,
+      });
+      expect((result as any).mergedResults.node1).toEqual({ value: "result1" });
+      expect((result as any).findings).toHaveLength(1);
+    });
+
+    it("should create loop handler with max iterations safety", async () => {
+      const handler = (executor as any).createLoopHandler();
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map(),
+        metadata: {},
+      };
+
+      const node: NodeDefinition = {
+        id: "loop-1",
+        type: NodeType.LOOP,
+        name: "Test Loop",
+        dependencies: [],
+        config: {
+          maxIterations: 3,
+          condition: "false", // Exit immediately
+        },
+      };
+
+      const result = await handler.execute(node, context);
+
+      expect(result).toMatchObject({
+        status: "completed",
+        iterations: 0,
+      });
+    });
+
+    it("should create parallel handler that returns node info", async () => {
+      const handler = (executor as any).createParallelHandler();
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map(),
+        metadata: {},
+      };
+
+      const node: NodeDefinition = {
+        id: "parallel-1",
+        type: NodeType.PARALLEL,
+        name: "Parallel Tasks",
+        description: "Run tasks in parallel",
+        dependencies: ["task1", "task2"],
+        config: {},
+      };
+
+      const result = await handler.execute(node, context);
+
+      expect(result).toMatchObject({
+        status: "completed",
+        nodeId: "parallel-1",
+        parallelBranches: ["task1", "task2"],
+      });
+    });
+  });
+
+  describe("resolveNodeConfig", () => {
+    let executor: PipelineExecutor;
+
+    beforeEach(() => {
+      const mockContext: PipelineContext = {
+        pipelineId: "test-pipeline",
+        tenantId: "test-tenant",
+        userId: "test-user",
+        sessionId: "test-session",
+        messageBus: {} as MessageBus,
+        contextManager: {} as SharedContextManager,
+        toolRegistry: new MockToolRegistry() as any,
+        parameters: {},
+      };
+      executor = new PipelineExecutor(mockContext);
+    });
+
+    it("should resolve variable references in node config", () => {
+      const context: ExecutionContext = {
+        graphId: "test",
+        executionId: "exec-1",
+        variables: new Map(),
+        outputs: new Map([["prev", { query: "search term" }]]),
+        metadata: {},
+      };
+
+      const node: NodeDefinition = {
+        id: "test-node",
+        type: NodeType.TASK,
+        name: "Test",
+        dependencies: ["prev"],
+        config: {
+          operation: "search",
+          query: "${prev.query}",
+          limit: 10,
+        },
+      };
+
+      const resolved = (executor as any).resolveNodeConfig(node, context);
+
+      expect(resolved.config.query).toBe("search term");
+      expect(resolved.config.limit).toBe(10);
+      expect(resolved.config.operation).toBe("search");
+    });
+  });
+});
