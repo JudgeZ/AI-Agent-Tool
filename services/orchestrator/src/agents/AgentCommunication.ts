@@ -1,6 +1,9 @@
 import { EventEmitter } from "events";
 import { z } from "zod";
 
+import type { IMessageBus } from "./IMessageBus.js";
+import type { ISharedContext } from "./ISharedContext.js";
+
 // ============================================================================
 // Message Types and Schemas
 // ============================================================================
@@ -113,6 +116,16 @@ export interface ContextQueryOptions {
   ownerId?: string;
   prefix?: string;
   pattern?: RegExp;
+  /**
+   * Maximum number of results to return (for pagination).
+   * Default: no limit (returns all matching entries up to iteration cap)
+   */
+  limit?: number;
+  /**
+   * Number of results to skip (for pagination).
+   * Default: 0
+   */
+  offset?: number;
 }
 
 // ============================================================================
@@ -135,7 +148,18 @@ const DEFAULT_MESSAGE_BUS_CONFIG: MessageBusConfig = {
   enableMetrics: true,
 };
 
-export class MessageBus extends EventEmitter {
+/**
+ * In-memory message bus implementation.
+ *
+ * Suitable for development and single-instance deployments.
+ * For horizontal scaling, use RedisMessageBus instead.
+ *
+ * LIMITATIONS:
+ * - Messages are lost on process restart
+ * - Not shared across multiple instances
+ * - Memory usage grows with pending messages
+ */
+export class MessageBus extends EventEmitter implements IMessageBus {
   private config: MessageBusConfig;
   private queues: Map<string, MessageEnvelope[]> = new Map(); // agentId -> messages
   private handlers: Map<string, Map<MessageType, MessageHandler>> = new Map(); // agentId -> type -> handler
@@ -165,7 +189,7 @@ export class MessageBus extends EventEmitter {
   // Agent Registration
   // ============================================================================
 
-  public registerAgent(agentId: string): void {
+  public async registerAgent(agentId: string): Promise<void> {
     if (!this.queues.has(agentId)) {
       this.queues.set(agentId, []);
       this.handlers.set(agentId, new Map());
@@ -173,19 +197,19 @@ export class MessageBus extends EventEmitter {
     }
   }
 
-  public unregisterAgent(agentId: string): void {
+  public async unregisterAgent(agentId: string): Promise<void> {
     this.queues.delete(agentId);
     this.handlers.delete(agentId);
     this.emit("agent:unregistered", { agentId, timestamp: new Date() });
   }
 
-  public registerHandler(
+  public async registerHandler(
     agentId: string,
     type: MessageType,
     handler: MessageHandler,
-  ): void {
+  ): Promise<void> {
     if (!this.handlers.has(agentId)) {
-      this.registerAgent(agentId);
+      await this.registerAgent(agentId);
     }
     this.handlers.get(agentId)!.set(type, handler);
     this.emit("handler:registered", { agentId, type });
@@ -257,7 +281,11 @@ export class MessageBus extends EventEmitter {
     });
 
     // Schedule delivery on next tick to allow batching of concurrent sends
-    setImmediate(() => this.deliverMessages(recipient));
+    setImmediate(() => {
+      this.deliverMessages(recipient).catch((error) => {
+        this.emit("error", { error, agentId: recipient, event: "delivery.failed" });
+      });
+    });
 
     return message.id;
   }
@@ -402,7 +430,11 @@ export class MessageBus extends EventEmitter {
           });
 
           // Schedule retry delivery
-          setImmediate(() => this.deliverMessages(agentId));
+          setImmediate(() => {
+            this.deliverMessages(agentId).catch((error) => {
+              this.emit("error", { error, agentId, event: "retry.delivery.failed" });
+            });
+          });
         }
       }
     }
@@ -478,11 +510,13 @@ export class MessageBus extends EventEmitter {
   ): Promise<void> {
     if (!requestMessage.correlationId) return;
 
+    // Do not expose internal error details (stack traces) in responses
+    // to prevent information disclosure
     await this.send({
       type: MessageType.ERROR,
       from: requestMessage.to as string,
       to: requestMessage.from,
-      payload: { message: error.message, stack: error.stack },
+      payload: { type: "error", error: error.message },
       correlationId: requestMessage.correlationId,
       priority: MessagePriority.HIGH,
     });
@@ -534,13 +568,13 @@ export class MessageBus extends EventEmitter {
     this.metrics.messagesExpired += expiredCount;
   }
 
-  public shutdown(): void {
+  public async shutdown(): Promise<void> {
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
     }
 
     // Reject all pending requests
-    for (const [correlationId, pending] of this.pendingRequests) {
+    for (const [_correlationId, pending] of this.pendingRequests) {
       clearTimeout(pending.timeout);
       pending.reject(new Error("Message bus shutting down"));
     }
@@ -587,15 +621,15 @@ export class MessageBus extends EventEmitter {
   // Query Methods
   // ============================================================================
 
-  public getMetrics(): MessageBusMetrics {
+  public async getMetrics(): Promise<MessageBusMetrics> {
     return { ...this.metrics };
   }
 
-  public getQueueSize(agentId: string): number {
+  public async getQueueSize(agentId: string): Promise<number> {
     return this.queues.get(agentId)?.length || 0;
   }
 
-  public getRegisteredAgents(): string[] {
+  public async getRegisteredAgents(): Promise<string[]> {
     return Array.from(this.queues.keys());
   }
 }
@@ -618,7 +652,18 @@ const DEFAULT_CONTEXT_CONFIG: SharedContextConfig = {
   enableVersioning: true,
 };
 
-export class SharedContextManager extends EventEmitter {
+/**
+ * In-memory shared context manager implementation.
+ *
+ * Suitable for development and single-instance deployments.
+ * For horizontal scaling, use RedisSharedContext instead.
+ *
+ * LIMITATIONS:
+ * - Context is lost on process restart
+ * - Not shared across multiple instances
+ * - Memory usage grows with stored entries
+ */
+export class SharedContextManager extends EventEmitter implements ISharedContext {
   private config: SharedContextConfig;
   private entries: Map<string, ContextEntry> = new Map();
   private accessControl: Map<string, Set<string>> = new Map(); // key -> allowed agent IDs
@@ -637,13 +682,13 @@ export class SharedContextManager extends EventEmitter {
   // Context Operations
   // ============================================================================
 
-  public set(
+  public async set(
     key: string,
     value: unknown,
     ownerId: string,
     scope: ContextScope = ContextScope.PRIVATE,
     ttl?: number,
-  ): void {
+  ): Promise<void> {
     if (this.entries.size >= this.config.maxEntries) {
       throw new Error("Context store is full");
     }
@@ -667,7 +712,7 @@ export class SharedContextManager extends EventEmitter {
     this.emit("context:set", { key, ownerId, scope, version: entry.version });
   }
 
-  public get(key: string, requesterId: string): unknown | undefined {
+  public async get(key: string, requesterId: string): Promise<unknown | undefined> {
     const entry = this.entries.get(key);
     if (!entry) return undefined;
 
@@ -689,7 +734,7 @@ export class SharedContextManager extends EventEmitter {
     return entry.value;
   }
 
-  public delete(key: string, requesterId: string): boolean {
+  public async delete(key: string, requesterId: string): Promise<boolean> {
     const entry = this.entries.get(key);
     if (!entry) return false;
 
@@ -706,7 +751,7 @@ export class SharedContextManager extends EventEmitter {
     return true;
   }
 
-  public share(key: string, ownerId: string, agentIds: string[]): void {
+  public async share(key: string, ownerId: string, agentIds: string[]): Promise<void> {
     const entry = this.entries.get(key);
     if (!entry) {
       throw new Error(`Context key not found: ${key}`);
@@ -730,16 +775,26 @@ export class SharedContextManager extends EventEmitter {
       allowed.add(agentId);
     }
 
-    this.emit("context:shared", { key, ownerId, agentIds });
+    this.emit("context:shared", { key, ownerId, sharedWith: agentIds });
   }
 
-  public query(
+  public async query(
     options: ContextQueryOptions,
     requesterId: string,
-  ): ContextEntry[] {
+  ): Promise<ContextEntry[]> {
     const results: ContextEntry[] = [];
 
+    // Pagination parameters
+    const offset = options.offset ?? 0;
+    const limit = options.limit;
+    let skipped = 0;
+
     for (const entry of this.entries.values()) {
+      // Early exit if we've collected enough results
+      if (limit !== undefined && results.length >= limit) {
+        break;
+      }
+
       // Check access
       if (!this.hasAccess(entry, requesterId)) continue;
 
@@ -751,6 +806,12 @@ export class SharedContextManager extends EventEmitter {
       if (options.ownerId && entry.ownerId !== options.ownerId) continue;
       if (options.prefix && !entry.key.startsWith(options.prefix)) continue;
       if (options.pattern && !options.pattern.test(entry.key)) continue;
+
+      // Handle offset (skip entries until we've passed the offset)
+      if (skipped < offset) {
+        skipped++;
+        continue;
+      }
 
       results.push(entry);
     }
@@ -826,7 +887,7 @@ export class SharedContextManager extends EventEmitter {
     }
   }
 
-  public shutdown(): void {
+  public async shutdown(): Promise<void> {
     if (this.cleanupTimer) {
       clearInterval(this.cleanupTimer);
     }
@@ -841,11 +902,11 @@ export class SharedContextManager extends EventEmitter {
   // Query Methods
   // ============================================================================
 
-  public getEntryCount(): number {
+  public async getEntryCount(): Promise<number> {
     return this.entries.size;
   }
 
-  public getKeys(scope?: ContextScope): string[] {
+  public async getKeys(scope?: ContextScope): Promise<string[]> {
     if (!scope) {
       return Array.from(this.entries.keys());
     }

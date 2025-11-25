@@ -139,7 +139,7 @@ describe("Token Refresh Handling", () => {
       const refreshToken = "valid-refresh-token";
 
       // Create session with tokens that will expire soon
-      const session = sessionStore.createSession(
+      const session = await sessionStore.createSession(
         {
           subject: "user-123",
           email: "user@example.com",
@@ -184,12 +184,12 @@ describe("Token Refresh Handling", () => {
       expect(new Date(session.expiresAt).getTime()).toBeGreaterThan(now);
     });
 
-    it("detects tokens nearing expiration threshold", () => {
+    it("detects tokens nearing expiration threshold", async () => {
       const now = Date.now();
       const refreshThreshold = 300; // 5 minutes
       const expiresIn = 3600; // 1 hour
 
-      const session = sessionStore.createSession(
+      const session = await sessionStore.createSession(
         {
           subject: "user-123",
           email: "user@example.com",
@@ -218,14 +218,14 @@ describe("Token Refresh Handling", () => {
       expect(futureNeedsRefresh).toBe(true);
     });
 
-    it("calculates optimal refresh timing based on token lifetime", () => {
+    it("calculates optimal refresh timing based on token lifetime", async () => {
       const now = Date.now();
       const expiresIn = 3600; // 1 hour
 
       // Common strategy: refresh at 80% of token lifetime
       const refreshAt = now + expiresIn * 1000 * 0.8;
 
-      const session = sessionStore.createSession(
+      const session = await sessionStore.createSession(
         {
           subject: "user-123",
           email: "user@example.com",
@@ -292,7 +292,9 @@ describe("Token Refresh Handling", () => {
     });
 
     it("stores rotated refresh token for subsequent refreshes", async () => {
-      const session = sessionStore.createSession(
+      // Create a session context (not directly used in token refresh flow,
+      // but establishes the session store state)
+      await sessionStore.createSession(
         {
           subject: "user-123",
           email: "user@example.com",
@@ -536,7 +538,7 @@ describe("Token Refresh Handling", () => {
       const now = Date.now();
       const initialExpiry = 3600; // 1 hour
 
-      const session = sessionStore.createSession(
+      const session = await sessionStore.createSession(
         {
           subject: "user-123",
           email: "user@example.com",
@@ -579,7 +581,7 @@ describe("Token Refresh Handling", () => {
     });
 
     it("maintains session consistency during refresh", async () => {
-      const session = sessionStore.createSession(
+      const session = await sessionStore.createSession(
         {
           subject: "user-456",
           email: "user@example.com",

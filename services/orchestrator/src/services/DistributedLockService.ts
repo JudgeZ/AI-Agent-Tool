@@ -2,6 +2,53 @@ import { createClient, type RedisClientType } from "redis";
 import { appLogger, normalizeError } from "../observability/logger.js";
 import { randomUUID } from "node:crypto";
 
+/**
+ * DistributedLockService provides distributed locking via Redis.
+ *
+ * ## Implementation Details
+ *
+ * Uses the Redis SET NX PX pattern for atomic lock acquisition:
+ * - `SET key token NX PX ttl` - Acquire lock only if key doesn't exist
+ * - Lua script for safe release (only delete if token matches)
+ *
+ * ## Limitations
+ *
+ * **Single Redis Instance:**
+ * This implementation assumes a single Redis instance or Redis Sentinel
+ * with automatic failover. It does NOT implement the Redlock algorithm
+ * for distributed consensus across multiple Redis masters.
+ *
+ * **NOT suitable for:**
+ * - Redis Cluster in multi-master mode
+ * - Scenarios requiring strong consistency during Redis failover
+ * - Critical sections where split-brain could cause data corruption
+ *
+ * **Suitable for:**
+ * - Single Redis instance deployments
+ * - Redis Sentinel with automatic failover
+ * - Use cases where occasional lock contention during failover is acceptable
+ *
+ * ## Lock Correctness Guarantees
+ *
+ * Under normal operation (no Redis failures):
+ * - Mutual exclusion: Only one client holds the lock at a time
+ * - Deadlock freedom: Locks automatically expire via TTL
+ * - Safe release: Token-based release prevents accidental unlock
+ *
+ * During Redis failover:
+ * - Brief period where lock state may be inconsistent
+ * - Multiple clients may briefly believe they hold the lock
+ * - Applications should be designed to handle this edge case
+ *
+ * ## Redlock Alternative
+ *
+ * For multi-master Redis deployments or stronger consistency requirements,
+ * consider using the `redlock` npm package which implements the Redlock
+ * algorithm across multiple independent Redis instances.
+ *
+ * @see https://redis.io/topics/distlock for the Redlock algorithm specification
+ */
+
 const instances = new Map<string, DistributedLockService>();
 const instancePromises = new Map<string, Promise<DistributedLockService>>();
 const MAX_RETRY_COUNT = 10;

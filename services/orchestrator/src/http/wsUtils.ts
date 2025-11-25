@@ -158,13 +158,18 @@ export function extractSessionIdFromUpgrade(req: IncomingMessage, cookieName: st
   return { status: "missing" };
 }
 
-export function authenticateSessionFromUpgrade(
+export async function authenticateSessionFromUpgrade(
   req: IncomingMessage,
   cookieName: string,
-):
+): Promise<
   | { status: "ok"; session: SessionRecord; sessionId: string; source?: SessionSource }
-  | { status: "error"; reason: string; source?: SessionSource } {
-  sessionStore.cleanupExpired();
+  | { status: "error"; reason: string; source?: SessionSource }
+> {
+  try {
+    await sessionStore.cleanupExpired();
+  } catch {
+    // Log but don't fail - cleanup is non-critical
+  }
   const sessionResult = extractSessionIdFromUpgrade(req, cookieName);
   if (sessionResult.status === "invalid") {
     return { status: "error", reason: "invalid session", source: sessionResult.source };
@@ -172,11 +177,15 @@ export function authenticateSessionFromUpgrade(
   if (sessionResult.status === "missing") {
     return { status: "error", reason: "missing session" };
   }
-  const session = sessionStore.getSession(sessionResult.sessionId);
-  if (!session) {
-    return { status: "error", reason: "unknown session", source: sessionResult.source };
+  try {
+    const session = await sessionStore.getSession(sessionResult.sessionId);
+    if (!session) {
+      return { status: "error", reason: "unknown session", source: sessionResult.source };
+    }
+    return { status: "ok", session, sessionId: sessionResult.sessionId, source: sessionResult.source };
+  } catch {
+    return { status: "error", reason: "session lookup failed", source: sessionResult.source };
   }
-  return { status: "ok", session, sessionId: sessionResult.sessionId, source: sessionResult.source };
 }
 
 export function auditSubjectFromSession(session: SessionRecord | undefined) {

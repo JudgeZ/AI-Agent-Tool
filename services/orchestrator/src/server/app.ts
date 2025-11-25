@@ -133,9 +133,15 @@ export function createServer(config?: AppConfig): Express {
     next();
   });
 
-  app.use((req: Request, _res: Response, next: NextFunction) => {
-    attachSession(req as ExtendedRequest, appConfig);
-    next();
+  app.use(async (req: Request, _res: Response, next: NextFunction) => {
+    try {
+      await attachSession(req as ExtendedRequest, appConfig);
+      next();
+    } catch (err) {
+      // In Express 4, unhandled async errors cause requests to hang.
+      // Pass error to Express error handling middleware.
+      next(err);
+    }
   });
 
   app.get("/healthz", (_req, res) => {

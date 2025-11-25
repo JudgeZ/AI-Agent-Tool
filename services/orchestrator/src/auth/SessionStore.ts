@@ -1,10 +1,7 @@
 import { randomUUID } from "node:crypto";
 
-function normalizeRoles(roles: string[]): string[] {
-  return Array.from(
-    new Set(roles.map(role => role.trim()).filter(role => role.length > 0))
-  ).sort((a, b) => a.localeCompare(b));
-}
+import type { ISessionStore } from "./ISessionStore.js";
+import { normalizeRoles } from "./sessionUtils.js";
 
 export type SessionRecord = {
   id: string;
@@ -29,15 +26,32 @@ export type CreateSessionInput = {
   claims: Record<string, unknown>;
 };
 
-export class SessionStore {
+/**
+ * In-memory session store implementation.
+ *
+ * Suitable for development and single-instance deployments.
+ * For horizontal scaling, use RedisSessionStore instead.
+ *
+ * LIMITATIONS:
+ * - Sessions are lost on process restart
+ * - Not shared across multiple instances
+ * - Memory usage grows with active sessions
+ */
+export class MemorySessionStore implements ISessionStore {
   private readonly sessions = new Map<string, SessionRecord>();
 
-  createSession(input: CreateSessionInput, ttlSeconds: number, expiresAtMsOverride?: number): SessionRecord {
+  async createSession(
+    input: CreateSessionInput,
+    ttlSeconds: number,
+    expiresAtMsOverride?: number,
+  ): Promise<SessionRecord> {
     const id = randomUUID();
     const issuedAtMs = Date.now();
     const ttlMs = Math.max(1, ttlSeconds) * 1000;
-    const expiryCandidate = expiresAtMsOverride ?? issuedAtMs + ttlMs;
-    const expiresAtMs = Math.min(expiryCandidate, issuedAtMs + ttlMs);
+    // Use override directly when provided; only fall back to TTL-based expiry
+    // when no override is given. This allows external systems (like OIDC) to
+    // set session expiry based on token lifetime.
+    const expiresAtMs = expiresAtMsOverride ?? issuedAtMs + ttlMs;
 
     const session: SessionRecord = {
       id,
@@ -56,7 +70,7 @@ export class SessionStore {
     return session;
   }
 
-  getSession(id: string): SessionRecord | undefined {
+  async getSession(id: string): Promise<SessionRecord | undefined> {
     const session = this.sessions.get(id);
     if (!session) {
       return undefined;
@@ -68,15 +82,15 @@ export class SessionStore {
     return session;
   }
 
-  revokeSession(id: string): boolean {
+  async revokeSession(id: string): Promise<boolean> {
     return this.sessions.delete(id);
   }
 
-  clear(): void {
+  async clear(): Promise<void> {
     this.sessions.clear();
   }
 
-  cleanupExpired(): void {
+  async cleanupExpired(): Promise<void> {
     const now = Date.now();
     for (const [id, session] of this.sessions.entries()) {
       if (now >= Date.parse(session.expiresAt)) {
@@ -84,6 +98,20 @@ export class SessionStore {
       }
     }
   }
+
+  async close(): Promise<void> {
+    this.sessions.clear();
+  }
 }
 
-export const sessionStore = new SessionStore();
+/**
+ * @deprecated Use MemorySessionStore directly or createSessionStore() factory.
+ * This alias exists for backward compatibility.
+ */
+export const SessionStore = MemorySessionStore;
+
+/**
+ * Default singleton session store instance.
+ * @deprecated Prefer dependency injection with createSessionStore() factory.
+ */
+export const sessionStore: ISessionStore = new MemorySessionStore();

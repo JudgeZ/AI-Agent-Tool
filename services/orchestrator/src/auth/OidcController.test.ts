@@ -179,9 +179,9 @@ const originalFetch = globalThis.fetch;
 const originalCookieSecure = process.env.COOKIE_SECURE;
 const fetchMock = vi.fn<typeof fetch>();
 
-beforeEach(() => {
+beforeEach(async () => {
   testConfig = buildConfig();
-  sessionStore.clear();
+  await sessionStore.clear();
   fetchMock.mockImplementation(
     async (input: RequestInfo | URL, init?: RequestInit) => {
       const url = typeof input === "string" ? input : input.toString();
@@ -229,9 +229,9 @@ beforeEach(() => {
   } as any);
 });
 
-afterEach(() => {
+afterEach(async () => {
   fetchMock.mockReset();
-  sessionStore.clear();
+  await sessionStore.clear();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
   if (originalCookieSecure === undefined) {
@@ -301,7 +301,7 @@ describe("OidcController", () => {
     });
     expect(sessionCheck.body.session).not.toHaveProperty("tokens");
 
-    const storedSession = sessionStore.getSession(response.body.sessionId);
+    const storedSession = await sessionStore.getSession(response.body.sessionId);
     expect(storedSession).toBeDefined();
     expect(storedSession).not.toHaveProperty("tokens");
 
@@ -761,7 +761,7 @@ describe("OidcController", () => {
   it("logs an audit event when the session has expired", async () => {
     const auditSpy = vi.spyOn(Audit, "logAuditEvent");
     const app = createApp();
-    const expiredSession = sessionStore.createSession(
+    const expiredSession = await sessionStore.createSession(
       {
         subject: "user-expired",
         email: "expired@example.com",

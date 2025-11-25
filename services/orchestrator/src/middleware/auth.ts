@@ -2,19 +2,32 @@ import type { AppConfig } from "../config.js";
 import { sessionStore, type SessionRecord } from "../auth/SessionStore.js";
 import { extractSessionId } from "../auth/sessionValidation.js";
 import { logAuditEvent } from "../observability/audit.js";
+import { appLogger, normalizeError } from "../observability/logger.js";
 import type { ExtendedRequest } from "../http/types.js";
 import type { Response, NextFunction } from "express";
 
-export function attachSession(
+const logger = appLogger.child({ subsystem: "auth-middleware" });
+
+export async function attachSession(
   req: ExtendedRequest,
   config: AppConfig,
-): SessionRecord | undefined {
+): Promise<SessionRecord | undefined> {
   const oidcConfig = config.auth.oidc;
   if (!oidcConfig.enabled) {
     req.auth = undefined;
     return undefined;
   }
-  sessionStore.cleanupExpired();
+
+  try {
+    await sessionStore.cleanupExpired();
+  } catch (error) {
+    // Log but don't fail the request - cleanup is non-critical
+    logger.warn(
+      { err: normalizeError(error), event: "auth.session.cleanup_failed" },
+      "Failed to cleanup expired sessions",
+    );
+  }
+
   const sessionResult = extractSessionId(req, oidcConfig.session.cookieName);
   if (sessionResult.status === "invalid") {
     req.auth = {
@@ -45,19 +58,35 @@ export function attachSession(
     req.auth = undefined;
     return undefined;
   }
-  const session = sessionStore.getSession(sessionResult.sessionId);
-  if (session) {
-    req.auth = { session };
-    return session;
+
+  try {
+    const session = await sessionStore.getSession(sessionResult.sessionId);
+    if (session) {
+      req.auth = { session };
+      return session;
+    }
+  } catch (error) {
+    // Log and treat as missing session
+    logger.warn(
+      { err: normalizeError(error), sessionId: sessionResult.sessionId, event: "auth.session.get_failed" },
+      "Failed to retrieve session from store",
+    );
   }
+
   req.auth = undefined;
   return undefined;
 }
 
 export function attachSessionMiddleware(config: AppConfig) {
-    return (req: ExtendedRequest, _res: Response, next: NextFunction) => {
-        attachSession(req, config);
-        next();
-    };
+  return async (req: ExtendedRequest, _res: Response, next: NextFunction) => {
+    try {
+      await attachSession(req, config);
+      next();
+    } catch (error) {
+      // In Express 4, unhandled async errors cause requests to hang.
+      // Pass error to Express error handling middleware.
+      next(error);
+    }
+  };
 }
 

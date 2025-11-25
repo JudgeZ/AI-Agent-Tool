@@ -357,7 +357,7 @@ export async function handleOidcCallback(req: Request, res: Response) {
     const roles = extractRoles(payload as Record<string, unknown>, oidc.roles);
     const scopes = parseTokensScope(tokenResponse.scope, oidc.scopes);
 
-    const session = sessionStore.createSession(
+    const session = await sessionStore.createSession(
       {
         subject: payload.sub,
         email,
@@ -478,8 +478,8 @@ export async function getSession(req: Request, res: Response) {
     });
     return;
   }
-  sessionStore.cleanupExpired();
-  const session = sessionStore.getSession(sessionResult.sessionId);
+  await sessionStore.cleanupExpired();
+  const session = await sessionStore.getSession(sessionResult.sessionId);
   if (!session) {
     logAuditEvent({
       action: "auth.session.get",
@@ -558,8 +558,8 @@ export async function logout(req: Request, res: Response) {
   }
 
   if (sessionResult.status === "valid") {
-    const session = sessionStore.getSession(sessionResult.sessionId);
-    sessionStore.revokeSession(sessionResult.sessionId);
+    const session = await sessionStore.getSession(sessionResult.sessionId);
+    await sessionStore.revokeSession(sessionResult.sessionId);
     const outcome = session ? "success" : "failure";
     logAuditEvent({
       action: "auth.logout",

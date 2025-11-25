@@ -26,6 +26,8 @@ import {
   queuePartitionLagGauge,
   queueRetryCounter
 } from "../observability/metrics.js";
+import type { IDedupeService } from "./IDedupeService.js";
+import { MemoryDedupeService } from "./MemoryDedupeService.js";
 import type {
   DeadLetterOptions,
   EnqueueOptions,
@@ -43,6 +45,7 @@ const DEFAULT_RETRY_DELAY_MS = 1000;
 const DEFAULT_TOPIC_PARTITIONS = 1;
 const DEFAULT_REPLICATION_FACTOR = 1;
 const DEFAULT_DEAD_LETTER_SUFFIX = ".dead";
+const DEFAULT_DEDUPE_TTL_MS = 300000; // 5 minutes
 
 type TopicMatcher = (value: string) => boolean;
 
@@ -70,6 +73,16 @@ type KafkaAdapterOptions = {
   tls?: KafkaTlsConfig;
   sasl?: KafkaSaslConfig;
   deadLetterSuffix?: string;
+  /**
+   * Optional dedupe service for distributed idempotency.
+   * If not provided, falls back to in-memory deduplication.
+   */
+  dedupeService?: IDedupeService;
+  /**
+   * Default TTL for idempotency claims (ms).
+   * Default: 300000 (5 minutes)
+   */
+  dedupeTtlMs?: number;
 };
 
 type KafkaFactory = Pick<Kafka, "producer" | "consumer" | "admin">;
@@ -141,7 +154,9 @@ export class KafkaAdapter implements QueueAdapter {
   private connected = false;
 
   private readonly consumers = new Map<string, QueueHandler<any>>();
-  private readonly inflightKeys = new Set<string>();
+  private readonly dedupe: IDedupeService;
+  private readonly dedupeTtlMs: number;
+  private readonly ownsDedupe: boolean;
   private readonly knownTopics = new Set<string>();
   private readonly topicInitPromises = new Map<string, Promise<void>>();
   private consumePromise: Promise<void> = Promise.resolve();
@@ -171,6 +186,9 @@ export class KafkaAdapter implements QueueAdapter {
     this.deadLetterSuffix =
       options.deadLetterSuffix ?? process.env.KAFKA_DEAD_LETTER_SUFFIX ?? DEFAULT_DEAD_LETTER_SUFFIX;
     this.tenantLabel = getDefaultTenantLabel();
+    this.ownsDedupe = !options.dedupeService;
+    this.dedupe = options.dedupeService ?? new MemoryDedupeService();
+    this.dedupeTtlMs = options.dedupeTtlMs ?? DEFAULT_DEDUPE_TTL_MS;
 
     const tlsConfig = options.tls ?? parseTlsConfigFromEnv();
     const saslConfig = options.sasl ?? parseSaslConfigFromEnv();
@@ -240,7 +258,6 @@ export class KafkaAdapter implements QueueAdapter {
     this.admin = null;
     this.consumerRunning = false;
     this.consumers.clear();
-    this.inflightKeys.clear();
     this.knownTopics.clear();
     this.topicInitPromises.clear();
 
@@ -255,6 +272,15 @@ export class KafkaAdapter implements QueueAdapter {
         this.logger.warn?.(`Kafka admin close failed: ${(error as Error).message}`)
       )
     ]);
+
+    // Close dedupe service if we own it (i.e., it wasn't injected)
+    if (this.ownsDedupe && this.dedupe.close) {
+      try {
+        await this.dedupe.close();
+      } catch (error) {
+        this.logger.warn?.(`Dedupe service close failed: ${(error as Error).message}`);
+      }
+    }
   }
 
   async enqueue<T>(queue: string, payload: T, options?: EnqueueOptions): Promise<void> {
@@ -448,7 +474,7 @@ export class KafkaAdapter implements QueueAdapter {
       this.logger.error?.(`Failed to parse Kafka message from ${topic}: ${(error as Error).message}`);
       await this.commitOffset(topic, partition, message.offset);
       if (idempotencyKey) {
-        this.releaseKey(idempotencyKey);
+        await this.releaseKey(idempotencyKey);
       }
       await this.refreshDepth(topic);
       return;
@@ -462,7 +488,7 @@ export class KafkaAdapter implements QueueAdapter {
       acknowledged = true;
       await this.commitOffset(topic, partition, message.offset);
       if (idempotencyKey) {
-        this.releaseKey(idempotencyKey);
+        await this.releaseKey(idempotencyKey);
       }
       await this.refreshDepth(topic);
     };
@@ -539,11 +565,14 @@ export class KafkaAdapter implements QueueAdapter {
     let addedKey = false;
     if (idempotencyKey) {
       headers["x-idempotency-key"] = idempotencyKey;
-      if (!skipDedupe && this.inflightKeys.has(idempotencyKey)) {
-        return;
+      if (!skipDedupe) {
+        const claimed = await this.dedupe.claim(idempotencyKey, this.dedupeTtlMs);
+        if (!claimed) {
+          // Key already claimed by another consumer
+          return;
+        }
+        addedKey = true;
       }
-      addedKey = !this.inflightKeys.has(idempotencyKey);
-      this.inflightKeys.add(idempotencyKey);
     }
 
     const messagePayload = this.preparePayloadForAttempt(payload, resolvedAttempt);
@@ -555,7 +584,7 @@ export class KafkaAdapter implements QueueAdapter {
       });
     } catch (error: unknown) {
       if (idempotencyKey && addedKey) {
-        this.releaseKey(idempotencyKey);
+        await this.releaseKey(idempotencyKey);
       }
       throw error;
     }
@@ -574,8 +603,8 @@ export class KafkaAdapter implements QueueAdapter {
     }
   }
 
-  private releaseKey(key: string): void {
-    this.inflightKeys.delete(key);
+  private async releaseKey(key: string): Promise<void> {
+    await this.dedupe.release(key);
   }
 
   private async commitOffset(topic: string, partition: number, offset: string): Promise<void> {

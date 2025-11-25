@@ -162,7 +162,7 @@ describe("persistence directory validation", () => {
   });
 });
 
-function createSessionHeaders({
+async function createSessionHeaders({
   tenantId = "tenant-a",
   projectId = "project-a",
   sessionHeaderId,
@@ -174,8 +174,8 @@ function createSessionHeaders({
   sessionHeaderId?: string;
   includeOrigin?: boolean;
   claims?: Record<string, unknown>;
-} = {}) {
-  const session = sessionStore.createSession(
+} = {}): Promise<Record<string, string>> {
+  const session = await sessionStore.createSession(
     {
       subject: `user-${tenantId}`,
       tenantId,
@@ -193,7 +193,7 @@ function createSessionHeaders({
     "x-project-id": projectId,
     "x-session-id": sessionHeaderId ?? session.id,
     ...(includeOrigin ? { Origin: ALLOWED_ORIGIN } : {}),
-  } as Record<string, string>;
+  };
 }
 
 describe("collaboration server", () => {
@@ -220,8 +220,8 @@ describe("collaboration server", () => {
     });
   });
 
-  afterEach(() => {
-    sessionStore.clear();
+  afterEach(async () => {
+    await sessionStore.clear();
     vi.mocked(logAuditEvent).mockClear();
     resetIpConnectionCountsForTesting();
     process.env.COLLAB_MAX_ROOMS = originalRoomLimit;
@@ -289,7 +289,7 @@ describe("collaboration server", () => {
 
   it("rejects connections when project is not authorized in the session claims", async () => {
     const client = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=unauthorized.txt`, {
-      headers: createSessionHeaders({
+      headers: await createSessionHeaders({
         projectId: "project-not-allowed",
         claims: { projects: ["project-allowed"] },
       }),
@@ -305,7 +305,7 @@ describe("collaboration server", () => {
   });
 
   it("rejects connections when header session id does not match authenticated session", async () => {
-    const headers = createSessionHeaders();
+    const headers = await createSessionHeaders();
     headers["x-session-id"] = randomUUID();
 
     const client = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=header-mismatch.txt`, { headers });
@@ -323,7 +323,7 @@ describe("collaboration server", () => {
   it("enforces per-IP connection limits", async () => {
     const auditSpy = vi.mocked(logAuditEvent);
     auditSpy.mockClear();
-    const headers = createSessionHeaders({ tenantId: "tenant-limit", projectId: "project-limit" });
+    const headers = await createSessionHeaders({ tenantId: "tenant-limit", projectId: "project-limit" });
 
     const first = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=limited.txt`, { headers });
     await new Promise<void>((resolve) => {
@@ -352,7 +352,7 @@ describe("collaboration server", () => {
   });
 
   it("uses forwarded client IPs from trusted proxies for per-IP limiting", async () => {
-    const headers = createSessionHeaders({ tenantId: "tenant-forwarded", projectId: "project-forwarded" });
+    const headers = await createSessionHeaders({ tenantId: "tenant-forwarded", projectId: "project-forwarded" });
 
     const first = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=forwarded.txt`, {
       headers: { ...headers, "x-forwarded-for": "198.51.100.10" },
@@ -382,7 +382,7 @@ describe("collaboration server", () => {
   });
 
   it("cleans up per-IP connection tracking after connections close", async () => {
-    const headers = createSessionHeaders({ tenantId: "tenant-cleanup", projectId: "project-cleanup" });
+    const headers = await createSessionHeaders({ tenantId: "tenant-cleanup", projectId: "project-cleanup" });
 
     const first = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=cleanup.txt`, { headers });
     await new Promise<void>((resolve, reject) => {
@@ -418,7 +418,7 @@ describe("collaboration server", () => {
 
   it("rejects new rooms when the configured room limit is reached", async () => {
     const first = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=first.txt`, {
-      headers: createSessionHeaders({
+      headers: await createSessionHeaders({
         tenantId: "tenant-room-limit",
         projectId: "project-room-limit",
       }),
@@ -433,7 +433,7 @@ describe("collaboration server", () => {
     });
 
     const second = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=second.txt`, {
-      headers: createSessionHeaders({
+      headers: await createSessionHeaders({
         tenantId: "tenant-room-limit",
         projectId: "project-room-limit",
       }),
@@ -451,7 +451,7 @@ describe("collaboration server", () => {
   it("ignores spoofed X-Real-IP headers for per-IP limiting", async () => {
     const auditSpy = vi.mocked(logAuditEvent);
     auditSpy.mockClear();
-    const headers = createSessionHeaders({ tenantId: "tenant-spoof", projectId: "project-spoof" });
+    const headers = await createSessionHeaders({ tenantId: "tenant-spoof", projectId: "project-spoof" });
 
     const first = new WebSocket(`ws://127.0.0.1:${port}/collaboration/ws?filePath=limited.txt`, {
       headers: { ...headers, "x-real-ip": "203.0.113.10" },
@@ -487,7 +487,7 @@ describe("collaboration server", () => {
   it("allows authenticated clients to connect", async () => {
     const auditSpy = vi.mocked(logAuditEvent);
     auditSpy.mockClear();
-    const headers = createSessionHeaders();
+    const headers = await createSessionHeaders();
     const client = new WebSocket(
       `ws://127.0.0.1:${port}/collaboration/ws?filePath=connected.txt`,
       { headers },
@@ -542,10 +542,11 @@ describe("collaboration server", () => {
         });
       });
 
-    await connectAndClose(createSessionHeaders({ tenantId: "tenant-shared", projectId: "project-shared" }));
-    await new Promise((resolve) => setTimeout(resolve, 10));
-    await connectAndClose(createSessionHeaders({ tenantId: "tenant-shared", projectId: "project-shared" }));
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await connectAndClose(await createSessionHeaders({ tenantId: "tenant-shared", projectId: "project-shared" }));
+    // Allow time for async upgrade handler and server-side close event to complete and decrement connection count
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    await connectAndClose(await createSessionHeaders({ tenantId: "tenant-shared", projectId: "project-shared" }));
+    await new Promise((resolve) => setTimeout(resolve, 100));
 
     const normalizedTenant = normalizeTenantIdInput("tenant-shared");
     const expectedKey = createHash("sha256")
@@ -561,7 +562,7 @@ describe("collaboration server", () => {
     const filePath = "stale-room.txt";
     const originalDir = process.env.COLLAB_PERSISTENCE_DIR;
     const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), "collab-stale-"));
-    const headers = createSessionHeaders({ tenantId: "tenant-stale", projectId: "project-stale" });
+    const headers = await createSessionHeaders({ tenantId: "tenant-stale", projectId: "project-stale" });
 
     try {
       process.env.COLLAB_PERSISTENCE_DIR = tempDir;
@@ -592,7 +593,7 @@ describe("collaboration server", () => {
   });
 
   it("rejects path traversal attempts", async () => {
-    const headers = createSessionHeaders();
+    const headers = await createSessionHeaders();
     const client = new WebSocket(
       `ws://127.0.0.1:${port}/collaboration/ws?filePath=../../etc/passwd`,
       { headers },
@@ -609,7 +610,7 @@ describe("collaboration server", () => {
   });
 
   it("rejects connections from disallowed origins when configured", async () => {
-    const headers = createSessionHeaders();
+    const headers = await createSessionHeaders();
     const client = new WebSocket(
       `ws://127.0.0.1:${port}/collaboration/ws?filePath=origin.txt`,
       { headers: { ...headers, Origin: "https://evil.example.com" } },
@@ -624,7 +625,7 @@ describe("collaboration server", () => {
   });
 
   it("rejects connections without an origin when allowlist is configured", async () => {
-    const headers = createSessionHeaders({ includeOrigin: false });
+    const headers = await createSessionHeaders({ includeOrigin: false });
     const client = new WebSocket(
       `ws://127.0.0.1:${port}/collaboration/ws?filePath=missing-origin.txt`,
       { headers },
@@ -671,9 +672,9 @@ describe("collaboration server", () => {
 describe("collaboration server proxy handling", () => {
   const originalIpLimit = process.env.COLLAB_WS_IP_LIMIT;
 
-  afterEach(() => {
+  afterEach(async () => {
     resetIpConnectionCountsForTesting();
-    sessionStore.clear();
+    await sessionStore.clear();
     if (originalIpLimit === undefined) {
       delete process.env.COLLAB_WS_IP_LIMIT;
     } else {
@@ -701,7 +702,7 @@ describe("collaboration server proxy handling", () => {
       });
     });
 
-    const headers = createSessionHeaders({
+    const headers = await createSessionHeaders({
       tenantId: "tenant-forwarded-private",
       projectId: "project-forwarded-private",
     });
