@@ -215,7 +215,9 @@ export type KafkaMessagingConfig = z.infer<typeof KafkaMessagingConfigSchema>;
 // ============================================================================
 
 export const RabbitMqMessagingConfigSchema = z.object({
-  url: z.string().url().default("amqp://guest:guest@localhost:5672"),
+  // Note: URL should be provided via RABBITMQ_URL env var with credentials
+  // Example: amqp://user:password@host:5672 - never commit credentials
+  url: z.string().url(),
   exchange: z.string().default("orchestrator"),
   queues: z.object({
     planSteps: z.string().default("plan-steps"),
