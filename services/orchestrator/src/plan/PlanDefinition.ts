@@ -95,7 +95,7 @@ export const InputConditionSchema = z.object({
   /** Type of condition: pattern match, keyword presence, or custom expression */
   type: z.enum(["pattern", "keywords", "expression"]),
   /** Pattern string (regex for pattern type, keywords for keywords type, expression for expression type) */
-  value: z.string(),
+  value: z.string().min(1),
   /** Priority when multiple conditions match (higher = more specific) */
   priority: z.number().default(0),
 });
@@ -278,16 +278,22 @@ export function validatePlanDefinitionCollection(
 ): PlanDefinitionCollection {
   const collection = PlanDefinitionCollectionSchema.parse(input);
 
-  // Validate each plan and check for duplicate IDs
+  // Validate each plan, capture enriched results, and check for duplicate IDs
   const seenIds = new Set<string>();
-  for (const plan of collection.plans) {
-    validatePlanDefinition(plan);
+  const validatedPlans: PlanDefinition[] = [];
 
-    if (seenIds.has(plan.id)) {
-      throw new Error(`Duplicate plan ID: ${plan.id}`);
+  for (const plan of collection.plans) {
+    const validatedPlan = validatePlanDefinition(plan);
+
+    if (seenIds.has(validatedPlan.id)) {
+      throw new Error(`Duplicate plan ID: ${validatedPlan.id}`);
     }
-    seenIds.add(plan.id);
+    seenIds.add(validatedPlan.id);
+    validatedPlans.push(validatedPlan);
   }
 
-  return collection;
+  return {
+    schemaVersion: collection.schemaVersion,
+    plans: validatedPlans,
+  };
 }

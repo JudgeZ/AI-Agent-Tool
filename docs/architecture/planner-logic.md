@@ -206,8 +206,7 @@ The `YamlPlanDefinitionRepository` supports file watching for development:
 
 ```typescript
 const repo = new YamlPlanDefinitionRepository({
-  planDirectory: "./config/plans",
+  plansDirectory: "./config/plans",
   watchForChanges: true,  // Enable hot reload
-  logger: appLogger,
 });
 ```

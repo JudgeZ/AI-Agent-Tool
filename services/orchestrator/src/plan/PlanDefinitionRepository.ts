@@ -256,11 +256,19 @@ export class YamlPlanDefinitionRepository implements IPlanDefinitionRepository {
     plans: Map<string, PlanDefinition>,
     plansByWorkflow: Map<WorkflowType, PlanDefinition[]>
   ): void {
-    if (plans.has(plan.id)) {
+    const existingPlan = plans.get(plan.id);
+    if (existingPlan) {
       appLogger.warn(
         { planId: plan.id, event: "plan_repository.duplicate_id" },
         "Duplicate plan ID, later definition will be used"
       );
+
+      // Remove old plan from workflow array to prevent duplicates accumulating
+      const oldWorkflowPlans = plansByWorkflow.get(existingPlan.workflowType);
+      if (oldWorkflowPlans) {
+        const filteredPlans = oldWorkflowPlans.filter((p) => p.id !== plan.id);
+        plansByWorkflow.set(existingPlan.workflowType, filteredPlans);
+      }
     }
 
     plans.set(plan.id, plan);
