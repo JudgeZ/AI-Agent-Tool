@@ -212,9 +212,13 @@ export class PlanFactory {
       throw new Error(`Plan not found: ${planId}`);
     }
 
+    // Safely extract goal from variables, falling back to plan name
+    const goalFromVars = options?.variables?.goal;
+    const goal = typeof goalFromVars === "string" ? goalFromVars : definition.name;
+
     return this.createPlan({
       ...options,
-      goal: options?.variables?.goal as string ?? definition.name,
+      goal,
       planId,
     });
   }
@@ -288,11 +292,17 @@ export class PlanFactory {
       if (typeof value === "string") {
         result[key] = this.substituteString(value, variables);
       } else if (Array.isArray(value)) {
-        result[key] = value.map((item) =>
-          typeof item === "string"
-            ? this.substituteString(item, variables)
-            : item
-        );
+        result[key] = value.map((item) => {
+          if (typeof item === "string") {
+            return this.substituteString(item, variables);
+          } else if (item && typeof item === "object") {
+            return this.substituteVariables(
+              item as Record<string, unknown>,
+              variables
+            );
+          }
+          return item;
+        });
       } else if (value && typeof value === "object") {
         result[key] = this.substituteVariables(
           value as Record<string, unknown>,

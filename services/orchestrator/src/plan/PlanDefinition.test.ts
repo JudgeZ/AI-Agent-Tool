@@ -271,6 +271,47 @@ describe("PlanDefinition", () => {
         'Entry step "non-existent" does not exist'
       );
     });
+
+    it("detects cyclic dependencies", () => {
+      const cyclicPlan = {
+        id: "plan-1",
+        name: "Cyclic Plan",
+        workflowType: "coding",
+        entrySteps: ["step-entry"],
+        steps: [
+          {
+            id: "step-entry",
+            action: "entry",
+            tool: "entry_tool",
+            capability: "repo.read",
+          },
+          {
+            id: "step-a",
+            action: "a",
+            tool: "tool_a",
+            capability: "repo.read",
+            dependencies: ["step-entry", "step-c"], // A depends on C
+          },
+          {
+            id: "step-b",
+            action: "b",
+            tool: "tool_b",
+            capability: "repo.read",
+            dependencies: ["step-a"], // B depends on A
+          },
+          {
+            id: "step-c",
+            action: "c",
+            tool: "tool_c",
+            capability: "repo.read",
+            dependencies: ["step-b"], // C depends on B -> cycle: A->B->C->A
+          },
+        ],
+      };
+      expect(() => validatePlanDefinition(cyclicPlan)).toThrow(
+        "contains cyclic dependencies"
+      );
+    });
   });
 
   describe("validatePlanDefinitionCollection", () => {

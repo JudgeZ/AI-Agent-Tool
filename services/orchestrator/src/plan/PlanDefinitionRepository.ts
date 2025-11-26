@@ -65,9 +65,12 @@ export interface IPlanDefinitionRepository {
 export interface YamlPlanDefinitionRepositoryOptions {
   /** Base directory containing plan definition files */
   plansDirectory: string;
-  /** File patterns to match (default: ["*.yaml", "*.yml"]) */
-  filePatterns?: string[];
-  /** Whether to watch for file changes and auto-reload (default: false) */
+  /**
+   * Whether to watch for file changes and auto-reload (default: false).
+   * Note: The recursive option for fs.watch only works on macOS and Windows.
+   * On Linux, only the top-level directory is watched. For cross-platform
+   * support in production, consider using a library like chokidar.
+   */
   watchForChanges?: boolean;
   /** Minimum interval between reloads in ms (default: 5000) */
   reloadDebounceMs?: number;
@@ -79,7 +82,6 @@ export interface YamlPlanDefinitionRepositoryOptions {
  */
 export class YamlPlanDefinitionRepository implements IPlanDefinitionRepository {
   private readonly plansDirectory: string;
-  private readonly filePatterns: string[];
   private readonly watchForChanges: boolean;
   private readonly reloadDebounceMs: number;
 
@@ -91,7 +93,6 @@ export class YamlPlanDefinitionRepository implements IPlanDefinitionRepository {
 
   constructor(options: YamlPlanDefinitionRepositoryOptions) {
     this.plansDirectory = path.resolve(options.plansDirectory);
-    this.filePatterns = options.filePatterns ?? ["*.yaml", "*.yml"];
     this.watchForChanges = options.watchForChanges ?? false;
     this.reloadDebounceMs = options.reloadDebounceMs ?? 5000;
   }
@@ -494,10 +495,20 @@ export class InMemoryPlanDefinitionRepository
   private plans: Map<string, PlanDefinition> = new Map();
   private lastReloadTime: Date | undefined;
 
-  constructor(initialPlans?: PlanDefinition[]) {
+  /**
+   * @param initialPlans - Initial plans to load. Set skipValidation=true for
+   *   pre-validated plans (e.g., from test fixtures) to improve performance.
+   * @param skipValidation - If true, skips validation of initialPlans (default: false)
+   */
+  constructor(initialPlans?: PlanDefinition[], skipValidation = false) {
     if (initialPlans) {
       for (const plan of initialPlans) {
-        this.plans.set(plan.id, plan);
+        if (skipValidation) {
+          this.plans.set(plan.id, plan);
+        } else {
+          const validated = validatePlanDefinition(plan);
+          this.plans.set(validated.id, validated);
+        }
       }
       this.lastReloadTime = new Date();
     }

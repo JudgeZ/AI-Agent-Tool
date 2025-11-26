@@ -228,6 +228,42 @@ export function validatePlanDefinition(input: unknown): PlanDefinition {
     }
   }
 
+  // Detect cyclic dependencies
+  const visited = new Set<string>();
+  const recursionStack = new Set<string>();
+
+  const hasCycle = (stepId: string): boolean => {
+    if (recursionStack.has(stepId)) {
+      return true; // Cycle detected
+    }
+    if (visited.has(stepId)) {
+      return false; // Already processed, no cycle from this node
+    }
+
+    visited.add(stepId);
+    recursionStack.add(stepId);
+
+    const step = plan.steps.find((s) => s.id === stepId);
+    if (step) {
+      for (const depId of step.dependencies) {
+        if (hasCycle(depId)) {
+          return true;
+        }
+      }
+    }
+
+    recursionStack.delete(stepId);
+    return false;
+  };
+
+  for (const step of plan.steps) {
+    if (hasCycle(step.id)) {
+      throw new Error(
+        `Plan "${plan.id}" contains cyclic dependencies involving step "${step.id}"`
+      );
+    }
+  }
+
   return plan;
 }
 

@@ -117,7 +117,7 @@
   {/if}
 
   <ul class="step__history">
-    {#each step.history as entry, index (entry.state + index)}
+    {#each step.history as entry (entry.at)}
       <li>
         <span class="step__history-time">{formatTime(entry.at)}</span>
         <span class="step__history-state">{entry.state.replace(/_/g, ' ')}</span>
