@@ -101,7 +101,7 @@
     <section class="step__egress">
       <h3>Requested destinations</h3>
       <ul>
-        {#each egressRequests as request (request.target)}
+        {#each egressRequests as request, idx (`${request.target}-${idx}`)}
           <li>
             <span class="step__egress-target">{request.target}</span>
             {#if request.method}
@@ -117,7 +117,7 @@
   {/if}
 
   <ul class="step__history">
-    {#each step.history as entry (entry.at)}
+    {#each step.history as entry, idx (`${entry.at}-${idx}`)}
       <li>
         <span class="step__history-time">{formatTime(entry.at)}</span>
         <span class="step__history-state">{entry.state.replace(/_/g, ' ')}</span>
