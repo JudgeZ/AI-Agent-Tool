@@ -341,6 +341,112 @@ export class PlanFactory {
     });
   }
 
+  /**
+   * Resolve runtime output references in an input object.
+   * Looks up ${stepId.output} patterns in context.outputs at execution time.
+   * This complements the static substituteVariables which runs at plan creation.
+   */
+  private resolveRuntimeOutputs(
+    input: Record<string, unknown>,
+    context: { outputs: Map<string, unknown>; variables: Map<string, unknown> }
+  ): Record<string, unknown> {
+    const result: Record<string, unknown> = {};
+
+    for (const [key, value] of Object.entries(input)) {
+      if (typeof value === "string") {
+        result[key] = this.resolveRuntimeString(value, context);
+      } else if (Array.isArray(value)) {
+        result[key] = value.map((item) => {
+          if (typeof item === "string") {
+            return this.resolveRuntimeString(item, context);
+          } else if (item && typeof item === "object") {
+            return this.resolveRuntimeOutputs(
+              item as Record<string, unknown>,
+              context
+            );
+          }
+          return item;
+        });
+      } else if (value && typeof value === "object") {
+        result[key] = this.resolveRuntimeOutputs(
+          value as Record<string, unknown>,
+          context
+        );
+      } else {
+        result[key] = value;
+      }
+    }
+
+    return result;
+  }
+
+  /**
+   * Resolve a single string with runtime output references.
+   * Supports patterns like:
+   *   ${step-id.output} -> context.outputs.get("step-id")
+   *   ${step-id.output.field} -> context.outputs.get("step-id")?.field
+   */
+  private resolveRuntimeString(
+    template: string,
+    context: { outputs: Map<string, unknown>; variables: Map<string, unknown> }
+  ): string {
+    // Match ${stepId.output} or ${stepId.output.field.path}
+    return template.replace(
+      /\$\{([\w-]+)\.output(?:\.([\w.]+))?\}/g,
+      (match, stepId, fieldPath) => {
+        // Prevent prototype pollution
+        if (
+          stepId === "__proto__" ||
+          stepId === "constructor" ||
+          stepId === "prototype"
+        ) {
+          return match;
+        }
+
+        const output = context.outputs.get(stepId);
+        if (output === undefined || output === null) {
+          return match; // Keep original if output not found
+        }
+
+        // If no field path, return the whole output
+        if (!fieldPath) {
+          return typeof output === "object"
+            ? JSON.stringify(output)
+            : String(output);
+        }
+
+        // Traverse the field path safely
+        const fields = fieldPath.split(".");
+        let value: unknown = output;
+
+        for (const field of fields) {
+          // Prevent prototype pollution during traversal
+          if (
+            field === "__proto__" ||
+            field === "constructor" ||
+            field === "prototype"
+          ) {
+            return match;
+          }
+
+          if (value && typeof value === "object" && field in value) {
+            value = (value as Record<string, unknown>)[field];
+          } else {
+            return match; // Field not found, keep original
+          }
+        }
+
+        if (value === undefined || value === null) {
+          return match;
+        }
+
+        return typeof value === "object"
+          ? JSON.stringify(value)
+          : String(value);
+      }
+    );
+  }
+
   private setupEventListeners(
     graph: ExecutionGraph,
     plan: PlanDefinition,
@@ -474,7 +580,10 @@ export class PlanFactory {
   }
 
   private registerDefaultHandlers(): void {
-    // Default TASK handler that logs execution
+    // Capture this for use in handlers
+    const factory = this;
+
+    // Default TASK handler that logs execution and resolves runtime outputs
     const taskHandler: NodeHandler = {
       async execute(node, context): Promise<unknown> {
         appLogger.info(
@@ -487,12 +596,19 @@ export class PlanFactory {
           `Executing task: ${node.name}`
         );
 
-        // Default implementation just returns the input
+        // Resolve runtime output references (e.g., ${step-id.output})
+        // This complements static variable substitution done at plan creation
+        const rawInput = node.config.input as Record<string, unknown> | undefined;
+        const resolvedInput = rawInput
+          ? factory.resolveRuntimeOutputs(rawInput, context)
+          : rawInput;
+
+        // Default implementation returns the resolved input
         // Real handlers should be registered by the application
         return {
           nodeId: node.id,
           executed: true,
-          input: node.config.input,
+          input: resolvedInput,
         };
       },
     };

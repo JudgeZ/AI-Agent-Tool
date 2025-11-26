@@ -527,5 +527,110 @@ describe("PlanFactory", () => {
       expect(result.graph.hasHandler(NodeType.MERGE)).toBe(true);
       expect(result.graph.hasHandler(NodeType.LOOP)).toBe(true);
     });
+
+    it("resolves runtime output references in task handler", async () => {
+      const testPlan = createTestPlan({
+        steps: [
+          {
+            id: "step-1",
+            action: "produce",
+            tool: "test_tool",
+            capability: "repo.read",
+            labels: [],
+            timeoutSeconds: 300,
+            approvalRequired: false,
+            input: { data: "input" },
+            dependencies: [],
+            transitions: [],
+            nodeType: NodeType.TASK,
+            continueOnError: false,
+          },
+          {
+            id: "step-2",
+            action: "consume",
+            tool: "test_tool",
+            capability: "repo.read",
+            labels: [],
+            timeoutSeconds: 300,
+            approvalRequired: false,
+            input: {
+              // These reference step-1's output at runtime
+              fullOutput: "${step-1.output}",
+              nestedField: "${step-1.output.result}",
+              deepField: "${step-1.output.data.value}",
+            },
+            dependencies: ["step-1"],
+            transitions: [],
+            nodeType: NodeType.TASK,
+            continueOnError: false,
+          },
+        ],
+        entrySteps: ["step-1"],
+      });
+      (repository as InMemoryPlanDefinitionRepository).addPlan(testPlan);
+
+      const result = await factory.createPlan({ goal: "test" });
+
+      // Execute the graph to test runtime resolution
+      const executionResult = await result.graph.execute();
+
+      // The execution should succeed
+      expect(executionResult.success).toBe(true);
+    });
+
+    it("prevents prototype pollution in runtime output resolution", async () => {
+      const testPlan = createTestPlan({
+        steps: [
+          {
+            id: "step-1",
+            action: "test",
+            tool: "test_tool",
+            capability: "repo.read",
+            labels: [],
+            timeoutSeconds: 300,
+            approvalRequired: false,
+            input: {},
+            dependencies: [],
+            transitions: [],
+            nodeType: NodeType.TASK,
+            continueOnError: false,
+          },
+          {
+            id: "step-2",
+            action: "test",
+            tool: "test_tool",
+            capability: "repo.read",
+            labels: [],
+            timeoutSeconds: 300,
+            approvalRequired: false,
+            input: {
+              // These should NOT be substituted (prototype pollution attempts)
+              proto: "${__proto__.output}",
+              constructor: "${constructor.output}",
+              protoField: "${step-1.output.__proto__}",
+            },
+            dependencies: ["step-1"],
+            transitions: [],
+            nodeType: NodeType.TASK,
+            continueOnError: false,
+          },
+        ],
+        entrySteps: ["step-1"],
+      });
+      (repository as InMemoryPlanDefinitionRepository).addPlan(testPlan);
+
+      const result = await factory.createPlan({ goal: "test" });
+      const executionResult = await result.graph.execute();
+
+      // Find step-2's output
+      const step2Output = executionResult.outputs["step-2"] as {
+        input: Record<string, unknown>;
+      };
+
+      // Prototype pollution patterns should remain unsubstituted
+      expect(step2Output.input.proto).toBe("${__proto__.output}");
+      expect(step2Output.input.constructor).toBe("${constructor.output}");
+      expect(step2Output.input.protoField).toBe("${step-1.output.__proto__}");
+    });
   });
 });
