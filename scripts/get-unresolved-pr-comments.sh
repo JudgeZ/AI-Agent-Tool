@@ -11,6 +11,8 @@
 #
 # Environment:
 #   GITHUB_TOKEN - GitHub personal access token (required for resolution status)
+#                  Required scopes: repo (private repos) or public_repo (public repos)
+#                  Used for: REST API (comments), GraphQL API (resolution status)
 #
 # Config:
 #   .local/pr-comments-handled.json - Track handled comments to exclude from output
@@ -21,7 +23,11 @@
 #         "67890": { "status": "ignored", "note": "Added to ignored.md as I46" }
 #       }
 #     }
-#   Status values: validated, ignored, wontfix, deferred
+#   Status values:
+#     validated - Code change made to address the comment
+#     ignored   - Added to ignored.md with rationale (not addressing)
+#     wontfix   - Added to ignored.md with rationale (won't address)
+#     deferred  - Added to ignored.md with rationale (will address later)
 #
 # Output:
 #   JSON with review comments and AI reviewer issue comments (Claude, CodeRabbit)
