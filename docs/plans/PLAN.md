@@ -41,7 +41,11 @@ A successful implementation enables a novice engineer, given only this repo and 
 
 Use this section to track granular work. Every meaningful stopping point should result in an updated entry here, splitting partially completed items into “done” and “remaining” as needed. Include timestamps in UTC where practical.
 
-* [ ] (YYYY-MM-DD HH:MMZ) Phase 0 – Set up `.agents` / `AGENTS.md` / ExecPlan workflow for this repo.
+* [x] (2025-11-26 12:00Z) Phase 0 – Set up `.agents` / `AGENTS.md` / ExecPlan workflow for this repo.
+  * Added Planning & ExecPlans section to `CLAUDE.md` (§1.1) with guidance on when and how to use ExecPlans.
+  * Added Planning & ExecPlans section to `AGENTS.md` (§1.2) with the same guidance.
+  * Added Planning & ExecPlans section to `GEMINI.md` with the same guidance.
+  * All files now reference `docs/plans/PLAN.md` as the primary ExecPlan.
 * [ ] (YYYY-MM-DD HH:MMZ) Phase 1 – Fix critical runtime issues and introduce the dynamic planner, session store abstraction, and modular `PlanTimeline` UI.
 * [ ] (YYYY-MM-DD HH:MMZ) Phase 2 – Implement workflow-specific backend capabilities and front-end views for Alerts, Data Analytics, Automation, Coding, and Chat, plus SDK consolidation and test hardening.
 * [ ] (YYYY-MM-DD HH:MMZ) Phase 3 – Implement messaging abstraction for RabbitMQ / NATS / Kafka, distributed state (Redis-backed), and horizontal scaling patterns.
@@ -70,6 +74,10 @@ Record every significant decision made while working this ExecPlan. Each entry s
 * Decision: *Initial plan adopted to implement dynamic planner and workflow-specific UIs in phases rather than as a single large refactor.*
   Rationale: *Reduces risk by keeping each phase shippable and verifiable; allows early value from Alerts and Chat while deeper refactors continue.*
   Date/Author: *YYYY-MM-DD – <your-name>.*
+
+* Decision: *Phase 0 implemented by adding Planning & ExecPlans guidance to all agent instruction files (CLAUDE.md, AGENTS.md, GEMINI.md).*
+  Rationale: *Provides a stable contract for how planning works in this repository; ensures all AI agents and human contributors understand the ExecPlan workflow before beginning work on subsequent phases.*
+  Date/Author: *2025-11-26 – Claude (AI Agent).*
 
 Add entries for things like choice of Redis provider, preferred queue system in production versus development, selected state machine library (if any), and Kubernetes patterns (e.g., Helm vs. raw manifests).
 
