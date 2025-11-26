@@ -6,6 +6,9 @@ target/
 infra/policies/dist/
 infra/policies/.cache/
 
+# Local working directory (not committed)
+.local/
+
 # Generated files and temporary directories
 nul
 cache/
