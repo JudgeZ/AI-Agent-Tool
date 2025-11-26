@@ -18,11 +18,13 @@ The Orchestrator is the brain of the OSS AI Agent Tool. It manages the agent lif
 
 - **Agent Runtime**: Loads agent profiles from `agents/*.md` and executes their capabilities.
 - **Planning**: Synthesizes high-level goals into executable steps using the **Planner** agent.
+- **Dynamic Planning Engine**: Load workflow definitions from YAML files in `config/plans/` without code changes. Supports five workflow types: alerts, analytics, automation, coding, and chat.
 - **Security**: OPA policy enforcement for capability access (`repo.write`, `network.egress`) and comprehensive audit logging.
 - **Policy Enforcement**: `PolicyEnforcer` validates every sensitive action (including Chat) against OPA policies.
 - **Observability**: OpenTelemetry tracing and Langfuse integration for prompt engineering.
 - **Rate Limiting**: Distributed rate limiting (Redis-backed) for all external endpoints.
 - **Resilient Queueing**: `PlanQueueManager` implements intelligent retries and dead-lettering for robust plan execution.
+- **Configuration Schema**: Comprehensive Zod-based configuration validation in `src/config/schema.ts`.
 
 ## Prerequisites
 

@@ -106,3 +106,108 @@ Each step surfaces the capability it exercises, the execution timeout, and wheth
 ## Observability
 
 Every HTTP handler and plan creation call is wrapped in a lightweight tracing shim that records a `traceId`, span attributes (plan id, chat model, etc.), and structured log entries. The implementation is intentionally minimal so OpenTelemetry exporters can be layered in without changing call sites.
+
+## Dynamic Planning Engine (Phase 1)
+
+The orchestrator now supports a **dynamic planning engine** that loads workflow definitions from external YAML files, allowing operators to modify plans without code changes.
+
+### Plan Definition Structure
+
+Plans are defined in `config/plans/*.yaml` with the following structure:
+
+```yaml
+schemaVersion: "1.0.0"
+plans:
+  - id: unique-plan-id
+    name: Human-readable Plan Name
+    description: |
+      Multi-line description of what this plan does.
+    version: "1.0.0"
+    workflowType: coding  # alerts | analytics | automation | coding | chat
+    inputConditions:
+      - type: keywords     # Match if goal contains these keywords
+        value: refactor,cleanup,optimize
+        priority: 15
+      - type: pattern      # Match if goal matches regex
+        value: "(refactor|clean up).*code"
+        priority: 20
+    tags:
+      - development
+      - refactoring
+    enabled: true
+    variables:
+      maxRetries: 3
+      timeoutMultiplier: 1.5
+    successCriteria:
+      - All changes compile
+      - Tests pass
+    steps:
+      - id: step-1
+        action: analyze_code
+        tool: code_analyzer
+        capability: repo.read
+        capabilityLabel: Analyze codebase
+        labels: [analysis]
+        timeoutSeconds: 300
+        approvalRequired: false
+        input:
+          target: "${targetPath}"
+      - id: step-2
+        action: apply_changes
+        tool: code_writer
+        capability: repo.write
+        dependencies: [step-1]
+        approvalRequired: true
+        input:
+          analysis: "${step-1.output}"
+```
+
+### Key Components
+
+| Component | Location | Purpose |
+|-----------|----------|---------|
+| `PlanDefinition.ts` | `src/plan/` | Zod schemas for validating plan definitions |
+| `PlanDefinitionRepository.ts` | `src/plan/` | Interface and YAML-based repository implementation |
+| `PlanFactory.ts` | `src/plan/` | Creates `ExecutionGraph` instances from plan definitions |
+
+### Workflow Types
+
+Five workflow types are supported, each with dedicated plan definitions:
+
+- **alerts**: Security alert triage, enrichment, and remediation
+- **analytics**: Data exploration, query execution, and visualization
+- **automation**: Playbook execution and scheduled task management
+- **coding**: Standard development, quick fixes, and refactoring
+- **chat**: Conversational workflows with context-aware responses
+
+### Plan Matching
+
+When a goal is submitted, the `PlanFactory` matches it against enabled plans:
+
+1. Filter plans by `workflowType` (if specified)
+2. Evaluate `inputConditions` against the goal:
+   - `keywords`: Check if goal contains any listed keyword
+   - `pattern`: Match goal against regex pattern
+3. Sort matches by priority (highest first)
+4. Select the best matching plan or throw if none found
+
+### Variable Substitution
+
+Step inputs support variable substitution using `${variable}` syntax:
+
+- Plan-level variables: `${maxRetries}`
+- Context variables: `${goal}`, `${planId}`, `${executionId}`
+- Subject variables: `${tenantId}`, `${userId}`, `${sessionId}`
+- Step output references: `${step-1.output}`
+
+### Hot Reloading
+
+The `YamlPlanDefinitionRepository` supports file watching for development:
+
+```typescript
+const repo = new YamlPlanDefinitionRepository({
+  planDirectory: "./config/plans",
+  watchForChanges: true,  // Enable hot reload
+  logger: appLogger,
+});
+```
