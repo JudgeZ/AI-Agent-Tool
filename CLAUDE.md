@@ -1,7 +1,7 @@
 # OSS-AI-Agent-Tool – Agents & Engineering Guidelines
 
 > This document defines how humans and AI agents (Code Writer, Reviewers, etc.) work on this repo.  
-> It encodes our expectations for security, reliability, and review. If something conflicts with this file, this file wins.
+> It encodes our expectations for security, reliability, and review. If something conflicts with this file, **this file wins**.
 
 ---
 
@@ -203,7 +203,7 @@ For any new feature or change, explicitly consider:
    - Is this endpoint/action public? If not, how is access controlled?
    - Are capabilities and policies enforced at the right layer?
 
-2. **Input Validation & Sanitisation**
+2. **Input Validation & Sanitization**
    - Validate all external inputs (HTTP, CLI, env, queues) using schemas.
    - Enforce bounds on size, format, and rate.
    - Reject on validation failure with safe error messages.
@@ -261,7 +261,7 @@ For any new feature or change, explicitly consider:
   - integration tests for service boundaries and policies,
   - end‑to‑end tests for critical flows.
 - Any bug fix must include a test that fails before the fix and passes after.
-- Avoid relying on real external services in CI; use fakes / mocks.
+- Avoid relying on real **shared** or **manually managed** external services in CI; use fakes / mocks or **ephemeral containers** (e.g. testcontainers) that are spun up per test run.
 
 Target coverage is a guide, not a religion, but as a rule of thumb:
 
