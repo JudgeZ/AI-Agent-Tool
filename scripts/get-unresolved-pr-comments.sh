@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Fetch unresolved PR review comments and Claude reviews from GitHub
+# Fetch unresolved PR review comments and AI reviewer comments from GitHub
 #
 # Usage:
 #   ./scripts/get-unresolved-pr-comments.sh <pr_number> [owner/repo]
@@ -13,7 +13,7 @@
 #   GITHUB_TOKEN - GitHub personal access token (required for resolution status)
 #
 # Output:
-#   JSON with review comments and Claude issue comments
+#   JSON with review comments and AI reviewer issue comments (Claude, CodeRabbit)
 #
 
 set -euo pipefail
@@ -103,8 +103,8 @@ echo "  Fetching review comments..." >&2
 REVIEW_FILE="$TMPDIR/review_comments.json"
 fetch_all_pages "repos/${REPO}/pulls/${PR_NUMBER}/comments" "$REVIEW_FILE"
 
-# Fetch issue comments (for Claude reviews)
-echo "  Fetching issue comments (Claude reviews)..." >&2
+# Fetch issue comments (for AI reviewer comments)
+echo "  Fetching issue comments (AI reviews)..." >&2
 ISSUE_FILE="$TMPDIR/issue_comments.json"
 fetch_all_pages "repos/${REPO}/issues/${PR_NUMBER}/comments" "$ISSUE_FILE"
 
@@ -154,11 +154,14 @@ jq --slurpfile resolved "$RESOLVED_FILE" '
   ]
 ' "$REVIEW_FILE" > "$UNRESOLVED_FILE"
 
-# Filter issue comments: only from Claude
-CLAUDE_FILE="$TMPDIR/claude_reviews.json"
+# Filter issue comments: only from AI reviewers (Claude, CodeRabbit)
+AI_REVIEWS_FILE="$TMPDIR/ai_reviews.json"
 jq '
   [.[] |
-   select(.user.login == "claude[bot]") |
+   select(
+     .user.login == "claude[bot]" or
+     .user.login == "coderabbitai[bot]"
+   ) |
    {
      id: .id,
      author: .user.login,
@@ -167,17 +170,17 @@ jq '
      created_at: .created_at,
      body: .body,
      url: .html_url,
-     type: "claude_review"
+     type: "ai_review"
    }
   ]
-' "$ISSUE_FILE" > "$CLAUDE_FILE"
+' "$ISSUE_FILE" > "$AI_REVIEWS_FILE"
 
 # Output result
 jq -n \
   --argjson pr "$PR_NUMBER" \
   --arg repo "$REPO" \
   --slurpfile review "$UNRESOLVED_FILE" \
-  --slurpfile claude "$CLAUDE_FILE" \
+  --slurpfile ai "$AI_REVIEWS_FILE" \
   '{
     pr_number: $pr,
     repository: $repo,
@@ -186,15 +189,17 @@ jq -n \
       count: ($review[0] | length),
       comments: $review[0]
     },
-    claude_reviews: {
-      count: ($claude[0] | length),
-      comments: $claude[0]
+    ai_reviews: {
+      count: ($ai[0] | length),
+      comments: $ai[0]
     }
   }'
 
 # Print summary to stderr
 REVIEW_COUNT=$(jq 'length' "$UNRESOLVED_FILE")
-CLAUDE_COUNT=$(jq 'length' "$CLAUDE_FILE")
+AI_COUNT=$(jq 'length' "$AI_REVIEWS_FILE")
+CLAUDE_COUNT=$(jq '[.[] | select(.author == "claude[bot]")] | length' "$AI_REVIEWS_FILE")
+CODERABBIT_COUNT=$(jq '[.[] | select(.author == "coderabbitai[bot]")] | length' "$AI_REVIEWS_FILE")
 echo "" >&2
 echo "Found $REVIEW_COUNT unresolved review comments" >&2
-echo "Found $CLAUDE_COUNT Claude reviews" >&2
+echo "Found $AI_COUNT AI reviews ($CLAUDE_COUNT Claude, $CODERABBIT_COUNT CodeRabbit)" >&2
