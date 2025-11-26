@@ -27,6 +27,29 @@
 *   `charts/` - Helm charts for Kubernetes.
 *   `scripts/` - Utility scripts (contains `logger.js`).
 
+## Planning & ExecPlans
+
+For large refactors, new workflow additions, infrastructure changes, or any work spanning multiple services, use an **ExecPlan** to coordinate the effort:
+
+*   **Primary ExecPlan:** [`docs/plans/PLAN.md`](docs/plans/PLAN.md) is the canonical design document for the platform's evolution into a dynamic, multi-workflow automation system.
+*   **Additional plans:** Scoped plans may live in `docs/plans/` for specific initiatives (e.g., `session-state-persistence-plan.md`).
+
+**When to use an ExecPlan:**
+
+1.  **Large refactors** — changes that touch multiple services or components.
+2.  **New workflow additions** — adding new user-facing workflows (Alerts, Analytics, Automation, Coding, Chat).
+3.  **Infrastructure changes** — modifications to deployment, messaging, or state management patterns.
+4.  **Phased migrations** — moving from one architecture pattern to another (e.g., static to dynamic planner).
+
+**How to work with ExecPlans:**
+
+1.  **Read the plan first** — understand the context, goals, and current phase before starting work.
+2.  **Track progress** — update the `Progress` section with timestamps and detailed checkboxes as work proceeds.
+3.  **Document surprises** — add unexpected findings to `Surprises & Discoveries` with evidence.
+4.  **Log decisions** — record significant choices in `Decision Log` with rationale.
+5.  **Keep diffs small** — break large plan phases into focused, reviewable PRs aligned with the plan's structure.
+6.  **Update outcomes** — at milestones, summarize what was achieved in `Outcomes & Retrospective`.
+
 ## Verified Development Commands
 
 ### Building
