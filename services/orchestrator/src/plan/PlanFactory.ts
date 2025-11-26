@@ -175,7 +175,7 @@ export class PlanFactory {
       }
 
       // Set up event listeners for plan step events
-      this.setupEventListeners(graph, definition, executionId, span.spanContext().traceId);
+      this.setupEventListeners(graph, definition, executionId, span.context.traceId);
 
       appLogger.info(
         {

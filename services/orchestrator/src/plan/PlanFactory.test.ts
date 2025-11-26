@@ -21,7 +21,7 @@ vi.mock("../observability/logger.js", () => ({
 vi.mock("../observability/tracing.js", () => ({
   startSpan: vi.fn(() => ({
     setAttribute: vi.fn(),
-    spanContext: () => ({ traceId: "test-trace-id" }),
+    context: { traceId: "test-trace-id", spanId: "test-span-id" },
     end: vi.fn(),
   })),
 }));
