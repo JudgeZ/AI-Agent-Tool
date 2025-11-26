@@ -9,7 +9,7 @@
 
 **Column descriptions**
 - `id`: Sequential task identifier (`I1`, `I2`, …); reuse the next available number when adding new tasks.
-- `status`: Always `ignored` for tasks captured here.
+- `status`: `ignored` for declined tasks, `deferred` for low-priority items accepted but delayed.
 - `description`: One-line summary of the declined change.
 - `source`: Who requested it and short quote/context.
 - `file_location`: Primary file or module the request targeted.
@@ -82,3 +82,5 @@
 | I49 | deferred | Replace `as unknown` with union types in getEgressRequests | Greptile PR#36: "as unknown bypasses TypeScript safety" | apps/gui/src/lib/components/PlanStep.svelte | 23 | The `as unknown` pattern is intentional for handling dynamic API response data where the shape is not guaranteed. Runtime checks follow immediately. | If stricter type contracts are established for step output shapes. | Pattern is safe with subsequent runtime validation; avoids over-engineering for dynamic data. |
 | I50 | deferred | Use object spread syntax for conditional properties | Gemini PR#36: "Use `...(method && { method })` syntax" | apps/gui/src/lib/components/PlanStep.svelte | 48-55 | Style preference; current explicit if statements are clear and readable. | During broader codebase style standardization. | No functional difference; current approach is explicit and maintainable. |
 | I51 | deferred | Add optional chaining on step.capability | CodeRabbit PR#36: "Add optional chaining for defensive programming" | apps/gui/src/lib/components/PlanStep.svelte | 62-63 | The `capability` property is required in the `PlanStep` type definition; optional chaining is unnecessary and could mask type errors. | If PlanStep type changes to make capability optional. | Type safety already guarantees capability exists; adding `?.` would be defensive against impossible state. |
+| I52 | deferred | Fix depth parameter off-by-one in findPlanFiles | Cursor PR#36: "Depth limit not enforced from initial call" | services/orchestrator/src/plan/PlanDefinitionRepository.ts | 289 | Minor off-by-one: allows 11 directory levels (0-10) instead of 10. Protection still works, just slightly more permissive. | If stricter depth control is required. | Low priority; current implementation provides adequate traversal protection. |
+| I53 | deferred | Refactor duplicated jq filtering logic in PR comments script | CodeRabbit PR#36: "Duplicated jq filtering logic lines 178-214 vs 218-257" | scripts/get-unresolved-pr-comments.sh | 178-257 | Style improvement; current explicit branches are clear and maintainable. | During broader script cleanup or if more filter conditions are added. | Functional duplication is minimal and keeps branches explicit. |
