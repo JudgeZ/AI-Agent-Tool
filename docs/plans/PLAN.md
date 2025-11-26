@@ -68,6 +68,12 @@ Use this section to track granular work. Every meaningful stopping point should 
     * [x] Created `config/schema.ts` with comprehensive Zod schemas for orchestrator configuration.
     * Covers: rate limiting, SSE quotas, CORS, TLS, security headers, Kafka, RabbitMQ, database, network egress, providers, policy cache, observability, session store, and dynamic planner config.
   * **Note:** Session store abstraction (`ISessionStore`, `RedisSessionStore`) and distributed dedupe service were already implemented in the codebase prior to this work.
+  * **Tests & CLAUDE.md compliance (2025-11-26 01:50Z):**
+    * [x] Created comprehensive test suites: `PlanDefinition.test.ts`, `PlanDefinitionRepository.test.ts`, `PlanFactory.test.ts`, `config/schema.test.ts` (99 tests total).
+    * [x] Fixed `PlanStep.svelte` TypeScript error (proper type narrowing for `diff` prop).
+    * [x] Fixed `PlanFactory.ts` to use empty defaults for `metadata` and `transitions` (NodeConfigSchema rejects `undefined`).
+    * [x] Removed hardcoded RabbitMQ credentials from config schema default URL per CLAUDE.md §2.1.
+    * [x] Replaced all `z.any()` with `z.record(z.string(), z.unknown())` in `validation.ts` per CLAUDE.md §3.3.
 * [ ] (YYYY-MM-DD HH:MMZ) Phase 2 – Implement workflow-specific backend capabilities and front-end views for Alerts, Data Analytics, Automation, Coding, and Chat, plus SDK consolidation and test hardening.
 * [ ] (YYYY-MM-DD HH:MMZ) Phase 3 – Implement messaging abstraction for RabbitMQ / NATS / Kafka, distributed state (Redis-backed), and horizontal scaling patterns.
 * [ ] (YYYY-MM-DD HH:MMZ) Phase 4 – Performance tuning, multi-cloud K8s deployment manifests, and documentation including an architectural diagram and operator runbooks.
@@ -92,6 +98,12 @@ Use this section to capture unexpected behavior, design constraints, or useful p
 
 * Observation: **Indexer port defaults differ from documentation.** The `server.rs` had hardcoded defaults of 9200/9201 while compose.dev.yaml and PLAN.md expected 7070/7071. Updated defaults to match expectations.
   Evidence: `server.rs` lines 27-30 (before fix): `DEFAULT_LISTEN_ADDR = "0.0.0.0:9200"`, `DEFAULT_GRPC_ADDR = "0.0.0.0:9201"`.
+
+* Observation: **Config schema had hardcoded RabbitMQ credentials.** The initial `RabbitMqMessagingConfigSchema` included `amqp://guest:guest@localhost:5672` as a default URL, violating CLAUDE.md §2.1 (no plaintext credentials). Fixed by removing credentials from default and requiring explicit URL configuration.
+  Evidence: `config/schema.ts` line 218 (before fix): `url: z.string().url().default("amqp://guest:guest@localhost:5672")`.
+
+* Observation: **Pre-existing `z.any()` usage in validation.ts.** The `validation.ts` file used `z.any()` for dynamic record fields (`input`, `metadata`, `output`), which violates CLAUDE.md §3.3 (no `any` types). Replaced with `z.record(z.string(), z.unknown())` for type-safe validation.
+  Evidence: 6 occurrences in `PlanStepSchema`, `PlanStepEventSchema`, `ToolInvocationSchema`, and `ToolEventSchema`.
 
 As real discoveries occur (e.g., unexpected indexer performance characteristics, queue adapter edge cases, or subtle Svelte reactivity issues), document them here along with short evidence snippets (logs, test output, or brief code excerpts).
 
