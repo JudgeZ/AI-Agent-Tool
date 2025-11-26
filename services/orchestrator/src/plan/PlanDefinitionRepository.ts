@@ -293,11 +293,44 @@ export class YamlPlanDefinitionRepository implements IPlanDefinitionRepository {
     return files;
   }
 
-  private async findPlanFilesInDir(directory: string): Promise<string[]> {
+  /** Maximum directory depth for recursive plan file search to prevent traversal attacks */
+  private static readonly MAX_DIRECTORY_DEPTH = 10;
+
+  private async findPlanFilesInDir(
+    directory: string,
+    depth: number = 0
+  ): Promise<string[]> {
+    // Prevent directory traversal attacks with depth limit
+    if (depth > YamlPlanDefinitionRepository.MAX_DIRECTORY_DEPTH) {
+      appLogger.warn(
+        {
+          directory,
+          depth,
+          maxDepth: YamlPlanDefinitionRepository.MAX_DIRECTORY_DEPTH,
+          event: "plan_repository.max_depth_exceeded",
+        },
+        "Maximum directory depth exceeded, skipping deeper directories"
+      );
+      return [];
+    }
+
     const entries = await fsPromises.readdir(directory, { withFileTypes: true });
     const files: string[] = [];
 
     for (const entry of entries) {
+      // Skip symbolic links to prevent symlink-based traversal attacks
+      if (entry.isSymbolicLink()) {
+        appLogger.debug(
+          {
+            directory,
+            entry: entry.name,
+            event: "plan_repository.symlink_skipped",
+          },
+          "Skipping symbolic link in plan directory"
+        );
+        continue;
+      }
+
       if (entry.isFile()) {
         const ext = path.extname(entry.name).toLowerCase();
         if (ext === ".yaml" || ext === ".yml") {
@@ -305,7 +338,7 @@ export class YamlPlanDefinitionRepository implements IPlanDefinitionRepository {
         }
       } else if (entry.isDirectory()) {
         const subDir = path.join(directory, entry.name);
-        const subFiles = await this.findPlanFilesInDir(subDir);
+        const subFiles = await this.findPlanFilesInDir(subDir, depth + 1);
         files.push(...subFiles);
       }
     }
@@ -327,6 +360,21 @@ export class YamlPlanDefinitionRepository implements IPlanDefinitionRepository {
 
       switch (condition.type) {
         case "pattern": {
+          // ReDoS protection: limit pattern length to prevent catastrophic backtracking
+          const MAX_PATTERN_LENGTH = 500;
+          if (condition.value.length > MAX_PATTERN_LENGTH) {
+            appLogger.warn(
+              {
+                planId: plan.id,
+                patternLength: condition.value.length,
+                maxLength: MAX_PATTERN_LENGTH,
+                event: "plan_repository.pattern_too_long",
+              },
+              "Regex pattern exceeds maximum length, skipping"
+            );
+            break;
+          }
+
           try {
             const regex = new RegExp(condition.value, "i");
             matched = regex.test(goal);

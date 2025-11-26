@@ -178,9 +178,6 @@ export function validatePlanDefinition(input: unknown): PlanDefinition {
 
   // Auto-compute entry steps if not specified
   if (!plan.entrySteps || plan.entrySteps.length === 0) {
-    const stepIds = new Set(plan.steps.map((s) => s.id));
-    const dependencyTargets = new Set(plan.steps.flatMap((s) => s.dependencies));
-
     plan.entrySteps = plan.steps
       .filter((s) => s.dependencies.length === 0)
       .map((s) => s.id);

@@ -175,7 +175,7 @@ export class PlanFactory {
       }
 
       // Set up event listeners for plan step events
-      this.setupEventListeners(graph, definition, executionId, span.context.traceId);
+      this.setupEventListeners(graph, definition, executionId, span.spanContext().traceId);
 
       appLogger.info(
         {
@@ -310,7 +310,9 @@ export class PlanFactory {
     template: string,
     variables: Record<string, unknown>
   ): string {
-    return template.replace(/\$\{(\w+)\}/g, (match, varName) => {
+    // Match ${varName} where varName can contain word chars, dots, and hyphens
+    // This supports step output references like ${index-repo.output}
+    return template.replace(/\$\{([\w.-]+)\}/g, (match, varName) => {
       // Prevent prototype pollution
       if (
         varName === "__proto__" ||

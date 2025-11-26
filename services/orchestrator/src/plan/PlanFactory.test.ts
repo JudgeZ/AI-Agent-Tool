@@ -21,7 +21,7 @@ vi.mock("../observability/logger.js", () => ({
 vi.mock("../observability/tracing.js", () => ({
   startSpan: vi.fn(() => ({
     setAttribute: vi.fn(),
-    context: { traceId: "test-trace-id" },
+    spanContext: () => ({ traceId: "test-trace-id" }),
     end: vi.fn(),
   })),
 }));
@@ -416,6 +416,59 @@ describe("PlanFactory", () => {
       const nodeConfig = graphDef.nodes[0].config;
 
       expect((nodeConfig.input as Record<string, unknown>).missing).toBe("${missingVar}");
+    });
+
+    it("substitutes variables with hyphens and dots in names", async () => {
+      const testPlan = createTestPlan({
+        steps: [
+          {
+            id: "index-repo",
+            action: "index",
+            tool: "indexer",
+            capability: "repo.read",
+            labels: [],
+            timeoutSeconds: 300,
+            approvalRequired: false,
+            input: {},
+            dependencies: [],
+            transitions: [],
+            nodeType: NodeType.TASK,
+            continueOnError: false,
+          },
+          {
+            id: "step-2",
+            action: "test",
+            tool: "test_tool",
+            capability: "repo.read",
+            labels: [],
+            timeoutSeconds: 300,
+            approvalRequired: false,
+            input: {
+              previousOutput: "${index-repo.output}",
+              dotVar: "${some.nested.var}",
+            },
+            dependencies: ["index-repo"],
+            transitions: [],
+            nodeType: NodeType.TASK,
+            continueOnError: false,
+          },
+        ],
+        entrySteps: ["index-repo"],
+        variables: {
+          "index-repo.output": "indexed data",
+          "some.nested.var": "nested value",
+        },
+      });
+      (repository as InMemoryPlanDefinitionRepository).addPlan(testPlan);
+
+      const result = await factory.createPlan({ goal: "test" });
+
+      const graphDef = result.graph.getDefinition();
+      const step2Node = graphDef.nodes.find((n) => n.id === "step-2");
+      const nodeConfig = step2Node!.config;
+
+      expect((nodeConfig.input as Record<string, unknown>).previousOutput).toBe("indexed data");
+      expect((nodeConfig.input as Record<string, unknown>).dotVar).toBe("nested value");
     });
 
     it("prevents prototype pollution in variable substitution", async () => {

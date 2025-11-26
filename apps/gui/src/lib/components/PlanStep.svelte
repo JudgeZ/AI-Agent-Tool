@@ -30,24 +30,20 @@
     for (const entry of candidates) {
       if (!entry || typeof entry !== 'object') continue;
 
+      // Cast once to simplify property access
+      const record = entry as Record<string, unknown>;
+
       const url =
-        typeof (entry as { url?: unknown }).url === 'string'
-          ? (entry as { url: string }).url
-          : typeof (entry as { host?: unknown }).host === 'string'
-          ? (entry as { host: string }).host
+        typeof record.url === 'string'
+          ? record.url
+          : typeof record.host === 'string'
+          ? record.host
           : undefined;
 
       if (!url) continue;
 
-      const method =
-        typeof (entry as { method?: unknown }).method === 'string'
-          ? (entry as { method: string }).method
-          : undefined;
-
-      const reason =
-        typeof (entry as { reason?: unknown }).reason === 'string'
-          ? (entry as { reason: string }).reason
-          : undefined;
+      const method = typeof record.method === 'string' ? record.method : undefined;
+      const reason = typeof record.reason === 'string' ? record.reason : undefined;
 
       const descriptor: EgressDescriptor = { target: url };
       if (method) {
