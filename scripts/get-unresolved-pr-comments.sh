@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Fetch unresolved PR review comments (code comments) from GitHub
+# Fetch unresolved PR review comments and Claude reviews from GitHub
 #
 # Usage:
 #   ./scripts/get-unresolved-pr-comments.sh <pr_number> [owner/repo]
@@ -13,7 +13,7 @@
 #   GITHUB_TOKEN - GitHub personal access token (required for resolution status)
 #
 # Output:
-#   JSON array of unresolved review comments with file, line, author, and body
+#   JSON with review comments and Claude issue comments
 #
 
 set -euo pipefail
@@ -96,12 +96,17 @@ fetch_all_pages() {
   done
 }
 
-echo "Fetching PR #${PR_NUMBER} review comments from ${REPO}..." >&2
+echo "Fetching PR #${PR_NUMBER} comments from ${REPO}..." >&2
 
 # Fetch review comments (code comments)
 echo "  Fetching review comments..." >&2
 REVIEW_FILE="$TMPDIR/review_comments.json"
 fetch_all_pages "repos/${REPO}/pulls/${PR_NUMBER}/comments" "$REVIEW_FILE"
+
+# Fetch issue comments (for Claude reviews)
+echo "  Fetching issue comments (Claude reviews)..." >&2
+ISSUE_FILE="$TMPDIR/issue_comments.json"
+fetch_all_pages "repos/${REPO}/issues/${PR_NUMBER}/comments" "$ISSUE_FILE"
 
 # Fetch review threads to check resolution status (requires GITHUB_TOKEN)
 RESOLVED_FILE="$TMPDIR/resolved_ids.json"
@@ -130,7 +135,7 @@ if [[ -n "$AUTH_HEADER" ]]; then
   ' "$TMPDIR/threads.json" > "$RESOLVED_FILE" 2>/dev/null || echo "[]" > "$RESOLVED_FILE"
 fi
 
-# Filter out resolved comments and replies, format output
+# Filter review comments: only top-level, not resolved
 UNRESOLVED_FILE="$TMPDIR/unresolved.json"
 jq --slurpfile resolved "$RESOLVED_FILE" '
   [.[] |
@@ -143,25 +148,53 @@ jq --slurpfile resolved "$RESOLVED_FILE" '
      line: (.line // .original_line),
      created_at: .created_at,
      body: .body,
-     url: .html_url
+     url: .html_url,
+     type: "review_comment"
    }
   ]
 ' "$REVIEW_FILE" > "$UNRESOLVED_FILE"
+
+# Filter issue comments: only from Claude
+CLAUDE_FILE="$TMPDIR/claude_reviews.json"
+jq '
+  [.[] |
+   select(.user.login == "claude[bot]") |
+   {
+     id: .id,
+     author: .user.login,
+     file: null,
+     line: null,
+     created_at: .created_at,
+     body: .body,
+     url: .html_url,
+     type: "claude_review"
+   }
+  ]
+' "$ISSUE_FILE" > "$CLAUDE_FILE"
 
 # Output result
 jq -n \
   --argjson pr "$PR_NUMBER" \
   --arg repo "$REPO" \
-  --slurpfile comments "$UNRESOLVED_FILE" \
+  --slurpfile review "$UNRESOLVED_FILE" \
+  --slurpfile claude "$CLAUDE_FILE" \
   '{
     pr_number: $pr,
     repository: $repo,
     fetched_at: (now | todate),
-    total_unresolved: ($comments[0] | length),
-    comments: $comments[0]
+    review_comments: {
+      count: ($review[0] | length),
+      comments: $review[0]
+    },
+    claude_reviews: {
+      count: ($claude[0] | length),
+      comments: $claude[0]
+    }
   }'
 
 # Print summary to stderr
-COMMENT_COUNT=$(jq 'length' "$UNRESOLVED_FILE")
+REVIEW_COUNT=$(jq 'length' "$UNRESOLVED_FILE")
+CLAUDE_COUNT=$(jq 'length' "$CLAUDE_FILE")
 echo "" >&2
-echo "Found $COMMENT_COUNT unresolved top-level review comments" >&2
+echo "Found $REVIEW_COUNT unresolved review comments" >&2
+echo "Found $CLAUDE_COUNT Claude reviews" >&2
