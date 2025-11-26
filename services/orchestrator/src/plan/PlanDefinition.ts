@@ -63,19 +63,19 @@ export const PlanStepDefinitionSchema = z.object({
   /** Human-readable description of the capability */
   capabilityLabel: z.string().optional(),
   /** Optional labels for categorization */
-  labels: z.array(z.string()).default([]),
+  labels: z.array(z.string()).default(() => []),
   /** Timeout in seconds for this step */
   timeoutSeconds: z.number().min(1).max(86400).default(300),
   /** Whether human approval is required before execution */
   approvalRequired: z.boolean().default(false),
   /** Input parameters for this step (can reference variables with ${varName}) */
-  input: z.record(z.string(), z.unknown()).default({}),
+  input: z.record(z.string(), z.unknown()).default(() => ({})),
   /** Optional metadata for the step */
   metadata: z.record(z.string(), z.unknown()).optional(),
   /** IDs of steps that must complete before this step */
-  dependencies: z.array(z.string()).default([]),
+  dependencies: z.array(z.string()).default(() => []),
   /** Transitions to other steps after completion */
-  transitions: z.array(StepTransitionSchema).default([]),
+  transitions: z.array(StepTransitionSchema).default(() => []),
   /** Node type for execution graph (defaults to TASK) */
   nodeType: z.nativeEnum(NodeType).default(NodeType.TASK),
   /** Retry policy for this step */
@@ -118,17 +118,17 @@ export const PlanDefinitionSchema = z.object({
   /** Workflow type this plan belongs to */
   workflowType: WorkflowTypeSchema,
   /** Conditions that determine when this plan should be selected */
-  inputConditions: z.array(InputConditionSchema).default([]),
+  inputConditions: z.array(InputConditionSchema).default(() => []),
   /** Steps in this plan */
   steps: z.array(PlanStepDefinitionSchema).min(1),
   /** IDs of entry steps (steps with no dependencies). Auto-computed if not specified. */
   entrySteps: z.array(z.string()).optional(),
   /** Initial variables available to all steps */
-  variables: z.record(z.string(), z.unknown()).default({}),
+  variables: z.record(z.string(), z.unknown()).default(() => ({})),
   /** Success criteria for the plan */
-  successCriteria: z.array(z.string()).default([]),
+  successCriteria: z.array(z.string()).default(() => []),
   /** Tags for filtering and organization */
-  tags: z.array(z.string()).default([]),
+  tags: z.array(z.string()).default(() => []),
   /** Whether this plan is enabled */
   enabled: z.boolean().default(true),
   /** Optional metadata */

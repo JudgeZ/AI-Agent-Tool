@@ -13,13 +13,13 @@ export const PlanStepSchema = z.object({
   action: z.string().min(1),
   capability: z.string().min(1),
   capabilityLabel: z.string().min(1),
-  labels: z.array(z.string().min(1)).default([]),
+  labels: z.array(z.string().min(1)).default(() => []),
   tool: z.string().min(1),
   timeoutSeconds: z.number().int().nonnegative().default(0),
   approvalRequired: z.boolean().default(false),
-  input: z.record(z.string(), z.unknown()).default({}),
+  input: z.record(z.string(), z.unknown()).default(() => ({})),
   summary: z.string().optional(),
-  metadata: z.record(z.string(), z.unknown()).default({})
+  metadata: z.record(z.string(), z.unknown()).default(() => ({}))
 });
 
 export const PlanSchema = z.object({
@@ -53,7 +53,7 @@ export const PlanStepEventSchema = z.object({
     state: PlanStepStateSchema,
     capability: z.string().min(1),
     capabilityLabel: z.string().min(1),
-    labels: z.array(z.string().min(1)).default([]),
+    labels: z.array(z.string().min(1)).default(() => []),
     tool: z.string().min(1),
     timeoutSeconds: z.number().int().nonnegative(),
     approvalRequired: z.boolean(),
@@ -71,11 +71,11 @@ export const ToolInvocationSchema = z.object({
   tool: z.string().min(1),
   capability: z.string().min(1),
   capabilityLabel: z.string().min(1),
-  labels: z.array(z.string().min(1)).default([]),
+  labels: z.array(z.string().min(1)).default(() => []),
   timeoutSeconds: z.number().int().positive().optional(),
   approvalRequired: z.boolean().optional(),
-  input: z.record(z.string(), z.unknown()).default({}),
-  metadata: z.record(z.string(), z.unknown()).default({})
+  input: z.record(z.string(), z.unknown()).default(() => ({})),
+  metadata: z.record(z.string(), z.unknown()).default(() => ({}))
 });
 
 export const ToolEventSchema = z.object({
@@ -103,8 +103,8 @@ export const PlanSubjectSchema = z.object({
   userId: z.string().min(1).optional(),
   email: z.string().min(1).optional(),
   name: z.string().min(1).optional(),
-  roles: z.array(z.string()).default([]),
-  scopes: z.array(z.string()).default([])
+  roles: z.array(z.string()).default(() => []),
+  scopes: z.array(z.string()).default(() => [])
 });
 
 export const PlanJobSchema = z.object({
