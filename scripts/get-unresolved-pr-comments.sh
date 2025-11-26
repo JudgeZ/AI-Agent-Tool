@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Fetch unresolved PR comments from GitHub
+# Fetch unresolved PR review comments (code comments) from GitHub
 #
 # Usage:
 #   ./scripts/get-unresolved-pr-comments.sh <pr_number> [owner/repo]
@@ -10,10 +10,10 @@
 #   ./scripts/get-unresolved-pr-comments.sh 36 JudgeZ/AI-Agent-Tool
 #
 # Environment:
-#   GITHUB_TOKEN - GitHub personal access token (optional, increases rate limit)
+#   GITHUB_TOKEN - GitHub personal access token (required for resolution status)
 #
 # Output:
-#   JSON array of unresolved comments with file, line, author, and body
+#   JSON array of unresolved review comments with file, line, author, and body
 #
 
 set -euo pipefail
@@ -31,8 +31,6 @@ fi
 if [[ -z "$REPO" ]]; then
   REMOTE_URL=$(git remote get-url origin 2>/dev/null || echo "")
   if [[ -n "$REMOTE_URL" ]]; then
-    # Handle SSH format: git@github.com:owner/repo.git
-    # Handle HTTPS format: https://github.com/owner/repo.git
     REPO=$(echo "$REMOTE_URL" | sed -E 's#^(https://github\.com/|git@github\.com:)##' | sed -E 's#\.git$##')
   fi
 fi
@@ -50,6 +48,8 @@ trap 'rm -rf "$TMPDIR"' EXIT
 AUTH_HEADER=""
 if [[ -n "${GITHUB_TOKEN:-}" ]]; then
   AUTH_HEADER="Authorization: Bearer $GITHUB_TOKEN"
+else
+  echo "Warning: GITHUB_TOKEN not set. Cannot determine resolution status." >&2
 fi
 
 # Function to make GitHub API request with pagination
@@ -96,20 +96,20 @@ fetch_all_pages() {
   done
 }
 
-echo "Fetching PR #${PR_NUMBER} comments from ${REPO}..." >&2
+echo "Fetching PR #${PR_NUMBER} review comments from ${REPO}..." >&2
 
 # Fetch review comments (code comments)
 echo "  Fetching review comments..." >&2
 REVIEW_FILE="$TMPDIR/review_comments.json"
 fetch_all_pages "repos/${REPO}/pulls/${PR_NUMBER}/comments" "$REVIEW_FILE"
 
-# Fetch review threads to check resolution status
-echo "  Fetching review threads..." >&2
+# Fetch review threads to check resolution status (requires GITHUB_TOKEN)
 RESOLVED_FILE="$TMPDIR/resolved_ids.json"
 echo "[]" > "$RESOLVED_FILE"
 
 if [[ -n "$AUTH_HEADER" ]]; then
-  # GraphQL query to get review threads with resolution status
+  echo "  Fetching review thread resolution status..." >&2
+
   OWNER=$(echo "$REPO" | cut -d'/' -f1)
   REPO_NAME=$(echo "$REPO" | cut -d'/' -f2)
 
@@ -130,72 +130,38 @@ if [[ -n "$AUTH_HEADER" ]]; then
   ' "$TMPDIR/threads.json" > "$RESOLVED_FILE" 2>/dev/null || echo "[]" > "$RESOLVED_FILE"
 fi
 
-# Filter out resolved comments and format output
+# Filter out resolved comments and replies, format output
 UNRESOLVED_FILE="$TMPDIR/unresolved.json"
 jq --slurpfile resolved "$RESOLVED_FILE" '
   [.[] |
-   select(.id as $id | ($resolved[0] | index($id)) == null) |
+   select(.in_reply_to_id == null) |  # Only top-level comments (not replies)
+   select(.id as $id | ($resolved[0] | index($id)) == null) |  # Not resolved
    {
      id: .id,
      author: .user.login,
      file: .path,
      line: (.line // .original_line),
      created_at: .created_at,
-     updated_at: .updated_at,
      body: .body,
-     url: .html_url,
-     in_reply_to: .in_reply_to_id
+     url: .html_url
    }
   ]
 ' "$REVIEW_FILE" > "$UNRESOLVED_FILE"
 
-# Fetch issue comments (non-code PR comments)
-echo "  Fetching issue comments..." >&2
-ISSUE_FILE="$TMPDIR/issue_comments.json"
-fetch_all_pages "repos/${REPO}/issues/${PR_NUMBER}/comments" "$ISSUE_FILE"
-
-ISSUE_FORMATTED_FILE="$TMPDIR/issue_formatted.json"
-jq '
-  [.[] |
-   {
-     id: .id,
-     author: .user.login,
-     file: null,
-     line: null,
-     created_at: .created_at,
-     updated_at: .updated_at,
-     body: .body,
-     url: .html_url,
-     type: "issue_comment"
-   }
-  ]
-' "$ISSUE_FILE" > "$ISSUE_FORMATTED_FILE"
-
-# Combine and output
+# Output result
 jq -n \
   --argjson pr "$PR_NUMBER" \
   --arg repo "$REPO" \
-  --slurpfile review "$UNRESOLVED_FILE" \
-  --slurpfile issue "$ISSUE_FORMATTED_FILE" \
+  --slurpfile comments "$UNRESOLVED_FILE" \
   '{
     pr_number: $pr,
     repository: $repo,
     fetched_at: (now | todate),
-    review_comments: {
-      total: ($review[0] | length),
-      unresolved: ([$review[0][] | select(.in_reply_to == null)] | length),
-      comments: $review[0]
-    },
-    issue_comments: {
-      total: ($issue[0] | length),
-      comments: $issue[0]
-    }
+    total_unresolved: ($comments[0] | length),
+    comments: $comments[0]
   }'
 
 # Print summary to stderr
-REVIEW_COUNT=$(jq 'length' "$UNRESOLVED_FILE")
-ISSUE_COUNT=$(jq 'length' "$ISSUE_FORMATTED_FILE")
+COMMENT_COUNT=$(jq 'length' "$UNRESOLVED_FILE")
 echo "" >&2
-echo "Summary:" >&2
-echo "  Unresolved review comments: $REVIEW_COUNT" >&2
-echo "  Issue comments: $ISSUE_COUNT" >&2
+echo "Found $COMMENT_COUNT unresolved top-level review comments" >&2
