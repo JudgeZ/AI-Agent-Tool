@@ -97,7 +97,7 @@
     <p class="step__summary">{step.summary}</p>
   {/if}
 
-  {#if showDiff}
+  {#if showDiff && step.diff}
     <DiffViewer diff={step.diff} />
   {/if}
 

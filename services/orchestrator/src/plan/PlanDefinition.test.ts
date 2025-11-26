@@ -198,6 +198,12 @@ describe("PlanDefinition", () => {
         ...validPlan,
         steps: [
           {
+            id: "step-entry",
+            action: "entry",
+            tool: "entry_tool",
+            capability: "repo.read",
+          },
+          {
             id: "step-1",
             action: "test",
             tool: "test_tool",

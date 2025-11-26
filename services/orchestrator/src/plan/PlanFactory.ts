@@ -263,8 +263,8 @@ export class PlanFactory {
         labels: step.labels,
         approvalRequired: step.approvalRequired,
         input,
-        metadata: step.metadata,
-        transitions: step.transitions,
+        metadata: step.metadata ?? {},
+        transitions: step.transitions ?? [],
       },
       retryPolicy: step.retryPolicy
         ? {
