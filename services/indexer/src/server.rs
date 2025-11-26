@@ -24,9 +24,9 @@ impl Drop for TracingGuard {
     }
 }
 
-const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:9200";
+const DEFAULT_LISTEN_ADDR: &str = "0.0.0.0:7071";
 const LISTEN_ADDR_ENV: &str = "INDEXER_LISTEN_ADDR";
-const DEFAULT_GRPC_ADDR: &str = "0.0.0.0:9201";
+const DEFAULT_GRPC_ADDR: &str = "0.0.0.0:7070";
 const GRPC_ADDR_ENV: &str = "INDEXER_GRPC_ADDR";
 
 #[derive(Debug, Error)]

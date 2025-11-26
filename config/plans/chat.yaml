@@ -1,0 +1,317 @@
+# Chat Workflow Plan Definitions
+# These plans support conversational AI workflows
+
+schemaVersion: "1.0.0"
+
+plans:
+  - id: chat-general-conversation
+    name: General Conversation Workflow
+    description: |
+      Standard conversational workflow for general queries.
+      Simple single-step response generation.
+    version: "1.0.0"
+    workflowType: chat
+    inputConditions:
+      - type: pattern
+        value: ".*"
+        priority: 0
+    tags:
+      - conversation
+      - general
+    enabled: true
+    variables:
+      maxResponseLength: 4000
+      includeContext: true
+    successCriteria:
+      - Response generated
+      - Context maintained
+    steps:
+      - id: generate-response
+        action: generate_response
+        tool: llm_responder
+        capability: chat.respond
+        capabilityLabel: Generate response
+        labels:
+          - chat
+          - response
+        timeoutSeconds: 120
+        approvalRequired: false
+        description: Generate a conversational response
+        input:
+          message: "${message}"
+          context: "${context}"
+          maxLength: "${maxResponseLength}"
+
+  - id: chat-code-assistance
+    name: Code Assistance Chat
+    description: |
+      Chat workflow for code-related questions.
+      Includes code search and context gathering.
+    version: "1.0.0"
+    workflowType: chat
+    inputConditions:
+      - type: keywords
+        value: code,function,class,method,variable,syntax,error,debug
+        priority: 15
+      - type: pattern
+        value: "(how|what|why|where|when).*(code|function|class|method)"
+        priority: 20
+    tags:
+      - chat
+      - code
+      - assistance
+    enabled: true
+    variables:
+      searchCodebase: true
+      maxCodeSnippets: 5
+    successCriteria:
+      - Code context gathered
+      - Question answered
+      - Examples provided
+    steps:
+      - id: search-codebase
+        action: search_codebase
+        tool: code_searcher
+        capability: repo.read
+        capabilityLabel: Search codebase
+        labels:
+          - chat
+          - code
+          - search
+        timeoutSeconds: 60
+        approvalRequired: false
+        description: Search codebase for relevant code
+        input:
+          query: "${message}"
+          maxResults: "${maxCodeSnippets}"
+
+      - id: generate-response
+        action: generate_response
+        tool: code_assistant
+        capability: chat.respond
+        capabilityLabel: Generate code assistance
+        labels:
+          - chat
+          - response
+        timeoutSeconds: 120
+        approvalRequired: false
+        dependencies:
+          - search-codebase
+        description: Generate code-aware response
+        input:
+          message: "${message}"
+          codeContext: "${search-codebase.output}"
+          context: "${context}"
+
+  - id: chat-alert-context
+    name: Alert Context Chat
+    description: |
+      Chat workflow for discussions with alert context.
+      Enriches conversation with alert data.
+    version: "1.0.0"
+    workflowType: chat
+    inputConditions:
+      - type: keywords
+        value: alert,incident,security,threat,attack,malware
+        priority: 15
+      - type: pattern
+        value: "(tell|explain|describe).*(alert|incident|threat)"
+        priority: 20
+    tags:
+      - chat
+      - alerts
+      - security
+    enabled: true
+    variables:
+      includeAlertHistory: true
+      maxAlerts: 10
+    successCriteria:
+      - Alert context loaded
+      - Question answered
+      - Recommendations included
+    steps:
+      - id: load-alert-context
+        action: load_alert_context
+        tool: alert_context_loader
+        capability: alert.read
+        capabilityLabel: Load alert context
+        labels:
+          - chat
+          - alerts
+        timeoutSeconds: 60
+        approvalRequired: false
+        description: Load relevant alert context
+        input:
+          message: "${message}"
+          alertId: "${alertId}"
+          maxAlerts: "${maxAlerts}"
+
+      - id: generate-response
+        action: generate_response
+        tool: security_assistant
+        capability: chat.respond
+        capabilityLabel: Generate security response
+        labels:
+          - chat
+          - response
+        timeoutSeconds: 120
+        approvalRequired: false
+        dependencies:
+          - load-alert-context
+        description: Generate security-aware response
+        input:
+          message: "${message}"
+          alertContext: "${load-alert-context.output}"
+          context: "${context}"
+
+  - id: chat-data-analysis
+    name: Data Analysis Chat
+    description: |
+      Chat workflow for data-related questions.
+      Can execute queries and explain results.
+    version: "1.0.0"
+    workflowType: chat
+    inputConditions:
+      - type: keywords
+        value: data,query,table,database,sql,count,sum,average
+        priority: 15
+      - type: pattern
+        value: "(how many|what is|show me).*(data|records|rows)"
+        priority: 20
+    tags:
+      - chat
+      - data
+      - analysis
+    enabled: true
+    variables:
+      allowQueries: true
+      maxRows: 100
+    successCriteria:
+      - Question understood
+      - Data retrieved if needed
+      - Clear explanation provided
+    steps:
+      - id: analyze-question
+        action: analyze_question
+        tool: question_analyzer
+        capability: chat.respond
+        capabilityLabel: Analyze data question
+        labels:
+          - chat
+          - analysis
+        timeoutSeconds: 30
+        approvalRequired: false
+        description: Determine if query execution is needed
+        input:
+          message: "${message}"
+
+      - id: execute-query
+        action: execute_query
+        tool: query_executor
+        capability: database.read
+        capabilityLabel: Execute data query
+        labels:
+          - chat
+          - data
+        timeoutSeconds: 120
+        approvalRequired: false
+        dependencies:
+          - analyze-question
+        description: Execute database query if needed
+        input:
+          analysis: "${analyze-question.output}"
+          maxRows: "${maxRows}"
+        continueOnError: true
+
+      - id: generate-response
+        action: generate_response
+        tool: data_explainer
+        capability: chat.respond
+        capabilityLabel: Explain data results
+        labels:
+          - chat
+          - response
+        timeoutSeconds: 120
+        approvalRequired: false
+        dependencies:
+          - execute-query
+        description: Generate explanation of data
+        input:
+          message: "${message}"
+          queryResults: "${execute-query.output}"
+          context: "${context}"
+
+  - id: chat-help
+    name: Help and Guidance Chat
+    description: |
+      Chat workflow for help and system guidance.
+      Provides information about capabilities and usage.
+    version: "1.0.0"
+    workflowType: chat
+    inputConditions:
+      - type: keywords
+        value: help,guide,how to,tutorial,documentation
+        priority: 20
+      - type: pattern
+        value: "^(help|how do I|what can)"
+        priority: 25
+    tags:
+      - chat
+      - help
+      - guidance
+    enabled: true
+    variables:
+      includeExamples: true
+    successCriteria:
+      - Question understood
+      - Guidance provided
+      - Examples included
+    steps:
+      - id: identify-topic
+        action: identify_topic
+        tool: topic_identifier
+        capability: chat.respond
+        capabilityLabel: Identify help topic
+        labels:
+          - chat
+          - help
+        timeoutSeconds: 30
+        approvalRequired: false
+        description: Identify what the user needs help with
+        input:
+          message: "${message}"
+
+      - id: load-documentation
+        action: load_documentation
+        tool: doc_loader
+        capability: file.read
+        capabilityLabel: Load documentation
+        labels:
+          - chat
+          - documentation
+        timeoutSeconds: 60
+        approvalRequired: false
+        dependencies:
+          - identify-topic
+        description: Load relevant documentation
+        input:
+          topic: "${identify-topic.output}"
+
+      - id: generate-guidance
+        action: generate_guidance
+        tool: guidance_generator
+        capability: chat.respond
+        capabilityLabel: Generate guidance
+        labels:
+          - chat
+          - response
+        timeoutSeconds: 120
+        approvalRequired: false
+        dependencies:
+          - load-documentation
+        description: Generate helpful guidance
+        input:
+          message: "${message}"
+          topic: "${identify-topic.output}"
+          documentation: "${load-documentation.output}"
+          includeExamples: "${includeExamples}"

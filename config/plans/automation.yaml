@@ -1,0 +1,300 @@
+# Automation Workflow Plan Definitions
+# These plans support SOAR-style automation development and playbook execution
+
+schemaVersion: "1.0.0"
+
+plans:
+  - id: automation-playbook-execution
+    name: Playbook Execution Workflow
+    description: |
+      Execute a predefined automation playbook.
+      Supports both agent-driven and deterministic steps.
+    version: "1.0.0"
+    workflowType: automation
+    inputConditions:
+      - type: keywords
+        value: run,execute,playbook,automation,workflow
+        priority: 10
+      - type: pattern
+        value: "^(run|execute)\\s+playbook"
+        priority: 20
+    tags:
+      - execution
+      - playbook
+    enabled: true
+    variables:
+      validateInputs: true
+      auditExecution: true
+    successCriteria:
+      - Playbook validated
+      - All steps executed
+      - Results recorded
+    steps:
+      - id: load-playbook
+        action: load_playbook
+        tool: playbook_loader
+        capability: file.read
+        capabilityLabel: Load playbook definition
+        labels:
+          - automation
+          - playbook
+        timeoutSeconds: 30
+        approvalRequired: false
+        description: Load and parse the playbook definition
+        input:
+          playbookId: "${playbookId}"
+
+      - id: validate-inputs
+        action: validate_inputs
+        tool: input_validator
+        capability: file.read
+        capabilityLabel: Validate playbook inputs
+        labels:
+          - automation
+          - validation
+        timeoutSeconds: 30
+        approvalRequired: false
+        dependencies:
+          - load-playbook
+        description: Validate all required inputs are present
+        input:
+          playbook: "${load-playbook.output}"
+          inputs: "${inputs}"
+
+      - id: execute-steps
+        action: execute_steps
+        tool: step_executor
+        capability: file.write
+        capabilityLabel: Execute playbook steps
+        labels:
+          - automation
+          - execution
+        timeoutSeconds: 3600
+        approvalRequired: false
+        dependencies:
+          - validate-inputs
+        description: Execute each step in the playbook
+        input:
+          playbook: "${load-playbook.output}"
+          inputs: "${inputs}"
+        retryPolicy:
+          maxRetries: 3
+          backoffMs: 5000
+          exponential: true
+
+      - id: record-results
+        action: record_results
+        tool: result_recorder
+        capability: file.write
+        capabilityLabel: Record execution results
+        labels:
+          - automation
+          - audit
+        timeoutSeconds: 60
+        approvalRequired: false
+        dependencies:
+          - execute-steps
+        description: Record execution results for audit
+        input:
+          executionId: "${executionId}"
+          results: "${execute-steps.output}"
+
+  - id: automation-playbook-development
+    name: Playbook Development Workflow
+    description: |
+      Create or modify automation playbooks.
+      Includes validation and testing.
+    version: "1.0.0"
+    workflowType: automation
+    inputConditions:
+      - type: keywords
+        value: create,develop,write,design,build
+        priority: 5
+      - type: pattern
+        value: "^(create|write|develop)\\s+(new\\s+)?playbook"
+        priority: 20
+    tags:
+      - development
+      - playbook
+    enabled: true
+    variables:
+      validateSyntax: true
+      runTestCases: true
+    successCriteria:
+      - Playbook created
+      - Syntax validated
+      - Test cases pass
+    steps:
+      - id: analyze-requirements
+        action: analyze_requirements
+        tool: requirement_analyzer
+        capability: chat.respond
+        capabilityLabel: Analyze requirements
+        labels:
+          - automation
+          - analysis
+        timeoutSeconds: 60
+        approvalRequired: false
+        description: Analyze playbook requirements from user input
+        input:
+          goal: "${goal}"
+
+      - id: generate-playbook
+        action: generate_playbook
+        tool: playbook_generator
+        capability: file.write
+        capabilityLabel: Generate playbook definition
+        labels:
+          - automation
+          - generation
+          - approval
+        timeoutSeconds: 120
+        approvalRequired: true
+        dependencies:
+          - analyze-requirements
+        description: Generate the playbook YAML definition
+        input:
+          requirements: "${analyze-requirements.output}"
+        metadata:
+          approvalType: human
+
+      - id: validate-syntax
+        action: validate_syntax
+        tool: syntax_validator
+        capability: file.read
+        capabilityLabel: Validate playbook syntax
+        labels:
+          - automation
+          - validation
+        timeoutSeconds: 30
+        approvalRequired: false
+        dependencies:
+          - generate-playbook
+        description: Validate the playbook syntax
+        input:
+          playbook: "${generate-playbook.output}"
+
+      - id: run-tests
+        action: run_tests
+        tool: playbook_tester
+        capability: file.write
+        capabilityLabel: Run playbook tests
+        labels:
+          - automation
+          - testing
+        timeoutSeconds: 300
+        approvalRequired: false
+        dependencies:
+          - validate-syntax
+        description: Run test cases against the playbook
+        input:
+          playbook: "${generate-playbook.output}"
+          testCases: "${testCases}"
+
+      - id: save-playbook
+        action: save_playbook
+        tool: playbook_saver
+        capability: file.write
+        capabilityLabel: Save playbook
+        labels:
+          - automation
+          - persistence
+        timeoutSeconds: 30
+        approvalRequired: false
+        dependencies:
+          - run-tests
+        description: Save the validated playbook
+        input:
+          playbook: "${generate-playbook.output}"
+          name: "${playbookName}"
+
+  - id: automation-scheduled-task
+    name: Scheduled Task Workflow
+    description: |
+      Execute scheduled automation tasks.
+      Supports cron-style scheduling and one-time execution.
+    version: "1.0.0"
+    workflowType: automation
+    inputConditions:
+      - type: keywords
+        value: schedule,cron,timer,periodic,recurring
+        priority: 10
+    tags:
+      - scheduling
+      - periodic
+    enabled: true
+    variables:
+      maxExecutionTime: 1800
+      retryOnFailure: true
+    successCriteria:
+      - Task executed on schedule
+      - Results recorded
+      - Next run scheduled
+    steps:
+      - id: validate-schedule
+        action: validate_schedule
+        tool: schedule_validator
+        capability: file.read
+        capabilityLabel: Validate schedule
+        labels:
+          - automation
+          - scheduling
+        timeoutSeconds: 30
+        approvalRequired: false
+        description: Validate the schedule configuration
+        input:
+          schedule: "${schedule}"
+
+      - id: acquire-lock
+        action: acquire_lock
+        tool: distributed_lock
+        capability: file.write
+        capabilityLabel: Acquire execution lock
+        labels:
+          - automation
+          - locking
+        timeoutSeconds: 30
+        approvalRequired: false
+        dependencies:
+          - validate-schedule
+        description: Acquire distributed lock for execution
+        input:
+          taskId: "${taskId}"
+          ttl: "${maxExecutionTime}"
+
+      - id: execute-task
+        action: execute_task
+        tool: task_executor
+        capability: file.write
+        capabilityLabel: Execute scheduled task
+        labels:
+          - automation
+          - execution
+        timeoutSeconds: 1800
+        approvalRequired: false
+        dependencies:
+          - acquire-lock
+        description: Execute the scheduled task
+        input:
+          task: "${task}"
+        retryPolicy:
+          maxRetries: 2
+          backoffMs: 10000
+          exponential: false
+
+      - id: release-lock
+        action: release_lock
+        tool: distributed_lock
+        capability: file.write
+        capabilityLabel: Release execution lock
+        labels:
+          - automation
+          - locking
+        timeoutSeconds: 30
+        approvalRequired: false
+        dependencies:
+          - execute-task
+        description: Release the distributed lock
+        input:
+          taskId: "${taskId}"
+        continueOnError: true

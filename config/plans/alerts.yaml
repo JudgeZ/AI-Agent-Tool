@@ -1,0 +1,270 @@
+# Alerts Workflow Plan Definitions
+# These plans support security alert ingestion, enrichment, and remediation
+
+schemaVersion: "1.0.0"
+
+plans:
+  - id: alerts-triage
+    name: Alert Triage Workflow
+    description: |
+      Standard workflow for triaging security alerts.
+      Includes enrichment, analysis, and recommended actions.
+    version: "1.0.0"
+    workflowType: alerts
+    inputConditions:
+      - type: keywords
+        value: triage,analyze,investigate,assess
+        priority: 10
+      - type: pattern
+        value: "^(triage|investigate)\\s+alert"
+        priority: 15
+    tags:
+      - triage
+      - security
+    enabled: true
+    variables:
+      enrichmentSources:
+        - threat_intel
+        - logs
+        - asset_inventory
+      maxEnrichmentTime: 120
+    successCriteria:
+      - Alert severity assessed
+      - Context gathered
+      - Recommendation provided
+    steps:
+      - id: ingest-alert
+        action: ingest_alert
+        tool: alert_ingester
+        capability: alert.read
+        capabilityLabel: Read alert data
+        labels:
+          - alert
+          - ingestion
+        timeoutSeconds: 60
+        approvalRequired: false
+        description: Ingest and parse the alert data
+        input:
+          alertData: "${alertData}"
+
+      - id: enrich-threat-intel
+        action: enrich_threat_intel
+        tool: threat_intel_client
+        capability: network.egress
+        capabilityLabel: Query threat intelligence
+        labels:
+          - alert
+          - enrichment
+        timeoutSeconds: 120
+        approvalRequired: false
+        dependencies:
+          - ingest-alert
+        description: Enrich alert with threat intelligence
+        input:
+          indicators: "${ingest-alert.output.indicators}"
+        continueOnError: true
+
+      - id: enrich-logs
+        action: enrich_logs
+        tool: log_analyzer
+        capability: database.read
+        capabilityLabel: Query logs
+        labels:
+          - alert
+          - enrichment
+        timeoutSeconds: 180
+        approvalRequired: false
+        dependencies:
+          - ingest-alert
+        description: Gather related log entries
+        input:
+          timeRange: "${ingest-alert.output.timeRange}"
+          entities: "${ingest-alert.output.entities}"
+        continueOnError: true
+
+      - id: analyze-alert
+        action: analyze_alert
+        tool: alert_analyzer
+        capability: alert.read
+        capabilityLabel: Analyze alert context
+        labels:
+          - alert
+          - analysis
+        timeoutSeconds: 120
+        approvalRequired: false
+        dependencies:
+          - enrich-threat-intel
+          - enrich-logs
+        description: Analyze alert with enriched context
+        input:
+          alert: "${ingest-alert.output}"
+          threatIntel: "${enrich-threat-intel.output}"
+          logs: "${enrich-logs.output}"
+
+      - id: recommend-action
+        action: recommend_action
+        tool: action_recommender
+        capability: alert.write
+        capabilityLabel: Generate recommendations
+        labels:
+          - alert
+          - recommendation
+        timeoutSeconds: 60
+        approvalRequired: false
+        dependencies:
+          - analyze-alert
+        description: Generate recommended response actions
+        input:
+          analysis: "${analyze-alert.output}"
+
+  - id: alerts-remediation
+    name: Alert Remediation Workflow
+    description: |
+      Workflow for executing remediation actions on alerts.
+      Requires approval before taking action.
+    version: "1.0.0"
+    workflowType: alerts
+    inputConditions:
+      - type: keywords
+        value: remediate,fix,respond,mitigate,contain
+        priority: 10
+      - type: pattern
+        value: "^(remediate|contain|mitigate)\\s+"
+        priority: 15
+    tags:
+      - remediation
+      - security
+      - response
+    enabled: true
+    variables:
+      requireApproval: true
+      auditAll: true
+    successCriteria:
+      - Remediation action executed
+      - Alert status updated
+      - Audit trail created
+    steps:
+      - id: validate-action
+        action: validate_action
+        tool: action_validator
+        capability: alert.read
+        capabilityLabel: Validate remediation action
+        labels:
+          - alert
+          - validation
+        timeoutSeconds: 60
+        approvalRequired: false
+        description: Validate the proposed remediation action
+        input:
+          action: "${action}"
+          alertId: "${alertId}"
+
+      - id: execute-remediation
+        action: execute_remediation
+        tool: remediation_executor
+        capability: alert.write
+        capabilityLabel: Execute remediation
+        labels:
+          - alert
+          - remediation
+          - approval
+        timeoutSeconds: 300
+        approvalRequired: true
+        dependencies:
+          - validate-action
+        description: Execute the approved remediation action
+        input:
+          action: "${action}"
+          validation: "${validate-action.output}"
+        metadata:
+          approvalType: human
+          riskLevel: high
+
+      - id: update-status
+        action: update_status
+        tool: alert_manager
+        capability: alert.write
+        capabilityLabel: Update alert status
+        labels:
+          - alert
+          - status
+        timeoutSeconds: 30
+        approvalRequired: false
+        dependencies:
+          - execute-remediation
+        description: Update the alert status
+        input:
+          alertId: "${alertId}"
+          newStatus: remediated
+          remediationResult: "${execute-remediation.output}"
+
+  - id: alerts-bulk-triage
+    name: Bulk Alert Triage
+    description: |
+      Workflow for triaging multiple similar alerts at once.
+      Efficient for handling alert storms.
+    version: "1.0.0"
+    workflowType: alerts
+    inputConditions:
+      - type: keywords
+        value: bulk,batch,multiple,many
+        priority: 5
+    tags:
+      - bulk
+      - triage
+      - efficiency
+    enabled: true
+    variables:
+      maxBatchSize: 100
+      parallelEnrichment: true
+    successCriteria:
+      - All alerts processed
+      - Similar alerts grouped
+      - Priorities assigned
+    steps:
+      - id: group-alerts
+        action: group_alerts
+        tool: alert_grouper
+        capability: alert.read
+        capabilityLabel: Group similar alerts
+        labels:
+          - alert
+          - grouping
+        timeoutSeconds: 120
+        approvalRequired: false
+        description: Group similar alerts together
+        input:
+          alerts: "${alerts}"
+          groupingCriteria: "${groupingCriteria}"
+
+      - id: enrich-groups
+        action: enrich_groups
+        tool: bulk_enricher
+        capability: network.egress
+        capabilityLabel: Bulk enrichment
+        labels:
+          - alert
+          - enrichment
+        timeoutSeconds: 300
+        approvalRequired: false
+        dependencies:
+          - group-alerts
+        description: Enrich alert groups efficiently
+        input:
+          groups: "${group-alerts.output}"
+
+      - id: prioritize-groups
+        action: prioritize_groups
+        tool: priority_calculator
+        capability: alert.write
+        capabilityLabel: Calculate priorities
+        labels:
+          - alert
+          - prioritization
+        timeoutSeconds: 60
+        approvalRequired: false
+        dependencies:
+          - enrich-groups
+        description: Calculate priority for each group
+        input:
+          enrichedGroups: "${enrich-groups.output}"

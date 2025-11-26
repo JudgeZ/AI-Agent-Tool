@@ -1,0 +1,269 @@
+# Coding Workflow Plan Definitions
+# These plans support IDE-like coding workflows with indexer integration
+
+schemaVersion: "1.0.0"
+
+plans:
+  - id: coding-standard-development
+    name: Standard Development Workflow
+    description: |
+      Standard multi-step workflow for implementing code changes.
+      Includes indexing, code analysis, implementation, testing, and PR creation.
+    version: "1.0.0"
+    workflowType: coding
+    inputConditions:
+      - type: keywords
+        value: implement,add,create,build,develop
+        priority: 5
+      - type: pattern
+        value: "^(implement|add|create|build)\\s+"
+        priority: 10
+    tags:
+      - development
+      - standard
+    enabled: true
+    variables:
+      maxIndexingTime: 300
+      runTests: true
+      createPR: true
+    successCriteria:
+      - All tests pass
+      - CI green
+      - Code follows style guidelines
+    steps:
+      - id: index-repo
+        action: index_repo
+        tool: repo_indexer
+        capability: repo.read
+        capabilityLabel: Read repository
+        labels:
+          - repo
+          - automation
+        timeoutSeconds: 300
+        approvalRequired: false
+        description: Index the repository to understand code structure
+        input:
+          goal: "${goal}"
+
+      - id: analyze-code
+        action: analyze_code
+        tool: code_analyzer
+        capability: repo.read
+        capabilityLabel: Analyze codebase
+        labels:
+          - repo
+          - analysis
+        timeoutSeconds: 120
+        approvalRequired: false
+        dependencies:
+          - index-repo
+        description: Analyze existing code patterns and architecture
+        input:
+          goal: "${goal}"
+          indexResult: "${index-repo.output}"
+
+      - id: apply-changes
+        action: apply_changes
+        tool: code_writer
+        capability: repo.write
+        capabilityLabel: Apply repository changes
+        labels:
+          - repo
+          - automation
+          - approval
+        timeoutSeconds: 900
+        approvalRequired: true
+        dependencies:
+          - analyze-code
+        description: Implement the requested code changes
+        input:
+          goal: "${goal}"
+          analysis: "${analyze-code.output}"
+        metadata:
+          approvalType: human
+
+      - id: run-tests
+        action: run_tests
+        tool: test_runner
+        capability: test.run
+        capabilityLabel: Execute tests
+        labels:
+          - repo
+          - automation
+        timeoutSeconds: 900
+        approvalRequired: false
+        dependencies:
+          - apply-changes
+        description: Run the test suite to verify changes
+        input:
+          goal: "${goal}"
+        retryPolicy:
+          maxRetries: 2
+          backoffMs: 5000
+          exponential: true
+
+      - id: open-pr
+        action: open_pr
+        tool: github_client
+        capability: github.write
+        capabilityLabel: Open pull request
+        labels:
+          - repo
+          - automation
+          - approval
+        timeoutSeconds: 300
+        approvalRequired: true
+        dependencies:
+          - run-tests
+        description: Create a pull request with the changes
+        input:
+          goal: "${goal}"
+          testResults: "${run-tests.output}"
+
+  - id: coding-quick-fix
+    name: Quick Fix Workflow
+    description: |
+      Streamlined workflow for quick bug fixes.
+      Skips extensive analysis for faster turnaround.
+    version: "1.0.0"
+    workflowType: coding
+    inputConditions:
+      - type: keywords
+        value: fix,bug,patch,hotfix,repair
+        priority: 15
+      - type: pattern
+        value: "^(fix|patch|repair)\\s+"
+        priority: 20
+    tags:
+      - bugfix
+      - quick
+    enabled: true
+    variables:
+      runTests: true
+      createPR: true
+    successCriteria:
+      - Bug is fixed
+      - Tests pass
+      - No regressions
+    steps:
+      - id: apply-fix
+        action: apply_fix
+        tool: code_writer
+        capability: repo.write
+        capabilityLabel: Apply bug fix
+        labels:
+          - repo
+          - bugfix
+          - approval
+        timeoutSeconds: 600
+        approvalRequired: true
+        description: Apply the bug fix
+        input:
+          goal: "${goal}"
+        metadata:
+          approvalType: human
+
+      - id: run-tests
+        action: run_tests
+        tool: test_runner
+        capability: test.run
+        capabilityLabel: Execute tests
+        labels:
+          - repo
+          - automation
+        timeoutSeconds: 600
+        approvalRequired: false
+        dependencies:
+          - apply-fix
+        description: Verify the fix with tests
+        input:
+          goal: "${goal}"
+          verifyFix: true
+
+  - id: coding-refactor
+    name: Code Refactoring Workflow
+    description: |
+      Workflow for code refactoring operations.
+      Emphasizes safety and incremental changes.
+    version: "1.0.0"
+    workflowType: coding
+    inputConditions:
+      - type: keywords
+        value: refactor,restructure,reorganize,cleanup,improve
+        priority: 10
+      - type: pattern
+        value: "^refactor\\s+"
+        priority: 15
+    tags:
+      - refactor
+      - quality
+    enabled: true
+    variables:
+      incrementalChanges: true
+      runTests: true
+    successCriteria:
+      - All tests pass
+      - Code quality improved
+      - No functionality changes
+    steps:
+      - id: index-repo
+        action: index_repo
+        tool: repo_indexer
+        capability: repo.read
+        capabilityLabel: Read repository
+        labels:
+          - repo
+        timeoutSeconds: 300
+        approvalRequired: false
+        description: Index the repository
+        input:
+          goal: "${goal}"
+
+      - id: identify-changes
+        action: identify_changes
+        tool: refactor_analyzer
+        capability: repo.read
+        capabilityLabel: Identify refactoring targets
+        labels:
+          - repo
+          - analysis
+        timeoutSeconds: 180
+        approvalRequired: false
+        dependencies:
+          - index-repo
+        description: Identify code areas to refactor
+        input:
+          goal: "${goal}"
+
+      - id: apply-refactor
+        action: apply_refactor
+        tool: code_writer
+        capability: repo.write
+        capabilityLabel: Apply refactoring changes
+        labels:
+          - repo
+          - refactor
+          - approval
+        timeoutSeconds: 900
+        approvalRequired: true
+        dependencies:
+          - identify-changes
+        description: Apply the refactoring changes
+        input:
+          goal: "${goal}"
+          targets: "${identify-changes.output}"
+
+      - id: run-tests
+        action: run_tests
+        tool: test_runner
+        capability: test.run
+        capabilityLabel: Execute tests
+        labels:
+          - repo
+        timeoutSeconds: 900
+        approvalRequired: false
+        dependencies:
+          - apply-refactor
+        description: Verify no regressions
+        input:
+          goal: "${goal}"

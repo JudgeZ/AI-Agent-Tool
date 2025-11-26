@@ -1,0 +1,283 @@
+# Analytics Workflow Plan Definitions
+# These plans support data analytics with SQL/database connectivity
+
+schemaVersion: "1.0.0"
+
+plans:
+  - id: analytics-data-exploration
+    name: Data Exploration Workflow
+    description: |
+      Workflow for exploring datasets and understanding data structure.
+      Includes schema discovery, sampling, and basic statistics.
+    version: "1.0.0"
+    workflowType: analytics
+    inputConditions:
+      - type: keywords
+        value: explore,examine,discover,understand,schema
+        priority: 10
+      - type: pattern
+        value: "^(explore|examine|show)\\s+(data|table|schema)"
+        priority: 15
+    tags:
+      - exploration
+      - discovery
+    enabled: true
+    variables:
+      sampleSize: 1000
+      includeStatistics: true
+    successCriteria:
+      - Schema understood
+      - Sample data retrieved
+      - Statistics computed
+    steps:
+      - id: discover-schema
+        action: discover_schema
+        tool: schema_inspector
+        capability: database.read
+        capabilityLabel: Inspect database schema
+        labels:
+          - analytics
+          - schema
+        timeoutSeconds: 60
+        approvalRequired: false
+        description: Discover table schemas and relationships
+        input:
+          database: "${database}"
+          tables: "${tables}"
+
+      - id: sample-data
+        action: sample_data
+        tool: data_sampler
+        capability: database.read
+        capabilityLabel: Sample data
+        labels:
+          - analytics
+          - sampling
+        timeoutSeconds: 120
+        approvalRequired: false
+        dependencies:
+          - discover-schema
+        description: Retrieve representative data samples
+        input:
+          schema: "${discover-schema.output}"
+          sampleSize: "${sampleSize}"
+
+      - id: compute-statistics
+        action: compute_statistics
+        tool: stats_calculator
+        capability: database.read
+        capabilityLabel: Compute statistics
+        labels:
+          - analytics
+          - statistics
+        timeoutSeconds: 180
+        approvalRequired: false
+        dependencies:
+          - sample-data
+        description: Compute basic statistics on the data
+        input:
+          sample: "${sample-data.output}"
+          schema: "${discover-schema.output}"
+
+      - id: summarize-findings
+        action: summarize_findings
+        tool: findings_summarizer
+        capability: chat.respond
+        capabilityLabel: Summarize results
+        labels:
+          - analytics
+          - summary
+        timeoutSeconds: 60
+        approvalRequired: false
+        dependencies:
+          - compute-statistics
+        description: Generate human-readable summary
+        input:
+          schema: "${discover-schema.output}"
+          statistics: "${compute-statistics.output}"
+
+  - id: analytics-query-execution
+    name: Query Execution Workflow
+    description: |
+      Execute user queries against databases with safety checks.
+      Includes query validation and result formatting.
+    version: "1.0.0"
+    workflowType: analytics
+    inputConditions:
+      - type: keywords
+        value: query,select,find,get,fetch,search
+        priority: 5
+      - type: pattern
+        value: "(SELECT|select|FROM|from|WHERE|where)"
+        priority: 20
+    tags:
+      - query
+      - execution
+    enabled: true
+    variables:
+      maxRows: 10000
+      timeout: 30
+      validateQuery: true
+    successCriteria:
+      - Query validated
+      - Results retrieved
+      - Output formatted
+    steps:
+      - id: parse-intent
+        action: parse_intent
+        tool: intent_parser
+        capability: chat.respond
+        capabilityLabel: Parse user intent
+        labels:
+          - analytics
+          - parsing
+        timeoutSeconds: 30
+        approvalRequired: false
+        description: Parse user's query intent
+        input:
+          goal: "${goal}"
+
+      - id: generate-query
+        action: generate_query
+        tool: query_generator
+        capability: database.read
+        capabilityLabel: Generate SQL query
+        labels:
+          - analytics
+          - query
+        timeoutSeconds: 60
+        approvalRequired: false
+        dependencies:
+          - parse-intent
+        description: Generate SQL from natural language
+        input:
+          intent: "${parse-intent.output}"
+          database: "${database}"
+
+      - id: validate-query
+        action: validate_query
+        tool: query_validator
+        capability: database.read
+        capabilityLabel: Validate query safety
+        labels:
+          - analytics
+          - validation
+        timeoutSeconds: 30
+        approvalRequired: false
+        dependencies:
+          - generate-query
+        description: Validate query for safety and correctness
+        input:
+          query: "${generate-query.output}"
+
+      - id: execute-query
+        action: execute_query
+        tool: query_executor
+        capability: database.read
+        capabilityLabel: Execute database query
+        labels:
+          - analytics
+          - execution
+        timeoutSeconds: 300
+        approvalRequired: false
+        dependencies:
+          - validate-query
+        description: Execute the validated query
+        input:
+          query: "${generate-query.output}"
+          maxRows: "${maxRows}"
+        retryPolicy:
+          maxRetries: 2
+          backoffMs: 1000
+          exponential: true
+
+      - id: format-results
+        action: format_results
+        tool: result_formatter
+        capability: chat.respond
+        capabilityLabel: Format query results
+        labels:
+          - analytics
+          - formatting
+        timeoutSeconds: 60
+        approvalRequired: false
+        dependencies:
+          - execute-query
+        description: Format results for display
+        input:
+          results: "${execute-query.output}"
+          intent: "${parse-intent.output}"
+
+  - id: analytics-visualization
+    name: Data Visualization Workflow
+    description: |
+      Generate visualizations from data queries.
+      Supports charts, graphs, and tables.
+    version: "1.0.0"
+    workflowType: analytics
+    inputConditions:
+      - type: keywords
+        value: chart,graph,plot,visualize,show,display
+        priority: 15
+      - type: pattern
+        value: "^(show|create|generate|make)\\s+(chart|graph|plot)"
+        priority: 20
+    tags:
+      - visualization
+      - charts
+    enabled: true
+    variables:
+      defaultChartType: bar
+      maxDataPoints: 1000
+    successCriteria:
+      - Data retrieved
+      - Visualization generated
+      - Output rendered
+    steps:
+      - id: analyze-request
+        action: analyze_request
+        tool: viz_analyzer
+        capability: chat.respond
+        capabilityLabel: Analyze visualization request
+        labels:
+          - analytics
+          - analysis
+        timeoutSeconds: 30
+        approvalRequired: false
+        description: Determine visualization type and parameters
+        input:
+          goal: "${goal}"
+
+      - id: fetch-data
+        action: fetch_data
+        tool: data_fetcher
+        capability: database.read
+        capabilityLabel: Fetch visualization data
+        labels:
+          - analytics
+          - data
+        timeoutSeconds: 120
+        approvalRequired: false
+        dependencies:
+          - analyze-request
+        description: Fetch data for visualization
+        input:
+          requirements: "${analyze-request.output}"
+          maxDataPoints: "${maxDataPoints}"
+
+      - id: generate-viz
+        action: generate_viz
+        tool: viz_generator
+        capability: chat.respond
+        capabilityLabel: Generate visualization
+        labels:
+          - analytics
+          - visualization
+        timeoutSeconds: 60
+        approvalRequired: false
+        dependencies:
+          - fetch-data
+        description: Generate the visualization
+        input:
+          data: "${fetch-data.output}"
+          vizType: "${analyze-request.output.chartType}"

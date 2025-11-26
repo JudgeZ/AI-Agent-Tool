@@ -39,14 +39,35 @@ A successful implementation enables a novice engineer, given only this repo and 
 
 ## Progress
 
-Use this section to track granular work. Every meaningful stopping point should result in an updated entry here, splitting partially completed items into “done” and “remaining” as needed. Include timestamps in UTC where practical.
+Use this section to track granular work. Every meaningful stopping point should result in an updated entry here, splitting partially completed items into "done" and "remaining" as needed. Include timestamps in UTC where practical.
 
 * [x] (2025-11-26 12:00Z) Phase 0 – Set up `.agents` / `AGENTS.md` / ExecPlan workflow for this repo.
   * Added Planning & ExecPlans section to `CLAUDE.md` (§1.1) with guidance on when and how to use ExecPlans.
   * Added Planning & ExecPlans section to `AGENTS.md` (§1.2) with the same guidance.
   * Added Planning & ExecPlans section to `GEMINI.md` with the same guidance.
   * All files now reference `docs/plans/PLAN.md` as the primary ExecPlan.
-* [ ] (YYYY-MM-DD HH:MMZ) Phase 1 – Fix critical runtime issues and introduce the dynamic planner, session store abstraction, and modular `PlanTimeline` UI.
+* [x] (2025-11-26 14:30Z) Phase 1 – Core stabilization and dynamic planner foundation.
+  * **Fix critical runtime issues:**
+    * [x] Updated indexer `server.rs` default ports to match expected values (HTTP: 7071, gRPC: 7070).
+    * [x] Added `OTEL_EXPORTER_OTLP_ENDPOINT` to indexer service in `compose.dev.yaml` for distributed tracing.
+  * **Dynamic planning engine:**
+    * [x] Created `PlanDefinition.ts` with Zod schemas for workflow definitions, steps, transitions, and input conditions.
+    * [x] Created `PlanDefinitionRepository.ts` with `IPlanDefinitionRepository` interface and `YamlPlanDefinitionRepository` implementation.
+    * [x] Created `PlanFactory.ts` for building `ExecutionGraph` instances from plan definitions.
+    * [x] Created sample YAML plan definitions in `config/plans/` for all five workflow types:
+      * `alerts.yaml` - Alert triage, remediation, and bulk triage workflows.
+      * `analytics.yaml` - Data exploration, query execution, and visualization workflows.
+      * `automation.yaml` - Playbook execution, development, and scheduled task workflows.
+      * `coding.yaml` - Standard development, quick fix, and refactoring workflows.
+      * `chat.yaml` - General conversation, code assistance, alert context, and data analysis chat workflows.
+  * **Modularize PlanTimeline UI:**
+    * [x] Extracted `PlanStep.svelte` component from `PlanTimeline.svelte`.
+    * [x] Refactored `PlanTimeline.svelte` to use the new `PlanStep` component.
+    * [x] Moved step-specific styles to `PlanStep.svelte`, keeping only layout styles in `PlanTimeline.svelte`.
+  * **Configuration schema:**
+    * [x] Created `config/schema.ts` with comprehensive Zod schemas for orchestrator configuration.
+    * Covers: rate limiting, SSE quotas, CORS, TLS, security headers, Kafka, RabbitMQ, database, network egress, providers, policy cache, observability, session store, and dynamic planner config.
+  * **Note:** Session store abstraction (`ISessionStore`, `RedisSessionStore`) and distributed dedupe service were already implemented in the codebase prior to this work.
 * [ ] (YYYY-MM-DD HH:MMZ) Phase 2 – Implement workflow-specific backend capabilities and front-end views for Alerts, Data Analytics, Automation, Coding, and Chat, plus SDK consolidation and test hardening.
 * [ ] (YYYY-MM-DD HH:MMZ) Phase 3 – Implement messaging abstraction for RabbitMQ / NATS / Kafka, distributed state (Redis-backed), and horizontal scaling patterns.
 * [ ] (YYYY-MM-DD HH:MMZ) Phase 4 – Performance tuning, multi-cloud K8s deployment manifests, and documentation including an architectural diagram and operator runbooks.
@@ -60,8 +81,17 @@ As work progresses, replace these coarse items with more detailed checkboxes ref
 
 Use this section to capture unexpected behavior, design constraints, or useful patterns you discover while implementing this plan.
 
-* Observation: *None yet — to be filled as implementation proceeds.*
-  Evidence: *N/A.*
+* Observation: **Session store abstraction already implemented.** The codebase already has `ISessionStore` interface, `MemorySessionStore`, and `RedisSessionStore` implementations in `services/orchestrator/src/auth/`. This is more mature than the PLAN.md context suggested.
+  Evidence: Files `ISessionStore.ts`, `SessionStore.ts`, `RedisSessionStore.ts` exist with full implementations including L1 caching for Redis.
+
+* Observation: **StandardPipelines.ts already uses ExecutionGraph correctly.** The `PipelineExecutor` class registers handlers via `registerHandler()` for all node types (TASK, PARALLEL, CONDITION, MERGE, LOOP) at lines 928-945. No refactoring needed for Phase 1 item 2.
+  Evidence: `PipelineExecutor` class in `StandardPipelines.ts` implements handler registration pattern as expected.
+
+* Observation: **OTLP tracing already fully implemented in indexer.** The `telemetry.rs` module already supports OTLP export via `OTEL_EXPORTER_OTLP_ENDPOINT` with proper span batching and graceful shutdown. Only needed to add the env var to `compose.dev.yaml`.
+  Evidence: `telemetry.rs` lines 55-120 implement OTLP layer initialization with service name `ossaat-indexer`.
+
+* Observation: **Indexer port defaults differ from documentation.** The `server.rs` had hardcoded defaults of 9200/9201 while compose.dev.yaml and PLAN.md expected 7070/7071. Updated defaults to match expectations.
+  Evidence: `server.rs` lines 27-30 (before fix): `DEFAULT_LISTEN_ADDR = "0.0.0.0:9200"`, `DEFAULT_GRPC_ADDR = "0.0.0.0:9201"`.
 
 As real discoveries occur (e.g., unexpected indexer performance characteristics, queue adapter edge cases, or subtle Svelte reactivity issues), document them here along with short evidence snippets (logs, test output, or brief code excerpts).
 
@@ -77,6 +107,18 @@ Record every significant decision made while working this ExecPlan. Each entry s
 
 * Decision: *Phase 0 implemented by adding Planning & ExecPlans guidance to all agent instruction files (CLAUDE.md, AGENTS.md, GEMINI.md).*
   Rationale: *Provides a stable contract for how planning works in this repository; ensures all AI agents and human contributors understand the ExecPlan workflow before beginning work on subsequent phases.*
+  Date/Author: *2025-11-26 – Claude (AI Agent).*
+
+* Decision: *Dynamic planner uses YAML files in `config/plans/` as the primary plan definition source.*
+  Rationale: *YAML is human-readable, version-controllable, and allows operators to modify workflows without code changes. The `YamlPlanDefinitionRepository` implementation supports hot-reloading via file watching for development flexibility.*
+  Date/Author: *2025-11-26 – Claude (AI Agent).*
+
+* Decision: *PlanStep.svelte extracted as a dedicated component rather than keeping inline rendering in PlanTimeline.svelte.*
+  Rationale: *Separation of concerns: PlanTimeline handles data orchestration and layout, PlanStep handles individual step rendering. This enables future workflow-specific step renderers (e.g., AlertStep, CodeStep) without modifying the timeline container.*
+  Date/Author: *2025-11-26 – Claude (AI Agent).*
+
+* Decision: *Configuration schema uses Zod with optional sections and defaults throughout.*
+  Rationale: *Allows gradual adoption - existing loadConfig.ts can continue working while new code paths use the schema. Safe defaults mean the system starts with minimal configuration, reducing onboarding friction.*
   Date/Author: *2025-11-26 – Claude (AI Agent).*
 
 Add entries for things like choice of Redis provider, preferred queue system in production versus development, selected state machine library (if any), and Kubernetes patterns (e.g., Helm vs. raw manifests).

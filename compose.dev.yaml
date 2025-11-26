@@ -69,6 +69,7 @@ services:
       GIT_REPO_PATH: /repo
       INDEXER_LISTEN_ADDR: 0.0.0.0:7071
       INDEXER_GRPC_ADDR: 0.0.0.0:7070
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://jaeger:4317
     depends_on:
       - postgres
     ports:
