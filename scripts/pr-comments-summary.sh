@@ -17,30 +17,53 @@ echo ""
 echo "═══════════════════════════════════════════════════════════════════════"
 echo "  PR #$(echo "$JSON" | jq -r '.pr_number') - $(echo "$JSON" | jq -r '.repository')"
 echo "  Fetched: $(echo "$JSON" | jq -r '.fetched_at')"
-echo "  Unresolved: $(echo "$JSON" | jq -r '.review_comments.count + .ai_reviews.count') comments"
-echo "  (Review: $(echo "$JSON" | jq -r '.review_comments.count'), AI: $(echo "$JSON" | jq -r '.ai_reviews.count'))"
+echo "  Total Unresolved: $(echo "$JSON" | jq -r '.total_unresolved // (.review_comments.count + .ai_reviews.count + (.pr_reviews.count // 0))')"
+echo "    - Inline review comments: $(echo "$JSON" | jq -r '.review_comments.count')"
+echo "    - PR review bodies: $(echo "$JSON" | jq -r '.pr_reviews.count // 0')"
+echo "    - AI issue comments: $(echo "$JSON" | jq -r '.ai_reviews.count')"
 echo "═══════════════════════════════════════════════════════════════════════"
 echo ""
 
-# Group by file and show review comments
-echo "$JSON" | jq -r '
-  .review_comments.comments |
-  group_by(.file) |
-  .[] |
-  "\n📁 \(.[0].file)\n" +
-  "────────────────────────────────────────────────────────────────────────\n" +
-  (
-    .[] |
-    "  Line \(.line // "?"): @\(.author)\n" +
-    "  \(.body | split("\n")[0] | if length > 72 then .[:72] + "..." else . end)\n"
-  )
-'
+# Show PR review summaries (main review bodies from CodeRabbit, Gemini, etc.)
+PR_REVIEW_COUNT=$(echo "$JSON" | jq -r '.pr_reviews.count // 0')
+if [[ "$PR_REVIEW_COUNT" -gt 0 ]]; then
+  echo ""
+  echo "📋 PR Review Bodies ($PR_REVIEW_COUNT) - Full AI analysis summaries"
+  echo "────────────────────────────────────────────────────────────────────────"
+  echo "$JSON" | jq -r '
+    .pr_reviews.comments[]? |
+    "\n  🔍 @\(.author) [\(.state)]:\n" +
+    "  \(.body | split("\n") | .[0:5] | join("\n  "))" +
+    (if (.body | split("\n") | length) > 5 then "\n  ... (truncated, \((.body | split("\n") | length) - 5) more lines)" else "" end)
+  '
+  echo ""
+fi
 
-# Show AI review summaries if any
+# Group by file and show inline review comments
+REVIEW_COUNT=$(echo "$JSON" | jq -r '.review_comments.count')
+if [[ "$REVIEW_COUNT" -gt 0 ]]; then
+  echo ""
+  echo "📁 Inline Review Comments ($REVIEW_COUNT)"
+  echo "────────────────────────────────────────────────────────────────────────"
+  echo "$JSON" | jq -r '
+    .review_comments.comments |
+    group_by(.file) |
+    .[] |
+    "\n📁 \(.[0].file)\n" +
+    "────────────────────────────────────────────────────────────────────────\n" +
+    (
+      .[] |
+      "  Line \(.line // "?"): @\(.author)\n" +
+      "  \(.body | split("\n")[0] | if length > 72 then .[:72] + "..." else . end)\n"
+    )
+  '
+fi
+
+# Show AI issue comment summaries if any
 AI_COUNT=$(echo "$JSON" | jq -r '.ai_reviews.count')
 if [[ "$AI_COUNT" -gt 0 ]]; then
   echo ""
-  echo "🤖 AI Review Summaries ($AI_COUNT)"
+  echo "🤖 AI Issue Comments ($AI_COUNT)"
   echo "────────────────────────────────────────────────────────────────────────"
   echo "$JSON" | jq -r '
     .ai_reviews.comments[] |
