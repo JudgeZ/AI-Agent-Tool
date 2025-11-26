@@ -12,6 +12,17 @@
 # Environment:
 #   GITHUB_TOKEN - GitHub personal access token (required for resolution status)
 #
+# Config:
+#   .local/pr-comments-handled.json - Track handled comments to exclude from output
+#   Format:
+#     {
+#       "36": {
+#         "12345": { "status": "validated", "note": "Fixed in commit abc123" },
+#         "67890": { "status": "ignored", "note": "Added to ignored.md as I46" }
+#       }
+#     }
+#   Status values: validated, ignored, wontfix, deferred
+#
 # Output:
 #   JSON with review comments and AI reviewer issue comments (Claude, CodeRabbit)
 #
@@ -40,9 +51,31 @@ if [[ -z "$REPO" ]]; then
   exit 1
 fi
 
+# Find repo root for config file
+REPO_ROOT=$(git rev-parse --show-toplevel 2>/dev/null || pwd)
+CONFIG_FILE="$REPO_ROOT/.local/pr-comments-handled.json"
+HANDLED_IDS_FILE=""
+
+# Load handled comment IDs from config if it exists
+if [[ -f "$CONFIG_FILE" ]]; then
+  echo "  Loading handled comments from $CONFIG_FILE..." >&2
+  # Create temp file with handled IDs for this PR
+  HANDLED_IDS_FILE=$(mktemp)
+  jq -r --arg pr "$PR_NUMBER" '
+    .[$pr] // {} | keys | map(tonumber) | sort
+  ' "$CONFIG_FILE" > "$HANDLED_IDS_FILE" 2>/dev/null || echo "[]" > "$HANDLED_IDS_FILE"
+
+  HANDLED_COUNT=$(jq 'length' "$HANDLED_IDS_FILE")
+  if [[ "$HANDLED_COUNT" -gt 0 ]]; then
+    echo "  Found $HANDLED_COUNT previously handled comments to exclude" >&2
+  fi
+else
+  echo "  No config file found at $CONFIG_FILE (all comments will be shown)" >&2
+fi
+
 # Create temp directory for intermediate files
 TMPDIR=$(mktemp -d)
-trap 'rm -rf "$TMPDIR"' EXIT
+trap 'rm -rf "$TMPDIR"; [[ -n "${HANDLED_IDS_FILE:-}" ]] && rm -f "$HANDLED_IDS_FILE"' EXIT
 
 # Set up auth header if token is available
 AUTH_HEADER=""
@@ -135,56 +168,108 @@ if [[ -n "$AUTH_HEADER" ]]; then
   ' "$TMPDIR/threads.json" > "$RESOLVED_FILE" 2>/dev/null || echo "[]" > "$RESOLVED_FILE"
 fi
 
-# Filter review comments: only top-level, not resolved
+# Filter review comments: only top-level, not resolved, not handled
 UNRESOLVED_FILE="$TMPDIR/unresolved.json"
-jq --slurpfile resolved "$RESOLVED_FILE" '
-  [.[] |
-   select(.in_reply_to_id == null) |  # Only top-level comments (not replies)
-   select(.id as $id | ($resolved[0] | index($id)) == null) |  # Not resolved
-   {
-     id: .id,
-     author: .user.login,
-     file: .path,
-     line: (.line // .original_line),
-     created_at: .created_at,
-     body: .body,
-     url: .html_url,
-     type: "review_comment"
-   }
-  ]
-' "$REVIEW_FILE" > "$UNRESOLVED_FILE"
+if [[ -n "$HANDLED_IDS_FILE" && -f "$HANDLED_IDS_FILE" ]]; then
+  jq --slurpfile resolved "$RESOLVED_FILE" --slurpfile handled "$HANDLED_IDS_FILE" '
+    [.[] |
+     select(.in_reply_to_id == null) |  # Only top-level comments (not replies)
+     select(.id as $id | ($resolved[0] | index($id)) == null) |  # Not resolved
+     select(.id as $id | ($handled[0] | index($id)) == null) |  # Not already handled
+     {
+       id: .id,
+       author: .user.login,
+       file: .path,
+       line: (.line // .original_line),
+       created_at: .created_at,
+       body: .body,
+       url: .html_url,
+       type: "review_comment"
+     }
+    ]
+  ' "$REVIEW_FILE" > "$UNRESOLVED_FILE"
+else
+  jq --slurpfile resolved "$RESOLVED_FILE" '
+    [.[] |
+     select(.in_reply_to_id == null) |  # Only top-level comments (not replies)
+     select(.id as $id | ($resolved[0] | index($id)) == null) |  # Not resolved
+     {
+       id: .id,
+       author: .user.login,
+       file: .path,
+       line: (.line // .original_line),
+       created_at: .created_at,
+       body: .body,
+       url: .html_url,
+       type: "review_comment"
+     }
+    ]
+  ' "$REVIEW_FILE" > "$UNRESOLVED_FILE"
+fi
 
-# Filter issue comments: only from AI reviewers (Claude, CodeRabbit)
+# Filter issue comments: only from AI reviewers (Claude, CodeRabbit), not handled
 AI_REVIEWS_FILE="$TMPDIR/ai_reviews.json"
-jq '
-  [.[] |
-   select(
-     .user.login == "claude[bot]" or
-     .user.login == "coderabbitai[bot]"
-   ) |
-   {
-     id: .id,
-     author: .user.login,
-     file: null,
-     line: null,
-     created_at: .created_at,
-     body: .body,
-     url: .html_url,
-     type: "ai_review"
-   }
-  ]
-' "$ISSUE_FILE" > "$AI_REVIEWS_FILE"
+if [[ -n "$HANDLED_IDS_FILE" && -f "$HANDLED_IDS_FILE" ]]; then
+  jq --slurpfile handled "$HANDLED_IDS_FILE" '
+    [.[] |
+     select(
+       .user.login == "claude[bot]" or
+       .user.login == "coderabbitai[bot]"
+     ) |
+     select(.id as $id | ($handled[0] | index($id)) == null) |  # Not already handled
+     {
+       id: .id,
+       author: .user.login,
+       file: null,
+       line: null,
+       created_at: .created_at,
+       body: .body,
+       url: .html_url,
+       type: "ai_review"
+     }
+    ]
+  ' "$ISSUE_FILE" > "$AI_REVIEWS_FILE"
+else
+  jq '
+    [.[] |
+     select(
+       .user.login == "claude[bot]" or
+       .user.login == "coderabbitai[bot]"
+     ) |
+     {
+       id: .id,
+       author: .user.login,
+       file: null,
+       line: null,
+       created_at: .created_at,
+       body: .body,
+       url: .html_url,
+       type: "ai_review"
+     }
+    ]
+  ' "$ISSUE_FILE" > "$AI_REVIEWS_FILE"
+fi
+
+# Count handled comments if config exists
+HANDLED_COUNT=0
+if [[ -n "$HANDLED_IDS_FILE" && -f "$HANDLED_IDS_FILE" ]]; then
+  HANDLED_COUNT=$(jq 'length' "$HANDLED_IDS_FILE")
+fi
 
 # Output result
 jq -n \
   --argjson pr "$PR_NUMBER" \
   --arg repo "$REPO" \
+  --arg config_file "$CONFIG_FILE" \
+  --argjson handled_count "$HANDLED_COUNT" \
   --slurpfile review "$UNRESOLVED_FILE" \
   --slurpfile ai "$AI_REVIEWS_FILE" \
   '{
     pr_number: $pr,
     repository: $repo,
     fetched_at: (now | todate),
+    config_file: $config_file,
+    handled_excluded: $handled_count,
     review_comments: {
       count: ($review[0] | length),
       comments: $review[0]
@@ -203,3 +288,6 @@ CODERABBIT_COUNT=$(jq '[.[] | select(.author == "coderabbitai[bot]")] | length' 
 echo "" >&2
 echo "Found $REVIEW_COUNT unresolved review comments" >&2
 echo "Found $AI_COUNT AI reviews ($CLAUDE_COUNT Claude, $CODERABBIT_COUNT CodeRabbit)" >&2
+if [[ "$HANDLED_COUNT" -gt 0 ]]; then
+  echo "Excluded $HANDLED_COUNT previously handled comments (from $CONFIG_FILE)" >&2
+fi
