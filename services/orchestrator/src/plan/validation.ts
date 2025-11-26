@@ -17,9 +17,9 @@ export const PlanStepSchema = z.object({
   tool: z.string().min(1),
   timeoutSeconds: z.number().int().nonnegative().default(0),
   approvalRequired: z.boolean().default(false),
-  input: z.record(z.any()).default({}),
+  input: z.record(z.string(), z.unknown()).default({}),
   summary: z.string().optional(),
-  metadata: z.record(z.any()).default({})
+  metadata: z.record(z.string(), z.unknown()).default({})
 });
 
 export const PlanSchema = z.object({
@@ -59,7 +59,7 @@ export const PlanStepEventSchema = z.object({
     approvalRequired: z.boolean(),
     attempt: z.number().int().nonnegative().optional(),
     summary: z.string().optional(),
-    output: z.record(z.any()).optional(),
+    output: z.record(z.string(), z.unknown()).optional(),
     approvals: z.record(z.boolean()).optional()
   })
 });
@@ -74,8 +74,8 @@ export const ToolInvocationSchema = z.object({
   labels: z.array(z.string().min(1)).default([]),
   timeoutSeconds: z.number().int().positive().optional(),
   approvalRequired: z.boolean().optional(),
-  input: z.record(z.any()).default({}),
-  metadata: z.record(z.any()).default({})
+  input: z.record(z.string(), z.unknown()).default({}),
+  metadata: z.record(z.string(), z.unknown()).default({})
 });
 
 export const ToolEventSchema = z.object({
@@ -84,7 +84,7 @@ export const ToolEventSchema = z.object({
   stepId: z.string().min(1),
   state: PlanStepStateSchema,
   summary: z.string().optional(),
-  output: z.record(z.any()).optional(),
+  output: z.record(z.string(), z.unknown()).optional(),
   occurredAt: z.string().optional(),
   attempt: z.number().int().nonnegative().optional()
 });
